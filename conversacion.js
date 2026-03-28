@@ -32,7 +32,7 @@ async function procesarMensaje(telefono, mensaje) {
 
     const { data: equipos } = await supabase
       .from('equipos')
-      .select('id, nombre, tipo')
+      .select('id, nombre, tipo, codigo')
       .eq('objetivo_id', capataz.objetivo_id)
       .eq('activo', true)
       .order('nombre');
@@ -54,7 +54,10 @@ async function procesarMensaje(telefono, mensaje) {
     };
     resetTimeout(tel);
 
-    const lista = equipos.map((e, i) => `  ${i + 1}. ${e.nombre}`).join('\n');
+    const lista = equipos.map((e, i) => {
+      const cod = e.codigo ? `[${e.codigo}] ` : '';
+      return `  ${i + 1}. ${cod}${e.nombre} · ${e.tipo}`;
+    }).join('\n');
     return `👋 Hola *${capataz.nombre}*. Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
   }
 
