@@ -5,28 +5,16 @@ const sesiones = {};
 const TIMEOUT_MS = 10 * 60 * 1000;
 
 const TIPOS_EQUIPO = [
-  'Motoguadaña',
-  'Motosierra',
-  'Extensible',
-  'Mini tractor',
-  'Giro cero',
-  'Plana',
-  'Toyota',
-  'Hidro grúa',
-  'Otro',
+  { label: 'Motoguadaña',  tipo: 'motoguadana' },
+  { label: 'Motosierra',   tipo: 'motosierra'  },
+  { label: 'Extensible',   tipo: 'maquina'     },
+  { label: 'Mini tractor', tipo: 'maquina'     },
+  { label: 'Giro cero',    tipo: 'maquina'     },
+  { label: 'Plana',        tipo: 'maquina'     },
+  { label: 'Toyota',       tipo: 'unidad'      },
+  { label: 'Hidro grúa',   tipo: 'maquina'     },
+  { label: 'Otro',         tipo: 'general'     },
 ];
-
-const TIPO_DB = {
-  'Motoguadaña':  'motoguadana',
-  'Motosierra':   'motosierra',
-  'Extensible':   'maquina',
-  'Mini tractor': 'maquina',
-  'Giro cero':    'maquina',
-  'Plana':        'maquina',
-  'Toyota':       'unidad',
-  'Hidro grúa':   'maquina',
-  'Otro':         'general',
-};
 
 function limpiarSesion(tel) { delete sesiones[tel]; }
 
@@ -58,7 +46,7 @@ async function procesarMensaje(telefono, mensaje) {
       capatazId:     capataz.id,
       objetivoId:    capataz.objetivo_id,
       capatazNombre: capataz.nombre,
-      tipoEquipo:    null,
+      tipoLabel:     null,
       tipoDb:        null,
       numeroUnidad:  null,
       prioridad:     null,
@@ -67,7 +55,7 @@ async function procesarMensaje(telefono, mensaje) {
     };
     resetTimeout(tel);
 
-    const lista = TIPOS_EQUIPO.map((t, i) => `  ${i + 1}. ${t}`).join('\n');
+    const lista = TIPOS_EQUIPO.map((t, i) => `  ${i + 1}. ${t.label}`).join('\n');
     return `👋 Hola *${capataz.nombre}*. Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
   }
 
@@ -80,10 +68,10 @@ async function procesarMensaje(telefono, mensaje) {
     if (isNaN(num) || num < 1 || num > TIPOS_EQUIPO.length) {
       return `Por favor respondé con un número del 1 al ${TIPOS_EQUIPO.length}.`;
     }
-    s.tipoEquipo = TIPOS_EQUIPO[num - 1];
-    s.tipoDb     = TIPO_DB[s.tipoEquipo] || 'general';
+    s.tipoLabel = TIPOS_EQUIPO[num - 1].label;
+    s.tipoDb    = TIPOS_EQUIPO[num - 1].tipo;
     s.paso = 2;
-    return `✅ *${s.tipoEquipo}*\n\n*¿Cuál es el número o código de la unidad?*\nEjemplo: MG-045, U30, 12, G01`;
+    return `✅ *${s.tipoLabel}*\n\n*¿Cuál es el número o código de la unidad?*\nEjemplo: MG-045, U30, 12, G01`;
   }
 
   // P2: número de unidad
@@ -114,25 +102,25 @@ async function procesarMensaje(telefono, mensaje) {
 
     const mecanicoId = await asignarMecanico(s.tipoDb);
 
-    // Buscar equipo del objetivo por tipo
-    let { data: equipos } = await supabase
+    // Buscar equipo del objetivo por nombre exacto del tipo seleccionado
+    const { data: equipos } = await supabase
       .from('equipos')
       .select('id')
       .eq('objetivo_id', s.objetivoId)
-      .ilike('tipo', s.tipoDb)
+      .eq('nombre', s.tipoLabel)
       .limit(1);
 
     // Fallback: cualquier equipo del objetivo
-    if (!equipos?.length) {
-      const res = await supabase
+    let equipoId = equipos?.[0]?.id;
+    if (!equipoId) {
+      const { data: fallback } = await supabase
         .from('equipos')
         .select('id')
         .eq('objetivo_id', s.objetivoId)
         .limit(1);
-      equipos = res.data;
+      equipoId = fallback?.[0]?.id;
     }
 
-    const equipoId = equipos?.[0]?.id;
     if (!equipoId) {
       limpiarSesion(tel);
       return '⚠️ No hay equipos registrados para tu objetivo. Contactá a administración.';
@@ -150,6 +138,7 @@ async function procesarMensaje(telefono, mensaje) {
         equipo_parado: s.equipoParado,
         descripcion:   texto,
         numero_unidad: s.numeroUnidad,
+        tipo_equipo:   s.tipoLabel,
       })
       .select('id')
       .single();
@@ -165,7 +154,7 @@ async function procesarMensaje(telefono, mensaje) {
     const etiquetas = { critico: 'CRÍTICO', alta: 'ALTA', media: 'MEDIA', baja: 'BAJA' };
 
     return `${iconos[s.prioridad]} *Incidencia registrada*\n\n` +
-           `🔧 Equipo: ${s.tipoEquipo}\n` +
+           `🔧 Equipo: ${s.tipoLabel}\n` +
            `🔢 Unidad: ${s.numeroUnidad}\n` +
            `⚡ Prioridad: *${etiquetas[s.prioridad]}*\n` +
            `📊 Estado: Pendiente\n` +
