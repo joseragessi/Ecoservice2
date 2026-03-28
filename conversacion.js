@@ -1,17 +1,40 @@
-const supabase              = require('./supabase');
-const { calcularPrioridad } = require('./prioridad');
-const { asignarMecanico }   = require('./mecanico');
+const supabase           = require('./supabase');
+const { asignarMecanico } = require('./mecanico');
 
 const sesiones = {};
 const TIMEOUT_MS = 10 * 60 * 1000;
 
-function limpiarSesion(telefono) { delete sesiones[telefono]; }
+const TIPOS_EQUIPO = [
+  'Motoguadaña',
+  'Motosierra',
+  'Extensible',
+  'Mini tractor',
+  'Giro cero',
+  'Plana',
+  'Toyota',
+  'Hidro grúa',
+  'Otro',
+];
 
-function resetTimeout(telefono) {
-  const s = sesiones[telefono];
+const TIPO_DB = {
+  'Motoguadaña':  'motoguadana',
+  'Motosierra':   'motosierra',
+  'Extensible':   'maquina',
+  'Mini tractor': 'maquina',
+  'Giro cero':    'maquina',
+  'Plana':        'maquina',
+  'Toyota':       'unidad',
+  'Hidro grúa':   'maquina',
+  'Otro':         'general',
+};
+
+function limpiarSesion(tel) { delete sesiones[tel]; }
+
+function resetTimeout(tel) {
+  const s = sesiones[tel];
   if (!s) return;
   clearTimeout(s._timer);
-  s._timer = setTimeout(() => limpiarSesion(telefono), TIMEOUT_MS);
+  s._timer = setTimeout(() => limpiarSesion(tel), TIMEOUT_MS);
 }
 
 async function procesarMensaje(telefono, mensaje) {
@@ -30,84 +53,103 @@ async function procesarMensaje(telefono, mensaje) {
       return '❌ Tu número no está registrado en el sistema EcoService. Contactá a administración.';
     }
 
-    const { data: equipos } = await supabase
-      .from('equipos')
-      .select('id, nombre, tipo, codigo')
-      .eq('objetivo_id', capataz.objetivo_id)
-      .eq('activo', true)
-      .order('nombre');
-
-    if (!equipos?.length) {
-      return '⚠️ No hay equipos registrados para tu objetivo. Contactá a administración.';
-    }
-
     sesiones[tel] = {
       paso: 1,
-      capatazId:       capataz.id,
-      objetivoId:      capataz.objetivo_id,
-      capatazNombre:   capataz.nombre,
-      equipos,
-      equipoId:        null,
-      prioridadDirecta: null,
-      equipoParado:    null,
-      _timer: null,
+      capatazId:     capataz.id,
+      objetivoId:    capataz.objetivo_id,
+      capatazNombre: capataz.nombre,
+      tipoEquipo:    null,
+      tipoDb:        null,
+      numeroUnidad:  null,
+      prioridad:     null,
+      equipoParado:  null,
+      _timer:        null,
     };
     resetTimeout(tel);
 
-    const lista = equipos.map((e, i) => {
-      const cod = e.codigo ? `[${e.codigo}] ` : '';
-      return `  ${i + 1}. ${cod}${e.nombre} · ${e.tipo}`;
-    }).join('\n');
+    const lista = TIPOS_EQUIPO.map((t, i) => `  ${i + 1}. ${t}`).join('\n');
     return `👋 Hola *${capataz.nombre}*. Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
   }
 
   const s = sesiones[tel];
   resetTimeout(tel);
 
+  // P1: tipo de equipo
   if (s.paso === 1) {
     const num = parseInt(texto);
-    if (isNaN(num) || num < 1 || num > s.equipos.length) {
-      return `Por favor respondé con un número del 1 al ${s.equipos.length}.`;
+    if (isNaN(num) || num < 1 || num > TIPOS_EQUIPO.length) {
+      return `Por favor respondé con un número del 1 al ${TIPOS_EQUIPO.length}.`;
     }
-    s.equipoId     = s.equipos[num - 1].id;
-    s.equipoNombre = s.equipos[num - 1].nombre;
-    s.equipoTipo   = s.equipos[num - 1].tipo;
+    s.tipoEquipo = TIPOS_EQUIPO[num - 1];
+    s.tipoDb     = TIPO_DB[s.tipoEquipo] || 'general';
     s.paso = 2;
-
-    return `✅ *${s.equipoNombre}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Parado total (Crítico)\n  2. 🟠 Operativo con falla importante (Alta)\n  3. 🟡 Operativo con falla menor (Media)\n  4. 🟢 Mantenimiento preventivo (Baja)`;
+    return `✅ *${s.tipoEquipo}*\n\n*¿Cuál es el número o código de la unidad?*\nEjemplo: MG-045, U30, 12, G01`;
   }
 
+  // P2: número de unidad
   if (s.paso === 2) {
+    s.numeroUnidad = texto;
+    s.paso = 3;
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Parado total (Crítico)\n  2. 🟠 Operativo con falla importante (Alta)\n  3. ⚪ Operativo con falla menor (Media)\n  4. 🟢 Mantenimiento preventivo (Baja)`;
+  }
+
+  // P3: prioridad
+  if (s.paso === 3) {
     const op = texto.trim();
     if (!['1','2','3','4'].includes(op)) {
       return 'Respondé con 1, 2, 3 o 4 según el estado del equipo.';
     }
-    const prioridadMap = { '1': 'critico', '2': 'alta', '3': 'media', '4': 'baja' };
-    s.prioridadDirecta = prioridadMap[op];
-    s.equipoParado     = op === '1';
-    s.paso = 3;
+    const mapa = { '1': 'critico', '2': 'alta', '3': 'media', '4': 'baja' };
+    s.prioridad    = mapa[op];
+    s.equipoParado = op === '1';
+    s.paso = 4;
     return `*¿Cuál es la falla o síntoma que presenta el equipo?*\nDescribilo con el mayor detalle posible.`;
   }
 
-  if (s.paso === 3) {
+  // P4: descripción + crear incidencia
+  if (s.paso === 4) {
     if (texto.length < 5) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    const prioridad  = s.prioridadDirecta;
-    const mecanicoId = await asignarMecanico(s.equipoTipo);
+    const mecanicoId = await asignarMecanico(s.tipoDb);
+
+    // Buscar equipo del objetivo por tipo
+    let { data: equipos } = await supabase
+      .from('equipos')
+      .select('id')
+      .eq('objetivo_id', s.objetivoId)
+      .ilike('tipo', s.tipoDb)
+      .limit(1);
+
+    // Fallback: cualquier equipo del objetivo
+    if (!equipos?.length) {
+      const res = await supabase
+        .from('equipos')
+        .select('id')
+        .eq('objetivo_id', s.objetivoId)
+        .limit(1);
+      equipos = res.data;
+    }
+
+    const equipoId = equipos?.[0]?.id;
+    if (!equipoId) {
+      limpiarSesion(tel);
+      return '⚠️ No hay equipos registrados para tu objetivo. Contactá a administración.';
+    }
 
     const { data: incidencia, error } = await supabase
       .from('incidencias')
       .insert({
         capataz_id:    s.capatazId,
         objetivo_id:   s.objetivoId,
-        equipo_id:     s.equipoId,
+        equipo_id:     equipoId,
         mecanico_id:   mecanicoId,
-        prioridad,
+        prioridad:     s.prioridad,
         estado:        'pendiente',
         equipo_parado: s.equipoParado,
         descripcion:   texto,
+        numero_unidad: s.numeroUnidad,
       })
       .select('id')
       .single();
@@ -119,10 +161,17 @@ async function procesarMensaje(telefono, mensaje) {
       return '⚠️ Ocurrió un error al registrar la incidencia. Intentá de nuevo en un momento.';
     }
 
-    const iconos    = { critico: '🔴', alta: '🟠', media: '🟡', baja: '🟢' };
+    const iconos    = { critico: '🔴', alta: '🟠', media: '⚪', baja: '🟢' };
     const etiquetas = { critico: 'CRÍTICO', alta: 'ALTA', media: 'MEDIA', baja: 'BAJA' };
 
-    return `${iconos[prioridad]} *Incidencia registrada*\n\n📋 Equipo: ${s.equipoNombre}\n⚡ Prioridad: *${etiquetas[prioridad]}*\n📊 Estado: Pendiente\n🔧 Asignado a mecánico\n\nID: \`${incidencia.id.slice(0, 8).toUpperCase()}\`\n\nEl equipo de taller fue notificado. ✅`;
+    return `${iconos[s.prioridad]} *Incidencia registrada*\n\n` +
+           `🔧 Equipo: ${s.tipoEquipo}\n` +
+           `🔢 Unidad: ${s.numeroUnidad}\n` +
+           `⚡ Prioridad: *${etiquetas[s.prioridad]}*\n` +
+           `📊 Estado: Pendiente\n` +
+           `👨‍🔧 Asignado a mecánico\n\n` +
+           `ID: \`${incidencia.id.slice(0, 8).toUpperCase()}\`\n\n` +
+           `El equipo de taller fue notificado. ✅`;
   }
 
   return 'No entendí tu respuesta. Enviá cualquier mensaje para empezar de nuevo.';
