@@ -3,7 +3,7 @@ const express  = require('express');
 const twilio   = require('twilio');
 const { procesarMensaje } = require('./conversacion');
 
-const app  = express();
+const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
@@ -14,8 +14,18 @@ const twilioClient = twilio(
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  const telefono = req.body.From;   // ej: whatsapp:+5493516111111
+  const telefono = req.body.From;
   const mensaje  = req.body.Body || '';
+
+  // Ignorar mensajes del propio número sandbox (evita bucle)
+  if (telefono === process.env.TWILIO_WHATSAPP_NUMBER) {
+    return res.sendStatus(200);
+  }
+
+  // Ignorar mensajes vacíos
+  if (!mensaje.trim()) {
+    return res.sendStatus(200);
+  }
 
   console.log(`[IN] ${telefono}: ${mensaje}`);
 
