@@ -78,7 +78,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Parado total (Crítico)\n  2. 🟠 Operativo con falla importante (Alta)\n  3. ⚪ Operativo con falla menor (Media)\n  4. 🟢 Mantenimiento preventivo (Baja)`;
+  return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
   }
 
   // P3: prioridad
