@@ -1,26 +1,34 @@
 const supabase = require('./supabase');
 
-// Mapa: tipo de equipo → habilidades requeridas (en orden de preferencia)
-const HABILIDADES_POR_TIPO = {
-  motoguadana: ['motor_2t', 'general'],
-  motosierra:  ['motor_2t', 'general'],
-  unidad:      ['motor_4t', 'electrico', 'general'],
-  carro:       ['hidraulica', 'neumatico', 'soldadura', 'general'],
-  maquina:     ['motor_4t', 'hidraulica', 'general'],
-};
-
 /**
- * Busca el mecánico más adecuado para el tipo de equipo.
- * Prioriza coincidencia de habilidades; si hay empate, elige el que
- * tiene menos incidencias activas (pendiente / en_reparacion).
- *
- * @param {string} tipoEquipo
- * @returns {string|null} uuid del mecánico o null si no hay disponibles
+ * Asigna el mecánico más adecuado según el tipo de falla.
+ * La habilidad específica de la falla tiene peso FIJO alto (100 puntos)
+ * para garantizar que el especialista siempre gane sobre generalistas.
+ * El desempate es por menor carga activa.
  */
-async function asignarMecanico(tipoEquipo) {
-  const habilidadesRequeridas = HABILIDADES_POR_TIPO[tipoEquipo] || ['general'];
+async function asignarMecanico(tipoFalla) {
 
-  // Traer todos los mecánicos activos
+  // Habilidad principal que debe tener el mecánico para este tipo de falla
+  const HABILIDAD_PRINCIPAL = {
+    electrico:   'electrico',
+    hidraulica:  'hidraulica',
+    neumatico:   'neumatico',
+    motor_2t:    'motor_2t',
+    motor_4t:    'motor_4t',
+    soldadura:   'soldadura',
+    giro_cero:   'giro_cero',
+    unidades:    'unidades',
+    tractores:   'tractores',
+    cortadora:   'cortadora',
+    motoguadana: 'motor_2t',
+    motosierra:  'motor_2t',
+    maquina:     'motor_4t',
+    unidad:      'motor_4t',
+    general:     'general',
+  };
+
+  const habPrincipal = HABILIDAD_PRINCIPAL[tipoFalla] || 'general';
+
   const { data: mecanicos, error } = await supabase
     .from('mecanicos')
     .select('id, nombre, habilidades')
@@ -28,32 +36,28 @@ async function asignarMecanico(tipoEquipo) {
 
   if (error || !mecanicos?.length) return null;
 
-  // Calcular score de cada mecánico
+  // Score: 100 si tiene la habilidad principal, +1 por cada habilidad extra
+  // Esto garantiza que el especialista SIEMPRE gana sobre el generalista
   const scored = mecanicos.map(m => {
     const habs = m.habilidades || [];
-    // Suma puntos según posición en la lista de preferencia
-    let score = 0;
-    habilidadesRequeridas.forEach((hab, idx) => {
-      if (habs.includes(hab)) score += (habilidadesRequeridas.length - idx);
-    });
-    return { ...m, score };
+    const tienePrincipal = habs.includes(habPrincipal);
+    const score = (tienePrincipal ? 100 : 0) + habs.length;
+    return { ...m, score, tienePrincipal };
   });
 
-  // Filtrar los que tienen alguna habilidad relevante; si ninguno, usar todos
-  const candidatos = scored.filter(m => m.score > 0).length
-    ? scored.filter(m => m.score > 0)
+  // Si nadie tiene la habilidad principal, usar todos
+  const candidatos = scored.filter(m => m.tienePrincipal).length
+    ? scored.filter(m => m.tienePrincipal)
     : scored;
 
-  // Ordenar por score desc
   candidatos.sort((a, b) => b.score - a.score);
 
-  // Entre los de mayor score, elegir el que tiene menos incidencias activas
   const topScore = candidatos[0].score;
   const top = candidatos.filter(m => m.score === topScore);
 
   if (top.length === 1) return top[0].id;
 
-  // Contar incidencias activas por mecánico
+  // Desempate por menor carga activa
   const { data: activas } = await supabase
     .from('incidencias')
     .select('mecanico_id')
