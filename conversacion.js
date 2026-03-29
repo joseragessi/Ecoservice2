@@ -42,7 +42,7 @@ async function procesarMensaje(telefono, mensaje) {
     }
 
     sesiones[tel] = {
-      paso: 1,
+      paso:          1,
       capatazId:     capataz.id,
       objetivoId:    capataz.objetivo_id,
       capatazNombre: capataz.nombre,
@@ -79,7 +79,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-    return `*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🤷 No sé / otro`;
   }
 
   // P3: tipo de falla
@@ -88,23 +88,12 @@ async function procesarMensaje(telefono, mensaje) {
     if (!['1','2','3','4','5'].includes(op)) {
       return 'Respondé con un número del 1 al 5.';
     }
-    const fallaMap = {
-      '1': 'mecanica',
-      '2': 'electrica',
-      '3': 'hidraulica',
-      '4': 'neumatica',
-      '5': 'otro'
-    };
-    const fallaDb = {
-      '1': 'motor_4t',
-      '2': 'electrico',
-      '3': 'hidraulica',
-      '4': 'neumatico',
-      '5': 'general'
-    };
+    const fallaMap = { '1': 'mecanica', '2': 'electrica', '3': 'hidraulica', '4': 'neumatica', '5': 'otro' };
+    const fallaDb  = { '1': 'motor_4t', '2': 'electrico', '3': 'hidraulica', '4': 'neumatico', '5': 'general' };
     s.tipoFalla = fallaMap[op];
-    s.tipoDb    = fallaDb[op]; // override tipo para asignación de mecánico
+    s.tipoDb    = fallaDb[op];
     s.paso = 4;
+    return `*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
   }
 
   // P4: prioridad
@@ -126,9 +115,8 @@ async function procesarMensaje(telefono, mensaje) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    const mecanicoId = await asignarMecanico(s.tipoFalla || s.tipoDb);
+    const mecanicoId = await asignarMecanico(s.tipoDb);
 
-    // Buscar equipo del objetivo por nombre exacto del tipo seleccionado
     const { data: equipos } = await supabase
       .from('equipos')
       .select('id')
@@ -136,7 +124,6 @@ async function procesarMensaje(telefono, mensaje) {
       .eq('nombre', s.tipoLabel)
       .limit(1);
 
-    // Fallback: cualquier equipo del objetivo
     let equipoId = equipos?.[0]?.id;
     if (!equipoId) {
       const { data: fallback } = await supabase
@@ -166,7 +153,6 @@ async function procesarMensaje(telefono, mensaje) {
         numero_unidad: s.numeroUnidad,
         tipo_equipo:   s.tipoLabel,
         tipo_falla:    s.tipoFalla,
-        tipo_falla:    s.tipoFalla,
       })
       .select('id')
       .single();
@@ -184,6 +170,7 @@ async function procesarMensaje(telefono, mensaje) {
     return `${iconos[s.prioridad]} *Incidencia registrada*\n\n` +
            `🔧 Equipo: ${s.tipoLabel}\n` +
            `🔢 Unidad: ${s.numeroUnidad}\n` +
+           `🔩 Falla: ${s.tipoFalla}\n` +
            `⚡ Prioridad: *${etiquetas[s.prioridad]}*\n` +
            `📊 Estado: Pendiente\n` +
            `👨‍🔧 Asignado a mecánico\n\n` +
