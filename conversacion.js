@@ -48,6 +48,7 @@ async function procesarMensaje(telefono, mensaje) {
       capatazNombre: capataz.nombre,
       tipoLabel:     null,
       tipoDb:        null,
+      tipoFalla:     null,
       numeroUnidad:  null,
       prioridad:     null,
       equipoParado:  null,
@@ -78,11 +79,37 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-  return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Parado total (Crítico)\n  2. 🟠 Operativo con falla importante (Alta)\n  3. ⚪ Operativo con falla menor (Media)\n  4. 🟢 Mantenimiento preventivo (Baja)`;
   }
 
-  // P3: prioridad
+  // P3: tipo de falla
   if (s.paso === 3) {
+    const op = texto.trim();
+    if (!['1','2','3','4','5'].includes(op)) {
+      return 'Respondé con un número del 1 al 5.';
+    }
+    const fallaMap = {
+      '1': 'mecanica',
+      '2': 'electrica',
+      '3': 'hidraulica',
+      '4': 'neumatica',
+      '5': 'otro'
+    };
+    const fallaDb = {
+      '1': 'motor_4t',
+      '2': 'electrico',
+      '3': 'hidraulica',
+      '4': 'neumatico',
+      '5': 'general'
+    };
+    s.tipoFalla = fallaMap[op];
+    s.tipoDb    = fallaDb[op]; // override tipo para asignación de mecánico
+    s.paso = 4;
+    return `*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
+  }
+
+  // P4: prioridad
+  if (s.paso === 4) {
     const op = texto.trim();
     if (!['1','2','3','4'].includes(op)) {
       return 'Respondé con 1, 2, 3 o 4 según el estado del equipo.';
@@ -90,17 +117,17 @@ async function procesarMensaje(telefono, mensaje) {
     const mapa = { '1': 'critico', '2': 'alta', '3': 'media', '4': 'baja' };
     s.prioridad    = mapa[op];
     s.equipoParado = op === '1';
-    s.paso = 4;
+    s.paso = 5;
     return `*¿Cuál es la falla o síntoma que presenta el equipo?*\nDescribilo con el mayor detalle posible.`;
   }
 
-  // P4: descripción + crear incidencia
-  if (s.paso === 4) {
+  // P5: descripción + crear incidencia
+  if (s.paso === 5) {
     if (texto.length < 5) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    const mecanicoId = await asignarMecanico(s.tipoDb);
+    const mecanicoId = await asignarMecanico(s.tipoFalla || s.tipoDb);
 
     // Buscar equipo del objetivo por nombre exacto del tipo seleccionado
     const { data: equipos } = await supabase
@@ -139,6 +166,8 @@ async function procesarMensaje(telefono, mensaje) {
         descripcion:   texto,
         numero_unidad: s.numeroUnidad,
         tipo_equipo:   s.tipoLabel,
+        tipo_falla:    s.tipoFalla,
+        tipo_falla:    s.tipoFalla,
       })
       .select('id')
       .single();
