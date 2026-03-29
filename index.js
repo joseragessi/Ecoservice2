@@ -17,15 +17,8 @@ app.post('/webhook', async (req, res) => {
   const telefono = req.body.From;
   const mensaje  = req.body.Body || '';
 
-  // Ignorar mensajes del propio número sandbox (evita bucle)
-  if (telefono === process.env.TWILIO_WHATSAPP_NUMBER) {
-    return res.sendStatus(200);
-  }
-
-  // Ignorar mensajes vacíos
-  if (!mensaje.trim()) {
-    return res.sendStatus(200);
-  }
+  if (telefono === process.env.TWILIO_WHATSAPP_NUMBER) return res.sendStatus(200);
+  if (!mensaje.trim()) return res.sendStatus(200);
 
   console.log(`[IN] ${telefono}: ${mensaje}`);
 
@@ -43,6 +36,38 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     console.error('Error en webhook:', err);
     res.sendStatus(500);
+  }
+});
+
+// ── Notificación de finalizado ────────────────────────────────
+app.post('/notificar-finalizado', async (req, res) => {
+  const { telefono, equipo, unidad, mecanico } = req.body;
+
+  if (!telefono || !equipo) {
+    return res.status(400).json({ error: 'Faltan datos' });
+  }
+
+  const numero = telefono.startsWith('+') ? telefono : `+${telefono}`;
+
+  const mensaje =
+    `✅ *Reparación finalizada*\n\n` +
+    `🔧 Equipo: ${equipo}\n` +
+    `${unidad ? `🔢 Unidad: ${unidad}\n` : ''}` +
+    `👨‍🔧 Mecánico: ${mecanico || 'Taller'}\n\n` +
+    `Tu incidencia fue resuelta. ✅\n\n` +
+    `_EcoService · Taller_`;
+
+  try {
+    await twilioClient.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to:   `whatsapp:${numero}`,
+      body: mensaje,
+    });
+    console.log(`[NOTIF] Finalizado enviado a ${numero}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error notificando:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
