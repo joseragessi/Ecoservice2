@@ -115,8 +115,9 @@ async function procesarMensaje(telefono, mensaje) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    // Si eligió maquinaria liviana pero el equipo no es motoguadaña/motosierra, usar motor_4t
-    const tipoDbFinal = (s.tipoFalla === 'liviana' && !['motoguadana','motosierra'].includes(s.tipoLabel.toLowerCase().replace('á','a').replace('ú','u')))
+    // Maquinaria liviana solo aplica para motoguadaña y motosierra (Santiago)
+    const EQUIPOS_LIVIANA = ['Motoguadaña', 'Motosierra'];
+    const tipoDbFinal = (s.tipoFalla === 'liviana' && !EQUIPOS_LIVIANA.includes(s.tipoLabel))
       ? 'motor_4t'
       : s.tipoDb;
     const mecanicoId = await asignarMecanico(tipoDbFinal);
