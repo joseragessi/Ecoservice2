@@ -24,6 +24,7 @@ async function asignarMecanico(tipoFalla) {
     motoguadana: 'cortadora',
     motosierra:  'cortadora',
     maquina:     'motor_4t',
+    extensible:  'motor_4t',
     unidad:      'motor_4t',
     general:     'general',
   };
