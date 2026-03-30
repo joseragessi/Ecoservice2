@@ -115,12 +115,7 @@ async function procesarMensaje(telefono, mensaje) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    // Maquinaria liviana solo aplica para motoguadaña y motosierra (Santiago)
-    const EQUIPOS_LIVIANA = ['Motoguadaña', 'Motosierra'];
-    const tipoDbFinal = (s.tipoFalla === 'liviana' && !EQUIPOS_LIVIANA.includes(s.tipoLabel))
-      ? 'motor_4t'
-      : s.tipoDb;
-    const mecanicoId = await asignarMecanico(tipoDbFinal);
+    const mecanicoId = await asignarMecanico(s.tipoFalla, s.tipoDb);
 
     const { data: equipos } = await supabase
       .from('equipos')
