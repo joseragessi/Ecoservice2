@@ -1,35 +1,31 @@
 const supabase = require('./supabase');
 
-/**
- * Asigna el mecánico más adecuado según el tipo de falla.
- * La habilidad específica de la falla tiene peso FIJO alto (100 puntos)
- * para garantizar que el especialista siempre gane sobre generalistas.
- * El desempate es por menor carga activa.
- */
-async function asignarMecanico(tipoFalla) {
+async function asignarMecanico(tipoFalla, tipoEquipo) {
 
-  // Habilidad principal que debe tener el mecánico para este tipo de falla
-  const HABILIDAD_PRINCIPAL = {
-    electrico:   'electrico',
-    hidraulica:  'hidraulica',
-    neumatico:   'neumatico',
-    motor_2t:    'cortadora',
-    motor_4t:    'motor_4t',
-    soldadura:   'soldadura',
-    giro_cero:   'giro_cero',
-    unidades:    'unidades',
-    tractores:   'tractores',
-    cortadora:   'cortadora',
-  liviana:     'cortadora',
-    motoguadana: 'cortadora',
-    motosierra:  'cortadora',
-    maquina:     'motor_4t',
-    extensible:  'motor_4t',
-    unidad:      'motor_4t',
-    general:     'general',
-  };
+  // Equipos que van SIEMPRE a Santiago (motor 2T / cortadora)
+  const EQUIPOS_SANTIAGO = ['motoguadana', 'motosierra'];
 
-  const habPrincipal = HABILIDAD_PRINCIPAL[tipoFalla] || 'general';
+  // Si el equipo es motoguadaña o motosierra → buscar cortadora (Santiago)
+  // En cualquier otro caso → usar la habilidad según tipo de falla
+  let habPrincipal;
+
+  if (EQUIPOS_SANTIAGO.includes(tipoEquipo)) {
+    habPrincipal = 'cortadora';
+  } else {
+    const MAPA = {
+      electrico:  'electrico',
+      electrica:  'electrico',
+      hidraulica: 'hidraulica',
+      neumatico:  'neumatico',
+      neumatica:  'neumatico',
+      motor_4t:   'motor_4t',
+      mecanica:   'motor_4t',
+      liviana:    'motor_4t',
+      general:    'motor_4t',
+      otro:       'motor_4t',
+    };
+    habPrincipal = MAPA[tipoFalla] || 'motor_4t';
+  }
 
   const { data: mecanicos, error } = await supabase
     .from('mecanicos')
@@ -38,8 +34,6 @@ async function asignarMecanico(tipoFalla) {
 
   if (error || !mecanicos?.length) return null;
 
-  // Score: 100 si tiene la habilidad principal, +1 por cada habilidad extra
-  // Esto garantiza que el especialista SIEMPRE gana sobre el generalista
   const scored = mecanicos.map(m => {
     const habs = m.habilidades || [];
     const tienePrincipal = habs.includes(habPrincipal);
@@ -47,7 +41,6 @@ async function asignarMecanico(tipoFalla) {
     return { ...m, score, tienePrincipal };
   });
 
-  // Si nadie tiene la habilidad principal, usar todos
   const candidatos = scored.filter(m => m.tienePrincipal).length
     ? scored.filter(m => m.tienePrincipal)
     : scored;
