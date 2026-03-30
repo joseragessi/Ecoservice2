@@ -79,7 +79,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🤷 No sé / otro`;
+     return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🪚 Maquinaria liviana (carburador, filtro, cuchilla, cadena, bujía)\n  6. 🤷 No sé / otro`;
   }
 
   // P3: tipo de falla
