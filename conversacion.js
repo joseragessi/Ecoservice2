@@ -79,17 +79,17 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-     return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🪚 Maquinaria liviana (carburador, filtro, cuchilla, cadena, bujía)\n  6. 🤷 No sé / otro`;
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🪚 Maquinaria liviana (carburador, filtro, cuchilla, cadena, bujía)\n  6. 🤷 No sé / otro`;
   }
 
   // P3: tipo de falla
   if (s.paso === 3) {
     const op = texto.trim();
-    if (!['1','2','3','4','5'].includes(op)) {
-      return 'Respondé con un número del 1 al 5.';
+    if (!['1','2','3','4','5','6'].includes(op)) {
+      return 'Respondé con un número del 1 al 6.';
     }
-    const fallaMap = { '1': 'mecanica', '2': 'electrica', '3': 'hidraulica', '4': 'neumatica', '5': 'otro' };
-    const fallaDb  = { '1': 'motor_4t', '2': 'electrico', '3': 'hidraulica', '4': 'neumatico', '5': 'general' };
+    const fallaMap = { '1': 'mecanica', '2': 'electrica', '3': 'hidraulica', '4': 'neumatica', '5': 'liviana', '6': 'otro' };
+    const fallaDb  = { '1': 'motor_4t', '2': 'electrico', '3': 'hidraulica', '4': 'neumatico', '5': 'motor_2t', '6': 'general' };
     s.tipoFalla = fallaMap[op];
     s.tipoDb    = fallaDb[op];
     s.paso = 4;
