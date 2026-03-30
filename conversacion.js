@@ -115,7 +115,11 @@ async function procesarMensaje(telefono, mensaje) {
       return 'Por favor describí la falla con un poco más de detalle.';
     }
 
-    const mecanicoId = await asignarMecanico(s.tipoDb);
+    // Si eligió maquinaria liviana pero el equipo no es motoguadaña/motosierra, usar motor_4t
+    const tipoDbFinal = (s.tipoFalla === 'liviana' && !['motoguadana','motosierra'].includes(s.tipoLabel.toLowerCase().replace('á','a').replace('ú','u')))
+      ? 'motor_4t'
+      : s.tipoDb;
+    const mecanicoId = await asignarMecanico(tipoDbFinal);
 
     const { data: equipos } = await supabase
       .from('equipos')
