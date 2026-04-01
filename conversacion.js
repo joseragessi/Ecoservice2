@@ -185,9 +185,7 @@ async function procesarMensaje(telefono, mensaje) {
     const descripcion = texto.toLowerCase() === 'listo' ? s.fallaLabel : `${s.fallaLabel}. ${texto}`;
 
     // Asignar mecánico según equipo y falla
-    const esLiviana = EQUIPOS_SANTIAGO.includes(s.tipoDb);
-    const tipoParaAsignar = esLiviana ? 'cortadora' : s.tipoDb;
-    const mecanicoId = await asignarMecanico(s.tipoFalla, tipoParaAsignar);
+    const mecanicoId = await asignarMecanico(s.tipoFalla, s.tipoDb);
 
     // Buscar equipo en la DB
     const { data: equipos } = await supabase
