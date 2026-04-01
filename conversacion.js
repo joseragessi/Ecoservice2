@@ -79,7 +79,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🔧 Mecánica (motor, transmisión, frenos)\n  2. ⚡ Eléctrica (batería, luces, arranque)\n  3. 💧 Hidráulica (dirección, cilindros)\n  4. 🔄 Neumática (cubiertas, suspensión)\n  5. 🪚 Maquinaria liviana (carburador, filtro, cuchilla, cadena, bujía)\n  6. 🤷 No sé / otro`;
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🪚 Falla en motoguadaña, motosierra o extensible (carburación, lubricación, arranque)\n  2. 🔧 El motor no arranca o falla\n  3. ⚡ Problema eléctrico (luces, batería, arranque)\n  4. 💧 Problema hidráulico (dirección, cilindros)\n  5. 🔄 Cambio de cubiertas o re capado\n  6. 🤷 No sé / otro`;
   }
 
   // P3: tipo de falla
