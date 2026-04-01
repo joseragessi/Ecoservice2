@@ -5,16 +5,85 @@ const sesiones = {};
 const TIMEOUT_MS = 10 * 60 * 1000;
 
 const TIPOS_EQUIPO = [
-  { label: 'Motoguadaña',  tipo: 'motoguadana' },
-  { label: 'Motosierra',   tipo: 'motosierra'  },
-  { label: 'Extensible',   tipo: 'maquina'     },
-  { label: 'Mini tractor', tipo: 'maquina'     },
-  { label: 'Giro cero',    tipo: 'maquina'     },
-  { label: 'Plana',        tipo: 'maquina'     },
-  { label: 'Toyota',       tipo: 'unidad'      },
-  { label: 'Hidro grúa',   tipo: 'maquina'     },
-  { label: 'Otro',         tipo: 'general'     },
+  { label: 'Motoguadaña',          tipo: 'motoguadana' },
+  { label: 'Motosierra',           tipo: 'motosierra'  },
+  { label: 'Extensible',           tipo: 'motoguadana' },
+  { label: 'Sopladora',            tipo: 'motoguadana' },
+  { label: 'Mini tractor / Giro cero', tipo: 'maquina' },
+  { label: 'Tractor',              tipo: 'maquina'     },
+  { label: 'Plana',                tipo: 'maquina'     },
+  { label: 'Toyota / Camioneta',   tipo: 'unidad'      },
+  { label: 'Camión / Atego',       tipo: 'unidad'      },
+  { label: 'Hidro grúa',           tipo: 'maquina'     },
+  { label: 'Carro / Remolque',     tipo: 'carro'       },
+  { label: 'Otro',                 tipo: 'general'     },
 ];
+
+// Fallas específicas por grupo de equipo
+const FALLAS_POR_TIPO = {
+  motoguadana: [
+    'No arranca o cuesta arrancar',
+    'No tiene fuerza o no modera',
+    'Se calienta y se apaga',
+    'Piola o soga cortada',
+    'Cable del acelerador',
+    'Carburación o regulación',
+    'Bujía',
+    'Embrague o trinquete',
+    'Pistón o motor roto',
+    'Escape roto',
+    'Tanque pinchado',
+    'Service / mantenimiento',
+    'Otro',
+  ],
+  maquina: [
+    'No arranca',
+    'Correa cortada',
+    'Cuchillas — cambio o desgaste',
+    'Enganche roto',
+    'Escape cortado',
+    'Pérdida hidráulica',
+    'Patín roto',
+    'Service / mantenimiento',
+    'Otro',
+  ],
+  unidad: [
+    'Batería agotada',
+    'Cambio de cubiertas',
+    'Frenos (pastillas, discos)',
+    'Service (filtros, aceite)',
+    'Eléctrico / alternador / luces',
+    'Hidráulico (dirección, pérdida)',
+    'Embrague',
+    'Otro',
+  ],
+  hidrogua: [
+    'Pérdida hidráulica (toma de fuerza, mangueras)',
+    'No levanta / sin fuerza',
+    'Problema eléctrico',
+    'Service / mantenimiento',
+    'Otro',
+  ],
+  carro: [
+    'Compuerta rota',
+    'Llanta / cubierta',
+    'Luces / cable eléctrico',
+    'Enganche / bulones',
+    'Soldadura / estructura',
+    'Otro',
+  ],
+  general: ['Otro'],
+};
+
+// Mapa tipo de equipo → grupo de fallas
+function getFallasGrupo(tipoLabel, tipoDb) {
+  if (tipoLabel === 'Hidro grúa') return FALLAS_POR_TIPO.hidrogua;
+  if (tipoLabel === 'Carro / Remolque') return FALLAS_POR_TIPO.carro;
+  return FALLAS_POR_TIPO[tipoDb] || FALLAS_POR_TIPO.general;
+}
+
+// Equipos que van a Santiago (motor 2T)
+const EQUIPOS_SANTIAGO = ['motoguadana', 'motosierra'];
 
 function limpiarSesion(tel) { delete sesiones[tel]; }
 
@@ -49,6 +118,7 @@ async function procesarMensaje(telefono, mensaje) {
       tipoLabel:     null,
       tipoDb:        null,
       tipoFalla:     null,
+      fallaLabel:    null,
       numeroUnidad:  null,
       prioridad:     null,
       equipoParado:  null,
@@ -72,26 +142,27 @@ async function procesarMensaje(telefono, mensaje) {
     s.tipoLabel = TIPOS_EQUIPO[num - 1].label;
     s.tipoDb    = TIPOS_EQUIPO[num - 1].tipo;
     s.paso = 2;
-    return `✅ *${s.tipoLabel}*\n\n*¿Cuál es el número o código de la unidad?*\nEjemplo: MG-045, U30, 12, G01`;
+    return `✅ *${s.tipoLabel}*\n\n*¿Cuál es el número o código de la unidad?*\nEjemplo: MG-045, U30, T22, 188`;
   }
 
   // P2: número de unidad
   if (s.paso === 2) {
     s.numeroUnidad = texto;
     s.paso = 3;
-    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿De qué tipo es la falla?*\n\n  1. 🪚 Falla en motoguadaña, motosierra o extensible (carburación, lubricación, arranque)\n  2. 🔧 El motor no arranca o falla\n  3. ⚡ Problema eléctrico (luces, batería, arranque)\n  4. 💧 Problema hidráulico (dirección, cilindros)\n  5. 🔄 Cambio de cubiertas o re capado\n  6. 🤷 No sé / otro`;
+    const fallas = getFallasGrupo(s.tipoLabel, s.tipoDb);
+    const lista = fallas.map((f, i) => `  ${i + 1}. ${f}`).join('\n');
+    return `✅ *Unidad: ${s.numeroUnidad}*\n\n*¿Cuál es la falla?*\n\n${lista}`;
   }
 
-  // P3: tipo de falla
+  // P3: tipo de falla específica
   if (s.paso === 3) {
-    const op = texto.trim();
-    if (!['1','2','3','4','5','6'].includes(op)) {
-      return 'Respondé con un número del 1 al 6.';
+    const fallas = getFallasGrupo(s.tipoLabel, s.tipoDb);
+    const num = parseInt(texto);
+    if (isNaN(num) || num < 1 || num > fallas.length) {
+      return `Por favor respondé con un número del 1 al ${fallas.length}.`;
     }
-    const fallaMap = { '1': 'liviana', '2': 'mecanica', '3': 'electrica', '4': 'hidraulica', '5': 'neumatica', '6': 'otro' };
-    const fallaDb  = { '1': 'motor_2t', '2': 'motor_4t', '3': 'electrico', '4': 'hidraulica', '5': 'neumatico', '6': 'general' };
-    s.tipoFalla = fallaMap[op];
-    s.tipoDb    = fallaDb[op];
+    s.fallaLabel = fallas[num - 1];
+    s.tipoFalla  = s.fallaLabel.toLowerCase();
     s.paso = 4;
     return `*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
   }
@@ -106,17 +177,19 @@ async function procesarMensaje(telefono, mensaje) {
     s.prioridad    = mapa[op];
     s.equipoParado = op === '1';
     s.paso = 5;
-    return `*¿Cuál es la falla o síntoma que presenta el equipo?*\nDescribilo con el mayor detalle posible.`;
+    return `*¿Querés agregar algún detalle adicional?*\nDescribilo o escribí "listo" para finalizar.`;
   }
 
   // P5: descripción + crear incidencia
   if (s.paso === 5) {
-    if (texto.length < 5) {
-      return 'Por favor describí la falla con un poco más de detalle.';
-    }
+    const descripcion = texto.toLowerCase() === 'listo' ? s.fallaLabel : `${s.fallaLabel}. ${texto}`;
 
-    const mecanicoId = await asignarMecanico(s.tipoFalla, s.tipoDb);
+    // Asignar mecánico según equipo y falla
+    const esLiviana = EQUIPOS_SANTIAGO.includes(s.tipoDb);
+    const tipoParaAsignar = esLiviana ? 'cortadora' : s.tipoDb;
+    const mecanicoId = await asignarMecanico(s.tipoFalla, tipoParaAsignar);
 
+    // Buscar equipo en la DB
     const { data: equipos } = await supabase
       .from('equipos')
       .select('id')
@@ -149,10 +222,10 @@ async function procesarMensaje(telefono, mensaje) {
         prioridad:     s.prioridad,
         estado:        'pendiente',
         equipo_parado: s.equipoParado,
-        descripcion:   texto,
+        descripcion:   descripcion,
         numero_unidad: s.numeroUnidad,
         tipo_equipo:   s.tipoLabel,
-        tipo_falla:    s.tipoFalla,
+        tipo_falla:    s.fallaLabel,
       })
       .select('id')
       .single();
@@ -170,7 +243,7 @@ async function procesarMensaje(telefono, mensaje) {
     return `${iconos[s.prioridad]} *Incidencia registrada*\n\n` +
            `🔧 Equipo: ${s.tipoLabel}\n` +
            `🔢 Unidad: ${s.numeroUnidad}\n` +
-           `🔩 Falla: ${s.tipoFalla}\n` +
+           `🔩 Falla: ${s.fallaLabel}\n` +
            `⚡ Prioridad: *${etiquetas[s.prioridad]}*\n` +
            `📊 Estado: Pendiente\n` +
            `👨‍🔧 Asignado a mecánico\n\n` +
