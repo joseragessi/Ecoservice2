@@ -88,8 +88,8 @@ async function procesarMensaje(telefono, mensaje) {
     if (!['1','2','3','4','5','6'].includes(op)) {
       return 'Respondé con un número del 1 al 6.';
     }
-    const fallaMap = { '1': 'mecanica', '2': 'electrica', '3': 'hidraulica', '4': 'neumatica', '5': 'liviana', '6': 'otro' };
-    const fallaDb  = { '1': 'motor_4t', '2': 'electrico', '3': 'hidraulica', '4': 'neumatico', '5': 'motor_2t', '6': 'general' };
+    const fallaMap = { '1': 'liviana', '2': 'mecanica', '3': 'electrica', '4': 'hidraulica', '5': 'neumatica', '6': 'otro' };
+    const fallaDb  = { '1': 'motor_2t', '2': 'motor_4t', '3': 'electrico', '4': 'hidraulica', '5': 'neumatico', '6': 'general' };
     s.tipoFalla = fallaMap[op];
     s.tipoDb    = fallaDb[op];
     s.paso = 4;
