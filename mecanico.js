@@ -2,29 +2,36 @@ const supabase = require('./supabase');
 
 async function asignarMecanico(tipoFalla, tipoEquipo) {
 
-  // Equipos que van SIEMPRE a Santiago (motor 2T / cortadora)
+  // Si la falla es eléctrica → Diego Allende (electrico) siempre
+  const esElectrica = tipoFalla && tipoFalla.toLowerCase().includes('eléctr') || 
+                      tipoFalla && tipoFalla.toLowerCase().includes('electr');
+
+  // Equipos que van a Santiago (motor 2T / cortadora)
   const EQUIPOS_SANTIAGO = ['motoguadana', 'motosierra'];
 
-  // Si el equipo es motoguadaña o motosierra → buscar cortadora (Santiago)
-  // En cualquier otro caso → usar la habilidad según tipo de falla
   let habPrincipal;
 
-  if (EQUIPOS_SANTIAGO.includes(tipoEquipo)) {
+  if (esElectrica) {
+    // Eléctrica → Diego
+    habPrincipal = 'electrico';
+  } else if (EQUIPOS_SANTIAGO.includes(tipoEquipo)) {
+    // Motoguadaña, Motosierra, Extensible, Sopladora → Santiago
     habPrincipal = 'cortadora';
   } else {
+    // Todo lo demás por tipo de falla
     const MAPA = {
-      electrico:  'electrico',
-      electrica:  'electrico',
-      hidraulica: 'hidraulica',
-      neumatico:  'neumatico',
-      neumatica:  'neumatico',
-      motor_4t:   'motor_4t',
-      mecanica:   'motor_4t',
-      liviana:    'motor_4t',
-      general:    'motor_4t',
-      otro:       'motor_4t',
+      hidraulica:  'hidraulica',
+      neumatico:   'neumatico',
+      neumatica:   'neumatico',
+      motor_4t:    'motor_4t',
+      mecanica:    'motor_4t',
+      unidad:      'motor_4t',
+      maquina:     'motor_4t',
+      carro:       'motor_4t',
+      general:     'motor_4t',
+      otro:        'motor_4t',
     };
-    habPrincipal = MAPA[tipoFalla] || 'motor_4t';
+    habPrincipal = MAPA[tipoEquipo] || MAPA[tipoFalla] || 'motor_4t';
   }
 
   const { data: mecanicos, error } = await supabase
