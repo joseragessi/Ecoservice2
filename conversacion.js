@@ -72,8 +72,11 @@ const FALLAS_POR_TIPO = {
     'Soldadura / estructura',
     'Otro',
   ],
+  motosierra: null,
   general: ['Otro'],
 };
+
+FALLAS_POR_TIPO.motosierra = FALLAS_POR_TIPO.motoguadana;
 
 // Mapa tipo de equipo → grupo de fallas
 function getFallasGrupo(tipoLabel, tipoDb) {
