@@ -1,12 +1,12 @@
 require('dotenv').config();
 const express  = require('express');
 const twilio   = require('twilio');
-const { procesarMensaje } = require('./conversacion');
+const { procesarMensaje }     = require('./conversacion');
+const { procesarComprobante } = require('./combustible');
 
-const app = express();
+const app  = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use((req,res,next)=>{res.header('Access-Control-Allow-Origin','*');res.header('Access-Control-Allow-Headers','Content-Type');res.header('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS')return res.sendStatus(200);next();});
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -15,16 +15,25 @@ const twilioClient = twilio(
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  const telefono = req.body.From;
+  const telefono = req.body.From;              // ej: whatsapp:+5493516111111
   const mensaje  = req.body.Body || '';
+  const numMedia = parseInt(req.body.NumMedia || '0', 10);
 
-  if (telefono === process.env.TWILIO_WHATSAPP_NUMBER) return res.sendStatus(200);
-  if (!mensaje.trim()) return res.sendStatus(200);
-
-  console.log(`[IN] ${telefono}: ${mensaje}`);
+  console.log(`[IN] ${telefono}: ${numMedia > 0 ? `[${numMedia} imagen(es)]` : mensaje}`);
 
   try {
-    const respuesta = await procesarMensaje(telefono, mensaje);
+    let respuesta;
+
+    if (numMedia > 0) {
+      // Llegó una foto → flujo de combustible (remito o factura)
+      const mediaUrl  = req.body.MediaUrl0;
+      const mediaType = req.body.MediaContentType0;
+      respuesta = await procesarComprobante(telefono, mediaUrl, mediaType);
+    } else {
+      // Texto → flujo de incidencias (el de siempre, sin cambios)
+      respuesta = await procesarMensaje(telefono, mensaje);
+    }
+
     console.log(`[OUT] ${telefono}: ${respuesta.slice(0, 80)}...`);
 
     await twilioClient.messages.create({
@@ -37,38 +46,6 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     console.error('Error en webhook:', err);
     res.sendStatus(500);
-  }
-});
-
-// ── Notificación de finalizado ────────────────────────────────
-app.post('/notificar-finalizado', async (req, res) => {
-  const { telefono, equipo, unidad, mecanico } = req.body;
-
-  if (!telefono || !equipo) {
-    return res.status(400).json({ error: 'Faltan datos' });
-  }
-
-  const numero = telefono.startsWith('+') ? telefono : `+${telefono}`;
-
-  const mensaje =
-    `✅ *Reparación finalizada*\n\n` +
-    `🔧 Equipo: ${equipo}\n` +
-    `${unidad ? `🔢 Unidad: ${unidad}\n` : ''}` +
-    `👨‍🔧 Mecánico: ${mecanico || 'Taller'}\n\n` +
-    `Tu incidencia fue resuelta. ✅\n\n` +
-    `_EcoService · Taller_`;
-
-  try {
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to:   `whatsapp:${numero}`,
-      body: mensaje,
-    });
-    console.log(`[NOTIF] Finalizado enviado a ${numero}`);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('Error notificando:', err);
-    res.status(500).json({ error: err.message });
   }
 });
 
