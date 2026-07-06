@@ -63,8 +63,12 @@ app.post('/webhook', async (req, res) => {
         const resto = mensaje.trim().replace(RE_INSUMOS, '');
         respuesta = await iniciarInsumos(telefono, resto);
       } else {
-        // Cualquier otro texto -> incidencias (flujo actual)
+        // Menú principal / flujo de incidencias (conversacion.js)
         respuesta = await procesarMensaje(telefono, mensaje);
+        // Si el capataz eligió "insumos" en el menú, arrancamos ese flujo
+        if (respuesta && respuesta.__derivar === 'insumos') {
+          respuesta = await iniciarInsumos(telefono, '');
+        }
       }
     }
 
