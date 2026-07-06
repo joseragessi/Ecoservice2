@@ -97,6 +97,27 @@ function resetTimeout(tel) {
   s._timer = setTimeout(() => limpiarSesion(tel), TIMEOUT_MS);
 }
 
+// Arranca el flujo de incidencia (menú de equipos). Reutilizable desde el menú principal.
+function iniciarIncidencia(tel, capataz) {
+  sesiones[tel] = {
+    paso:          1,
+    capatazId:     capataz.id,
+    objetivoId:    capataz.objetivo_id,
+    capatazNombre: capataz.nombre,
+    tipoLabel:     null,
+    tipoDb:        null,
+    tipoFalla:     null,
+    fallaLabel:    null,
+    numeroUnidad:  null,
+    prioridad:     null,
+    equipoParado:  null,
+    _timer:        null,
+  };
+  resetTimeout(tel);
+  const lista = TIPOS_EQUIPO.map((t, i) => `  ${i + 1}. ${t.label}`).join('\n');
+  return `🔧 Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
+}
+
 async function procesarMensaje(telefono, mensaje) {
   const tel   = telefono.replace('whatsapp:', '').replace('+', '');
   const texto = mensaje.trim();
@@ -113,28 +134,41 @@ async function procesarMensaje(telefono, mensaje) {
       return '❌ Tu número no está registrado en el sistema EcoService. Contactá a administración.';
     }
 
+    // Menú principal: el capataz elige qué hacer.
     sesiones[tel] = {
-      paso:          1,
+      paso:          'menu',
       capatazId:     capataz.id,
       objetivoId:    capataz.objetivo_id,
       capatazNombre: capataz.nombre,
-      tipoLabel:     null,
-      tipoDb:        null,
-      tipoFalla:     null,
-      fallaLabel:    null,
-      numeroUnidad:  null,
-      prioridad:     null,
-      equipoParado:  null,
+      _capataz:      capataz,
       _timer:        null,
     };
     resetTimeout(tel);
-
-    const lista = TIPOS_EQUIPO.map((t, i) => `  ${i + 1}. ${t.label}`).join('\n');
-    return `👋 Hola *${capataz.nombre}*. Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
+    return `👋 Hola *${capataz.nombre}*. ¿Qué necesitás?\nRespondé con el número:\n\n` +
+           `  1. ⛽ Cargar combustible\n` +
+           `  2. 📦 Pedir insumos\n` +
+           `  3. 🔧 Reportar una reparación`;
   }
 
   const s = sesiones[tel];
   resetTimeout(tel);
+
+  // Menú principal: derivar según la opción
+  if (s.paso === 'menu') {
+    const op = texto.trim();
+    if (op === '1') {
+      limpiarSesion(tel);
+      return '⛽ Perfecto. Sacale una *foto* al remito o factura de la carga y mandámela por acá.';
+    }
+    if (op === '2') {
+      limpiarSesion(tel);
+      return { __derivar: 'insumos' };  // index.js arranca el flujo de insumos
+    }
+    if (op === '3') {
+      return iniciarIncidencia(tel, s._capataz);
+    }
+    return 'Respondé con *1* (combustible), *2* (insumos) o *3* (reparación).';
+  }
 
   // P1: tipo de equipo
   if (s.paso === 1) {
