@@ -322,6 +322,8 @@ select.reasign:focus{border-color:var(--brote)}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.5L12 12l8.7-4.5M12 12v9.5"/></svg>Insumos <span class="nav-count" id="c-ins">0</span></div>
       <div class="nav-item" data-v="combustible" onclick="go('combustible')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg>Combustible</div>
+      <div class="nav-item" data-v="reparaciones" onclick="go('reparaciones')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg>Reparaciones <span class="nav-count" id="c-rep">0</span></div>
     </nav>
     <div class="rail-foot"><span class="dot"></span>Supabase · sincronizado</div>
   </aside>
@@ -341,8 +343,16 @@ select.reasign:focus{border-color:var(--brote)}
 /* ===== Estado ===== */
 let token = localStorage.getItem('eco_token') || null;
 let objetivos = [];
-let insumosData = [], facturasData = [];
+let insumosData = [], facturasData = [], repData = [], mecanicos = [];
 let filtroFact = 'pendiente', filtroIns = '';
+let repFEstado = '', repFPrio = '', repFMec = '';
+
+/* Estados y colores de reparaciones */
+const EST_REP = ['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
+const EST_REP_LABEL = ['Pendiente','Diagnóstico','Esp. repuestos','En reparación','Finalizado'];
+const PRIO_BADGE = {critico:'b-red',alta:'b-amber',media:'b-blue',baja:'b-green'};
+const HAB_COLOR = {hidraulica:'b-amber',soldadura:'b-red',giro_cero:'b-green',unidades:'b-amber',tractores:'b-violet',general:'b-gray',electrico:'b-amber',neumatico:'b-red',motor_2t:'b-blue',cortadora:'b-green',motor_4t:'b-blue'};
+function hace(f){if(!f)return'';const d=Math.floor((Date.now()-new Date(f))/86400000);return d<=0?'hoy':d+'d';}
 
 /* ===== Helpers ===== */
 const money  = n => n==null?'—':'$ '+Number(n).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -387,6 +397,7 @@ async function iniciar(){
   document.getElementById('user-name').textContent=localStorage.getItem('eco_user')||'';
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
+  try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
   go('dashboard'); refrescarContadores();
 }
 async function refrescarContadores(){
@@ -396,10 +407,15 @@ async function refrescarContadores(){
     if(cf) cf.textContent=d.facturas.pendientes;
     if(ci) ci.textContent=d.insumos.pendientes;
   }catch(e){}
+  try{
+    const reps=await api('/api/reparaciones');
+    const activas=reps.filter(r=>r.estado!=='finalizado').length;
+    const cr=document.getElementById('c-rep'); if(cr) cr.textContent=activas;
+  }catch(e){}
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible'};
+const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones'};
 function go(v){
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   document.getElementById('crumb').textContent=CRUMB[v];
@@ -409,6 +425,7 @@ function go(v){
   if(v==='facturas')vFacturas(view);
   if(v==='insumos')vInsumos(view);
   if(v==='combustible')vCombustible(view);
+  if(v==='reparaciones')vReparaciones(view);
 }
 
 /* ===== Dashboard ===== */
@@ -575,6 +592,95 @@ async function vCombustible(view){
           <td><span class="badge ${c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td></tr>`;}).join('')
         :'<tr><td colspan="6"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
+}
+
+/* ===== Reparaciones ===== */
+async function vReparaciones(view){
+  try{
+    repData=await api('/api/reparaciones');
+    renderReparaciones(view);
+  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
+}
+function renderReparaciones(view){
+  const cnt=(campo,val)=>repData.filter(r=>r[campo]===val).length;
+  const filtrada=repData.filter(r=>
+    (!repFEstado||r.estado===repFEstado)&&
+    (!repFPrio||r.prioridad===repFPrio)&&
+    (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec)));
+  const resumen={critico:cnt('prioridad','critico'),alta:cnt('prioridad','alta'),media:cnt('prioridad','media'),baja:cnt('prioridad','baja')};
+
+  const fEstado=[['','Todos',repData.length],...EST_REP.map(e=>[e,cap(e),cnt('estado',e)])]
+    .map(([v,l,c])=>`<div class="frow ${repFEstado===v?'on':''}" onclick="repFEstado='${v}';renderReparaciones(document.getElementById('view'))"><span>${l}</span><span class="fc">${c}</span></div>`).join('');
+  const fPrio=[['critico','Crítico','#DC4A5B'],['alta','Alta','#D98A1F'],['media','Media','#3B7DC4'],['baja','Baja','#159B51']]
+    .map(([v,l,c])=>`<div class="frow ${repFPrio===v?'on':''}" onclick="repFPrio='${repFPrio===v?'':v}';renderReparaciones(document.getElementById('view'))"><span class="pdot" style="background:${c}"></span><span>${l}</span><span class="fc">${resumen[v]}</span></div>`).join('');
+  const mecCount={}; repData.forEach(r=>{if(r.mecanico_id)mecCount[r.mecanico_id]=(mecCount[r.mecanico_id]||0)+1;});
+  const fMec=[...mecanicos.map(m=>`<div class="frow ${repFMec===m.id?'on':''}" onclick="repFMec='${repFMec===m.id?'':m.id}';renderReparaciones(document.getElementById('view'))"><span>${m.nombre}</span><span class="fc">${mecCount[m.id]||0}</span></div>`).join(''),
+    `<div class="frow ${repFMec==='__sin'?'on':''}" onclick="repFMec='${repFMec==='__sin'?'':'__sin'}';renderReparaciones(document.getElementById('view'))"><span>Sin asignar</span><span class="fc">${repData.filter(r=>!r.mecanico_id).length}</span></div>`].join('');
+
+  const filas=filtrada.map((r,ix)=>{
+    const idx=EST_REP.indexOf(r.estado);
+    return `<tr onclick="selRep(${ix})" data-ix="${ix}">
+      <td><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></td>
+      <td><div style="font-weight:500">${r.equipos?r.equipos.nombre:'—'}</div><div class="sub">${r.equipos&&r.equipos.codigo?r.equipos.codigo:''}</div></td>
+      <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
+      <td>${r.capataces?r.capataces.nombre:'—'}</td>
+      <td>${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
+      <td><span class="badge ${idx===4?'b-green':'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span></td>
+      <td class="mono sub">${hace(r.created_at)}</td></tr>`;}).join('');
+
+  view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Reparaciones</div>
+      <div class="view-desc">Incidencias reportadas por los capataces desde WhatsApp</div></div>
+      <div class="spacer"></div>
+      <div style="display:flex;gap:14px;font-size:12px" class="mono">
+        <span style="color:#DC4A5B">● ${resumen.critico} crítico</span><span style="color:#D98A1F">● ${resumen.alta} alta</span>
+        <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span></div></div>
+    <div class="repwrap">
+      <div class="rep-filters">
+        <div class="fgroup-t">Estado</div>${fEstado}
+        <div class="fgroup-t">Prioridad</div>${fPrio}
+        <div class="fgroup-t">Mecánico</div>${fMec}
+      </div>
+      <div class="tablewrap"><table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
+        <tbody id="rep-body">${filas||'<tr><td colspan="7"><div class="empty"><div>No hay incidencias con estos filtros.</div></div></td></tr>'}</tbody></table></div>
+      <div class="side" id="rep-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg><div>Elegí una incidencia<br>para ver el detalle</div></div></div>
+    </div>`;
+  window._repFiltrada=filtrada;
+}
+function selRep(ix){
+  const r=window._repFiltrada[ix];
+  document.querySelectorAll('#rep-body tr').forEach(t=>t.classList.toggle('sel',+t.dataset.ix===ix));
+  const idx=EST_REP.indexOf(r.estado);
+  const habs=(r.mecanicos&&r.mecanicos.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}">${h.toUpperCase()}</span>`).join('');
+  const coms=(r.comentarios_incidencias||[]).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  const comHTML=coms.length?coms.map(c=>`<div class="obs" style="margin-bottom:8px"><b>${c.mecanico_nombre||'Mecánico'}:</b> ${c.texto}<div class="sub mono" style="margin-top:4px">${new Date(c.created_at).toLocaleString('es-AR')}</div></div>`).join(''):'<div class="sub">Sin observaciones aún.</div>';
+  const selMec=`<select class="reasign" id="rep-mec"><option value="">— sin asignar —</option>${mecanicos.map(m=>`<option value="${m.id}" ${r.mecanico_id===m.id?'selected':''}>${m.nombre}${m.habilidades?' — '+m.habilidades.join(', '):''}</option>`).join('')}</select>`;
+  const btnAvanzar=idx<4?`<button class="btn" style="width:100%;justify-content:center;margin-top:14px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>`:'<div class="badge b-green" style="width:100%;justify-content:center;margin-top:14px;padding:9px">✓ Finalizado</div>';
+  document.getElementById('rep-side').innerHTML=`
+    <div class="side-id">INCIDENCIA${r.equipo_parado?' · EQUIPO PARADO':''}</div>
+    <div class="side-title">${r.equipos?r.equipos.nombre:'—'}</div>
+    <div class="side-meta">${r.objetivos?r.objetivos.nombre:'—'} · ${r.capataces?r.capataces.nombre:'—'}</div>
+    <div style="margin:10px 0"><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></div>
+    <div class="field-l" style="margin-bottom:6px">Descripción</div>
+    <div class="obs" style="margin-bottom:14px">${r.descripcion||'—'}</div>
+    ${railEstado(idx,5,false)}${railLabels(EST_REP_LABEL,idx)}
+    <div class="divider"></div>
+    <div class="field-l" style="margin-bottom:8px">Mecánico asignado</div>
+    ${r.mecanicos?`<div style="font-weight:600;margin-bottom:6px">${r.mecanicos.nombre}</div><div class="habs">${habs}</div>`:'<div class="sub" style="margin-bottom:8px">Sin asignar</div>'}
+    ${selMec}
+    <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="reasignarRep('${r.id}')">Guardar mecánico</button>
+    <div class="divider"></div>
+    <div class="field-l" style="margin-bottom:8px">Observaciones del mecánico</div>${comHTML}
+    ${btnAvanzar}`;
+}
+async function avanzarRep(id,estado){
+  try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({estado})});await vReparaciones(document.getElementById('view'));refrescarContadores();}
+  catch(e){alert('No pude avanzar: '+e.message);}
+}
+async function reasignarRep(id){
+  const mecanico_id=document.getElementById('rep-mec').value||null;
+  try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({mecanico_id})});await vReparaciones(document.getElementById('view'));}
+  catch(e){alert('No pude reasignar: '+e.message);}
 }
 
 /* ===== Arranque ===== */
