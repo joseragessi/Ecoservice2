@@ -7,10 +7,14 @@ const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
 const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
         continuarInsumos } = require('./insumos');
 const { procesarFactura } = require('./facturas_bot');
+const panelApi = require('./panel_api');
 
 const app  = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+
+// Panel de gestión (login + API + HTML), servido desde el mismo Express.
+app.use('/', panelApi);
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
