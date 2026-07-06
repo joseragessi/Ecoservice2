@@ -161,16 +161,21 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
     const { data, error } = await supabase
       .from('pedidos_insumos').update(patch).eq('id', req.params.id)
-      .select('*, capataces(nombre,telefono), objetivos(nombre)').single();
+      .select('*, capataces(nombre,telefono), objetivos(nombre), pedidos_insumos_items(*)').single();
     if (error) throw error;
 
     // Aviso al capataz cuando el pedido se entrega
     let notificado = false;
     if (req.body.estado === 'entregado' && data.capataces && data.capataces.telefono) {
-      const obj = data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || '');
+      const obj = data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || '—');
+      const items = (data.pedidos_insumos_items || [])
+        .map(i => `• ${i.item}${i.cantidad ? ' — ' + i.cantidad : ''}`).join('\n');
       notificado = await notificarCapataz(
         data.capataces.telefono,
-        `📦 *Pedido entregado*\n\nTu pedido de insumos${obj ? ' para ' + obj : ''} ya fue entregado en depósito.\n\nGracias.`
+        `📦 *Pedido listo para retirar*\n\n` +
+        `📍 Objetivo: ${obj}\n` +
+        (items ? `\n${items}\n` : '') +
+        `\nTu pedido de insumos ya está disponible en depósito. ✅\n\n_EcoService · Depósito_`
       );
     }
     res.json({ ...data, _notificado: notificado });
@@ -247,16 +252,22 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
     const { data, error } = await supabase
       .from('incidencias').update(patch).eq('id', req.params.id)
-      .select('*, capataces(nombre,telefono), equipos(nombre)').single();
+      .select('*, capataces(nombre,telefono), equipos(nombre), mecanicos(nombre)').single();
     if (error) throw error;
 
     // Aviso al capataz cuando la reparación se finaliza
     let notificado = false;
     if (req.body.estado === 'finalizado' && data.capataces && data.capataces.telefono) {
-      const equipo = data.equipos ? data.equipos.nombre : 'tu equipo';
+      const equipo   = data.equipos ? data.equipos.nombre : '—';
+      const unidad   = data.numero_unidad || '—';
+      const mecanico = data.mecanicos ? data.mecanicos.nombre : null;
       notificado = await notificarCapataz(
         data.capataces.telefono,
-        `✅ *Reparación finalizada*\n\n${equipo} ya está reparado y listo para usar.\n\nGracias por reportarlo.`
+        `✅ *Reparación finalizada*\n\n` +
+        `🔧 Equipo: ${equipo}\n` +
+        `🔢 Unidad: ${unidad}\n` +
+        (mecanico ? `👨‍🔧 Mecánico: ${mecanico}\n` : '') +
+        `\nTu incidencia fue resuelta. ✅\n\n_EcoService · Taller_`
       );
     }
     res.json({ ...data, _notificado: notificado });
