@@ -199,6 +199,63 @@ router.get('/api/objetivos', auth, async (req, res) => {
   }
 });
 
+// ── Reparaciones (incidencias del taller) ─────────────────────
+router.get('/api/reparaciones', auth, async (req, res) => {
+  try {
+    let q = supabase
+      .from('incidencias')
+      .select('*, equipos(nombre,tipo,codigo), capataces(nombre), objetivos(nombre), mecanicos(nombre,habilidades), comentarios_incidencias(mecanico_nombre,texto,created_at)')
+      .order('created_at', { ascending: false });
+    if (req.query.estado) q = q.eq('estado', req.query.estado);
+    if (req.query.prioridad) q = q.eq('prioridad', req.query.prioridad);
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('reparaciones:', err);
+    res.status(500).json({ error: 'Error cargando reparaciones' });
+  }
+});
+
+// Avanzar estado / reasignar mecánico
+const FECHA_ESTADO = {
+  diagnostico:         'fecha_diagnostico',
+  esperando_repuestos: 'fecha_espera_repuestos',
+  en_reparacion:       'fecha_en_reparacion',
+  finalizado:          'fecha_finalizado',
+};
+router.post('/api/reparaciones/:id', auth, async (req, res) => {
+  try {
+    const patch = {};
+    if (req.body.estado) {
+      patch.estado = req.body.estado;
+      const campoFecha = FECHA_ESTADO[req.body.estado];
+      if (campoFecha) patch[campoFecha] = new Date().toISOString();
+    }
+    if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
+    const { data, error } = await supabase
+      .from('incidencias').update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('reparacion update:', err);
+    res.status(500).json({ error: 'Error actualizando la reparación' });
+  }
+});
+
+// ── Mecánicos (para reasignar) ────────────────────────────────
+router.get('/api/mecanicos', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('mecanicos').select('id, nombre, habilidades').eq('activo', true).order('nombre');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('mecanicos:', err);
+    res.status(500).json({ error: 'Error cargando mecánicos' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
