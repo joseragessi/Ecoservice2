@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EcoService · Gestión</title>
+<style>
+  :root {
+    --verde-hondo: #1B4332;
+    --verde: #2D6A4F;
+    --verde-claro: #40916C;
+    --fondo: #F4F6F4;
+    --panel: #FFFFFF;
+    --borde: #E3E7E3;
+    --texto: #1A211C;
+    --texto-2: #6B7670;
+    --ambar: #B45309;  --ambar-bg: #FEF3C7;
+    --ok: #047857;     --ok-bg: #D1FAE5;
+    --rojo: #B91C1C;   --rojo-bg: #FEE2E2;
+    --azul: #1D4ED8;   --azul-bg: #DBEAFE;
+    --gris: #4B5563;   --gris-bg: #F3F4F6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--fondo); color: var(--texto);
+    font-size: 14px; line-height: 1.45;
+  }
+  button { font-family: inherit; cursor: pointer; }
+
+  /* ── Login ── */
+  #login {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(150deg, var(--verde-hondo), var(--verde));
+    padding: 20px;
+  }
+  .login-card {
+    background: var(--panel); border-radius: 14px; padding: 40px 34px;
+    width: 100%; max-width: 360px; box-shadow: 0 20px 50px rgba(0,0,0,.25);
+  }
+  .login-card .marca { font-size: 22px; font-weight: 800; color: var(--verde-hondo); letter-spacing: -.4px; }
+  .login-card .sub { color: var(--texto-2); margin-bottom: 26px; font-size: 13px; }
+  .campo { margin-bottom: 14px; }
+  .campo label { display: block; font-size: 12px; font-weight: 600; color: var(--texto-2); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .3px; }
+  .campo input {
+    width: 100%; padding: 11px 13px; border: 1.5px solid var(--borde); border-radius: 8px;
+    font-size: 14px; transition: border-color .15s;
+  }
+  .campo input:focus { outline: none; border-color: var(--verde-claro); }
+  .btn-primario {
+    width: 100%; padding: 12px; background: var(--verde-hondo); color: #fff; border: none;
+    border-radius: 8px; font-size: 14px; font-weight: 600; margin-top: 6px; transition: background .15s;
+  }
+  .btn-primario:hover { background: var(--verde); }
+  .login-error { color: var(--rojo); font-size: 13px; margin-top: 12px; min-height: 18px; }
+
+  /* ── App shell ── */
+  #app { display: none; min-height: 100vh; }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; background: var(--verde-hondo); color: #DCE6DF; flex-shrink: 0;
+    display: flex; flex-direction: column; padding: 22px 0;
+  }
+  .sidebar .marca { font-size: 18px; font-weight: 800; color: #fff; padding: 0 22px 22px; letter-spacing: -.3px; }
+  .nav-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 22px; color: #B7C7BC; font-weight: 500; border: none; background: none;
+    width: 100%; text-align: left; font-size: 14px; transition: background .12s, color .12s;
+  }
+  .nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+  .nav-item.activo { background: var(--verde); color: #fff; }
+  .nav-badge {
+    background: var(--ambar); color: #fff; font-size: 11px; font-weight: 700;
+    padding: 1px 7px; border-radius: 10px; min-width: 18px; text-align: center;
+  }
+  .nav-item.activo .nav-badge { background: rgba(255,255,255,.25); }
+
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar {
+    height: 58px; background: var(--panel); border-bottom: 1px solid var(--borde);
+    display: flex; align-items: center; justify-content: space-between; padding: 0 26px;
+  }
+  .topbar h1 { font-size: 17px; font-weight: 700; }
+  .topbar .user { color: var(--texto-2); font-size: 13px; }
+  .topbar .user b { color: var(--texto); }
+  .btn-salir { margin-left: 16px; background: none; border: 1px solid var(--borde); color: var(--texto-2); padding: 6px 12px; border-radius: 7px; font-size: 13px; }
+  .btn-salir:hover { border-color: var(--rojo); color: var(--rojo); }
+
+  .contenido { padding: 26px; overflow: auto; }
+
+  /* ── Dashboard ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--borde); border-radius: 12px; padding: 18px 20px;
+  }
+  .card .k-label { font-size: 12px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+  .card .k-num { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -1px; }
+  .card .k-sub { font-size: 12px; color: var(--texto-2); margin-top: 3px; }
+  .card.alerta .k-num { color: var(--ambar); }
+
+  /* ── Tablas ── */
+  .barra { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filtros { display: flex; gap: 6px; }
+  .chip {
+    padding: 6px 13px; border: 1px solid var(--borde); background: var(--panel); border-radius: 20px;
+    font-size: 13px; color: var(--texto-2); font-weight: 500;
+  }
+  .chip.activo { background: var(--verde-hondo); color: #fff; border-color: var(--verde-hondo); }
+
+  .tabla-wrap { background: var(--panel); border: 1px solid var(--borde); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--texto-2); font-weight: 700; padding: 12px 16px; border-bottom: 1px solid var(--borde); background: #FAFBFA;
+  }
+  td { padding: 13px 16px; border-bottom: 1px solid var(--borde); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.fila:hover { background: #FAFBFA; }
+  .items-mini { color: var(--texto-2); font-size: 13px; margin-top: 3px; }
+
+  .estado {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 12px;
+    text-transform: uppercase; letter-spacing: .3px;
+  }
+  .e-pendiente { background: var(--ambar-bg); color: var(--ambar); }
+  .e-imputada, .e-en_compra { background: var(--azul-bg); color: var(--azul); }
+  .e-aprobada, .e-entregado, .e-facturada { background: var(--ok-bg); color: var(--ok); }
+  .e-pagada { background: var(--ok-bg); color: var(--ok); }
+  .e-rechazada, .e-cancelado { background: var(--rojo-bg); color: var(--rojo); }
+  .e-sin_facturar { background: var(--gris-bg); color: var(--gris); }
+
+  .acciones { display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn-mini {
+    font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--borde);
+    background: var(--panel); color: var(--texto); font-weight: 600;
+  }
+  .btn-mini:hover { background: var(--gris-bg); }
+  .btn-mini.ok { border-color: var(--ok); color: var(--ok); }
+  .btn-mini.rojo { border-color: var(--rojo); color: var(--rojo); }
+  .btn-mini.azul { border-color: var(--azul); color: var(--azul); }
+
+  .vacio { padding: 50px; text-align: center; color: var(--texto-2); }
+  .cargando { padding: 40px; text-align: center; color: var(--texto-2); }
+  .monto { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  /* ── Modal ── */
+  .modal-bg {
+    display: none; position: fixed; inset: 0; background: rgba(20,30,25,.5);
+    align-items: center; justify-content: center; padding: 20px; z-index: 50;
+  }
+  .modal-bg.abierto { display: flex; }
+  .modal {
+    background: var(--panel); border-radius: 14px; padding: 26px; width: 100%; max-width: 440px;
+    max-height: 90vh; overflow: auto;
+  }
+  .modal h3 { font-size: 17px; margin-bottom: 4px; }
+  .modal .m-sub { color: var(--texto-2); font-size: 13px; margin-bottom: 18px; }
+  .modal label { display: block; font-size: 12px; font-weight: 600; color: var(--texto-2); margin: 14px 0 5px; text-transform: uppercase; letter-spacing: .3px; }
+  .modal select {
+    width: 100%; padding: 10px 12px; border: 1.5px solid var(--borde); border-radius: 8px; font-size: 14px; background: #fff;
+  }
+  .modal-acciones { display: flex; gap: 10px; margin-top: 22px; }
+  .modal-acciones button { flex: 1; padding: 11px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+  .btn-cancelar { background: var(--gris-bg); border: none; color: var(--texto); }
+  .btn-guardar { background: var(--verde-hondo); border: none; color: #fff; }
+
+  @media (max-width: 720px) {
+    .sidebar { width: 64px; }
+    .sidebar .marca { font-size: 0; padding: 0 0 18px; }
+    .nav-item { justify-content: center; padding: 12px 0; font-size: 0; }
+    .nav-item .nav-badge { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ LOGIN ══ -->
+<div id="login">
+  <div class="login-card">
+    <div class="marca">EcoService</div>
+    <div class="sub">Panel de gestión</div>
+    <div class="campo">
+      <label>Usuario</label>
+      <input id="in-usuario" type="text" autocomplete="username">
+    </div>
+    <div class="campo">
+      <label>Clave</label>
+      <input id="in-clave" type="password" autocomplete="current-password">
+    </div>
+    <button class="btn-primario" onclick="entrar()">Entrar</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="app">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="marca">EcoService</div>
+      <button class="nav-item activo" data-vista="dashboard" onclick="ir('dashboard')">Resumen</button>
+      <button class="nav-item" data-vista="facturas" onclick="ir('facturas')">Facturas <span class="nav-badge" id="bdg-fact" style="display:none">0</span></button>
+      <button class="nav-item" data-vista="insumos" onclick="ir('insumos')">Insumos <span class="nav-badge" id="bdg-ins" style="display:none">0</span></button>
+      <button class="nav-item" data-vista="combustible" onclick="ir('combustible')">Combustible</button>
+    </aside>
+    <div class="main">
+      <div class="topbar">
+        <h1 id="titulo">Resumen</h1>
+        <div>
+          <span class="user">Sesión: <b id="nombre-user"></b></span>
+          <button class="btn-salir" onclick="salir()">Salir</button>
+        </div>
+      </div>
+      <div class="contenido" id="contenido"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal imputar factura -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3 id="modal-titulo">Imputar factura</h3>
+    <div class="m-sub" id="modal-sub"></div>
+    <label>Objetivo</label>
+    <select id="modal-objetivo"></select>
+    <label>Categoría de gasto</label>
+    <select id="modal-categoria"></select>
+    <label>Estado</label>
+    <select id="modal-estado"></select>
+    <div class="modal-acciones">
+      <button class="btn-cancelar" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn-guardar" onclick="guardarFactura()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = ''; // mismo origen
+let token = localStorage.getItem('eco_token') || null;
+let objetivos = [];
+let facturaEditando = null;
+
+const CATEGORIAS = ['Repuestos','Maquinaria','Combustible','Insumos','Herramientas','Servicios','Otros'];
+const ESTADOS_FACT = ['pendiente','imputada','aprobada','pagada','rechazada'];
+
+function money(n) {
+  if (n == null) return '—';
+  return '$' + Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fecha(f) { return f ? new Date(f).toLocaleDateString('es-AR') : '—'; }
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+async function api(ruta, opts = {}) {
+  const r = await fetch(API + ruta, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts.headers||{}) },
+  });
+  if (r.status === 401) { salir(); throw new Error('Sesión vencida'); }
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || 'Error');
+  return r.json();
+}
+
+// ── Login ──
+async function entrar() {
+  const usuario = document.getElementById('in-usuario').value.trim();
+  const clave = document.getElementById('in-clave').value;
+  const err = document.getElementById('login-error');
+  err.textContent = '';
+  try {
+    const r = await fetch(API + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usuario, clave }),
+    });
+    if (!r.ok) { err.textContent = 'Usuario o clave incorrectos'; return; }
+    const data = await r.json();
+    token = data.token;
+    localStorage.setItem('eco_token', token);
+    localStorage.setItem('eco_user', data.usuario);
+    iniciarApp();
+  } catch (e) { err.textContent = 'No pude conectar. Reintentá.'; }
+}
+function salir() {
+  token = null;
+  localStorage.removeItem('eco_token');
+  localStorage.removeItem('eco_user');
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login').style.display = 'flex';
+}
+document.getElementById('in-clave').addEventListener('keydown', e => { if (e.key === 'Enter') entrar(); });
+
+async function iniciarApp() {
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('nombre-user').textContent = localStorage.getItem('eco_user') || '';
+  try { objetivos = await api('/api/objetivos'); } catch(e) { objetivos = []; }
+  ir('dashboard');
+  refrescarBadges();
+}
+
+async function refrescarBadges() {
+  try {
+    const d = await api('/api/dashboard');
+    const bf = document.getElementById('bdg-fact'), bi = document.getElementById('bdg-ins');
+    if (d.facturas.pendientes > 0) { bf.style.display=''; bf.textContent=d.facturas.pendientes; } else bf.style.display='none';
+    if (d.insumos.pendientes > 0) { bi.style.display=''; bi.textContent=d.insumos.pendientes; } else bi.style.display='none';
+  } catch(e) {}
+}
+
+// ── Navegación ──
+const TITULOS = { dashboard:'Resumen', facturas:'Facturas de proveedor', insumos:'Pedidos de insumos', combustible:'Combustible' };
+function ir(vista) {
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('activo', b.dataset.vista === vista));
+  document.getElementById('titulo').textContent = TITULOS[vista];
+  const cont = document.getElementById('contenido');
+  cont.innerHTML = '<div class="cargando">Cargando…</div>';
+  if (vista === 'dashboard') verDashboard(cont);
+  if (vista === 'facturas') verFacturas(cont);
+  if (vista === 'insumos') verInsumos(cont);
+  if (vista === 'combustible') verCombustible(cont);
+}
+
+// ── Dashboard ──
+async function verDashboard(cont) {
+  try {
+    const d = await api('/api/dashboard');
+    cont.innerHTML = `
+      <div class="cards">
+        <div class="card alerta">
+          <div class="k-label">Facturas pendientes</div>
+          <div class="k-num">${d.facturas.pendientes}</div>
+          <div class="k-sub">${money(d.facturas.total_pendiente)} por imputar</div>
+        </div>
+        <div class="card">
+          <div class="k-label">Facturas aprobadas</div>
+          <div class="k-num">${d.facturas.aprobadas}</div>
+          <div class="k-sub">listas para pagar</div>
+        </div>
+        <div class="card alerta">
+          <div class="k-label">Insumos pendientes</div>
+          <div class="k-num">${d.insumos.pendientes}</div>
+          <div class="k-sub">${d.insumos.en_compra} en compra</div>
+        </div>
+        <div class="card">
+          <div class="k-label">Combustible del mes</div>
+          <div class="k-num">${d.combustible.cargas_mes}</div>
+          <div class="k-sub">${Number(d.combustible.litros_mes||0).toLocaleString('es-AR')} lt cargados</div>
+        </div>
+        <div class="card">
+          <div class="k-label">Cargas sin facturar</div>
+          <div class="k-num">${d.combustible.sin_facturar}</div>
+          <div class="k-sub">remitos a conciliar</div>
+        </div>
+      </div>`;
+  } catch(e) { cont.innerHTML = `<div class="vacio">No pude cargar el resumen.</div>`; }
+}
+
+// ── Facturas ──
+let filtroFact = 'pendiente';
+async function verFacturas(cont) {
+  try {
+    const q = filtroFact ? '?estado=' + filtroFact : '';
+    const fs = await api('/api/facturas' + q);
+    const chips = ['pendiente','imputada','aprobada','pagada',''].map(e =>
+      `<button class="chip ${filtroFact===e?'activo':''}" onclick="filtroFact='${e}';ir('facturas')">${e?cap(e):'Todas'}</button>`).join('');
+    let filas = fs.map(f => `
+      <tr class="fila">
+        <td><b>${f.proveedor_nombre||'—'}</b><div class="items-mini">${f.tipo_comprobante||''} ${f.numero||''}</div></td>
+        <td>${fecha(f.fecha)}<div class="items-mini">${f.vencimiento?'vence '+fecha(f.vencimiento):''}</div></td>
+        <td class="monto">${money(f.total)}</td>
+        <td>${f.objetivos?f.objetivos.nombre:'<span style="color:var(--texto-2)">sin imputar</span>'}${f.categoria?'<div class="items-mini">'+f.categoria+'</div>':''}</td>
+        <td><span class="estado e-${f.estado}">${f.estado}</span></td>
+        <td><div class="acciones">
+          <button class="btn-mini azul" onclick='abrirModal(${JSON.stringify(f).replace(/'/g,"&#39;")})'>Imputar</button>
+        </div></td>
+      </tr>`).join('');
+    cont.innerHTML = `
+      <div class="barra"><div class="filtros">${chips}</div></div>
+      <div class="tabla-wrap">
+        ${fs.length ? `<table><thead><tr><th>Proveedor</th><th>Fecha</th><th>Total</th><th>Imputación</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table>`
+          : `<div class="vacio">No hay facturas ${filtroFact?cap(filtroFact).toLowerCase():''}.</div>`}
+      </div>`;
+  } catch(e) { cont.innerHTML = `<div class="vacio">No pude cargar las facturas.</div>`; }
+}
+
+function abrirModal(f) {
+  facturaEditando = f;
+  document.getElementById('modal-titulo').textContent = 'Imputar factura';
+  document.getElementById('modal-sub').textContent = `${f.proveedor_nombre||''} · ${money(f.total)}`;
+  const selO = document.getElementById('modal-objetivo');
+  selO.innerHTML = '<option value="">— sin objetivo —</option>' +
+    objetivos.map(o => `<option value="${o.id}" ${f.objetivo_id===o.id?'selected':''}>${o.nombre}</option>`).join('');
+  const selC = document.getElementById('modal-categoria');
+  selC.innerHTML = '<option value="">— sin categoría —</option>' +
+    CATEGORIAS.map(c => `<option value="${c}" ${f.categoria===c?'selected':''}>${c}</option>`).join('');
+  const selE = document.getElementById('modal-estado');
+  selE.innerHTML = ESTADOS_FACT.map(e => `<option value="${e}" ${f.estado===e?'selected':''}>${cap(e)}</option>`).join('');
+  document.getElementById('modal-bg').classList.add('abierto');
+}
+function cerrarModal() { document.getElementById('modal-bg').classList.remove('abierto'); facturaEditando = null; }
+async function guardarFactura() {
+  if (!facturaEditando) return;
+  const body = {
+    objetivo_id: document.getElementById('modal-objetivo').value || null,
+    categoria: document.getElementById('modal-categoria').value || null,
+    estado: document.getElementById('modal-estado').value,
+  };
+  try {
+    await api('/api/facturas/' + facturaEditando.id, { method: 'POST', body: JSON.stringify(body) });
+    cerrarModal(); ir('facturas'); refrescarBadges();
+  } catch(e) { alert('No pude guardar: ' + e.message); }
+}
+
+// ── Insumos ──
+let filtroIns = 'pendiente';
+async function verInsumos(cont) {
+  try {
+    const q = filtroIns ? '?estado=' + filtroIns : '';
+    const ps = await api('/api/insumos' + q);
+    const chips = ['pendiente','en_compra','entregado',''].map(e =>
+      `<button class="chip ${filtroIns===e?'activo':''}" onclick="filtroIns='${e}';ir('insumos')">${e?cap(e.replace('_',' ')):'Todos'}</button>`).join('');
+    let filas = ps.map(p => {
+      const items = (p.pedidos_insumos_items||[]).map(i => `${i.item}${i.cantidad?' ('+i.cantidad+')':''}`).join(', ');
+      const acc = [];
+      if (p.estado==='pendiente') acc.push(`<button class="btn-mini azul" onclick="cambiarInsumo('${p.id}','en_compra')">Marcar en compra</button>`);
+      if (p.estado==='en_compra') acc.push(`<button class="btn-mini ok" onclick="cambiarInsumo('${p.id}','entregado')">Marcar entregado</button>`);
+      if (p.estado!=='cancelado' && p.estado!=='entregado') acc.push(`<button class="btn-mini rojo" onclick="cambiarInsumo('${p.id}','cancelado')">Cancelar</button>`);
+      return `<tr class="fila">
+        <td><b>${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</b><div class="items-mini">${p.capataces?p.capataces.nombre:''}</div></td>
+        <td>${items||'—'}</td>
+        <td>${fecha(p.created_at)}</td>
+        <td><span class="estado e-${p.estado}">${p.estado.replace('_',' ')}</span></td>
+        <td><div class="acciones">${acc.join('')}</div></td>
+      </tr>`;
+    }).join('');
+    cont.innerHTML = `
+      <div class="barra"><div class="filtros">${chips}</div></div>
+      <div class="tabla-wrap">
+        ${ps.length ? `<table><thead><tr><th>Objetivo / Capataz</th><th>Pedido</th><th>Fecha</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table>`
+          : `<div class="vacio">No hay pedidos ${filtroIns?cap(filtroIns.replace('_',' ')).toLowerCase():''}.</div>`}
+      </div>`;
+  } catch(e) { cont.innerHTML = `<div class="vacio">No pude cargar los pedidos.</div>`; }
+}
+async function cambiarInsumo(id, estado) {
+  try { await api('/api/insumos/' + id, { method: 'POST', body: JSON.stringify({ estado }) }); ir('insumos'); refrescarBadges(); }
+  catch(e) { alert('No pude actualizar: ' + e.message); }
+}
+
+// ── Combustible ──
+let filtroComb = '';
+async function verCombustible(cont) {
+  try {
+    const q = filtroComb ? '?estado=' + filtroComb : '';
+    const cs = await api('/api/combustible' + q);
+    const chips = ['','sin_facturar','facturada'].map(e =>
+      `<button class="chip ${filtroComb===e?'activo':''}" onclick="filtroComb='${e}';ir('combustible')">${e?cap(e.replace('_',' ')):'Todas'}</button>`).join('');
+    let filas = cs.map(c => {
+      const items = (c.cargas_combustible_items||[]).map(i => {
+        const dest = i.destino==='bidon' ? '→ bidones' : (i.unidad_id ? '→ unidad' : '');
+        return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;
+      }).join('<br>');
+      return `<tr class="fila">
+        <td><b>${c.proveedores?c.proveedores.nombre:'—'}</b><div class="items-mini">${c.numero_remito||c.numero_factura||''}</div></td>
+        <td>${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</td>
+        <td class="items-mini" style="color:var(--texto)">${items||'—'}</td>
+        <td class="monto">${c.litros_total?c.litros_total+' lt':'—'}</td>
+        <td>${fecha(c.fecha)}</td>
+        <td><span class="estado e-${c.estado}">${c.estado.replace('_',' ')}</span></td>
+      </tr>`;
+    }).join('');
+    cont.innerHTML = `
+      <div class="barra"><div class="filtros">${chips}</div></div>
+      <div class="tabla-wrap">
+        ${cs.length ? `<table><thead><tr><th>Proveedor</th><th>Patente</th><th>Productos</th><th>Litros</th><th>Fecha</th><th>Estado</th></tr></thead><tbody>${filas}</tbody></table>`
+          : `<div class="vacio">No hay cargas registradas.</div>`}
+      </div>`;
+  } catch(e) { cont.innerHTML = `<div class="vacio">No pude cargar el combustible.</div>`; }
+}
+
+// ── Arranque ──
+if (token) iniciarApp(); else document.getElementById('login').style.display = 'flex';
+</script>
+</body>
+</html>
