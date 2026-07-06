@@ -1,9 +1,9 @@
 const supabase = require('./supabase');
 const { extraerComprobante } = require('./extraccion');
 
-// Sesiones de combustible EN MEMORIA (igual criterio que incidencias).
-// telefono -> { paso, datos, mediaUrl, capataz, destino }
-//   paso: 'esperando_destino' | 'esperando_objetivo'
+// Sesiones de combustible EN MEMORIA.
+// telefono -> { paso, datos, mediaUrl, capataz, unidad, itemsComb, indice, imputaciones }
+//   paso: 'destino_item' | 'objetivo_item'
 const sesiones = {};
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -49,7 +49,6 @@ async function resolverProveedor(nombre, cuit) {
   return nuevo ? nuevo.id : null;
 }
 
-/** Resuelve el objetivo de los bidones: 'mío' -> el del capataz; texto -> match por nombre. */
 async function resolverObjetivo(texto, capataz) {
   const t = texto.trim().toLowerCase();
   if (['mio', 'mío', 'el mio', 'el mío', 'mi objetivo'].includes(t)) {
@@ -66,16 +65,41 @@ async function resolverObjetivo(texto, capataz) {
   return match ? { id: match.id, nombre: match.nombre } : null;
 }
 
-/** Inserta la carga + items con el destino y el objetivo ya resueltos. */
-async function guardarCarga({ datos, mediaUrl, capataz, unidad }, destino, objetivoId) {
+function resumenProductos(datos) {
+  return (datos.items || [])
+    .map(i => `  • ${i.producto}: ${i.litros ?? '—'} lt`)
+    .join('\n');
+}
+
+/** Pregunta el destino del producto actual de la sesión. */
+function preguntarItem(sesion) {
+  const it  = sesion.itemsComb[sesion.indice];
+  const pat = sesion.datos.patente;
+  const op1 = pat ? `A la unidad ${pat}` : 'A la unidad';
+  const total = sesion.itemsComb.length;
+  const pos = total > 1 ? ` (${sesion.indice + 1}/${total})` : '';
+  return `⛽ *${it.producto}* — ${it.litros ?? '—'} lt${pos}\n` +
+         `¿A dónde va?\n1️⃣ ${op1}\n2️⃣ A bidones\n\nRespondé 1 o 2.`;
+}
+
+/** Inserta la carga + items con la imputación por producto ya resuelta. */
+async function guardarCarga(sesion) {
+  const { datos, mediaUrl, capataz, itemsComb, imputaciones } = sesion;
   const esFactura = datos.tipo_doc === 'factura';
   const proveedorId = await resolverProveedor(datos.proveedor, datos.cuit);
-  const litros = (datos.items || [])
-    .filter(i => i.es_combustible !== false)
-    .reduce((s, i) => s + (i.litros || 0), 0);
+  const litros = itemsComb.reduce((s, i) => s + (i.litros || 0), 0);
 
-  // Para bidón no se imputa unidad (aunque el remito traiga patente).
-  const unidadId = destino === 'bidon' ? null : (unidad ? unidad.id : null);
+  // Resumen de destino de la carga
+  const dests = imputaciones.map(x => x.destino);
+  const resumen = dests.length && dests.every(d => d === 'unidad') ? 'unidad'
+                : dests.length && dests.every(d => d === 'bidon')  ? 'bidon'
+                : 'mixto';
+
+  const unidadCargaId = resumen === 'unidad' && sesion.unidad ? sesion.unidad.id : null;
+  const impObj = imputaciones.find(x => x.objetivo_id);
+  const objCargaId = (impObj && impObj.objetivo_id)
+                   || (sesion.unidad && sesion.unidad.objetivo_id)
+                   || capataz.objetivo_id || null;
 
   const { data: carga, error } = await supabase
     .from('cargas_combustible')
@@ -83,9 +107,9 @@ async function guardarCarga({ datos, mediaUrl, capataz, unidad }, destino, objet
       origen:         esFactura ? 'factura_capataz' : 'remito_capataz',
       tipo_doc:       datos.tipo_doc,
       estado:         esFactura ? 'facturada' : 'sin_facturar',
-      destino,
-      unidad_id:      unidadId,
-      objetivo_id:    objetivoId || (unidad && unidad.objetivo_id) || capataz.objetivo_id || null,
+      destino:        resumen,
+      unidad_id:      unidadCargaId,
+      objetivo_id:    objCargaId,
       capataz_id:     capataz.id,
       proveedor_id:   proveedorId,
       fecha:          datos.fecha,
@@ -108,25 +132,48 @@ async function guardarCarga({ datos, mediaUrl, capataz, unidad }, destino, objet
     return null;
   }
 
-  if (datos.items && datos.items.length) {
-    const items = datos.items.map(i => ({
+  const items = (datos.items || []).map(it => {
+    const idx = itemsComb.indexOf(it);
+    const imp = idx >= 0 ? imputaciones[idx] : null;
+    return {
       carga_id:       carga.id,
-      producto:       i.producto,
-      es_combustible: i.es_combustible !== false,
-      litros:         i.litros ?? null,
-      precio_unit:    i.precio_unit ?? null,
-      subtotal:       i.subtotal ?? null,
-    }));
-    await supabase.from('cargas_combustible_items').insert(items);
-  }
+      producto:       it.producto,
+      es_combustible: it.es_combustible !== false,
+      litros:         it.litros ?? null,
+      precio_unit:    it.precio_unit ?? null,
+      subtotal:       it.subtotal ?? null,
+      destino:        imp ? imp.destino : 'unidad',
+      unidad_id:      imp ? imp.unidad_id : (sesion.unidad ? sesion.unidad.id : null),
+      objetivo_id:    imp ? imp.objetivo_id : null,
+    };
+  });
+  await supabase.from('cargas_combustible_items').insert(items);
   return carga;
 }
 
-/** Resumen de productos para los mensajes. */
-function resumenProductos(datos) {
-  return (datos.items || [])
-    .map(i => `  • ${i.producto}: ${i.litros ?? '—'} lt`)
-    .join('\n');
+/** Arma el resumen final que se le manda al capataz. */
+function resumenFinal(sesion, nombre) {
+  const lineas = sesion.itemsComb.map((it, idx) => {
+    const imp = sesion.imputaciones[idx];
+    const dest = imp.destino === 'bidon'
+      ? `bidones → ${imp.objetivo_nombre || 'objetivo'}`
+      : `unidad ${sesion.datos.patente || ''}`.trim();
+    return `  • ${it.producto} (${it.litros ?? '—'} lt) → ${dest}`;
+  }).join('\n');
+  return `✅ Carga registrada, *${nombre}*:\n${lineas}`;
+}
+
+/** Avanza al siguiente producto, o guarda si ya no quedan. */
+async function avanzar(tel, sesion, nombre) {
+  sesion.indice++;
+  if (sesion.indice < sesion.itemsComb.length) {
+    sesion.paso = 'destino_item';
+    return preguntarItem(sesion);
+  }
+  const carga = await guardarCarga(sesion);
+  delete sesiones[tel];
+  if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+  return resumenFinal(sesion, nombre);
 }
 
 // ── Entrada 1: llega la FOTO ──────────────────────────────────
@@ -169,22 +216,30 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
   console.log('[COMBUSTIBLE] extraído:', JSON.stringify(datos));
 
   const unidad = await resolverUnidad(datos.patente);
-
-  // Guardar la sesión y preguntar el destino
-  sesiones[tel] = { paso: 'esperando_destino', datos, mediaUrl, capataz, unidad };
+  const itemsComb = (datos.items || []).filter(i => i.es_combustible !== false);
 
   const lineaDoc = datos.tipo_doc === 'factura'
     ? `📄 Factura ${datos.numero} — ${pesos(datos.total)}`
     : `📄 Remito ${datos.numero} — sin facturar`;
-  const opcionUnidad = datos.patente ? `A la unidad ${datos.patente}` : 'A la unidad';
+  const encabezado = `📸 Leí tu comprobante, *${nombre}*:\n\n⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n\n`;
 
-  return `📸 Leí tu comprobante, *${nombre}*:\n\n` +
-         `⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n\n` +
-         `¿A dónde va esta carga?\n` +
-         `1️⃣ ${opcionUnidad}\n` +
-         `2️⃣ A bidones (máquinas)\n` +
-         `3️⃣ Mixto (unidad + bidones)\n\n` +
-         `Respondé 1, 2 o 3.`;
+  // Si no hay productos de combustible que discriminar, guardo directo.
+  if (itemsComb.length === 0) {
+    const sesion = { datos, mediaUrl, capataz, unidad, itemsComb: [], imputaciones: [] };
+    const carga = await guardarCarga(sesion);
+    if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+    return `${encabezado}✅ Registrada.`;
+  }
+
+  sesiones[tel] = {
+    paso: 'destino_item', datos, mediaUrl, capataz, unidad,
+    itemsComb, indice: 0, imputaciones: [],
+  };
+
+  const intro = itemsComb.length > 1
+    ? `Tenés ${itemsComb.length} productos. Te pregunto uno por uno.\n\n`
+    : '';
+  return encabezado + intro + preguntarItem(sesiones[tel]);
 }
 
 // ── Entrada 2: llega TEXTO con sesión activa ──────────────────
@@ -201,39 +256,37 @@ async function continuarConversacion(telefono, mensaje) {
 
   const texto = (mensaje || '').trim();
   const nombre = sesion.capataz.nombre.split(' ')[0];
+  const it = sesion.itemsComb[sesion.indice];
 
-  // Paso A: eligió el destino (1/2/3)
-  if (sesion.paso === 'esperando_destino') {
+  if (sesion.paso === 'destino_item') {
     if (texto === '1') {
-      const carga = await guardarCarga(sesion, 'unidad', null);
-      delete sesiones[tel];
-      if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
-      const imput = sesion.unidad
-        ? `unidad ${sesion.datos.patente} ✓`
-        : `patente ${sesion.datos.patente || '—'} (sin imputar todavía)`;
-      return `✅ Carga registrada a ${imput}, *${nombre}*.`;
+      sesion.imputaciones[sesion.indice] = {
+        destino: 'unidad',
+        unidad_id: sesion.unidad ? sesion.unidad.id : null,
+        objetivo_id: null,
+      };
+      return avanzar(tel, sesion, nombre);
     }
-    if (texto === '2' || texto === '3') {
-      sesion.destino = texto === '2' ? 'bidon' : 'mixto';
-      sesion.paso = 'esperando_objetivo';
+    if (texto === '2') {
+      sesion.paso = 'objetivo_item';
       const miObj = sesion.capataz.objetivo_nombre || 'tu objetivo';
-      return `¿A qué objetivo van los bidones?\n\n` +
+      return `¿A qué objetivo van los bidones de *${it.producto}*?\n\n` +
              `Respondé *mío* para ${miObj}, o escribí el nombre de otro objetivo.`;
     }
-    return 'Respondé *1* (unidad), *2* (bidones) o *3* (mixto).';
+    const pat = sesion.datos.patente ? ' ' + sesion.datos.patente : '';
+    return `Respondé *1* (unidad${pat}) o *2* (bidones).`;
   }
 
-  // Paso B: eligió el objetivo de los bidones
-  if (sesion.paso === 'esperando_objetivo') {
+  if (sesion.paso === 'objetivo_item') {
     const obj = await resolverObjetivo(texto, sesion.capataz);
     if (!obj || !obj.id) {
-      return `No encontré ese objetivo. Escribí el nombre de nuevo, o respondé *mío* para tu objetivo.`;
+      return `No encontré ese objetivo. Escribí el nombre de nuevo, o *mío* para tu objetivo.`;
     }
-    const carga = await guardarCarga(sesion, sesion.destino, obj.id);
-    delete sesiones[tel];
-    if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
-    const tipo = sesion.destino === 'mixto' ? 'Carga mixta' : 'Bidones';
-    return `✅ ${tipo} registrada para *${obj.nombre}*, ${nombre}.`;
+    sesion.imputaciones[sesion.indice] = {
+      destino: 'bidon', unidad_id: null,
+      objetivo_id: obj.id, objetivo_nombre: obj.nombre,
+    };
+    return avanzar(tel, sesion, nombre);
   }
 
   return null;
