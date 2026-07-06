@@ -2,7 +2,10 @@ require('dotenv').config();
 const express  = require('express');
 const twilio   = require('twilio');
 const { procesarMensaje } = require('./conversacion');
-const { procesarComprobante, tieneSesionActiva, continuarConversacion } = require('./combustible');
+const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
+        continuarConversacion } = require('./combustible');
+const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
+        continuarInsumos } = require('./insumos');
 const { procesarFactura } = require('./facturas_bot');
 
 const app  = express();
@@ -15,14 +18,15 @@ const twilioClient = twilio(
 );
 
 // Número dedicado a facturas de proveedor (formato: whatsapp:+549...).
-// Si un mensaje llega a ESTE número → flujo de facturas. Si llega a cualquier
-// otro → flujo de capataces (incidencias / combustible).
 const NUMERO_PROVEEDORES = process.env.TWILIO_NUMERO_PROVEEDORES;
+
+// Disparador de pedidos de insumos: el capataz arranca con "insumos" o "pedido".
+const RE_INSUMOS = /^(insumos|pedido)\b[\s:,\-]*/i;
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  const telefono   = req.body.From;              // quién escribió
-  const paraNumero = req.body.To;                // a qué número escribió
+  const telefono   = req.body.From;
+  const paraNumero = req.body.To;
   const mensaje    = req.body.Body || '';
   const numMedia   = parseInt(req.body.NumMedia || '0', 10);
 
@@ -42,12 +46,20 @@ app.post('/webhook', async (req, res) => {
         respuesta = 'Hola 👋 Mandá la *factura* como foto o PDF y la registramos automáticamente.';
       }
     } else {
-      // ── Flujo CAPATACES (incidencias / combustible) ──
+      // ── Flujo CAPATACES (combustible / insumos / incidencias) ──
       if (numMedia > 0) {
+        // Una imagen es un comprobante de combustible
         respuesta = await procesarComprobante(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
-      } else if (tieneSesionActiva(telefono)) {
+      } else if (tieneSesionCombustible(telefono)) {
         respuesta = await continuarConversacion(telefono, mensaje);
+      } else if (tieneSesionInsumos(telefono)) {
+        respuesta = await continuarInsumos(telefono, mensaje);
+      } else if (RE_INSUMOS.test(mensaje.trim())) {
+        // Arranca un pedido de insumos; le pasamos lo que escribió después de la palabra
+        const resto = mensaje.trim().replace(RE_INSUMOS, '');
+        respuesta = await iniciarInsumos(telefono, resto);
       } else {
+        // Cualquier otro texto -> incidencias (flujo actual)
         respuesta = await procesarMensaje(telefono, mensaje);
       }
     }
@@ -55,7 +67,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`[OUT] ${telefono}: ${(respuesta || '').slice(0, 80)}...`);
 
     await twilioClient.messages.create({
-      from: paraNumero || process.env.TWILIO_WHATSAPP_NUMBER,  // responde desde el número correcto
+      from: paraNumero || process.env.TWILIO_WHATSAPP_NUMBER,
       to:   telefono,
       body: respuesta,
     });
