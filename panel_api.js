@@ -2,6 +2,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
+const { notificarCapataz } = require('./notificar');
 
 const router = express.Router();
 
@@ -159,9 +160,20 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
     const patch = {};
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
     const { data, error } = await supabase
-      .from('pedidos_insumos').update(patch).eq('id', req.params.id).select().single();
+      .from('pedidos_insumos').update(patch).eq('id', req.params.id)
+      .select('*, capataces(nombre,telefono), objetivos(nombre)').single();
     if (error) throw error;
-    res.json(data);
+
+    // Aviso al capataz cuando el pedido se entrega
+    let notificado = false;
+    if (req.body.estado === 'entregado' && data.capataces && data.capataces.telefono) {
+      const obj = data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || '');
+      notificado = await notificarCapataz(
+        data.capataces.telefono,
+        `📦 *Pedido entregado*\n\nTu pedido de insumos${obj ? ' para ' + obj : ''} ya fue entregado en depósito.\n\nGracias.`
+      );
+    }
+    res.json({ ...data, _notificado: notificado });
   } catch (err) {
     console.error('insumo update:', err);
     res.status(500).json({ error: 'Error actualizando el pedido' });
@@ -234,9 +246,20 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     }
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
     const { data, error } = await supabase
-      .from('incidencias').update(patch).eq('id', req.params.id).select().single();
+      .from('incidencias').update(patch).eq('id', req.params.id)
+      .select('*, capataces(nombre,telefono), equipos(nombre)').single();
     if (error) throw error;
-    res.json(data);
+
+    // Aviso al capataz cuando la reparación se finaliza
+    let notificado = false;
+    if (req.body.estado === 'finalizado' && data.capataces && data.capataces.telefono) {
+      const equipo = data.equipos ? data.equipos.nombre : 'tu equipo';
+      notificado = await notificarCapataz(
+        data.capataces.telefono,
+        `✅ *Reparación finalizada*\n\n${equipo} ya está reparado y listo para usar.\n\nGracias por reportarlo.`
+      );
+    }
+    res.json({ ...data, _notificado: notificado });
   } catch (err) {
     console.error('reparacion update:', err);
     res.status(500).json({ error: 'Error actualizando la reparación' });
