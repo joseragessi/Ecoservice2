@@ -286,6 +286,18 @@ select.reasign:focus{border-color:var(--brote)}
     border-radius:var(--r-s);font-family:inherit;font-size:12.5px;cursor:pointer;transition:.14s}
   .btn-salir:hover{border-color:var(--rojo);color:var(--rojo)}
   .cargando-v{display:grid;place-items:center;height:280px;color:var(--tinta-3);font-family:'JetBrains Mono',monospace;font-size:13px}
+  /* Modal maestros */
+  .modal-bg{display:none;position:fixed;inset:0;background:rgba(20,30,25,.45);align-items:center;justify-content:center;padding:20px;z-index:60}
+  .modal-bg.abierto{display:flex}
+  .modal{background:var(--blanco);border-radius:var(--r);padding:24px;width:100%;max-width:460px;max-height:90vh;overflow:auto;box-shadow:var(--sombra-lg)}
+  .modal h3{font-size:17px;margin-bottom:16px}
+  .mm-field{margin-bottom:13px}
+  .mm-field label{display:block;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin-bottom:6px}
+  .mm-field input,.mm-field select{width:100%;background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:10px 12px;font-family:inherit;font-size:13px;outline:none}
+  .mm-field input:focus,.mm-field select:focus{border-color:var(--brote)}
+  .mm-habs{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .mm-hab{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--tinta-2);cursor:pointer}
+  .modal-acciones{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
 </style>
 </head>
 <body>
@@ -324,6 +336,9 @@ select.reasign:focus{border-color:var(--brote)}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg>Combustible</div>
       <div class="nav-item" data-v="reparaciones" onclick="go('reparaciones')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg>Reparaciones <span class="nav-count" id="c-rep">0</span></div>
+      <div class="nav-label">Sistema</div>
+      <div class="nav-item" data-v="maestros" onclick="go('maestros')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l7 4v6c0 5-3 7.5-7 9-4-1.5-7-4-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>Maestros</div>
     </nav>
     <div class="rail-foot"><span class="dot"></span>Supabase · sincronizado</div>
   </aside>
@@ -339,6 +354,18 @@ select.reasign:focus{border-color:var(--brote)}
     <div class="view" id="view"></div>
   </div>
 </div>
+<!-- Modal maestros -->
+<div class="modal-bg" id="mm-bg">
+  <div class="modal">
+    <h3 id="mm-titulo">Nuevo</h3>
+    <div id="mm-campos"></div>
+    <div class="modal-acciones">
+      <button class="btn ghost" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" onclick="guardarMaestro()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ===== Estado ===== */
 let token = localStorage.getItem('eco_token') || null;
@@ -415,7 +442,7 @@ async function refrescarContadores(){
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones'};
+const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros'};
 function go(v){
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   document.getElementById('crumb').textContent=CRUMB[v];
@@ -426,6 +453,7 @@ function go(v){
   if(v==='insumos')vInsumos(view);
   if(v==='combustible')vCombustible(view);
   if(v==='reparaciones')vReparaciones(view);
+  if(v==='maestros')vMaestros(view);
 }
 
 /* ===== Dashboard ===== */
@@ -603,13 +631,17 @@ async function vReparaciones(view){
 }
 function renderReparaciones(view){
   const cnt=(campo,val)=>repData.filter(r=>r[campo]===val).length;
-  const filtrada=repData.filter(r=>
-    (!repFEstado||r.estado===repFEstado)&&
+  // Por defecto ocultamos las finalizadas (solo activas). El filtro "Finalizadas" las muestra.
+  const base = repFEstado==='finalizado' ? repData.filter(r=>r.estado==='finalizado')
+             : repFEstado ? repData.filter(r=>r.estado===repFEstado)
+             : repData.filter(r=>r.estado!=='finalizado');
+  const filtrada=base.filter(r=>
     (!repFPrio||r.prioridad===repFPrio)&&
     (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec)));
   const resumen={critico:cnt('prioridad','critico'),alta:cnt('prioridad','alta'),media:cnt('prioridad','media'),baja:cnt('prioridad','baja')};
 
-  const fEstado=[['','Todos',repData.length],...EST_REP.map(e=>[e,cap(e),cnt('estado',e)])]
+  const activas=repData.filter(r=>r.estado!=='finalizado').length;
+  const fEstado=[['','Activas',activas],...EST_REP.map(e=>[e,cap(e),cnt('estado',e)])]
     .map(([v,l,c])=>`<div class="frow ${repFEstado===v?'on':''}" onclick="repFEstado='${v}';renderReparaciones(document.getElementById('view'))"><span>${l}</span><span class="fc">${c}</span></div>`).join('');
   const fPrio=[['critico','Crítico','#DC4A5B'],['alta','Alta','#D98A1F'],['media','Media','#3B7DC4'],['baja','Baja','#159B51']]
     .map(([v,l,c])=>`<div class="frow ${repFPrio===v?'on':''}" onclick="repFPrio='${repFPrio===v?'':v}';renderReparaciones(document.getElementById('view'))"><span class="pdot" style="background:${c}"></span><span>${l}</span><span class="fc">${resumen[v]}</span></div>`).join('');
@@ -681,6 +713,107 @@ async function reasignarRep(id){
   const mecanico_id=document.getElementById('rep-mec').value||null;
   try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({mecanico_id})});await vReparaciones(document.getElementById('view'));}
   catch(e){alert('No pude reasignar: '+e.message);}
+}
+
+/* ===== Maestros (ABM) ===== */
+const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica','Hidráulica'],['electrico','Eléctrico'],['soldadura','Soldadura'],['neumatico','Neumático'],['giro_cero','Giro cero'],['unidades','Unidades'],['tractores','Tractores'],['cortadora','Cortadora de pasto'],['general','General']];
+const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz'};
+let maestroTab='mecanicos', maestrosData=[], maestroEdit=null;
+
+async function vMaestros(view){
+  const tabs=[['mecanicos','Mecánicos'],['objetivos','Objetivos'],['capataces','Capataces']];
+  view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Maestros</div>
+      <div class="view-desc">Alta, edición y baja de mecánicos, objetivos y capataces</div></div>
+      <div class="spacer"></div>
+      <button class="btn" onclick="nuevoMaestro()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Nuevo ${SINGULAR[maestroTab]}</button></div>
+    <div class="subtabs">${tabs.map(([v,l])=>`<div class="subtab ${maestroTab===v?'on':''}" onclick="maestroTab='${v}';vMaestros(document.getElementById('view'))">${l}</div>`).join('')}</div>
+    <div id="mm-lista"><div class="cargando-v">Cargando…</div></div>`;
+  cargarMaestros();
+}
+async function cargarMaestros(){
+  try{maestrosData=await api('/api/maestros/'+maestroTab);renderMaestros();}
+  catch(e){document.getElementById('mm-lista').innerHTML='<div class="cargando-v">No pude cargar.</div>';}
+}
+function renderMaestros(){
+  const cont=document.getElementById('mm-lista');
+  if(!maestrosData.length){cont.innerHTML='<div class="empty" style="height:200px"><div>No hay registros. Tocá "Nuevo".</div></div>';return;}
+  cont.innerHTML='<div class="cardgrid">'+maestrosData.map((m,ix)=>cardMaestro(m,ix)).join('')+'</div>';
+}
+function cardMaestro(m,ix){
+  const ini=(m.nombre||'?').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase();
+  let sub='',extra='';
+  if(maestroTab==='mecanicos'){
+    sub=(m.habilidades||[]).length+' habilidades';
+    extra='<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}">${h.toUpperCase()}</span>`).join('')+'</div>';
+  }
+  if(maestroTab==='objetivos'){sub=m.activo?'Activo':'Inactivo';}
+  if(maestroTab==='capataces'){
+    sub=m.objetivos?m.objetivos.nombre:'sin objetivo';
+    extra=`<div class="mcard-row"><span>Teléfono</span><b>${m.telefono||'—'}</b></div>${m.rol?`<div class="mcard-row"><span>Rol</span><b>${m.rol}</b></div>`:''}`;
+  }
+  return `<div class="mcard" style="${m.activo?'':'opacity:.55'}">
+    <div class="mcard-h"><div class="mcard-ini">${ini}</div>
+      <div><div class="mcard-name">${m.nombre}</div><div class="mcard-sub">${sub}</div></div></div>
+    ${extra}
+    <div class="mcard-actions">
+      <button class="mini-btn" onclick="editarMaestro(${ix})">Editar</button>
+      <button class="mini-btn ${m.activo?'danger':''}" onclick="toggleMaestro(${ix})">${m.activo?'Desactivar':'Activar'}</button>
+    </div></div>`;
+}
+function nuevoMaestro(){maestroEdit=null;abrirModalMaestro({});}
+function editarMaestro(ix){maestroEdit=maestrosData[ix];abrirModalMaestro(maestroEdit);}
+function abrirModalMaestro(m){
+  document.getElementById('mm-titulo').textContent=(maestroEdit?'Editar ':'Nuevo ')+SINGULAR[maestroTab];
+  let campos=`<div class="mm-field"><label>Nombre</label><input id="mm-nombre" value="${(m.nombre||'').replace(/"/g,'&quot;')}"></div>`;
+  if(maestroTab==='mecanicos'){
+    campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
+  }
+  if(maestroTab==='capataces'){
+    campos+=`<div class="mm-field"><label>Teléfono</label><input id="mm-telefono" value="${m.telefono||''}" placeholder="549351..."></div>`;
+    campos+=`<div class="mm-field"><label>Rol</label><input id="mm-rol" value="${(m.rol||'').replace(/"/g,'&quot;')}" placeholder="Logística, Supervisores..."></div>`;
+    campos+=`<div class="mm-field"><label>Objetivo</label><select id="mm-objetivo"><option value="">— sin objetivo —</option>${objetivos.map(o=>`<option value="${o.id}" ${m.objetivo_id===o.id?'selected':''}>${o.nombre}</option>`).join('')}</select></div>`;
+  }
+  if(maestroTab==='objetivos'){
+    campos+=`<div class="mm-field"><label>Ubicación</label><input id="mm-ubicacion" value="${(m.ubicacion||'').replace(/"/g,'&quot;')}" placeholder="Córdoba, Río Cuarto..."></div>`;
+    campos+=`<div class="mm-field"><label>Tipo</label><select id="mm-tipo"><option value="operativo" ${(m.tipo||'operativo')==='operativo'?'selected':''}>Operativo</option><option value="imputacion" ${m.tipo==='imputacion'?'selected':''}>Imputación</option></select></div>`;
+  }
+  document.getElementById('mm-campos').innerHTML=campos;
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+function cerrarMaestro(){document.getElementById('mm-bg').classList.remove('abierto');maestroEdit=null;}
+async function guardarMaestro(){
+  const nombre=document.getElementById('mm-nombre').value.trim();
+  if(!nombre){alert('El nombre es obligatorio');return;}
+  const body={nombre};
+  if(maestroTab==='mecanicos'){body.habilidades=[...document.querySelectorAll('#mm-campos input[type=checkbox]:checked')].map(c=>c.value);}
+  if(maestroTab==='capataces'){
+    body.telefono=document.getElementById('mm-telefono').value.trim()||null;
+    body.rol=document.getElementById('mm-rol').value.trim()||null;
+    body.objetivo_id=document.getElementById('mm-objetivo').value||null;
+  }
+  if(maestroTab==='objetivos'){
+    body.ubicacion=document.getElementById('mm-ubicacion').value.trim()||null;
+    body.tipo=document.getElementById('mm-tipo').value||'operativo';
+  }
+  try{
+    const ruta='/api/maestros/'+maestroTab+(maestroEdit?'/'+maestroEdit.id:'');
+    await api(ruta,{method:'POST',body:JSON.stringify(body)});
+    cerrarMaestro(); cargarMaestros();
+    if(maestroTab==='objetivos'){try{objetivos=await api('/api/objetivos');}catch(e){}}
+    if(maestroTab==='mecanicos'){try{mecanicos=await api('/api/mecanicos');}catch(e){}}
+  }catch(e){alert('No pude guardar: '+e.message);}
+}
+async function toggleMaestro(ix){
+  const m=maestrosData[ix];
+  const accion=m.activo?'desactivar':'activar';
+  if(!confirm(`¿Seguro que querés ${accion} a "${m.nombre}"?`))return;
+  try{
+    await api('/api/maestros/'+maestroTab+'/'+m.id,{method:'POST',body:JSON.stringify({activo:!m.activo})});
+    cargarMaestros();
+    if(maestroTab==='objetivos'){try{objetivos=await api('/api/objetivos');}catch(e){}}
+    if(maestroTab==='mecanicos'){try{mecanicos=await api('/api/mecanicos');}catch(e){}}
+  }catch(e){alert('No pude actualizar: '+e.message);}
 }
 
 /* ===== Arranque ===== */
