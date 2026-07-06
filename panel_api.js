@@ -256,6 +256,69 @@ router.get('/api/mecanicos', auth, async (req, res) => {
   }
 });
 
+// ── MAESTROS · ABM de mecánicos, objetivos y capataces ────────
+// Lista blanca de campos editables por tabla (protege columnas críticas)
+const CAMPOS_MAESTRO = {
+  mecanicos: ['nombre', 'habilidades', 'activo'],
+  objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
+  capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo'],
+};
+
+function filtrarCampos(tipo, body) {
+  const permitidos = CAMPOS_MAESTRO[tipo] || [];
+  const out = {};
+  for (const k of permitidos) if (body[k] !== undefined) out[k] = body[k] === '' ? null : body[k];
+  return out;
+}
+
+// Listar (incluye inactivos, para poder reactivar)
+router.get('/api/maestros/:tipo', auth, async (req, res) => {
+  const tipo = req.params.tipo;
+  if (!CAMPOS_MAESTRO[tipo]) return res.status(400).json({ error: 'Tipo inválido' });
+  try {
+    const sel = tipo === 'capataces' ? '*, objetivos(nombre)' : '*';
+    const { data, error } = await supabase.from(tipo).select(sel).order('nombre');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('maestros list:', err);
+    res.status(500).json({ error: 'Error cargando ' + tipo });
+  }
+});
+
+// Crear
+router.post('/api/maestros/:tipo', auth, async (req, res) => {
+  const tipo = req.params.tipo;
+  if (!CAMPOS_MAESTRO[tipo]) return res.status(400).json({ error: 'Tipo inválido' });
+  try {
+    const fila = filtrarCampos(tipo, req.body);
+    if (!fila.nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
+    if (fila.activo === undefined) fila.activo = true;
+    const { data, error } = await supabase.from(tipo).insert(fila).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('maestros create:', err);
+    res.status(500).json({ error: 'No pude crear: ' + (err.message || 'error') });
+  }
+});
+
+// Editar / activar-desactivar
+router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
+  const tipo = req.params.tipo;
+  if (!CAMPOS_MAESTRO[tipo]) return res.status(400).json({ error: 'Tipo inválido' });
+  try {
+    const patch = filtrarCampos(tipo, req.body);
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'Nada para actualizar' });
+    const { data, error } = await supabase.from(tipo).update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('maestros update:', err);
+    res.status(500).json({ error: 'No pude actualizar: ' + (err.message || 'error') });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
