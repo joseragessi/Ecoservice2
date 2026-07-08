@@ -386,6 +386,62 @@ router.get('/api/compras/remitos', auth, async (req, res) => {
   }
 });
 
+// Extraer datos de una factura con IA (proxy a Claude, key server-side)
+router.post('/api/compras/extract', auth, async (req, res) => {
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
+    const isImg = fileType && fileType.startsWith('image/');
+    const part = isImg
+      ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
+      : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
+    const prompt = 'Analizá esta factura argentina y devolvé ÚNICAMENTE JSON sin backticks:\n' +
+      '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","proveedor":"string","cuit":"string",' +
+      '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"iva":0.00}],' +
+      '"total_sin_iva":0.00,"total_iva":0.00}\n' +
+      'Montos como números. Campos ilegibles: null.';
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
+        max_tokens: 8000,
+        messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
+      }),
+    });
+    const data = await resp.json();
+    const txt = (data.content || []).map(c => c.text || '').join('');
+    try {
+      const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      res.json(parsed);
+    } catch (e) {
+      res.json({ __error: 'No se pudo extraer automáticamente. Completá los campos a mano.' });
+    }
+  } catch (err) {
+    console.error('compras extract:', err);
+    res.status(500).json({ error: 'Error extrayendo la factura' });
+  }
+});
+
+// Guardar una factura (con su asignación) en la base de compras
+router.post('/api/compras/factura', auth, async (req, res) => {
+  try {
+    const inv = req.body || {};
+    const { data, error } = await supabaseCompras
+      .from('facturas').insert({ numero_factura: inv.numero_factura || null, data: inv })
+      .select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('compras crear factura:', err);
+    res.status(500).json({ error: 'Error guardando la factura' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
