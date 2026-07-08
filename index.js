@@ -10,8 +10,8 @@ const { procesarFactura } = require('./facturas_bot');
 const panelApi = require('./panel_api');
 
 const app  = express();
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: false, limit: '25mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 // Panel de gestión (login + API + HTML), servido desde el mismo Express.
 app.use('/', panelApi);
