@@ -2,6 +2,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
+const supabaseCompras = require('./supabase_compras');
 const { notificarCapataz } = require('./notificar');
 
 const router = express.Router();
@@ -350,6 +351,38 @@ router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
   } catch (err) {
     console.error('maestros update:', err);
     res.status(500).json({ error: 'No pude actualizar: ' + (err.message || 'error') });
+  }
+});
+
+// ── COMPRAS (segunda base de datos) ───────────────────────────
+// Las tablas guardan pocos campos duros + un jsonb `data` con el resto.
+// Aplanamos el data para que el front lo consuma directo.
+function aplanar(row) {
+  const { data, ...duros } = row;
+  return { ...(data || {}), ...duros };
+}
+
+router.get('/api/compras/facturas', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseCompras
+      .from('facturas').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json((data || []).map(aplanar));
+  } catch (err) {
+    console.error('compras facturas:', err);
+    res.status(500).json({ error: 'Error cargando facturas de compras' });
+  }
+});
+
+router.get('/api/compras/remitos', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseCompras
+      .from('remitos_combustible').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json((data || []).map(aplanar));
+  } catch (err) {
+    console.error('compras remitos:', err);
+    res.status(500).json({ error: 'Error cargando remitos de combustible' });
   }
 });
 
