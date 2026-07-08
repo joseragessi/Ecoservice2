@@ -334,6 +334,8 @@ select.reasign:focus{border-color:var(--brote)}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.5L12 12l8.7-4.5M12 12v9.5"/></svg>Insumos <span class="nav-count" id="c-ins">0</span></div>
       <div class="nav-item" data-v="combustible" onclick="go('combustible')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg>Combustible</div>
+      <div class="nav-item" data-v="compras" onclick="go('compras')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2l1.5 4h13L18 14H8L6 6H3M9 20a1 1 0 100 2 1 1 0 000-2zM18 20a1 1 0 100 2 1 1 0 000-2z"/></svg>Compras <span class="nav-count" id="c-comp" style="display:none">0</span></div>
       <div class="nav-item" data-v="reparaciones" onclick="go('reparaciones')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg>Reparaciones <span class="nav-count" id="c-rep">0</span></div>
       <div class="nav-label">Sistema</div>
@@ -442,7 +444,7 @@ async function refrescarContadores(){
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros'};
+const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras'};
 function go(v){
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   document.getElementById('crumb').textContent=CRUMB[v];
@@ -454,6 +456,7 @@ function go(v){
   if(v==='combustible')vCombustible(view);
   if(v==='reparaciones')vReparaciones(view);
   if(v==='maestros')vMaestros(view);
+  if(v==='compras')vCompras(view);
 }
 
 /* ===== Dashboard ===== */
@@ -814,6 +817,67 @@ async function toggleMaestro(ix){
     if(maestroTab==='objetivos'){try{objetivos=await api('/api/objetivos');}catch(e){}}
     if(maestroTab==='mecanicos'){try{mecanicos=await api('/api/mecanicos');}catch(e){}}
   }catch(e){alert('No pude actualizar: '+e.message);}
+}
+
+/* ===== Compras (segunda base) ===== */
+function asignacionInv(inv){
+  if(inv.assignmentMode==='total' && inv.totalAssign){
+    return {obj:inv.totalAssign.objetivo||'', uni:inv.totalAssign.unidad||''};
+  }
+  const asigns=Object.values(inv.assignments||{});
+  return {
+    obj:(asigns.map(x=>x.objetivo).filter(Boolean)[0]||''),
+    uni:(asigns.map(x=>x.unidad).filter(Boolean)[0]||''),
+  };
+}
+async function vCompras(view){
+  try{
+    const invs=await api('/api/compras/facturas');
+    const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
+    const totIva=invs.reduce((s,i)=>s+(Number(i.total_iva)||0),0);
+    const cm=new Date().toISOString().slice(0,7);
+    const totMes=invs.filter(i=>(i.fecha_factura||'').startsWith(cm)).reduce((s,i)=>s+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0)),0);
+    // ranking proveedores
+    const porProv={};
+    invs.forEach(i=>{const k=i.proveedor||'Sin nombre';porProv[k]=(porProv[k]||0)+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0));});
+    const ranking=Object.entries(porProv).map(([name,total])=>({name,total})).sort((a,b)=>b.total-a.total);
+    const top=ranking[0];
+
+    const filas=invs.map(inv=>{
+      const a=asignacionInv(inv);
+      const total=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+      return `<tr class="fila">
+        <td class="mono">${inv.fecha_factura||'—'}</td>
+        <td class="mono sub">${inv.numero_factura||'—'}</td>
+        <td><b>${inv.proveedor||'—'}</b>${inv.cuit?`<div class="sub mono">${inv.cuit}</div>`:''}</td>
+        <td class="money">${money0(inv.total_sin_iva)}</td>
+        <td class="money sub">${money0(inv.total_iva)}</td>
+        <td class="money">${money0(total)}</td>
+        <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
+      </tr>`;}).join('');
+
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Compras</div>
+      <div class="view-desc">Facturas de proveedores · base de compras</div></div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-val">${invs.length}</div><div class="kpi-sub">cargadas</div></div>
+      <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money0(totMes)}</div><div class="kpi-sub">${cm}</div></div>
+      <div class="kpi"><div class="kpi-label">Neto acumulado</div><div class="kpi-val">${money0(totNeto)}</div><div class="kpi-sub">IVA ${money0(totIva)}</div></div>
+      <div class="kpi plain"><div class="kpi-label">Top proveedor</div><div class="kpi-val" style="font-size:16px;font-weight:700">${top?top.name.slice(0,18):'—'}</div><div class="kpi-sub">${top?money0(top.total):''}</div></div>
+    </div>
+    <div class="grid g-2" style="margin-bottom:18px">
+      <div class="panel"><div class="panel-title">Ranking de proveedores</div>
+        ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money0(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
+      </div>
+      <div class="panel"><div class="panel-title">Últimas facturas</div>
+        ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
+      </div>
+    </div>
+    <div class="tabla-wrap">
+      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th></tr></thead><tbody>${filas}</tbody></table>`
+        :`<div class="empty">No hay facturas cargadas en la base de compras.</div>`}
+    </div>`;
+  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar compras. ${e.message||''}</div>`;}
 }
 
 /* ===== Arranque ===== */
