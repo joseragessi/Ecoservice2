@@ -202,6 +202,12 @@ select.reasign:focus{border-color:var(--brote)}
 .fac-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
 @media(max-width:1000px){.fac-grid{grid-template-columns:1fr}}
 .dropzone{border:1.5px dashed var(--linea-2);border-radius:var(--r);padding:32px;text-align:center;background:var(--blanco);cursor:pointer;transition:.15s;box-shadow:var(--sombra)}
+.dropzone:hover{border-color:var(--brote)}
+.dz-ico{font-size:34px;color:var(--brote);line-height:1;margin-bottom:10px}
+.dz-t{font-size:14px;font-weight:600;color:var(--tinta)}
+.dz-s{font-size:11px;color:var(--tinta-3);margin-top:4px}
+.separador{height:1px;background:var(--linea);margin:16px 0}
+.aviso-amarillo{background:#FFF8E1;border:1px solid #F5C518;color:#7A5C00;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
 .dropzone:hover{border-color:var(--brote);background:var(--brote-soft)}
 .dropzone svg{width:34px;height:34px;color:var(--brote);margin-bottom:10px}
 .fac-preview{background:var(--blanco);border:1px solid var(--linea);border-radius:var(--r);min-height:440px;
@@ -831,6 +837,7 @@ function asignacionInv(inv){
   };
 }
 async function vCompras(view){
+  if(comprasMode==='carga'){vComprasCarga(view);return;}
   try{
     const invs=await api('/api/compras/facturas');
     const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
@@ -858,7 +865,8 @@ async function vCompras(view){
 
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Compras</div>
-      <div class="view-desc">Facturas de proveedores · base de compras</div></div></div>
+      <div class="view-desc">Facturas de proveedores · base de compras</div></div>
+      <button class="btn" onclick="comprasNueva()">＋ Nueva factura</button></div>
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-val">${invs.length}</div><div class="kpi-sub">cargadas</div></div>
       <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money0(totMes)}</div><div class="kpi-sub">${cm}</div></div>
@@ -878,6 +886,112 @@ async function vCompras(view){
         :`<div class="empty">No hay facturas cargadas en la base de compras.</div>`}
     </div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar compras. ${e.message||''}</div>`;}
+}
+
+/* ===== Compras · listas y estado de carga ===== */
+const COMPRAS_OBJ=["CAMINOS DE LA SIERRA S.A","MUNICIPALIDAD DE CORDOBA","EPEC","AGENCIA CORDOBA TURISMO SEM","SOCIEDAD CIVIL COUNTRY CHACRAS DE LA VILLA","RIO CUARTO RIVERSIDE COUNTRY CLUB SA","URBANIZACION RESIDENCIAL ESPECIAL COUNTRY CAÑUELAS","UNIVERSIDAD CATOLICA DE CORDOBA","ASOCIACION CIVIL CUATRO HOJAS","CONSORCIO PROPIETARIOS URBANIZACION LA DESEADA","CONSORCIO DE PROPIETARIOS LOTEO COUNTRY JOCKEY CLU","CORP DEL OBISPO PTE DE LA IGLESIA DE JESUSCRISTO D","URBANIZACION RESIDENCIAL ESPECIAL COUNTRY AYRES D","URBANIZACION LA CALANDRIA S.A","CONDOMINIO PRIVADO CASONAS DEL SUR","ASOC.BELA VISTA VILLA RESIDENCIAL S.A","PARQUE AZUL SRL","PRITTY SA","UNION DE CONSTRUCTORES DE MAQUINAS S.A","GASTON MARCHESINI SA","PROMEDON SA","ENTE MUNICIPAL BIOCORDOBA","COBRANZAS EFT","CLUB LA TABLADA","APDES COLEGIO EL TORREON","TOP GARDEN SRL","COUNTRY DE LAS SIERRAS SA","FIDEICOMISO INMOBILIARIO POLO 52","ACUERDOS SRL","AGUSTIN AMADEY","RADIO MITRE S.A","URBANIZACIONES RESIDENCIALES SA","COLEGIO DE ARQUITECTOS DE LA PROVINCIA DE CORDOBA","YUCHAN SA","ASTORI ESTRUCTURAS S.A","ASOCIACION ESCOLAR Y CULTURAL ALEMANA DE CORDOBA","AGUARAIBA S.A","RODE S.A","FRECUENCIA PRODUCCIONES PUBLICITARIAS S. A","SIX-CO SA","O-TEK ARGENTINA S.A","INNOQUIM S.A","GABRIEL BASTOS"];
+const COMPRAS_UNI=["U10 — Daihatsu Delta Mod.2001 — DFJ 755","U12 — Fiat Strada Cab.Simple Mod.2018 — AC770AY — Agustin Nobrega","U14 — Fiat Strada Doble Cab. Mod.2021 — AE872 LM — Emilio Cainos","U15 — Fiat Strada Doble Cab. Mod.2021 — AE672OF — Municipalidad","U16 — Mercedes Benz Atego Mod.2018 — AB 892 GU — Nico Torres","U17 — Mercedes Benz Sprinter Mod.2018 — AB312SQ — Andres Chanquia","U19 — Toyota Hilux 2.8 Mod.2001 — DGN 028 — Alexis Barraza","U20 — Toyota Hilux 2.8 Mod.2017 — AC861QQ — Matias Rio IV","U21 — Toyota Hilux 2.8 Mod.98 — CXX 912 — Javier Arrieta","U22 — Toyota Hilux 3.0 4x2 Mod.2011 — KCG 906 — Luis Ponferrada","U23 — Toyota Hilux 3.0 4x2 Mod.2004 — EFG 274 — Chavez Claudio","U24 — Toyota Hilux 3.0 4x4 Mod.1999 — CYQ 755 — NO OPERATIVA","U25 — Toyota Hilux 3.0 Aut. Mod.2011 — KIU 167 — DEPOSITO","U26 — Toyota Hilux 2.5 Mod.2016 — PKJ 363 — Ezequiel Gonzalez","U27 — Toyota Hilux 4x2 2.5 TDI Mod.2015 — PFE923 — Diego Gonzalez","U28 — Toyota 4x2 Mod.2023 — AF964 WK — DEPOSITO","U29 — Fiat Iveco Grúa Palfinger — AF983HA — Ivar Ñañez","U30 — Toyota Cabina Simple 4x2 — AE466VW — DEPOSITO","U31 — Mercedes Benz Sprinter — AG 955 OU — Francisco Godoy","S/N — Ford Transit — AH 488 GL — Jorge Morales","U32 — Ford Transit — AH 488 GM — German Castañares","U33 — Fiat Strada — AH 122 JO — Gustavo Velez","U34 — Fiat Strada — AH 182 LV — Ivan Palacios","U35 — Iveco Daily Cabina Doble — AH 077 CF — EPEC","U36 — Iveco Daily Cabina Doble — AH 255 MB — EPEC","U37 — Iveco Daily Cabina Simple — AF 581 WV — EPEC","U37b — Hilux 2022 — AC 496 OC — Pablo Ruiz","U38 — Ranger — AH 381 UH — Jorge Morales","S/N — Ranger — AH 381 UG — Hernan","U39 — Bobcat Nueva — Fabricio Tapia","U40 — Toyota Hilux Cabina Doble — NJW 639 — Eduardo Islas","U41 — Toyota Hilux Nueva — HAI 248 — Lalo","U42 — BYD — Mariano Zamponi","U43 — BYD — Pedro Losano"];
+let comprasMode='lista';   // 'lista' | 'carga'
+let comprasStep='upload';  // 'upload' | 'extract' | 'assign'
+let comprasFile=null;      // {data, type, name}
+let comprasExtracted=null; // datos extraídos
+let comprasAssign={objetivo:'',unidad:'',comentario:''};
+let comprasMsg='';
+
+function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssign={objetivo:'',unidad:'',comentario:''};comprasMsg='';go('compras');}
+function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');}
+
+function comprasPickFile(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{comprasFile={data:String(r.result).split(',')[1],type:f.type,name:f.name};go('compras');};
+  r.readAsDataURL(f);
+}
+
+async function comprasExtraer(){
+  if(!comprasFile)return;
+  comprasStep='extract';go('compras');
+  try{
+    const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:comprasFile.data,fileType:comprasFile.type})});
+    if(d.__error){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg=d.__error;}
+    else{comprasExtracted=d;comprasMsg='';}
+  }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
+  comprasStep='assign';go('compras');
+}
+
+async function comprasGuardar(){
+  const g=id=>document.getElementById(id);
+  const inv={
+    fecha_factura:g('cf-fecha').value||null,
+    numero_factura:g('cf-num').value||null,
+    proveedor:g('cf-prov').value||null,
+    cuit:g('cf-cuit').value||null,
+    total_sin_iva:parseFloat(g('cf-neto').value)||0,
+    total_iva:parseFloat(g('cf-iva').value)||0,
+    items:comprasExtracted&&comprasExtracted.items||[],
+    assignmentMode:'total',
+    assignments:{},
+    totalAssign:{objetivo:g('cf-obj').value||'',unidad:g('cf-uni').value||'',comentario:g('cf-com').value||''},
+    createdAt:new Date().toISOString(),
+  };
+  g('cf-save').disabled=true;g('cf-save').textContent='Guardando…';
+  try{
+    await api('/api/compras/factura',{method:'POST',body:JSON.stringify(inv)});
+    comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');
+  }catch(e){g('cf-save').disabled=false;g('cf-save').textContent='Guardar factura';alert('No se pudo guardar: '+(e.message||''));}
+}
+
+function vComprasCarga(view){
+  const oo=COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">${o}</option>`).join('');
+  const uo=COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}">${u}</option>`).join('');
+  if(comprasStep==='upload'){
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Nueva factura</div><div class="view-desc">Subí el PDF o imagen · la IA extrae los datos</div></div>
+      <button class="btn-salir" onclick="comprasCancelar()">← Volver</button></div>
+    <div style="max-width:520px">
+      <label class="dropzone" id="cf-dz">
+        <input type="file" accept="application/pdf,image/*" style="display:none" onchange="comprasPickFile(this)">
+        <div class="dz-ico">＋</div>
+        <div class="dz-t">${comprasFile?comprasFile.name:'Tocá para elegir un archivo'}</div>
+        <div class="dz-s">PDF, JPG o PNG</div>
+      </label>
+      ${comprasFile?`<button class="btn" style="margin-top:14px;width:100%" onclick="comprasExtraer()">✦ Extraer con IA</button>`:''}
+    </div>`;
+    return;
+  }
+  if(comprasStep==='extract'){
+    view.innerHTML=`<div class="view-head"><div class="view-title">Nueva factura</div></div>
+      <div class="cargando-v">✦ Leyendo la factura con IA…</div>`;
+    return;
+  }
+  // assign
+  const d=comprasExtracted||{};
+  view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Revisar y asignar</div><div class="view-desc">Verificá los datos y asigná objetivo / unidad</div></div>
+      <button class="btn-salir" onclick="comprasCancelar()">← Cancelar</button></div>
+    ${comprasMsg?`<div class="aviso-amarillo">${comprasMsg}</div>`:''}
+    <div style="max-width:640px">
+      <div class="grid g-2">
+        <div class="mm-field"><label>Fecha</label><input id="cf-fecha" type="date" value="${d.fecha_factura||''}"></div>
+        <div class="mm-field"><label>N° Factura</label><input id="cf-num" value="${(d.numero_factura||'').replace(/"/g,'&quot;')}"></div>
+      </div>
+      <div class="mm-field"><label>Proveedor</label><input id="cf-prov" value="${(d.proveedor||'').replace(/"/g,'&quot;')}"></div>
+      <div class="grid g-2">
+        <div class="mm-field"><label>CUIT</label><input id="cf-cuit" value="${(d.cuit||'').replace(/"/g,'&quot;')}"></div>
+        <div class="mm-field"><label>&nbsp;</label><div style="padding:10px 0;font-size:13px;color:var(--tinta-2)">Total: <b>${money0((Number(d.total_sin_iva)||0)+(Number(d.total_iva)||0))}</b></div></div>
+      </div>
+      <div class="grid g-2">
+        <div class="mm-field"><label>Neto (sin IVA)</label><input id="cf-neto" type="number" step="0.01" value="${Number(d.total_sin_iva)||0}"></div>
+        <div class="mm-field"><label>IVA</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}"></div>
+      </div>
+      <div class="separador"></div>
+      <div class="grid g-2">
+        <div class="mm-field"><label>Objetivo</label><select id="cf-obj"><option value="">— Seleccioná —</option>${oo}</select></div>
+        <div class="mm-field"><label>Unidad</label><select id="cf-uni"><option value="">— Seleccioná —</option>${uo}</select></div>
+      </div>
+      <div class="mm-field"><label>Comentarios</label><textarea id="cf-com" rows="2" style="width:100%;background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:10px 12px;font-family:inherit;font-size:13px;outline:none" placeholder="Obs..."></textarea></div>
+      <button class="btn" id="cf-save" style="width:100%;margin-top:6px" onclick="comprasGuardar()">Guardar factura</button>
+    </div>`;
 }
 
 /* ===== Arranque ===== */
