@@ -615,7 +615,17 @@ async function cambiarInsumo(id,estado){
 
 /* ===== Combustible ===== */
 let filtroComb='';
+let combTab='cargas';           // 'cargas' | 'analisis'
+let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
+let combRemFile=null;
+let combRemExtracted=null;
+
 async function vCombustible(view){
+  const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
+    <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
+    <button class="${combTab==='analisis'?'on':''}" onclick="combTab='analisis';go('combustible')">Análisis de consumo</button>
+  </div>`;
+  if(combTab==='analisis'){return vCombAnalisis(view,tabs);}
   try{
     const q=filtroComb?'?estado='+filtroComb:'';
     const cs=await api('/api/combustible'+q);
@@ -624,6 +634,7 @@ async function vCombustible(view){
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible</div>
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div></div>
+    ${tabs}
     <div class="filters">${chips}</div>
     <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th></tr></thead>
       <tbody>${cs.length?cs.map(c=>{
@@ -638,6 +649,120 @@ async function vCombustible(view){
           <td><span class="badge ${c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td></tr>`;}).join('')
         :'<tr><td colspan="6"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
+}
+
+/* ===== Combustible · Análisis y conciliación ===== */
+function combRemPick(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{combRemFile={data:String(r.result).split(',')[1],type:f.type,name:f.name};go('combustible')};
+  r.readAsDataURL(f);
+}
+async function combRemExtraer(){
+  if(!combRemFile)return;
+  combRemStep='extract';go('combustible');
+  try{
+    const d=await api('/api/combustible/remito/extract',{method:'POST',body:JSON.stringify({fileData:combRemFile.data,fileType:combRemFile.type})});
+    if(d.__error){alert(d.__error);combRemStep='upload';}
+    else{combRemExtracted=d;combRemStep='preview';}
+  }catch(e){alert('No se pudo extraer el listado.');combRemStep='upload';}
+  go('combustible');
+}
+async function combRemGuardar(){
+  const btn=document.getElementById('cr-save');
+  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  try{
+    await api('/api/combustible/remito',{method:'POST',body:JSON.stringify(combRemExtracted)});
+    combRemStep='';combRemFile=null;combRemExtracted=null;go('combustible');
+  }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar y conciliar';}alert('No se pudo guardar: '+(e.message||''));}
+}
+async function vCombAnalisis(view,tabs){
+  // Flujo de subida del listado
+  if(combRemStep==='upload'){
+    view.innerHTML=`<div class="view-head"><div><div class="view-title">Subir listado del proveedor</div>
+      <div class="view-desc">El resumen de remitos del período (Ferreyra, SERVISUD…)</div></div>
+      <button class="btn-salir" onclick="combRemStep='';go('combustible')">← Volver</button></div>
+    <div style="max-width:520px">
+      <label class="dropzone">
+        <input type="file" accept="application/pdf,image/*" style="display:none" onchange="combRemPick(this)">
+        <div class="dz-ico">＋</div>
+        <div class="dz-t">${combRemFile?combRemFile.name:'Tocá para elegir el listado'}</div>
+        <div class="dz-s">PDF, JPG o PNG</div>
+      </label>
+      ${combRemFile?`<button class="btn" style="margin-top:14px;width:100%" onclick="combRemExtraer()">✦ Extraer con IA</button>`:''}
+    </div>`;
+    return;
+  }
+  if(combRemStep==='extract'){
+    view.innerHTML=`<div class="view-head"><div class="view-title">Subir listado</div></div>
+      <div class="cargando-v">✦ Leyendo el listado con IA…</div>`;
+    return;
+  }
+  if(combRemStep==='preview'){
+    const d=combRemExtracted||{};const fs=d.filas||[];
+    view.innerHTML=`<div class="view-head"><div><div class="view-title">Revisar listado</div>
+      <div class="view-desc">${d.proveedor||'—'} · ${fechaAR(d.periodo_desde)} a ${fechaAR(d.periodo_hasta)} · ${fs.length} líneas</div></div>
+      <button class="btn-salir" onclick="combRemStep='upload';go('combustible')">← Atrás</button></div>
+    <div class="tabla-wrap" style="margin-bottom:14px">
+      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Chofer</th><th>Producto</th><th class="tr">Litros</th><th class="tr">Total</th></tr></thead>
+      <tbody>${fs.map(f=>`<tr><td class="mono">${fechaAR(f.fecha)}</td><td class="mono">${f.numero_remito||'—'}</td>
+        <td><span class="uni-chip">${f.patente||'—'}</span></td><td>${f.chofer||'—'}</td><td style="font-size:12px">${f.producto||'—'}</td>
+        <td class="money tr">${f.litros!=null?f.litros:'—'}</td><td class="money tr">${money0(f.total)}</td></tr>`).join('')}
+      <tr class="tot-row"><td colspan="5"><b>Total general</b></td><td></td><td class="money tr"><b>${money0(d.total_general)}</b></td></tr></tbody></table>
+    </div>
+    <button class="btn" id="cr-save" onclick="combRemGuardar()">Guardar y conciliar</button>`;
+    return;
+  }
+  // Vista de análisis
+  try{
+    const a=await api('/api/combustible/analisis');
+    const k=a.kpis||{};
+    const semaforo=u=>u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>';
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Análisis de consumo</div>
+      <div class="view-desc">Listados del proveedor vs. tickets subidos por los capataces</div></div>
+      <button class="btn" onclick="combRemStep='upload';combRemFile=null;go('combustible')">＋ Subir listado</button></div>
+    ${tabs}
+    ${a.remitos.length?'':'<div class="aviso-amarillo">Todavía no hay listados del proveedor cargados. Subí el primero para empezar a conciliar.</div>'}
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${k.litros_prov||0}</div><div class="kpi-sub">${k.entregas||0} entregas</div></div>
+      <div class="kpi plain"><div class="kpi-label">Litros c/ ticket</div><div class="kpi-val">${k.litros_ticket||0}</div><div class="kpi-sub">cobertura ${k.cobertura_pct!=null?k.cobertura_pct+'%':'—'}</div></div>
+      <div class="kpi ${k.sin_ticket?'':'plain'}"><div class="kpi-label">Sin ticket</div><div class="kpi-val">${k.sin_ticket||0}</div><div class="kpi-sub">entregas sin comprobante</div></div>
+      <div class="kpi ${k.desvios?'':'plain'}"><div class="kpi-label">Desvíos</div><div class="kpi-val">${k.desvios||0}</div><div class="kpi-sub">litros no coinciden</div></div>
+    </div>
+    <div class="mm-label">Consumo por unidad</div>
+    <div class="tabla-wrap" style="margin-bottom:18px">
+      <table><thead><tr><th>Patente</th><th class="tr">Litros proveedor</th><th class="tr">Litros tickets</th><th class="tr">Dif.</th><th class="tr">Entregas</th><th class="tr">Cargas</th><th>Estado</th></tr></thead>
+      <tbody>${a.unidades.length?a.unidades.map(u=>`<tr>
+        <td><span class="uni-chip">${u.patente}</span></td>
+        <td class="money tr">${u.litros_prov}</td><td class="money tr">${u.litros_ticket}</td>
+        <td class="money tr" style="${Math.abs(u.dif)>1?'color:var(--rojo,#C0392B);font-weight:600':''}">${u.dif>0?'+':''}${u.dif}</td>
+        <td class="tr">${u.entregas}</td><td class="tr">${u.cargas}</td><td>${semaforo(u)}</td></tr>`).join('')
+        :'<tr><td colspan="7"><div class="sub" style="padding:14px">Sin datos aún.</div></td></tr>'}</tbody></table>
+    </div>
+    ${a.sin_ticket.length?`<div class="mm-label">Entregas sin ticket del capataz</div>
+    <div class="tabla-wrap" style="margin-bottom:18px">
+      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Chofer</th><th class="tr">Litros</th><th class="tr">Total</th></tr></thead>
+      <tbody>${a.sin_ticket.map(g=>`<tr><td class="mono">${fechaAR(g.fecha)}</td><td class="mono">${g.numero_remito||'—'}</td>
+        <td><span class="uni-chip">${g.patente||'—'}</span></td><td>${g.chofer||'—'}</td>
+        <td class="money tr">${Math.round(g.litros*100)/100}</td><td class="money tr">${money0(g.total)}</td></tr>`).join('')}</tbody></table>
+    </div>`:''}
+    ${a.desvios.length?`<div class="mm-label">Desvíos de litros (remito vs ticket)</div>
+    <div class="tabla-wrap" style="margin-bottom:18px">
+      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th class="tr">Litros remito</th><th class="tr">Litros ticket</th><th class="tr">Dif.</th></tr></thead>
+      <tbody>${a.desvios.map(g=>`<tr><td class="mono">${fechaAR(g.fecha)}</td><td class="mono">${g.numero_remito||'—'}</td>
+        <td><span class="uni-chip">${g.patente||'—'}</span></td>
+        <td class="money tr">${Math.round(g.litros*100)/100}</td><td class="money tr">${g.litros_ticket}</td>
+        <td class="money tr" style="color:var(--rojo,#C0392B);font-weight:600">${g.dif>0?'+':''}${g.dif}</td></tr>`).join('')}</tbody></table>
+    </div>`:''}
+    ${a.sin_respaldo.length?`<div class="mm-label">Cargas subidas sin respaldo en el listado</div>
+    <div class="tabla-wrap">
+      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Capataz</th><th class="tr">Litros</th></tr></thead>
+      <tbody>${a.sin_respaldo.map(c=>`<tr><td class="mono">${fechaAR(c.fecha)}</td><td class="mono">${c.numero_remito||'—'}</td>
+        <td><span class="uni-chip">${c.patente||'—'}</span></td><td>${c.capataz||'—'}</td>
+        <td class="money tr">${c.litros||'—'}</td></tr>`).join('')}</tbody></table>
+    </div>`:''}`;
+  }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el análisis. ${e.message||''}</div>`;}
 }
 
 /* ===== Reparaciones ===== */
