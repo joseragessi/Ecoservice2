@@ -619,6 +619,7 @@ let combTab='cargas';           // 'cargas' | 'analisis'
 let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
 let combRemFile=null;
 let combRemExtracted=null;
+let combAna=null;               // último análisis (para el detalle lateral)
 
 async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
@@ -713,56 +714,76 @@ async function vCombAnalisis(view,tabs){
     <button class="btn" id="cr-save" onclick="combRemGuardar()">Guardar y conciliar</button>`;
     return;
   }
-  // Vista de análisis
+  // Vista de análisis — maestro-detalle: unidades a la izquierda, detalle al costado
   try{
-    const a=await api('/api/combustible/analisis');
-    const k=a.kpis||{};
+    combAna=await api('/api/combustible/analisis');
+    const a=combAna;const k=a.kpis||{};
     const semaforo=u=>u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>';
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Análisis de consumo</div>
-      <div class="view-desc">Listados del proveedor vs. tickets subidos por los capataces</div></div>
+      <div class="view-desc">Listados del proveedor vs. tickets de los capataces · tocá una unidad para el detalle</div></div>
       <button class="btn" onclick="combRemStep='upload';combRemFile=null;go('combustible')">＋ Subir listado</button></div>
     ${tabs}
     ${a.remitos.length?'':'<div class="aviso-amarillo">Todavía no hay listados del proveedor cargados. Subí el primero para empezar a conciliar.</div>'}
     <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${k.litros_prov||0}</div><div class="kpi-sub">${k.entregas||0} entregas</div></div>
-      <div class="kpi plain"><div class="kpi-label">Litros c/ ticket</div><div class="kpi-val">${k.litros_ticket||0}</div><div class="kpi-sub">cobertura ${k.cobertura_pct!=null?k.cobertura_pct+'%':'—'}</div></div>
+      <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${Math.round(k.litros_prov||0)}</div><div class="kpi-sub">${k.entregas||0} entregas</div></div>
+      <div class="kpi plain"><div class="kpi-label">Litros c/ ticket</div><div class="kpi-val">${Math.round(k.litros_ticket||0)}</div><div class="kpi-sub">cobertura ${k.cobertura_pct!=null?k.cobertura_pct+'%':'—'}</div></div>
       <div class="kpi ${k.sin_ticket?'':'plain'}"><div class="kpi-label">Sin ticket</div><div class="kpi-val">${k.sin_ticket||0}</div><div class="kpi-sub">entregas sin comprobante</div></div>
       <div class="kpi ${k.desvios?'':'plain'}"><div class="kpi-label">Desvíos</div><div class="kpi-val">${k.desvios||0}</div><div class="kpi-sub">litros no coinciden</div></div>
     </div>
-    <div class="mm-label">Consumo por unidad</div>
-    <div class="tabla-wrap" style="margin-bottom:18px">
-      <table><thead><tr><th>Patente</th><th class="tr">Litros proveedor</th><th class="tr">Litros tickets</th><th class="tr">Dif.</th><th class="tr">Entregas</th><th class="tr">Cargas</th><th>Estado</th></tr></thead>
-      <tbody>${a.unidades.length?a.unidades.map(u=>`<tr>
-        <td><span class="uni-chip">${u.patente}</span></td>
-        <td class="money tr">${u.litros_prov}</td><td class="money tr">${u.litros_ticket}</td>
-        <td class="money tr" style="${Math.abs(u.dif)>1?'color:var(--rojo,#C0392B);font-weight:600':''}">${u.dif>0?'+':''}${u.dif}</td>
-        <td class="tr">${u.entregas}</td><td class="tr">${u.cargas}</td><td>${semaforo(u)}</td></tr>`).join('')
-        :'<tr><td colspan="7"><div class="sub" style="padding:14px">Sin datos aún.</div></td></tr>'}</tbody></table>
-    </div>
-    ${a.sin_ticket.length?`<div class="mm-label">Entregas sin ticket del capataz</div>
-    <div class="tabla-wrap" style="margin-bottom:18px">
-      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Chofer</th><th class="tr">Litros</th><th class="tr">Total</th></tr></thead>
-      <tbody>${a.sin_ticket.map(g=>`<tr><td class="mono">${fechaAR(g.fecha)}</td><td class="mono">${g.numero_remito||'—'}</td>
-        <td><span class="uni-chip">${g.patente||'—'}</span></td><td>${g.chofer||'—'}</td>
-        <td class="money tr">${Math.round(g.litros*100)/100}</td><td class="money tr">${money0(g.total)}</td></tr>`).join('')}</tbody></table>
-    </div>`:''}
-    ${a.desvios.length?`<div class="mm-label">Desvíos de litros (remito vs ticket)</div>
-    <div class="tabla-wrap" style="margin-bottom:18px">
-      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th class="tr">Litros remito</th><th class="tr">Litros ticket</th><th class="tr">Dif.</th></tr></thead>
-      <tbody>${a.desvios.map(g=>`<tr><td class="mono">${fechaAR(g.fecha)}</td><td class="mono">${g.numero_remito||'—'}</td>
-        <td><span class="uni-chip">${g.patente||'—'}</span></td>
-        <td class="money tr">${Math.round(g.litros*100)/100}</td><td class="money tr">${g.litros_ticket}</td>
-        <td class="money tr" style="color:var(--rojo,#C0392B);font-weight:600">${g.dif>0?'+':''}${g.dif}</td></tr>`).join('')}</tbody></table>
-    </div>`:''}
-    ${a.sin_respaldo.length?`<div class="mm-label">Cargas subidas sin respaldo en el listado</div>
-    <div class="tabla-wrap">
-      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Capataz</th><th class="tr">Litros</th></tr></thead>
-      <tbody>${a.sin_respaldo.map(c=>`<tr><td class="mono">${fechaAR(c.fecha)}</td><td class="mono">${c.numero_remito||'—'}</td>
-        <td><span class="uni-chip">${c.patente||'—'}</span></td><td>${c.capataz||'—'}</td>
-        <td class="money tr">${c.litros||'—'}</td></tr>`).join('')}</tbody></table>
-    </div>`:''}`;
+    <div class="split">
+      <div class="tablewrap">
+        <table><thead><tr><th>Patente</th><th class="num">Lt. proveedor</th><th class="num">Lt. tickets</th><th class="num">Dif.</th><th>Estado</th></tr></thead>
+        <tbody id="ana-list">${a.unidades.length?a.unidades.map((u,ix)=>`<tr onclick="selUniAna(${ix})" data-ix="${ix}" style="cursor:pointer">
+          <td><span class="uni-chip">${u.patente}</span></td>
+          <td class="num">${u.litros_prov}</td><td class="num">${u.litros_ticket}</td>
+          <td class="num" style="${Math.abs(u.dif)>1?'color:var(--rojo);font-weight:600':''}">${u.dif>0?'+':''}${u.dif}</td>
+          <td>${semaforo(u)}</td></tr>`).join('')
+          :'<tr><td colspan="5"><div class="sub" style="padding:14px">Sin datos aún.</div></td></tr>'}</tbody></table>
+      </div>
+      <div class="side" id="ana-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg><div>Elegí una unidad<br>para ver sus entregas y tickets</div></div></div>
+    </div>`;
   }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el análisis. ${e.message||''}</div>`;}
+}
+function selUniAna(ix){
+  const a=combAna;if(!a)return;
+  const u=a.unidades[ix];if(!u)return;
+  document.querySelectorAll('#ana-list tr').forEach(t=>t.style.outline=(+t.dataset.ix===ix)?'2px solid var(--brote)':'none');
+  const nP=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const pat=nP(u.patente);
+  // Entregas de esta unidad: con ticket, con desvío, y sin ticket
+  const entregas=[
+    ...a.matcheadas.filter(g=>nP(g.patente)===pat).map(g=>({...g,__st:'ok'})),
+    ...a.desvios.filter(g=>nP(g.patente)===pat).map(g=>({...g,__st:'desvio'})),
+    ...a.sin_ticket.filter(g=>nP(g.patente)===pat).map(g=>({...g,__st:'sin'})),
+  ].sort((x,y)=>String(x.fecha||'').localeCompare(String(y.fecha||'')));
+  const sinResp=a.sin_respaldo.filter(c=>nP(c.patente)===pat);
+  const chip=e=>e.__st==='ok'?'<span class="badge b-green">✓ ticket</span>'
+    :e.__st==='desvio'?`<span class="badge b-amber">⚠ ${e.dif>0?'+':''}${e.dif} lt</span>`
+    :'<span class="badge b-red">✕ sin ticket</span>';
+  document.getElementById('ana-side').innerHTML=`
+    <div class="side-id">ANÁLISIS · unidad</div>
+    <div class="side-title"><span class="uni-chip" style="font-size:14px">${u.patente}</span></div>
+    <div class="side-meta">${u.entregas} entregas del proveedor · ${u.cargas} tickets subidos</div>
+    <div style="display:flex;gap:12px;margin:12px 0">
+      <div class="extract-field" style="flex:1"><label>Lt. proveedor</label><div class="val filled">${u.litros_prov}</div></div>
+      <div class="extract-field" style="flex:1"><label>Lt. tickets</label><div class="val filled">${u.litros_ticket}</div></div>
+      <div class="extract-field" style="flex:1"><label>Dif.</label><div class="val ${Math.abs(u.dif)>1?'filled':''}" style="${Math.abs(u.dif)>1?'color:var(--rojo)':''}">${u.dif>0?'+':''}${u.dif}</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:10px">Entregas del período</div>
+    ${entregas.length?entregas.map(e=>`
+      <div class="queue-item" style="margin-bottom:8px">
+        <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(e.fecha)} · ${Math.round(e.litros*100)/100} lt</div>
+        <div class="sub mono" style="font-size:11px">${e.numero_remito||'s/n'}${e.chofer?' · '+e.chofer:''}</div></div>
+        ${chip(e)}
+      </div>`).join(''):'<div class="sub" style="padding:8px 0">Sin entregas del proveedor para esta unidad.</div>'}
+    ${sinResp.length?`<div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:10px">Tickets sin respaldo del proveedor</div>
+    ${sinResp.map(c=>`<div class="queue-item" style="margin-bottom:8px">
+      <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(c.fecha)} · ${c.litros||'?'} lt</div>
+      <div class="sub mono" style="font-size:11px">${c.numero_remito||'s/n'}${c.capataz?' · '+c.capataz:''}</div></div>
+      <span class="badge b-amber">revisar</span></div>`).join('')}`:''}`;
 }
 
 /* ===== Reparaciones ===== */
