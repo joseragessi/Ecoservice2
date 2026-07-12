@@ -477,24 +477,31 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
       },
       body: JSON.stringify({
         model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
-        max_tokens: 8000,
+        max_tokens: 32000,
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
     });
     const data = await resp.json();
-    console.log(`[listado] anthropic status=${resp.status} en ${Math.round((Date.now() - t0) / 1000)}s`);
+    console.log(`[listado] anthropic status=${resp.status} stop=${data.stop_reason || '?'} en ${Math.round((Date.now() - t0) / 1000)}s`);
     if (!resp.ok) {
       const emsg = (data.error && data.error.message) || ('HTTP ' + resp.status);
       console.error('[listado] error anthropic:', emsg);
       return res.json({ __error: 'La IA rechazó el pedido: ' + emsg });
     }
     const txt = (data.content || []).map(c => c.text || '').join('');
+    // Parseo robusto: quedarnos con lo que hay entre la primera { y la última }
+    let raw = txt.replace(/```json|```/g, '').trim();
+    const i0 = raw.indexOf('{'), i1 = raw.lastIndexOf('}');
+    if (i0 >= 0 && i1 > i0) raw = raw.slice(i0, i1 + 1);
     try {
-      const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      const parsed = JSON.parse(raw);
       console.log(`[listado] extraídas ${(parsed.filas || []).length} filas de ${parsed.proveedor || '?'}`);
       res.json(parsed);
     } catch (e) {
-      console.error('[listado] respuesta no parseable:', txt.slice(0, 200));
+      console.error('[listado] respuesta no parseable (stop=' + (data.stop_reason || '?') + '):', txt.slice(0, 300));
+      if (data.stop_reason === 'max_tokens') {
+        return res.json({ __error: 'El listado es muy largo y la respuesta se cortó. Probá subirlo en partes (por página).' });
+      }
       res.json({ __error: 'No se pudo interpretar el listado.' });
     }
   } catch (err) {
