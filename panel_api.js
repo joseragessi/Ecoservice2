@@ -442,6 +442,178 @@ router.post('/api/compras/factura', auth, async (req, res) => {
   }
 });
 
+// ── COMBUSTIBLE · Conciliación con listados del proveedor ──────
+// El proveedor (Ferreyra, SERVISUD...) emite un listado consolidado del período.
+// Se extrae con IA, se guarda en remitos_combustible (base compras) y el
+// análisis lo cruza contra cargas_combustible (base bot): match por
+// numero_remito, fallback patente+fecha — como prevé el ciclo de vida del módulo.
+
+router.post('/api/combustible/remito/extract', auth, async (req, res) => {
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
+    const isImg = fileType && fileType.startsWith('image/');
+    const part = isImg
+      ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
+      : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
+    const prompt = 'Esto es un LISTADO CONSOLIDADO de remitos de combustible de un proveedor argentino ' +
+      '(una fila por entrega, con fecha, número de comprobante/remito, chofer, patente, artículo, cantidad en litros, precio y total). ' +
+      'Devolvé ÚNICAMENTE JSON sin backticks:\n' +
+      '{"proveedor":"string","periodo_desde":"YYYY-MM-DD","periodo_hasta":"YYYY-MM-DD",' +
+      '"filas":[{"fecha":"YYYY-MM-DD","numero_remito":"string","patente":"string","chofer":"string o null",' +
+      '"producto":"string","litros":0.0,"precio_unit":0.0,"total":0.0,"numero_factura":"string o null"}],' +
+      '"total_general":0.0}\n' +
+      'Reglas: el año de las fechas sacalo del encabezado del período. Una fila del JSON por cada línea producto ' +
+      '(si un remito tiene 2 productos, son 2 filas con el mismo numero_remito). Patente tal como figura. ' +
+      'Montos como números sin separador de miles. Campos ilegibles: null.';
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
+        max_tokens: 16000,
+        messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
+      }),
+    });
+    const data = await resp.json();
+    const txt = (data.content || []).map(c => c.text || '').join('');
+    try {
+      res.json(JSON.parse(txt.replace(/```json|```/g, '').trim()));
+    } catch (e) {
+      res.json({ __error: 'No se pudo interpretar el listado.' });
+    }
+  } catch (err) {
+    console.error('combustible remito extract:', err);
+    res.status(500).json({ error: 'Error extrayendo el listado' });
+  }
+});
+
+router.post('/api/combustible/remito', auth, async (req, res) => {
+  try {
+    const r = req.body || {};
+    const { data, error } = await supabaseCompras
+      .from('remitos_combustible')
+      .insert({
+        proveedor:      r.proveedor || null,
+        periodo_desde:  r.periodo_desde || null,
+        periodo_hasta:  r.periodo_hasta || null,
+        total_general:  Number(r.total_general) || 0,
+        data:           { filas: r.filas || [], origen: 'panel_conciliacion' },
+      }).select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('combustible remito guardar:', err);
+    res.status(500).json({ error: 'Error guardando el listado' });
+  }
+});
+
+router.get('/api/combustible/analisis', auth, async (req, res) => {
+  try {
+    const normN = s => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+    const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    // 1) Listados del proveedor (base compras)
+    const { data: rems, error: e1 } = await supabaseCompras
+      .from('remitos_combustible').select('*').order('created_at', { ascending: false });
+    if (e1) throw e1;
+    const filas = [];
+    (rems || []).forEach(r => {
+      const fs = (r.data && r.data.filas) || [];
+      fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id }));
+    });
+
+    // 2) Cargas de los capataces (base bot), acotadas al rango de los listados
+    let q = supabase.from('cargas_combustible')
+      .select('*, cargas_combustible_items(*), unidades(patente,codigo,marca), capataces(nombre), proveedores(nombre)')
+      .neq('estado', 'anulada');
+    const fechas = filas.map(f => f.fecha).filter(Boolean).sort();
+    if (fechas.length) q = q.gte('fecha', fechas[0]).lte('fecha', fechas[fechas.length - 1]);
+    const { data: cargas, error: e2 } = await q;
+    if (e2) throw e2;
+
+    // 3) Agrupar filas del listado por remito (un remito puede tener 2 productos)
+    const grupos = {};
+    filas.forEach(f => {
+      const k = normN(f.numero_remito) || ('SR|' + normP(f.patente) + '|' + (f.fecha || ''));
+      if (!grupos[k]) grupos[k] = { key: k, numero_remito: f.numero_remito, fecha: f.fecha, patente: f.patente,
+        chofer: f.chofer, proveedor: f.__prov, litros: 0, total: 0, productos: [] };
+      grupos[k].litros += Number(f.litros) || 0;
+      grupos[k].total  += Number(f.total)  || 0;
+      if (f.producto) grupos[k].productos.push(f.producto);
+    });
+
+    // 4) Indexar cargas por remito y por patente+fecha
+    const byNum = {}, byPatFecha = {};
+    (cargas || []).forEach(c => {
+      const n = normN(c.numero_remito); if (n) byNum[n] = c;
+      const p = normP((c.unidades && c.unidades.patente) || c.patente_raw);
+      if (p && c.fecha) byPatFecha[p + '|' + c.fecha] = c;
+    });
+
+    // 5) Matchear
+    const sinTicket = [], desvios = [], matcheadas = [];
+    const cargasUsadas = new Set();
+    Object.values(grupos).forEach(g => {
+      let c = byNum[g.key] || byPatFecha[normP(g.patente) + '|' + (g.fecha || '')] || null;
+      if (!c) { sinTicket.push(g); return; }
+      cargasUsadas.add(c.id);
+      const lt = Number(c.litros_total) || 0;
+      const dif = Math.round((g.litros - lt) * 100) / 100;
+      const fila = { ...g, carga_id: c.id, litros_ticket: lt, dif,
+        capataz: c.capataces ? c.capataces.nombre : null };
+      if (Math.abs(dif) > 1) desvios.push(fila); else matcheadas.push(fila);
+    });
+    const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado');
+
+    // 6) Resumen por unidad (patente)
+    const porUnidad = {};
+    const uniDe = p => { const k = normP(p) || 'SINPAT';
+      if (!porUnidad[k]) porUnidad[k] = { patente: p || '—', litros_prov: 0, litros_ticket: 0, entregas: 0, cargas: 0, sin_ticket: 0 };
+      return porUnidad[k]; };
+    Object.values(grupos).forEach(g => { const u = uniDe(g.patente); u.litros_prov += g.litros; u.entregas++; });
+    sinTicket.forEach(g => { uniDe(g.patente).sin_ticket++; });
+    (cargas || []).forEach(c => {
+      const u = uniDe((c.unidades && c.unidades.patente) || c.patente_raw);
+      u.litros_ticket += Number(c.litros_total) || 0; u.cargas++;
+    });
+    const unidades = Object.values(porUnidad)
+      .map(u => ({ ...u, litros_prov: Math.round(u.litros_prov * 100) / 100,
+        litros_ticket: Math.round(u.litros_ticket * 100) / 100,
+        dif: Math.round((u.litros_prov - u.litros_ticket) * 100) / 100 }))
+      .sort((a, b) => b.litros_prov - a.litros_prov);
+
+    const litrosProv   = unidades.reduce((s, u) => s + u.litros_prov, 0);
+    const litrosTicket = unidades.reduce((s, u) => s + u.litros_ticket, 0);
+    res.json({
+      remitos: (rems || []).map(r => ({ id: r.id, proveedor: r.proveedor,
+        periodo_desde: r.periodo_desde, periodo_hasta: r.periodo_hasta,
+        total_general: r.total_general, filas: ((r.data && r.data.filas) || []).length })),
+      kpis: {
+        litros_prov:   Math.round(litrosProv * 100) / 100,
+        litros_ticket: Math.round(litrosTicket * 100) / 100,
+        entregas:      Object.keys(grupos).length,
+        con_ticket:    matcheadas.length + desvios.length,
+        sin_ticket:    sinTicket.length,
+        desvios:       desvios.length,
+        cobertura_pct: Object.keys(grupos).length
+          ? Math.round((matcheadas.length + desvios.length) * 100 / Object.keys(grupos).length) : null,
+      },
+      unidades, sin_ticket: sinTicket, desvios, matcheadas,
+      sin_respaldo: sinRespaldo.map(c => ({ id: c.id, fecha: c.fecha, numero_remito: c.numero_remito,
+        patente: (c.unidades && c.unidades.patente) || c.patente_raw, litros: c.litros_total,
+        capataz: c.capataces ? c.capataces.nombre : null, proveedor: c.proveedores ? c.proveedores.nombre : null })),
+    });
+  } catch (err) {
+    console.error('combustible analisis:', err);
+    res.status(500).json({ error: 'Error armando el análisis' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
