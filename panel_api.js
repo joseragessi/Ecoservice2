@@ -449,9 +449,11 @@ router.post('/api/compras/factura', auth, async (req, res) => {
 // numero_remito, fallback patente+fecha — como prevé el ciclo de vida del módulo.
 
 router.post('/api/combustible/remito/extract', auth, async (req, res) => {
+  const t0 = Date.now();
   try {
     const { fileData, fileType } = req.body || {};
     if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
+    console.log(`[listado] recibido ${Math.round(fileData.length / 1024)}kb tipo=${fileType || 'pdf'}`);
     const isImg = fileType && fileType.startsWith('image/');
     const part = isImg
       ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
@@ -475,19 +477,28 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
       },
       body: JSON.stringify({
         model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
-        max_tokens: 16000,
+        max_tokens: 8000,
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
     });
     const data = await resp.json();
+    console.log(`[listado] anthropic status=${resp.status} en ${Math.round((Date.now() - t0) / 1000)}s`);
+    if (!resp.ok) {
+      const emsg = (data.error && data.error.message) || ('HTTP ' + resp.status);
+      console.error('[listado] error anthropic:', emsg);
+      return res.json({ __error: 'La IA rechazó el pedido: ' + emsg });
+    }
     const txt = (data.content || []).map(c => c.text || '').join('');
     try {
-      res.json(JSON.parse(txt.replace(/```json|```/g, '').trim()));
+      const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      console.log(`[listado] extraídas ${(parsed.filas || []).length} filas de ${parsed.proveedor || '?'}`);
+      res.json(parsed);
     } catch (e) {
+      console.error('[listado] respuesta no parseable:', txt.slice(0, 200));
       res.json({ __error: 'No se pudo interpretar el listado.' });
     }
   } catch (err) {
-    console.error('combustible remito extract:', err);
+    console.error('[listado] extract error:', err.message || err);
     res.status(500).json({ error: 'Error extrayendo el listado' });
   }
 });
