@@ -366,6 +366,8 @@ th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2l1.5 4h13L18 14H8L6 6H3M9 20a1 1 0 100 2 1 1 0 000-2zM18 20a1 1 0 100 2 1 1 0 000-2z"/></svg>Compras <span class="nav-count" id="c-comp" style="display:none">0</span></div>
       <div class="nav-item" data-v="reparaciones" onclick="go('reparaciones')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg>Reparaciones <span class="nav-count" id="c-rep">0</span></div>
+      <div class="nav-item" data-v="stock" onclick="go('stock')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 7l2-3h12l2 3M4 7v13h16V7"/><path d="M9 11h6M9 15h6"/></svg>Stock</div>
       <div class="nav-label">Sistema</div>
       <div class="nav-item" data-v="maestros" onclick="go('maestros')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l7 4v6c0 5-3 7.5-7 9-4-1.5-7-4-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>Maestros</div>
@@ -472,7 +474,7 @@ async function refrescarContadores(){
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras'};
+const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
 function go(v){
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   document.getElementById('crumb').textContent=CRUMB[v];
@@ -485,6 +487,7 @@ function go(v){
   if(v==='reparaciones')vReparaciones(view);
   if(v==='maestros')vMaestros(view);
   if(v==='compras')vCompras(view);
+  if(v==='stock')vStock(view);
 }
 
 /* ===== Dashboard ===== */
@@ -930,6 +933,96 @@ function selUniAna(key){
       <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(c.fecha)} · ${c.litros||'?'} lt</div>
       <div class="sub mono" style="font-size:11px">${c.numero_remito||'s/n'}${c.capataz?' · '+c.capataz:''}</div></div>
       <span class="badge b-amber">revisar</span></div>`).join('')}`:''}`;
+}
+
+/* ===== Stock de maquinaria ===== */
+let stockPeriodo=null;   // null = período actual
+let stockData=null;      // último GET /api/stock (para el detalle lateral)
+let stockSelId=null;     // censo seleccionado
+
+const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK[(m||1)-1]||'';return n.charAt(0).toUpperCase()+n.slice(1)+' '+(a||'');}
+function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
+
+async function vStock(view){
+  try{
+    const qs=stockPeriodo?'?periodo='+encodeURIComponent(stockPeriodo):'';
+    stockData=await api('/api/stock'+qs);
+    const d=stockData;stockSelId=null;
+    const resp=d.censos.filter(c=>c.estado==='respondido');
+    const pend=d.censos.filter(c=>c.estado!=='respondido');
+    const eqTotal=resp.reduce((s,c)=>s+(c.censos_stock_items||[]).reduce((x,i)=>x+(i.cantidad||0),0),0);
+    const tipos=new Set();resp.forEach(c=>(c.censos_stock_items||[]).forEach(i=>tipos.add(i.tipo_equipo)));
+    const pct=d.censos.length?Math.round(resp.length*100/d.censos.length):null;
+    const sel=`<select class="busca" style="width:auto" onchange="stockPeriodo=this.value;go('stock')">
+      ${d.periodos.map(p=>`<option value="${p}" ${p===d.periodo?'selected':''}>${mesStk(p)}</option>`).join('')}</select>`;
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Censo por objetivo · los capataces responden por WhatsApp con la palabra <b>stock</b></div></div>
+      <div style="display:flex;gap:8px;align-items:center">${sel}
+      <button class="btn" onclick="pedirStock()">📤 Pedir stock</button></div></div>
+    ${d.censos.length?'':'<div class="aviso-amarillo">Todavía no hay censos en este período. Tocá "Pedir stock" para mandarle el pedido por WhatsApp a los capataces de todos los objetivos operativos.</div>'}
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Respondieron</div><div class="kpi-val green">${resp.length}</div><div class="kpi-sub">de ${d.censos.length} objetivos${pct!=null?' · '+pct+'%':''}</div></div>
+      <div class="kpi ${pend.length?'':'plain'}"><div class="kpi-label">Pendientes</div><div class="kpi-val ${pend.length?'amber':''}">${pend.length}</div><div class="kpi-sub">sin respuesta del capataz</div></div>
+      <div class="kpi plain"><div class="kpi-label">Equipos informados</div><div class="kpi-val">${eqTotal}</div><div class="kpi-sub">${tipos.size} tipos distintos</div></div>
+    </div>
+    <div class="split">
+      <div class="tablewrap">
+        <table><thead><tr><th>Objetivo</th><th>Capataz</th><th class="num">Equipos</th><th>Respondió</th><th>Estado</th><th style="width:100px"></th></tr></thead>
+        <tbody id="stk-list">${d.censos.length?d.censos.map(c=>{
+          const eq=(c.censos_stock_items||[]).reduce((s,i)=>s+(i.cantidad||0),0);
+          return `<tr onclick="selCenso('${c.id}')" data-id="${c.id}" style="cursor:pointer">
+            <td style="font-weight:500">${c.objetivos?c.objetivos.nombre:'—'}</td>
+            <td>${c.capataces?c.capataces.nombre:'—'}</td>
+            <td class="num">${eq||'—'}</td>
+            <td class="mono" style="font-size:12px">${horaStk(c.respondido_at)||'—'}</td>
+            <td>${c.estado==='respondido'?'<span class="badge b-green">respondido</span>':'<span class="badge b-red">pendiente</span>'}</td>
+            <td style="text-align:right">${c.estado!=='respondido'?`<button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="event.stopPropagation();reenviarStock('${c.id}')">↻ Reenviar</button>`:''}</td></tr>`;}).join('')
+          :'<tr><td colspan="6"><div class="sub" style="padding:14px">Sin censos en este período.</div></td></tr>'}</tbody></table>
+      </div>
+      <div class="side" id="stk-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M4 7l2-3h12l2 3M4 7v13h16V7"/><path d="M9 11h6M9 15h6"/></svg><div>Elegí un objetivo<br>para ver el stock informado</div></div></div>
+    </div>`;
+  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el stock. ${e.message||''}</div>`;}
+}
+function selCenso(id){
+  const d=stockData;if(!d)return;
+  const c=d.censos.find(x=>String(x.id)===String(id));if(!c)return;
+  stockSelId=String(id);
+  document.querySelectorAll('#stk-list tr').forEach(t=>t.style.outline=(t.dataset.id===stockSelId)?'2px solid var(--brote)':'none');
+  const items=c.censos_stock_items||[];
+  document.getElementById('stk-side').innerHTML=`
+    <div class="side-id">STOCK · objetivo</div>
+    <div class="side-title">${c.objetivos?c.objetivos.nombre:'—'}</div>
+    <div class="side-meta">${c.capataces?'Capataz '+c.capataces.nombre:'Capataz sin asignar'}${c.respondido_at?' · respondió '+horaStk(c.respondido_at):''}</div>
+    <div class="divider"></div>
+    ${c.estado!=='respondido'
+      ?`<div class="aviso-amarillo" style="margin:0 0 10px">Sin respuesta todavía. El pedido se mandó por WhatsApp${c.reenviado_at?' (último reenvío '+horaStk(c.reenviado_at)+')':''}.</div>
+        <button class="btn" style="width:100%" onclick="reenviarStock('${c.id}')">↻ Reenviar pedido</button>`
+      :items.length?items.map(i=>`
+        <div class="queue-item" style="margin-bottom:8px">
+          <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${i.tipo_equipo}</div>
+          <div class="sub mono" style="font-size:11px">${i.numeros&&i.numeros.length?'N° '+i.numeros.join(', '):'sin números'}${i.observacion?' · '+i.observacion:''}</div></div>
+          <div class="mono" style="font-size:15px;font-weight:600">${i.cantidad}</div>
+        </div>`).join('')
+      :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}`;
+}
+async function pedirStock(){
+  const d=stockData;const per=d?d.periodo:'';
+  if(!confirm(`Se manda el pedido de stock de ${mesStk(per)} por WhatsApp a los capataces de todos los objetivos operativos que aún no respondieron. ¿Dale?`))return;
+  try{
+    const r=await api('/api/stock/pedir',{method:'POST',body:JSON.stringify({periodo:per})});
+    alert(`Pedidos enviados: ${r.enviados}\nYa habían respondido: ${r.ya_respondidos}\nObjetivos sin capataz con teléfono: ${r.sin_capataz}`);
+    go('stock');
+  }catch(e){alert('No se pudo pedir el stock: '+(e.message||''));}
+}
+async function reenviarStock(id){
+  if(!confirm('¿Reenviar el pedido de stock a los capataces de este objetivo?'))return;
+  try{
+    const r=await api('/api/stock/reenviar/'+id,{method:'POST'});
+    alert(r.enviados?'Pedido reenviado.':'No se pudo enviar (¿capataz sin teléfono o ya respondió?).');
+    go('stock');
+  }catch(e){alert('No se pudo reenviar: '+(e.message||''));}
 }
 
 /* ===== Reparaciones ===== */
