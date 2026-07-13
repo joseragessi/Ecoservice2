@@ -816,6 +816,163 @@ router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
   }
 });
 
+// ── STOCK · Inventario oficial y consolidado ──────────────────
+// El inventario (stock_objetivo) es lo que la empresa DICE que tiene.
+// Se siembra con el primer censo (stock.js) y después se edita a mano acá.
+// El desvío = censo del período − inventario oficial.
+
+// Trae el último censo respondido por objetivo (para comparar), del período pedido.
+async function censoPorObjetivo(periodo) {
+  const { data, error } = await supabase
+    .from('censos_stock')
+    .select('objetivo_id, censos_stock_items(tipo_equipo, cantidad)')
+    .eq('periodo', periodo).eq('estado', 'respondido');
+  if (error) throw error;
+  const mapa = {};   // objetivo_id -> { tipo -> cantidad }
+  (data || []).forEach(c => {
+    mapa[c.objetivo_id] = mapa[c.objetivo_id] || {};
+    (c.censos_stock_items || []).forEach(i => {
+      mapa[c.objetivo_id][i.tipo_equipo] = (mapa[c.objetivo_id][i.tipo_equipo] || 0) + (i.cantidad || 0);
+    });
+  });
+  return mapa;
+}
+
+router.get('/api/stock/inventario', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
+    const { data: inv, error: e1 } = await supabase
+      .from('stock_objetivo').select('*, objetivos(nombre)').order('id');
+    if (e1) throw e1;
+    const censo = await censoPorObjetivo(periodo);
+
+    const filas = (inv || []).map(r => {
+      const cen = (censo[r.objetivo_id] || {})[r.tipo_equipo];
+      return {
+        id: r.id, objetivo_id: r.objetivo_id,
+        objetivo: r.objetivos ? r.objetivos.nombre : '—',
+        tipo_equipo: r.tipo_equipo, cantidad: r.cantidad,
+        numeros: r.numeros || [], observacion: r.observacion, origen: r.origen,
+        censo: cen != null ? cen : null,
+        dif: cen != null ? cen - r.cantidad : null,
+      };
+    }).sort((a, b) => a.objetivo.localeCompare(b.objetivo) || a.tipo_equipo.localeCompare(b.tipo_equipo));
+
+    // Objetivos operativos que todavía no tienen inventario (nunca censaron)
+    const { data: objs, error: e2 } = await supabase
+      .from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo');
+    if (e2) throw e2;
+    const conInv = new Set((inv || []).map(r => r.objetivo_id));
+    const sinInventario = (objs || []).filter(o => !conInv.has(o.id)).length;
+
+    const objetivosConDesvio = new Set(filas.filter(f => f.dif != null && f.dif !== 0).map(f => f.objetivo_id));
+    const objetivosComparados = new Set(filas.filter(f => f.dif != null).map(f => f.objetivo_id));
+    res.json({
+      periodo, filas,
+      kpis: {
+        coinciden:      objetivosComparados.size - objetivosConDesvio.size,
+        faltantes:      filas.reduce((s, f) => s + (f.dif != null && f.dif < 0 ? -f.dif : 0), 0),
+        sin_inventario: sinInventario,
+      },
+    });
+  } catch (err) {
+    console.error('stock inventario:', err);
+    res.status(500).json({ error: 'Error cargando el inventario' });
+  }
+});
+
+// Editar / crear / borrar una línea del inventario oficial (a mano, desde el panel).
+router.post('/api/stock/inventario/:id?', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fila = {
+      cantidad:       Math.max(0, parseInt(b.cantidad) || 0),
+      numeros:        Array.isArray(b.numeros) ? b.numeros.map(String)
+                      : String(b.numeros || '').split(',').map(s => s.trim()).filter(Boolean),
+      observacion:    b.observacion || null,
+      origen:         'manual',
+      actualizado_at: new Date().toISOString(),
+    };
+    if (req.params.id) {
+      const { data, error } = await supabase.from('stock_objetivo')
+        .update(fila).eq('id', req.params.id).select().single();
+      if (error) throw error;
+      return res.json(data);
+    }
+    if (!b.objetivo_id || !b.tipo_equipo) return res.status(400).json({ error: 'Falta objetivo o tipo de equipo' });
+    const { data, error } = await supabase.from('stock_objetivo')
+      .insert({ ...fila, objetivo_id: b.objetivo_id, tipo_equipo: b.tipo_equipo })
+      .select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('stock inventario guardar:', err);
+    res.status(500).json({ error: 'Error guardando la línea del inventario' });
+  }
+});
+
+router.delete('/api/stock/inventario/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('stock_objetivo').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('stock inventario borrar:', err);
+    res.status(500).json({ error: 'Error borrando la línea' });
+  }
+});
+
+// Consolidado: toda la maquinaria de EcoService sumada por tipo.
+router.get('/api/stock/consolidado', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
+    const { data: inv, error: e1 } = await supabase
+      .from('stock_objetivo').select('objetivo_id, tipo_equipo, cantidad');
+    if (e1) throw e1;
+    const censo = await censoPorObjetivo(periodo);
+
+    const porTipo = {};
+    const de = t => { if (!porTipo[t]) porTipo[t] = { tipo_equipo: t, oficial: 0, informado: 0, objetivos: new Set() };
+      return porTipo[t]; };
+    (inv || []).forEach(r => { const t = de(r.tipo_equipo);
+      t.oficial += r.cantidad || 0; t.objetivos.add(r.objetivo_id); });
+    Object.values(censo).forEach(tipos => {
+      Object.entries(tipos).forEach(([tipo, cant]) => { de(tipo).informado += cant; });
+    });
+    const filas = Object.values(porTipo)
+      .map(t => ({ tipo_equipo: t.tipo_equipo, oficial: t.oficial, informado: t.informado,
+        dif: t.informado - t.oficial, objetivos: t.objetivos.size }))
+      .sort((a, b) => b.oficial - a.oficial);
+    res.json({ periodo, filas,
+      total_oficial: filas.reduce((s, f) => s + f.oficial, 0),
+      total_informado: filas.reduce((s, f) => s + f.informado, 0) });
+  } catch (err) {
+    console.error('stock consolidado:', err);
+    res.status(500).json({ error: 'Error armando el consolidado' });
+  }
+});
+
+// Histórico de un objetivo: qué informó en cada período.
+router.get('/api/stock/historico/:objetivo_id', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('censos_stock')
+      .select('periodo, estado, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros)')
+      .eq('objetivo_id', req.params.objetivo_id)
+      .eq('estado', 'respondido')
+      .order('periodo', { ascending: false });
+    if (error) throw error;
+    res.json((data || []).map(c => ({
+      periodo: c.periodo, respondido_at: c.respondido_at,
+      items: c.censos_stock_items || [],
+      total: (c.censos_stock_items || []).reduce((s, i) => s + (i.cantidad || 0), 0),
+    })));
+  } catch (err) {
+    console.error('stock historico:', err);
+    res.status(500).json({ error: 'Error cargando el histórico' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
