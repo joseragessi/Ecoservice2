@@ -1647,10 +1647,11 @@ function cardMaestro(m,ix){
   const ini=(m.nombre||'?').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase();
   let sub='',extra='';
   if(maestroTab==='mecanicos'){
-    sub=(m.habilidades||[]).length+' habilidades';
-    extra='<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}`+'">'+h.toUpperCase()+'</span>').join('')+'</div>';
+    const esPanol=m.rol_app==='panol';
+    sub=esPanol?'Pañol · depósito':(m.habilidades||[]).length+' habilidades';
+    extra=esPanol?'':'<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}`+'">'+h.toUpperCase()+'</span>').join('')+'</div>';
     extra+=`<div class="mcard-row"><span>App</span>${m.usuario
-      ?`<span class="badge b-green mono" style="font-size:10px">${m.usuario}</span>`
+      ?`<span class="badge ${esPanol?'b-blue':'b-green'} mono" style="font-size:10px">${esPanol?'📦 ':''}${m.usuario}</span>`
       :'<span class="badge b-gray">sin acceso</span>'}</div>`;
   }
   if(maestroTab==='objetivos'){
@@ -1679,7 +1680,11 @@ function abrirModalMaestro(m){
   if(maestroTab==='mecanicos'){
     campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
     campos+=`<div class="divider"></div>
-      <div class="field-l" style="margin-bottom:8px">Acceso a la app del taller</div>
+      <div class="field-l" style="margin-bottom:8px">Acceso a la app</div>
+      <div class="mm-field"><label>Rol en la app</label><select id="mm-rolapp">
+        <option value="mecanico" ${(m.rol_app||'mecanico')!=='panol'?'selected':''}>Taller — ve sus reparaciones</option>
+        <option value="panol" ${m.rol_app==='panol'?'selected':''}>Pañol — ve los pedidos de insumos</option>
+      </select></div>
       <div class="mm-field"><label>Usuario</label><input id="mm-usuario" value="${(m.usuario||'').replace(/"/g,'&quot;')}" placeholder="ej: santiago" autocapitalize="none"></div>
       <div class="mm-field"><label>Clave</label><input id="mm-clave" type="text" placeholder="${m.usuario?'dejar vacío para no cambiarla':'clave para entrar a la app'}"></div>
       <div class="sub">La clave se guarda encriptada. Para cambiarla, escribí una nueva; si dejás el campo vacío, se mantiene la actual.</div>`;
@@ -1705,6 +1710,7 @@ async function guardarMaestro(){
   if(maestroTab==='mecanicos'){
     body.habilidades=[...document.querySelectorAll('#mm-campos .mm-habs input[type=checkbox]:checked')].map(c=>c.value);
     body.usuario=document.getElementById('mm-usuario').value.trim().toLowerCase()||null;
+    body.rol_app=document.getElementById('mm-rolapp').value||'mecanico';
     const cl=document.getElementById('mm-clave').value.trim();
     if(cl)body.clave=cl;   // vacío = no cambiar la clave actual
   }
