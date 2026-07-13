@@ -7,7 +7,7 @@ const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
 const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
         continuarInsumos } = require('./insumos');
 const { iniciarStock, tieneSesionActiva: tieneSesionStock,
-        continuarStock } = require('./stock');
+        continuarStock, tienePedidoPendiente } = require('./stock');
 const { procesarFactura } = require('./facturas_bot');
 const panelApi = require('./panel_api');
 
@@ -72,6 +72,12 @@ app.post('/webhook', async (req, res) => {
         // Arranca el envío de stock; le pasamos lo que escribió después de "stock"
         const resto = mensaje.trim().replace(RE_STOCK, '');
         respuesta = await iniciarStock(telefono, resto);
+      } else if (!/^(menu|menú)$/i.test(mensaje.trim()) && !/^[1-4]$/.test(mensaje.trim())
+                 && await tienePedidoPendiente(telefono)) {
+        // Le pedimos el stock y todavía no respondió: cualquier texto libre que
+        // mande es su listado. No hace falta que escriba la palabra "stock".
+        // ("menu" o un dígito 1-4 siguen yendo al menú, para no encerrarlo.)
+        respuesta = await iniciarStock(telefono, mensaje.trim());
       } else {
         // Menú principal / flujo de incidencias (conversacion.js)
         respuesta = await procesarMensaje(telefono, mensaje);
