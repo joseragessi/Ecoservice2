@@ -530,6 +530,18 @@ router.post('/api/combustible/remito', auth, async (req, res) => {
   }
 });
 
+router.delete('/api/combustible/remito/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabaseCompras
+      .from('remitos_combustible').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('combustible remito eliminar:', err);
+    res.status(500).json({ error: 'Error eliminando el listado' });
+  }
+});
+
 router.get('/api/combustible/analisis', auth, async (req, res) => {
   try {
     const normN = s => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
@@ -539,8 +551,20 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     const { data: rems, error: e1 } = await supabaseCompras
       .from('remitos_combustible').select('*').order('created_at', { ascending: false });
     if (e1) throw e1;
+
+    // Selección de listados: ?ids=uuid,uuid → esos | ?ids=todos → todos |
+    // sin parámetro → solo el más reciente (default para no mezclar períodos).
+    const idsParam = String(req.query.ids || '').trim();
+    let remsSel = rems || [];
+    if (idsParam && idsParam !== 'todos') {
+      const setIds = new Set(idsParam.split(',').map(s => s.trim()).filter(Boolean));
+      remsSel = remsSel.filter(r => setIds.has(String(r.id)));
+    } else if (!idsParam && remsSel.length > 1) {
+      remsSel = [remsSel[0]]; // vienen ordenados por created_at desc
+    }
+
     const filas = [];
-    (rems || []).forEach(r => {
+    remsSel.forEach(r => {
       const fs = (r.data && r.data.filas) || [];
       fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id }));
     });
@@ -611,6 +635,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       remitos: (rems || []).map(r => ({ id: r.id, proveedor: r.proveedor,
         periodo_desde: r.periodo_desde, periodo_hasta: r.periodo_hasta,
         total_general: r.total_general, filas: ((r.data && r.data.filas) || []).length })),
+      ids_aplicados: remsSel.map(r => String(r.id)),
       kpis: {
         litros_prov:   Math.round(litrosProv * 100) / 100,
         litros_ticket: Math.round(litrosTicket * 100) / 100,
