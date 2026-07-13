@@ -494,33 +494,107 @@ function go(v){
 /* ===== Dashboard ===== */
 async function vDashboard(view){
   try{
-    const [d,fs,ps]=await Promise.all([api('/api/dashboard'),api('/api/facturas?estado=pendiente'),api('/api/insumos?estado=pendiente')]);
+    const d=await api('/api/dashboard');
+    const a=d.acciones||{},c=d.compras||{},cb=d.combustible||{},t=d.taller||{},st=d.stock||{};
+    // Lo que requiere acción: solo se muestra lo que efectivamente tiene algo pendiente
+    const acciones=[
+      ['reparaciones_urgentes','Reparaciones urgentes',a.reparaciones_urgentes,'reparaciones','rojo','crítico o alta sin resolver'],
+      ['facturas_pendientes','Facturas por imputar',a.facturas_pendientes,'facturas','ambar','esperando imputación'],
+      ['insumos_pendientes','Insumos por entregar',a.insumos_pendientes,'insumos','ambar','pedidos en el pañol'],
+      ['stock_sin_responder','Stock sin responder',a.stock_sin_responder,'stock','ambar','capataces que no censaron'],
+      ['combustible_sin_facturar','Cargas sin facturar',a.combustible_sin_facturar,'combustible','ambar','remitos sin factura'],
+    ].filter(x=>x[2]>0);
+    const col={rojo:'var(--rojo)',ambar:'var(--ambar)'};
+    const varPct=c.var_pct;
+    const bars=(lista,color)=>lista.length?lista.slice(0,6).map(x=>{
+      const max=lista[0].valor||1;const w=Math.max(4,Math.round(x.valor*100/max));
+      return `<div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:500">${x.nombre}</span><span class="mono">${x.valor}</span></div>
+        <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
+      </div>`;}).join(''):'<div class="sub" style="padding:10px 0">El taller está vacío.</div>';
+
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Panel de gestión</div>
-      <div class="view-desc">Todo el gasto de campo en una sola superficie</div></div></div>
-    <div class="kpis">
-      <div class="kpi amber"><div class="kpi-label">Facturas pendientes</div><div class="kpi-val amber">${d.facturas.pendientes}</div><div class="kpi-sub">${money0(d.facturas.total_pendiente)} por imputar</div></div>
-      <div class="kpi"><div class="kpi-label">Facturas aprobadas</div><div class="kpi-val green">${d.facturas.aprobadas}</div><div class="kpi-sub">listas para pagar</div></div>
-      <div class="kpi amber"><div class="kpi-label">Insumos pendientes</div><div class="kpi-val amber">${d.insumos.pendientes+(d.insumos.en_compra||0)}</div><div class="kpi-sub">por entregar</div></div>
-      <div class="kpi plain"><div class="kpi-label">Combustible del mes</div><div class="kpi-val">${d.combustible.cargas_mes}</div><div class="kpi-sub">${Number(d.combustible.litros_mes||0).toLocaleString('es-AR')} lt · ${d.combustible.sin_facturar} sin facturar</div></div>
+      <div class="view-desc">Todo el gasto de campo en una sola superficie · ${mesStk(d.periodo)}</div></div></div>
+
+    ${acciones.length?`
+    <div class="panel" style="margin-bottom:18px;border-left:3px solid var(--ambar)">
+      <div class="panel-title" style="margin-bottom:12px">⚠ Requiere tu atención</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">
+        ${acciones.map(([k,l,n,dest,cl,sub])=>`
+          <div onclick="go('${dest}')" style="cursor:pointer;background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:11px 13px;transition:.14s" onmouseover="this.style.borderColor='${col[cl]}'" onmouseout="this.style.borderColor='var(--linea)'">
+            <div style="display:flex;align-items:baseline;gap:8px">
+              <span class="mono" style="font-size:21px;font-weight:700;color:${col[cl]}">${n}</span>
+              <span style="font-size:12.5px;font-weight:600">${l}</span></div>
+            <div class="sub" style="font-size:11px;margin-top:2px">${sub} →</div>
+          </div>`).join('')}
+      </div>
+    </div>`:`
+    <div class="panel" style="margin-bottom:18px;border-left:3px solid var(--brote)">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+        <span style="font-size:19px">✅</span>
+        <div><div style="font-weight:600;font-size:14px">Todo al día</div>
+        <div class="sub">No hay nada pendiente de acción en ningún módulo.</div></div>
+      </div>
+    </div>`}
+
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="kpi-label">Gasto del mes</div>
+        <div class="kpi-val" style="font-size:22px">${money0(c.gasto_mes||0)}</div>
+        <div class="kpi-sub">${varPct==null?'sin mes anterior para comparar'
+          :`<span style="color:${varPct>0?'var(--rojo)':'var(--brote-2)'};font-weight:600">${varPct>0?'▲':'▼'} ${Math.abs(Math.round(varPct))}%</span> vs mes anterior`}</div></div>
+      <div class="kpi plain"><div class="kpi-label">Combustible del mes</div>
+        <div class="kpi-val" style="font-size:22px">${Math.round(cb.litros_mes||0).toLocaleString('es-AR')}</div>
+        <div class="kpi-sub">litros · ${cb.cargas_mes||0} cargas</div></div>
+      <div class="kpi ${t.activas?'amber':''}"><div class="kpi-label">Taller</div>
+        <div class="kpi-val ${t.activas?'amber':''}" style="font-size:22px">${t.activas||0}</div>
+        <div class="kpi-sub">activas · ${t.finalizadas_mes||0} cerradas este mes</div></div>
+      <div class="kpi plain"><div class="kpi-label">Resolución promedio</div>
+        <div class="kpi-val" style="font-size:22px">${t.resolucion_prom!=null?Math.round(t.resolucion_prom*10)/10:'—'}</div>
+        <div class="kpi-sub">días por reparación</div></div>
     </div>
-    <div class="grid g-2">
-      <div class="panel"><div class="panel-title">Facturas por imputar <span class="tag-mini" style="margin-left:auto">${fs.length}</span></div>
-        ${fs.length?fs.slice(0,6).map(f=>`<div class="queue-item">
-          <div class="q-ico" style="background:var(--diesel-soft)"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="var(--diesel)" stroke-width="1.8"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5z"/><path d="M14 2v6h6"/></svg></div>
-          <div style="flex:1"><div style="font-weight:600;font-size:13px">${f.proveedor_nombre||'—'}</div><div class="sub mono">${f.numero||''}</div></div>
-          <div style="text-align:right"><div class="money">${money0(f.total)}</div></div></div>`).join('')
-          :'<div class="sub" style="padding:14px 0">No hay facturas pendientes.</div>'}
+
+    <div class="grid g-2" style="margin-bottom:18px">
+      <div class="panel">
+        <div class="panel-title" style="margin-bottom:12px">Carga del taller</div>
+        ${bars(t.carga_mecanicos||[],'var(--brote)')}
+        ${t.mas_vieja?`<div class="divider"></div>
+          <div class="sub" style="font-size:11px;margin-bottom:5px">LA MÁS VIEJA SIN RESOLVER</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="go('reparaciones')">
+            <div><div style="font-weight:600;font-size:13px">${t.mas_vieja.equipo}</div>
+            <div class="sub" style="font-size:11.5px">${t.mas_vieja.objetivo}</div></div>
+            <span class="badge ${t.mas_vieja.dias>30?'b-red':'b-amber'}">${t.mas_vieja.dias} días</span>
+          </div>`:''}
       </div>
-      <div class="panel"><div class="panel-title">Insumos pendientes <span class="tag-mini" style="margin-left:auto">${ps.length}</span></div>
-        ${ps.length?ps.slice(0,6).map(p=>`<div class="queue-item">
-          <div class="q-ico" style="background:var(--brote-soft)"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="var(--brote-2)" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg></div>
-          <div style="flex:1"><div style="font-weight:600;font-size:13px">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div><div class="sub">${(p.pedidos_insumos_items||[]).map(i=>i.item).join(', ')||'—'}</div></div>
-          <span class="obj-chip">${p.capataces?p.capataces.nombre.split(' ')[0]:''}</span></div>`).join('')
-          :'<div class="sub" style="padding:14px 0">No hay pedidos pendientes.</div>'}
+      <div class="panel">
+        <div class="panel-title" style="margin-bottom:12px">Censo de stock · ${mesStk(d.periodo)}</div>
+        ${st.total?`
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+            <span class="mono" style="font-size:27px;font-weight:700;color:var(--brote)">${st.respondieron}</span>
+            <span class="sub">de ${st.total} objetivos respondieron</span>
+          </div>
+          <div style="height:8px;background:var(--papel);border-radius:4px;overflow:hidden;margin-bottom:8px">
+            <div style="height:8px;width:${st.total?Math.round(st.respondieron*100/st.total):0}%;background:var(--brote);border-radius:4px"></div>
+          </div>
+          ${st.pendientes?`<div class="sub" style="cursor:pointer" onclick="go('stock')"><b style="color:var(--ambar)">${st.pendientes} sin responder</b> · reenviarles el pedido →</div>`
+            :'<div class="sub">Censo completo ✓</div>'}`
+          :`<div class="sub" style="padding:8px 0">Todavía no pediste el stock de ${mesStk(d.periodo)}.</div>
+            <button class="btn" style="margin-top:10px" onclick="go('stock')">Pedir stock →</button>`}
       </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:10px">Insumos esperando en el pañol</div>
+      ${(d.insumos_lista||[]).length?(d.insumos_lista).map(p=>`
+        <div class="queue-item" style="margin-bottom:7px;cursor:pointer" onclick="go('insumos')">
+          <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${p.objetivo}</div>
+          <div class="sub" style="font-size:11.5px">${p.items||'—'} · ${p.capataz}</div></div>
+          <span class="badge ${p.dias>7?'b-red':'b-gray'}">${p.dias===0?'hoy':p.dias+'d'}</span>
+        </div>`).join('')
+        :'<div class="sub" style="padding:10px 0">No hay pedidos pendientes. ✓</div>'}
     </div>`;
-  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el resumen.</div>`;}
+  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el resumen. ${e.message||''}</div>`;}
 }
 
 /* ===== Facturas (patrón "entrantes" con detalle lateral) ===== */
