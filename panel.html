@@ -1848,7 +1848,8 @@ function mesInv(f){
 // Reparte el total de una factura por objetivo o unidad. Si la imputación es por
 // ítem, distribuye proporcional al monto de cada ítem; si es total, va entero.
 function repartoInv(inv,campo){
-  const total=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+  const total=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0)
+    -(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
   if(inv.assignmentMode==='per-item'&&inv.assignments&&Object.keys(inv.assignments).length){
     const items=inv.items||[];
     const partes=Object.entries(inv.assignments).map(([ix,a])=>({a,peso:Math.abs(Number((items[+ix]||{}).monto_sin_iva))||1}));
@@ -1859,9 +1860,14 @@ function repartoInv(inv,campo){
   return [{clave:a[campo]||'Sin asignar',monto:total}];
 }
 // Calcula todos los indicadores sobre un set de facturas
+// El total de una factura es su bruto MENOS las notas de crédito que tenga.
+function ncDe(f){return (f.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);}
 function calcIndicadores(fs){
-  const neto=f=>Number(f.total_sin_iva)||0,iva=f=>Number(f.total_iva)||0,tot=f=>neto(f)+iva(f);
-  const totNeto=fs.reduce((s,f)=>s+neto(f),0),totIva=fs.reduce((s,f)=>s+iva(f),0),totTot=totNeto+totIva;
+  const neto=f=>(Number(f.total_sin_iva)||0),iva=f=>(Number(f.total_iva)||0);
+  const tot=f=>neto(f)+iva(f)-ncDe(f);
+  const totNeto=fs.reduce((s,f)=>s+neto(f),0),totIva=fs.reduce((s,f)=>s+iva(f),0);
+  const totNC=fs.reduce((s,f)=>s+ncDe(f),0);
+  const totTot=totNeto+totIva-totNC;
   const porProv={};fs.forEach(f=>{const k=f.proveedor||'Sin nombre';
     porProv[k]=porProv[k]||{docs:0,total:0};porProv[k].docs++;porProv[k].total+=tot(f);});
   const ranking=Object.entries(porProv).map(([nombre,v])=>({nombre,...v,pct:totTot?v.total*100/totTot:0}))
@@ -1872,7 +1878,7 @@ function calcIndicadores(fs){
     return Object.entries(m).map(([nombre,total])=>({nombre,total,pct:totTot?total*100/totTot:0}))
       .sort((a,b)=>b.total-a.total);
   };
-  return {docs:fs.length,totNeto,totIva,totTot,ticket:fs.length?totTot/fs.length:0,conc3,
+  return {docs:fs.length,totNeto,totIva,totNC,totTot,ticket:fs.length?totTot/fs.length:0,conc3,
     ranking,porObjetivo:agrupar('objetivo'),porUnidad:agrupar('unidad')};
 }
 
@@ -1910,7 +1916,7 @@ async function vComprasInd(view){
       </div></div>
     ${tabsCompras()}
     <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money0(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas</div></div>
+      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money0(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${k.totNC?' · NC −'+money0(k.totNC):''}</div></div>
       <div class="kpi plain"><div class="kpi-label">Neto</div><div class="kpi-val" style="font-size:21px">${money0(k.totNeto)}</div><div class="kpi-sub">sin IVA</div></div>
       <div class="kpi plain"><div class="kpi-label">IVA</div><div class="kpi-val" style="font-size:21px">${money0(k.totIva)}</div><div class="kpi-sub">crédito fiscal</div></div>
       <div class="kpi plain"><div class="kpi-label">Ticket promedio</div><div class="kpi-val" style="font-size:21px">${money0(k.ticket)}</div><div class="kpi-sub">por factura</div></div>
@@ -2001,9 +2007,16 @@ function exportarComprasPDF(){
 
 async function vCompras(view){
   if(comprasMode==='carga'){vComprasCarga(view);return;}
+  if(comprasMode==='detalle'){vComprasDetalle(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
   try{
-    const invs=await api('/api/compras/facturas');
+    comprasData=await api('/api/compras/facturas');
+    const b=comprasBusca.trim().toLowerCase();
+    const invs=b?comprasData.filter(i=>{
+      const a=asignacionInv(i);
+      return [i.proveedor,i.numero_factura,i.cuit,a.obj,a.uni]
+        .some(v=>String(v||'').toLowerCase().includes(b));
+    }):comprasData;
     const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
     const totIva=invs.reduce((s,i)=>s+(Number(i.total_iva)||0),0);
     const cm=new Date().toISOString().slice(0,7);
@@ -2016,15 +2029,21 @@ async function vCompras(view){
 
     const filas=invs.map(inv=>{
       const a=asignacionInv(inv);
-      const total=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+      const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+      const nc=(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+      const neto=bruto-nc;
       return `<tr class="fila">
         <td class="mono">${inv.fecha_factura||'—'}</td>
         <td class="mono sub">${inv.numero_factura||'—'}</td>
         <td><b>${inv.proveedor||'—'}</b>${inv.cuit?`<div class="sub mono">${inv.cuit}</div>`:''}</td>
         <td class="money">${money0(inv.total_sin_iva)}</td>
         <td class="money sub">${money0(inv.total_iva)}</td>
-        <td class="money">${money0(total)}</td>
+        <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
+          ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
         <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
+        </td>
       </tr>`;}).join('');
 
     view.innerHTML=`
@@ -2046,11 +2065,180 @@ async function vCompras(view){
         ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <input class="busca" style="width:280px" placeholder="Buscar proveedor, N° factura, objetivo…" value="${comprasBusca.replace(/"/g,'&quot;')}" oninput="comprasBusca=this.value;go('compras')">
+      <div class="sub">${invs.length} factura${invs.length===1?'':'s'}</div>
+    </div>
     <div class="tabla-wrap">
-      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th></tr></thead><tbody>${filas}</tbody></table>`
-        :`<div class="empty">No hay facturas cargadas en la base de compras.</div>`}
+      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th><th style="width:70px"></th></tr></thead><tbody>${filas}</tbody></table>`
+        :`<div class="empty">${comprasBusca?'Ninguna factura coincide con la búsqueda.':'No hay facturas cargadas en la base de compras.'}</div>`}
     </div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar compras. ${e.message||''}</div>`;}
+}
+
+/* ===== Compras · detalle, edición y notas de crédito ===== */
+let comprasBusca='';
+let comprasData=[];
+let comprasVer=null;      // factura abierta en detalle
+let comprasEdit=false;    // ¿está en modo edición?
+
+function ncTotal(inv){
+  return (inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+}
+function verCompra(id){
+  comprasVer=comprasData.find(i=>String(i.id)===String(id));
+  if(!comprasVer)return;
+  comprasEdit=false;comprasMode='detalle';go('compras');
+}
+function volverCompras(){comprasVer=null;comprasEdit=false;comprasMode='lista';go('compras');}
+
+function vComprasDetalle(view){
+  const inv=comprasVer;if(!inv){volverCompras();return;}
+  const a=asignacionInv(inv);
+  const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+  const nc=ncTotal(inv);
+  const neto=bruto-nc;
+  const oo=COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}" ${o===a.obj?'selected':''}>${o}</option>`).join('');
+  const uo=COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}" ${u===a.uni?'selected':''}>${u}</option>`).join('');
+  const ed=comprasEdit;
+  const campo=(id,val,tipo)=>ed
+    ?`<input id="${id}" ${tipo==='num'?'type="number" step="0.01"':''} value="${String(val==null?'':val).replace(/"/g,'&quot;')}" style="background:var(--blanco);border:1px solid var(--linea);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;outline:none;width:100%">`
+    :`<span class="${tipo==='num'?'money':''}">${tipo==='num'?money(val):(val||'—')}</span>`;
+
+  view.innerHTML=`
+  <div class="view-head"><div>
+    <button class="btn-salir" style="margin-bottom:8px;padding:5px 11px;font-size:12px" onclick="volverCompras()">← Volver</button>
+    <div class="view-title">${inv.proveedor||'Factura'}</div>
+    <div class="view-desc">${inv.numero_factura||'sin número'} · ${inv.fecha_factura||'sin fecha'}</div></div>
+    <div style="display:flex;gap:8px">
+      ${ed?`<button class="btn-salir" onclick="comprasEdit=false;go('compras')">Cancelar</button>
+            <button class="btn" onclick="guardarEdicionCompra()">Guardar cambios</button>`
+        :`<button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
+          <button class="btn" onclick="abrirNC()">＋ Nota de crédito</button>
+          <button class="btn-salir" style="color:var(--rojo)" onclick="borrarCompra('${inv.id}')">Eliminar</button>`}
+    </div></div>
+
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:12px">Factura</div>
+      <div class="mcard-row"><span>Fecha</span>${campo('ec-fecha',inv.fecha_factura)}</div>
+      <div class="mcard-row"><span>N° Factura</span>${campo('ec-num',inv.numero_factura)}</div>
+      <div class="mcard-row"><span>Proveedor</span>${campo('ec-prov',inv.proveedor)}</div>
+      <div class="mcard-row"><span>CUIT</span>${campo('ec-cuit',inv.cuit)}</div>
+      <div class="mcard-row"><span>Neto</span>${campo('ec-neto',inv.total_sin_iva,'num')}</div>
+      <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>
+      <div class="divider"></div>
+      <div class="mcard-row"><span style="font-weight:600">Total factura</span><b class="money">${money(bruto)}</b></div>
+      ${nc?`<div class="mcard-row"><span style="color:var(--ambar)">Notas de crédito</span><b class="money" style="color:var(--ambar)">− ${money(nc)}</b></div>
+        <div class="mcard-row" style="border-top:2px solid var(--linea);padding-top:8px">
+          <span style="font-weight:700">Neto a pagar</span><b class="money" style="font-size:16px;color:var(--brote)">${money(neto)}</b></div>`:''}
+    </div>
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:12px">Imputación</div>
+      ${ed?`
+        <div class="mm-field"><label>Objetivo</label><select id="ec-obj"><option value="">— sin asignar —</option>${oo}</select></div>
+        <div class="mm-field"><label>Unidad</label><select id="ec-uni"><option value="">— sin asignar —</option>${uo}</select></div>
+        <div class="sub">Si la factura estaba imputada por ítem, al guardar acá pasa a imputación total.</div>`
+      :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
+        <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
+        <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>`}
+      ${nc?`<div class="divider"></div>
+        <div class="panel-title" style="margin-bottom:8px">Notas de crédito</div>
+        ${(inv.notas_credito||[]).map(n=>`
+          <div class="queue-item" style="margin-bottom:7px">
+            <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${n.numero||'NC sin número'}</div>
+            <div class="sub" style="font-size:11px">${fechaAR(n.fecha)}${n.motivo?' · '+n.motivo:''}</div></div>
+            <div class="money" style="color:var(--ambar);font-weight:600">− ${money0((Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0))}</div>
+            <button class="btn-salir" style="padding:3px 7px;font-size:11px;color:var(--rojo);margin-left:8px" onclick="borrarNC('${inv.id}','${n.id}')">✕</button>
+          </div>`).join('')}`:''}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title" style="margin-bottom:10px">Ítems</div>
+    ${(inv.items||[]).length?`<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th></tr></thead>
+      <tbody>${(inv.items||[]).map(i=>`<tr><td>${i.descripcion||'—'}</td>
+        <td class="num money">${money(i.monto_sin_iva||0)}</td>
+        <td class="num money sub">${money(i.monto_iva||0)}</td></tr>`).join('')}
+      <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td>
+        <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
+        <td class="num money"><b>${money(inv.total_iva||0)}</b></td></tr></tbody></table>`
+      :'<div class="sub" style="padding:10px 0">La factura no tiene ítems cargados.</div>'}
+  </div>`;
+}
+async function guardarEdicionCompra(){
+  const inv=comprasVer;if(!inv)return;
+  const g=id=>document.getElementById(id);
+  const obj=g('ec-obj')?g('ec-obj').value:'';
+  const uni=g('ec-uni')?g('ec-uni').value:'';
+  const body={
+    fecha_factura:g('ec-fecha').value.trim()||null,
+    numero_factura:g('ec-num').value.trim()||null,
+    proveedor:g('ec-prov').value.trim()||null,
+    cuit:g('ec-cuit').value.trim()||null,
+    total_sin_iva:Number(g('ec-neto').value)||0,
+    total_iva:Number(g('ec-iva').value)||0,
+    assignmentMode:'total',
+    totalAssign:{objetivo:obj,unidad:uni,comentario:(inv.totalAssign&&inv.totalAssign.comentario)||''},
+    assignments:{},
+  };
+  try{
+    const r=await api('/api/compras/factura/'+inv.id,{method:'PUT',body:JSON.stringify(body)});
+    comprasVer=r;comprasEdit=false;go('compras');
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
+}
+async function borrarCompra(id){
+  if(!confirm('¿Eliminar esta factura? No se puede deshacer.'))return;
+  try{await api('/api/compras/factura/'+id,{method:'DELETE'});volverCompras();}
+  catch(e){alert('No pude eliminar: '+(e.message||''));}
+}
+function abrirNC(){
+  const inv=comprasVer;if(!inv)return;
+  const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+  const ya=ncTotal(inv);
+  const saldo=bruto-ya;
+  document.getElementById('mm-titulo').textContent='Nota de crédito';
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">Sobre <b>${inv.proveedor||'—'}</b> · factura ${inv.numero_factura||'—'}<br>
+      Saldo disponible: <b class="money">${money(saldo)}</b></div>
+    <div class="mm-field"><label>N° de nota de crédito</label><input id="nc-num" placeholder="ej: 0001-00000123"></div>
+    <div class="mm-field"><label>Fecha</label><input id="nc-fecha" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div class="mm-field"><label>Neto</label><input id="nc-neto" type="number" step="0.01" min="0" placeholder="0.00"></div>
+    <div class="mm-field"><label>IVA</label><input id="nc-iva" type="number" step="0.01" min="0" placeholder="0.00"></div>
+    <div class="mm-field"><label>Motivo</label><input id="nc-motivo" placeholder="ej: devolución, bonificación"></div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" id="nc-btn" onclick="guardarNC()">Guardar nota</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function guardarNC(){
+  const inv=comprasVer;if(!inv)return;
+  const body={
+    numero:document.getElementById('nc-num').value.trim()||null,
+    fecha:document.getElementById('nc-fecha').value||null,
+    total_sin_iva:Number(document.getElementById('nc-neto').value)||0,
+    total_iva:Number(document.getElementById('nc-iva').value)||0,
+    motivo:document.getElementById('nc-motivo').value.trim()||null,
+  };
+  if(body.total_sin_iva<=0&&body.total_iva<=0){alert('Poné el monto de la nota de crédito.');return;}
+  const btn=document.getElementById('nc-btn');
+  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  try{
+    const r=await api('/api/compras/factura/'+inv.id+'/nota-credito',{method:'POST',body:JSON.stringify(body)});
+    comprasVer=r;cerrarMaestro();go('compras');
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Guardar nota';}
+    alert(e.message||'No pude guardar la nota de crédito');
+  }
+}
+async function borrarNC(id,ncid){
+  if(!confirm('¿Borrar esta nota de crédito?'))return;
+  try{
+    const r=await api('/api/compras/factura/'+id+'/nota-credito/'+ncid,{method:'DELETE'});
+    comprasVer=r;go('compras');
+  }catch(e){alert('No pude borrar: '+(e.message||''));}
 }
 
 /* ===== Compras · listas y estado de carga ===== */
@@ -2128,8 +2316,25 @@ async function comprasGuardar(){
     createdAt:new Date().toISOString(),
   };
   const btn=document.getElementById('cf-save');
-  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  if(btn){btn.disabled=true;btn.textContent='Verificando…';}
   try{
+    // Antes de guardar, chequear que la factura no esté ya cargada
+    const dup=await api('/api/compras/duplicado',{method:'POST',
+      body:JSON.stringify({numero_factura:inv.numero_factura,cuit:inv.cuit,proveedor:inv.proveedor})});
+    if(dup.duplicado){
+      const f=dup.factura;
+      const seguir=confirm(
+        `⚠️ Esta factura YA está cargada:\n\n`+
+        `${f.proveedor||'—'}\n`+
+        `N° ${f.numero_factura||'—'} · ${f.fecha_factura||'sin fecha'}\n`+
+        `Total: ${money0(f.total)}\n\n`+
+        `¿Querés cargarla igual? (Aceptar = duplicar, Cancelar = no guardar)`);
+      if(!seguir){
+        if(btn){btn.disabled=false;btn.textContent='Guardar factura';}
+        return;
+      }
+    }
+    if(btn)btn.textContent='Guardando…';
     await api('/api/compras/factura',{method:'POST',body:JSON.stringify(inv)});
     comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar factura';}alert('No se pudo guardar: '+(e.message||''));}
