@@ -2081,16 +2081,29 @@ let comprasBusca='';
 let comprasData=[];
 let comprasVer=null;      // factura abierta en detalle
 let comprasEdit=false;    // ¿está en modo edición?
+let comprasEditMode='total'; // 'total' | 'per-item' (imputación al editar)
 
 function ncTotal(inv){
   return (inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
 }
 function verCompra(id){
-  comprasVer=comprasData.find(i=>String(i.id)===String(id));
-  if(!comprasVer)return;
-  comprasEdit=false;comprasMode='detalle';go('compras');
+  const orig=comprasData.find(i=>String(i.id)===String(id));
+  if(!orig)return;
+  comprasVer=JSON.parse(JSON.stringify(orig));   // copia: editar no toca la lista
+  comprasEdit=false;
+  comprasEditMode=comprasVer.assignmentMode==='per-item'?'per-item':'total';
+  comprasMode='detalle';go('compras');
 }
 function volverCompras(){comprasVer=null;comprasEdit=false;comprasMode='lista';go('compras');}
+// Cancelar descarta los cambios: se recarga la factura original de la lista,
+// porque el toggle de modo va escribiendo en el objeto en memoria.
+function cancelarEdicionCompra(){
+  const orig=comprasData.find(i=>String(i.id)===String(comprasVer&&comprasVer.id));
+  if(orig)comprasVer=JSON.parse(JSON.stringify(orig));
+  comprasEdit=false;
+  comprasEditMode=comprasVer&&comprasVer.assignmentMode==='per-item'?'per-item':'total';
+  go('compras');
+}
 
 function vComprasDetalle(view){
   const inv=comprasVer;if(!inv){volverCompras();return;}
@@ -2111,7 +2124,7 @@ function vComprasDetalle(view){
     <div class="view-title">${inv.proveedor||'Factura'}</div>
     <div class="view-desc">${inv.numero_factura||'sin número'} · ${inv.fecha_factura||'sin fecha'}</div></div>
     <div style="display:flex;gap:8px">
-      ${ed?`<button class="btn-salir" onclick="comprasEdit=false;go('compras')">Cancelar</button>
+      ${ed?`<button class="btn-salir" onclick="cancelarEdicionCompra()">Cancelar</button>
             <button class="btn" onclick="guardarEdicionCompra()">Guardar cambios</button>`
         :`<button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
           <button class="btn" onclick="abrirNC()">＋ Nota de crédito</button>
@@ -2136,12 +2149,23 @@ function vComprasDetalle(view){
     <div class="panel">
       <div class="panel-title" style="margin-bottom:12px">Imputación</div>
       ${ed?`
-        <div class="mm-field"><label>Objetivo</label><select id="ec-obj"><option value="">— sin asignar —</option>${oo}</select></div>
-        <div class="mm-field"><label>Unidad</label><select id="ec-uni"><option value="">— sin asignar —</option>${uo}</select></div>
-        <div class="sub">Si la factura estaba imputada por ítem, al guardar acá pasa a imputación total.</div>`
+        <div class="toggle-imp" style="margin-bottom:14px">
+          <button class="${comprasEditMode==='total'?'on':''}" onclick="comprasSetEditMode('total')">Total de factura</button>
+          <button class="${comprasEditMode==='per-item'?'on':''}" onclick="comprasSetEditMode('per-item')">Por ítem</button>
+        </div>
+        ${comprasEditMode==='total'?`
+          <div class="mm-field"><label>Objetivo</label><select id="ec-obj"><option value="">— sin asignar —</option>${oo}</select></div>
+          <div class="mm-field"><label>Unidad</label><select id="ec-uni"><option value="">— sin asignar —</option>${uo}</select></div>`
+        :`<div class="sub">Cada ítem se imputa por separado, abajo en la tabla. El gasto se reparte proporcional al monto de cada línea.</div>`}`
       :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
         <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
-        <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>`}
+        <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
+        ${inv.assignmentMode==='per-item'?`<div class="divider"></div>
+          ${(inv.items||[]).map((it,ix)=>{const asg=(inv.assignments||{})[ix]||{};
+            return `<div class="queue-item" style="margin-bottom:6px">
+              <div style="flex:1"><div style="font-size:12px;font-weight:500">${it.descripcion||'—'}</div>
+              <div class="sub" style="font-size:11px">${asg.objetivo||'sin asignar'}${asg.unidad?' · '+asg.unidad:''}</div></div>
+              <div class="money sub">${money0(it.monto_sin_iva||0)}</div></div>`;}).join('')}`:''}`}
       ${nc?`<div class="divider"></div>
         <div class="panel-title" style="margin-bottom:8px">Notas de crédito</div>
         ${(inv.notas_credito||[]).map(n=>`
@@ -2171,25 +2195,62 @@ function vComprasDetalle(view){
       const ivaDe=i=>prorratear
         ?ivaFact*(Number(i.monto_sin_iva)||0)/netoItems
         :ivaBruto(i);
-      return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th></tr></thead>
-      <tbody>${items.map(i=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
+      const perItem=ed&&comprasEditMode==='per-item';
+      const asgDe=ix=>(inv.assignments||{})[ix]||{};
+      const selObj=ix=>`<select id="ei-obj-${ix}" style="width:100%;font-size:11.5px;padding:5px 7px">
+        <option value="">— sin asignar —</option>
+        ${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}" ${o===asgDe(ix).objetivo?'selected':''}>${o}</option>`).join('')}</select>`;
+      const selUni=ix=>`<select id="ei-uni-${ix}" style="width:100%;font-size:11.5px;padding:5px 7px;margin-top:4px">
+        <option value="">— sin unidad —</option>
+        ${COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}" ${u===asgDe(ix).unidad?'selected':''}>${u}</option>`).join('')}</select>`;
+      return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th>${perItem?'<th style="width:260px">Imputación</th>':''}</tr></thead>
+      <tbody>${items.map((i,ix)=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
         return `<tr><td>${i.descripcion||'—'}</td>
         <td class="num money">${money(n)}</td>
         <td class="num money sub">${money(v)}</td>
-        <td class="num money">${money(n+v)}</td></tr>`;}).join('')}
+        <td class="num money">${money(n+v)}</td>
+        ${perItem?`<td>${selObj(ix)}${selUni(ix)}</td>`:''}</tr>`;}).join('')}
       <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td>
         <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
         <td class="num money"><b>${money(ivaFact)}</b></td>
-        <td class="num money"><b>${money(bruto)}</b></td></tr></tbody></table>
+        <td class="num money"><b>${money(bruto)}</b></td>${perItem?'<td></td>':''}</tr></tbody></table>
       ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}`;
     })()}
   </div>`;
 }
+// Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
+// lo que el usuario venía editando para no perderlo.
+function comprasSetEditMode(modo){
+  const inv=comprasVer;if(!inv)return;
+  const g=id=>document.getElementById(id);
+  if(g('ec-fecha')){
+    inv.fecha_factura=g('ec-fecha').value.trim()||null;
+    inv.numero_factura=g('ec-num').value.trim()||null;
+    inv.proveedor=g('ec-prov').value.trim()||null;
+    inv.cuit=g('ec-cuit').value.trim()||null;
+    inv.total_sin_iva=Number(g('ec-neto').value)||0;
+    inv.total_iva=Number(g('ec-iva').value)||0;
+  }
+  // Guardar también la imputación del modo que estábamos dejando
+  if(comprasEditMode==='total'&&g('ec-obj')){
+    inv.totalAssign={objetivo:g('ec-obj').value,unidad:g('ec-uni')?g('ec-uni').value:'',
+      comentario:(inv.totalAssign&&inv.totalAssign.comentario)||''};
+  }else if(comprasEditMode==='per-item'){
+    const asg={};
+    (inv.items||[]).forEach((_,ix)=>{
+      const o=g('ei-obj-'+ix),u=g('ei-uni-'+ix);
+      if(o||u){const objetivo=o?o.value:'',unidad=u?u.value:'';
+        if(objetivo||unidad)asg[ix]={objetivo,unidad,comentario:((inv.assignments||{})[ix]||{}).comentario||''};}
+    });
+    if(Object.keys(asg).length)inv.assignments=asg;
+  }
+  comprasEditMode=modo;
+  go('compras');
+}
+
 async function guardarEdicionCompra(){
   const inv=comprasVer;if(!inv)return;
   const g=id=>document.getElementById(id);
-  const obj=g('ec-obj')?g('ec-obj').value:'';
-  const uni=g('ec-uni')?g('ec-uni').value:'';
   const body={
     fecha_factura:g('ec-fecha').value.trim()||null,
     numero_factura:g('ec-num').value.trim()||null,
@@ -2197,10 +2258,24 @@ async function guardarEdicionCompra(){
     cuit:g('ec-cuit').value.trim()||null,
     total_sin_iva:Number(g('ec-neto').value)||0,
     total_iva:Number(g('ec-iva').value)||0,
-    assignmentMode:'total',
-    totalAssign:{objetivo:obj,unidad:uni,comentario:(inv.totalAssign&&inv.totalAssign.comentario)||''},
-    assignments:{},
+    assignmentMode:comprasEditMode,
   };
+  if(comprasEditMode==='per-item'){
+    const asg={};
+    (inv.items||[]).forEach((_,ix)=>{
+      const o=g('ei-obj-'+ix),u=g('ei-uni-'+ix);
+      const objetivo=o?o.value:'',unidad=u?u.value:'';
+      if(objetivo||unidad)asg[ix]={objetivo,unidad,
+        comentario:((inv.assignments||{})[ix]||{}).comentario||''};
+    });
+    body.assignments=asg;
+    body.totalAssign={objetivo:'',unidad:'',comentario:''};
+  }else{
+    const obj=g('ec-obj')?g('ec-obj').value:'';
+    const uni=g('ec-uni')?g('ec-uni').value:'';
+    body.totalAssign={objetivo:obj,unidad:uni,comentario:(inv.totalAssign&&inv.totalAssign.comentario)||''};
+    body.assignments={};
+  }
   try{
     const r=await api('/api/compras/factura/'+inv.id,{method:'PUT',body:JSON.stringify(body)});
     comprasVer=r;comprasEdit=false;go('compras');
