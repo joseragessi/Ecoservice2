@@ -1,0 +1,208 @@
+const supabase = require('./supabase');
+const { interpretarStock } = require('./stock_ia');
+
+// Sesiones de stock EN MEMORIA.
+// telefono -> { paso, capataz, items, textoOriginal }
+//   paso: 'esperando_listado' | 'confirmando'
+const sesiones = {};
+
+const CONFIRMACIONES = [
+  'si', 'sí', 'ok', 'oka', 'okey', 'dale', 'listo', 'confirmo', 'confirmar',
+  'perfecto', 'correcto', 'esta bien', 'está bien', 'esta perfecto', 'de una', 'va',
+];
+const CANCELACIONES = ['cancelar', 'cancela', 'no', 'nada', 'dejalo', 'olvidalo'];
+
+// ── Helpers ───────────────────────────────────────────────────
+
+// Período actual en horario de Córdoba: '2026-07'
+function periodoActual() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+}
+
+async function resolverCapataz(tel) {
+  const { data } = await supabase
+    .from('capataces')
+    .select('id, nombre, objetivo_id, objetivos(nombre)')
+    .eq('telefono', tel).eq('activo', true).single();
+  if (data) data.objetivo_nombre = data.objetivos ? data.objetivos.nombre : null;
+  return data;
+}
+
+function listado(items) {
+  if (!items || !items.length) return '  (sin equipos todavía)';
+  return items.map(i => {
+    const nums = i.numeros && i.numeros.length ? ` — N° ${i.numeros.join(', ')}` : '';
+    const obs  = i.observacion ? ` _(${i.observacion})_` : '';
+    return `  • ${i.tipo} ×${i.cantidad}${nums}${obs}`;
+  }).join('\n');
+}
+
+function resumenCenso(sesion) {
+  const obj = sesion.capataz.objetivo_nombre || 'sin especificar';
+  return `📍 Objetivo: ${obj}\n📋 Stock:\n${listado(sesion.items)}`;
+}
+
+function pedirConfirmacion(sesion) {
+  return `${resumenCenso(sesion)}\n\n` +
+         `¿Confirmás? Respondé *sí* para guardar, o decime qué *agregar* o *corregir*.`;
+}
+
+// ── Guardado ──────────────────────────────────────────────────
+
+// Busca el censo del período para el objetivo (lo pudo crear el panel al
+// pedir stock); si no existe, lo crea como espontáneo. Reemplaza los items.
+async function guardarCenso(sesion) {
+  const periodo = periodoActual();
+  const objetivoId = sesion.capataz.objetivo_id;
+
+  let { data: censo } = await supabase
+    .from('censos_stock')
+    .select('id')
+    .eq('periodo', periodo)
+    .eq('objetivo_id', objetivoId)
+    .maybeSingle();
+
+  if (censo) {
+    const { error } = await supabase
+      .from('censos_stock')
+      .update({ estado: 'respondido', capataz_id: sesion.capataz.id, respondido_at: new Date().toISOString() })
+      .eq('id', censo.id);
+    if (error) { console.error('Error actualizando censo:', error); return null; }
+    // Si vuelve a mandar el stock en el mismo período, pisa lo anterior.
+    await supabase.from('censos_stock_items').delete().eq('censo_id', censo.id);
+  } else {
+    const { data: nuevo, error } = await supabase
+      .from('censos_stock')
+      .insert({
+        periodo,
+        objetivo_id:   objetivoId,
+        capataz_id:    sesion.capataz.id,
+        estado:        'respondido',
+        origen:        'espontaneo',
+        respondido_at: new Date().toISOString(),
+      })
+      .select('id').single();
+    if (error || !nuevo) { console.error('Error creando censo:', error); return null; }
+    censo = nuevo;
+  }
+
+  if (sesion.items && sesion.items.length) {
+    const items = sesion.items.map(i => ({
+      censo_id:    censo.id,
+      tipo_equipo: i.tipo,
+      cantidad:    i.cantidad,
+      numeros:     i.numeros || [],
+      observacion: i.observacion || null,
+    }));
+    const { error } = await supabase.from('censos_stock_items').insert(items);
+    if (error) { console.error('Error insertando items del censo:', error); return null; }
+  }
+  return censo;
+}
+
+// ── Entrada: el capataz arranca el envío de stock ─────────────
+
+function tieneSesionActiva(telefono) {
+  const tel = telefono.replace('whatsapp:', '').replace('+', '');
+  return !!sesiones[tel];
+}
+
+/**
+ * Arranca el flujo de stock. `resto` es lo que el capataz escribió
+ * después de la palabra "stock" (puede venir vacío).
+ */
+async function iniciarStock(telefono, resto) {
+  const tel = telefono.replace('whatsapp:', '').replace('+', '');
+
+  const capataz = await resolverCapataz(tel);
+  if (!capataz) {
+    return '❌ Tu número no está registrado en el sistema EcoService. Contactá a administración.';
+  }
+  if (!capataz.objetivo_id) {
+    return '⚠️ Tu número no tiene un objetivo asignado, así que no puedo registrar el stock. Avisá a administración.';
+  }
+  const nombre = capataz.nombre.split(' ')[0];
+
+  if (!resto || !resto.trim()) {
+    sesiones[tel] = { paso: 'esperando_listado', capataz };
+    return `Dale *${nombre}*, mandame el listado de maquinaria de tu objetivo ` +
+           `con cantidades y números de máquina, por ejemplo:\n\n` +
+           `_3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_`;
+  }
+
+  return await procesarListadoTexto(tel, capataz, resto.trim());
+}
+
+/** Interpreta el listado y pasa a confirmación. */
+async function procesarListadoTexto(tel, capataz, texto) {
+  let interpretado;
+  try {
+    interpretado = await interpretarStock(texto, null);
+  } catch (err) {
+    console.error('Error interpretando stock:', err);
+    return '⚠️ No pude interpretar el listado. ¿Podés escribirlo de nuevo?';
+  }
+
+  if (!interpretado.items.length) {
+    return '⚠️ No encontré equipos en el mensaje. Escribí el listado, por ejemplo: _3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4_';
+  }
+
+  sesiones[tel] = {
+    paso: 'confirmando',
+    capataz,
+    items: interpretado.items,
+    textoOriginal: texto,
+  };
+
+  const nombre = capataz.nombre.split(' ')[0];
+  return `Entendí esto, *${nombre}*:\n\n${pedirConfirmacion(sesiones[tel])}`;
+}
+
+// ── Continuación de la conversación ───────────────────────────
+
+async function continuarStock(telefono, mensaje) {
+  const tel = telefono.replace('whatsapp:', '').replace('+', '');
+  const sesion = sesiones[tel];
+  if (!sesion) return null;
+
+  const texto = (mensaje || '').trim();
+  const t = texto.toLowerCase();
+  const nombre = sesion.capataz.nombre.split(' ')[0];
+
+  if (sesion.paso === 'esperando_listado') {
+    return await procesarListadoTexto(tel, sesion.capataz, texto);
+  }
+
+  if (sesion.paso === 'confirmando') {
+    if (CANCELACIONES.includes(t)) {
+      delete sesiones[tel];
+      return `Listo *${nombre}*, cancelé el envío. Cuando quieras escribí *stock* de nuevo.`;
+    }
+
+    if (CONFIRMACIONES.includes(t)) {
+      if (!sesion.items || !sesion.items.length) {
+        return `El listado está vacío. Decime qué maquinaria tenés, o *cancelar* para salir.`;
+      }
+      const censo = await guardarCenso(sesion);
+      delete sesiones[tel];
+      if (!censo) return '⚠️ No pude guardar el stock. Avisá a administración.';
+      return `✅ Stock registrado, *${nombre}*. Gracias.\n\n${resumenCenso(sesion)}`;
+    }
+
+    // Cualquier otra cosa -> es un ajuste: reinterpretar con la IA
+    let actualizado;
+    try {
+      actualizado = await interpretarStock(texto, { items: sesion.items });
+    } catch (err) {
+      console.error('Error ajustando stock:', err);
+      return '⚠️ No entendí el cambio. Probá de nuevo, o respondé *sí* para guardar como está.';
+    }
+    sesion.items = actualizado.items;
+
+    return `Actualicé el listado:\n\n${pedirConfirmacion(sesion)}`;
+  }
+
+  return null;
+}
+
+module.exports = { iniciarStock, tieneSesionActiva, continuarStock, periodoActual };
