@@ -487,8 +487,14 @@ router.get('/api/compras/remitos', auth, async (req, res) => {
   }
 });
 
+// Modelo para EXTRACCIÓN de documentos (OCR estructurado, no razonamiento):
+// Haiku es notablemente más rápido que Sonnet y con la misma precisión en esta
+// tarea. Se puede forzar otro con ANTHROPIC_MODEL_EXTRACT.
+const MODEL_EXTRACT = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+
 // Extraer datos de una factura con IA (proxy a Claude, key server-side)
 router.post('/api/compras/extract', auth, async (req, res) => {
+  const t0 = Date.now();
   try {
     const { fileData, fileType } = req.body || {};
     if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
@@ -515,13 +521,15 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         'content-type':      'application/json',
       },
       body: JSON.stringify({
-        model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
-        max_tokens: 8000,
+        model:      MODEL_EXTRACT,
+        max_tokens: 4000,   // una factura rara vez pasa de 30 ítems
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
     });
     const data = await resp.json();
     const txt = (data.content || []).map(c => c.text || '').join('');
+    console.log(`[factura] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+      `(${MODEL_EXTRACT}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
     try {
       const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
       res.json(parsed);
@@ -787,16 +795,19 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
     const part = isImg
       ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
       : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
+    // JSON COMPACTO: con claves de una letra el modelo escribe ~40% menos tokens
+    // de salida, y en un listado de 100 filas eso es la mayor parte del tiempo.
+    // Se expanden a los nombres reales acá abajo.
     const prompt = 'Esto es un LISTADO CONSOLIDADO de remitos de combustible de un proveedor argentino ' +
-      '(una fila por entrega, con fecha, número de comprobante/remito, chofer, patente, artículo, cantidad en litros, precio y total). ' +
-      'Devolvé ÚNICAMENTE JSON sin backticks:\n' +
-      '{"proveedor":"string","periodo_desde":"YYYY-MM-DD","periodo_hasta":"YYYY-MM-DD",' +
-      '"filas":[{"fecha":"YYYY-MM-DD","numero_remito":"string","patente":"string","chofer":"string o null",' +
-      '"producto":"string","litros":0.0,"precio_unit":0.0,"total":0.0,"numero_factura":"string o null"}],' +
-      '"total_general":0.0}\n' +
-      'Reglas: el año de las fechas sacalo del encabezado del período. Una fila del JSON por cada línea producto ' +
-      '(si un remito tiene 2 productos, son 2 filas con el mismo numero_remito). Patente tal como figura. ' +
-      'Montos como números sin separador de miles. Campos ilegibles: null.';
+      '(una fila por entrega: fecha, número de comprobante/remito, chofer, patente, artículo, litros, precio, total). ' +
+      'Devolvé ÚNICAMENTE JSON compacto sin backticks, sin espacios ni saltos de línea innecesarios:\n' +
+      '{"p":"proveedor","d":"YYYY-MM-DD","h":"YYYY-MM-DD","t":0.0,' +
+      '"f":[["YYYY-MM-DD","nro_remito","patente","chofer","producto",litros,precio,total,"nro_factura"]]}\n' +
+      'Donde: p=proveedor, d=período desde, h=período hasta, t=total general, f=filas.\n' +
+      'Cada fila es un ARRAY en ese orden exacto: [fecha, nro_remito, patente, chofer, producto, litros, precio_unit, total, nro_factura].\n' +
+      'Reglas: el año de las fechas sacalo del encabezado del período. Una fila por cada línea de producto ' +
+      '(si un remito tiene 2 productos, son 2 filas con el mismo nro_remito). Patente tal como figura. ' +
+      'Montos como números sin separador de miles. Campos ilegibles o ausentes: null.';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -805,13 +816,15 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
         'content-type':      'application/json',
       },
       body: JSON.stringify({
-        model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
-        max_tokens: 32000,
+        model:      MODEL_EXTRACT,
+        max_tokens: 16000,   // alcanza para ~300 filas en formato compacto
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
     });
     const data = await resp.json();
-    console.log(`[listado] anthropic status=${resp.status} stop=${data.stop_reason || '?'} en ${Math.round((Date.now() - t0) / 1000)}s`);
+    const segs = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[listado] anthropic status=${resp.status} stop=${data.stop_reason || '?'} en ${segs}s ` +
+      `(${MODEL_EXTRACT}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
     if (!resp.ok) {
       const emsg = (data.error && data.error.message) || ('HTTP ' + resp.status);
       console.error('[listado] error anthropic:', emsg);
@@ -823,8 +836,21 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
     const i0 = raw.indexOf('{'), i1 = raw.lastIndexOf('}');
     if (i0 >= 0 && i1 > i0) raw = raw.slice(i0, i1 + 1);
     try {
-      const parsed = JSON.parse(raw);
-      console.log(`[listado] extraídas ${(parsed.filas || []).length} filas de ${parsed.proveedor || '?'}`);
+      const c = JSON.parse(raw);
+      // Expandir el formato compacto al que espera el resto del sistema
+      const parsed = {
+        proveedor:     c.p || c.proveedor || null,
+        periodo_desde: c.d || c.periodo_desde || null,
+        periodo_hasta: c.h || c.periodo_hasta || null,
+        total_general: Number(c.t != null ? c.t : c.total_general) || 0,
+        filas: (c.f || c.filas || []).map(f => Array.isArray(f)
+          ? { fecha: f[0] || null, numero_remito: f[1] || null, patente: f[2] || null,
+              chofer: f[3] || null, producto: f[4] || null,
+              litros: Number(f[5]) || 0, precio_unit: Number(f[6]) || 0,
+              total: Number(f[7]) || 0, numero_factura: f[8] || null }
+          : f),   // por si el modelo devolvió objetos igual
+      };
+      console.log(`[listado] extraídas ${parsed.filas.length} filas de ${parsed.proveedor || '?'} en ${segs}s`);
       res.json(parsed);
     } catch (e) {
       console.error('[listado] respuesta no parseable (stop=' + (data.stop_reason || '?') + '):', txt.slice(0, 300));
