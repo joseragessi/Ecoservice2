@@ -158,6 +158,23 @@ router.get('/api/insumos', auth, async (req, res) => {
 
 router.post('/api/insumos/:id', auth, async (req, res) => {
   try {
+    // Si el panel manda items, reemplazan a los del pedido (lo que realmente
+    // se entrega puede diferir de lo pedido). El pedido original queda en
+    // texto_original como respaldo.
+    if (Array.isArray(req.body.items)) {
+      const limpios = req.body.items
+        .map(i => ({ pedido_id: req.params.id,
+          item: String(i.item || '').trim(), cantidad: i.cantidad ? String(i.cantidad).trim() : null }))
+        .filter(i => i.item);
+      const { error: eDel } = await supabase
+        .from('pedidos_insumos_items').delete().eq('pedido_id', req.params.id);
+      if (eDel) throw eDel;
+      if (limpios.length) {
+        const { error: eIns } = await supabase.from('pedidos_insumos_items').insert(limpios);
+        if (eIns) throw eIns;
+      }
+    }
+
     const patch = {};
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
     const { data, error } = await supabase
