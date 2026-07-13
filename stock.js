@@ -96,8 +96,36 @@ async function guardarCenso(sesion) {
     }));
     const { error } = await supabase.from('censos_stock_items').insert(items);
     if (error) { console.error('Error insertando items del censo:', error); return null; }
+    await sembrarInventario(objetivoId, sesion.items);
   }
   return censo;
+}
+
+/**
+ * Semilla del inventario oficial: si el objetivo NO tiene inventario cargado,
+ * el primer censo lo crea. Si ya tiene, no se toca — los censos siguientes solo
+ * se comparan contra él (el desvío se calcula en el panel).
+ */
+async function sembrarInventario(objetivoId, items) {
+  try {
+    const { data: yaHay } = await supabase
+      .from('stock_objetivo').select('id').eq('objetivo_id', objetivoId).limit(1);
+    if (yaHay && yaHay.length) return;   // ya tiene inventario: no pisar nunca
+
+    const filas = items.map(i => ({
+      objetivo_id: objetivoId,
+      tipo_equipo: i.tipo,
+      cantidad:    i.cantidad,
+      numeros:     i.numeros || [],
+      observacion: i.observacion || null,
+      origen:      'censo',
+    }));
+    const { error } = await supabase.from('stock_objetivo').insert(filas);
+    if (error) { console.error('[stock] error sembrando inventario:', error); return; }
+    console.log(`[stock] inventario sembrado para objetivo ${objetivoId}: ${filas.length} tipos`);
+  } catch (err) {
+    console.error('[stock] error sembrando inventario:', err.message || err);
+  }
 }
 
 // ── Entrada: el capataz arranca el envío de stock ─────────────
