@@ -498,9 +498,15 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
     const prompt = 'Analizá esta factura argentina y devolvé ÚNICAMENTE JSON sin backticks:\n' +
       '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","proveedor":"string","cuit":"string",' +
-      '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"iva":0.00}],' +
+      '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"monto_iva":0.00}],' +
       '"total_sin_iva":0.00,"total_iva":0.00}\n' +
-      'Montos como números. Campos ilegibles: null.';
+      'Reglas:\n' +
+      '- Montos como números, sin separador de miles. Campos ilegibles: null.\n' +
+      '- El IVA de cada ítem va en "monto_iva" (NO en "iva").\n' +
+      '- Si la factura NO desglosa el IVA por ítem y solo lo trae en el total, ' +
+      'prorrateá el IVA total entre los ítems proporcional a su monto_sin_iva, ' +
+      'de modo que la suma de los monto_iva dé exactamente total_iva.\n' +
+      '- La suma de monto_sin_iva de los ítems tiene que dar total_sin_iva.';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
