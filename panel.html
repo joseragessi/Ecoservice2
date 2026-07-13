@@ -2156,14 +2156,33 @@ function vComprasDetalle(view){
 
   <div class="panel">
     <div class="panel-title" style="margin-bottom:10px">Ítems</div>
-    ${(inv.items||[]).length?`<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th></tr></thead>
-      <tbody>${(inv.items||[]).map(i=>`<tr><td>${i.descripcion||'—'}</td>
-        <td class="num money">${money(i.monto_sin_iva||0)}</td>
-        <td class="num money sub">${money(i.monto_iva||0)}</td></tr>`).join('')}
+    ${(()=>{
+      const items=inv.items||[];
+      if(!items.length)return '<div class="sub" style="padding:10px 0">La factura no tiene ítems cargados.</div>';
+      // Muchas facturas traen el IVA solo en el total, no por línea. Si los ítems
+      // no lo tienen desglosado, se prorratea proporcional al neto de cada uno,
+      // así el desglose cierra con el total de la factura.
+      // (`iva` es el nombre viejo del campo; se acepta por compatibilidad.)
+      const ivaBruto=i=>Number(i.monto_iva!=null?i.monto_iva:i.iva)||0;
+      const ivaItems=items.reduce((s,i)=>s+ivaBruto(i),0);
+      const ivaFact=Number(inv.total_iva)||0;
+      const netoItems=items.reduce((s,i)=>s+(Number(i.monto_sin_iva)||0),0);
+      const prorratear=ivaItems===0&&ivaFact>0&&netoItems>0;
+      const ivaDe=i=>prorratear
+        ?ivaFact*(Number(i.monto_sin_iva)||0)/netoItems
+        :ivaBruto(i);
+      return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th></tr></thead>
+      <tbody>${items.map(i=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
+        return `<tr><td>${i.descripcion||'—'}</td>
+        <td class="num money">${money(n)}</td>
+        <td class="num money sub">${money(v)}</td>
+        <td class="num money">${money(n+v)}</td></tr>`;}).join('')}
       <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td>
         <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
-        <td class="num money"><b>${money(inv.total_iva||0)}</b></td></tr></tbody></table>`
-      :'<div class="sub" style="padding:10px 0">La factura no tiene ítems cargados.</div>'}
+        <td class="num money"><b>${money(ivaFact)}</b></td>
+        <td class="num money"><b>${money(bruto)}</b></td></tr></tbody></table>
+      ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}`;
+    })()}
   </div>`;
 }
 async function guardarEdicionCompra(){
