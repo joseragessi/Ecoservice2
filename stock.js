@@ -144,7 +144,9 @@ async function procesarListadoTexto(tel, capataz, texto) {
   }
 
   if (!interpretado.items.length) {
-    return '⚠️ No encontré equipos en el mensaje. Escribí el listado, por ejemplo: _3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4_';
+    return '⚠️ No encontré equipos en el mensaje.\n\n' +
+           'Si querés informar el stock, escribí el listado, por ejemplo: _3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4_\n\n' +
+           'Si necesitabas otra cosa, escribí *menu*.';
   }
 
   sesiones[tel] = {
@@ -205,4 +207,28 @@ async function continuarStock(telefono, mensaje) {
   return null;
 }
 
-module.exports = { iniciarStock, tieneSesionActiva, continuarStock, periodoActual };
+/**
+ * ¿Este teléfono tiene un pedido de stock PENDIENTE en el período actual?
+ * Se consulta en base (no en memoria) así sobrevive a los redeploys: el capataz
+ * puede contestar horas o días después de recibir el pedido, sin palabra clave.
+ */
+async function tienePedidoPendiente(telefono) {
+  const tel = telefono.replace('whatsapp:', '').replace('+', '');
+  try {
+    const capataz = await resolverCapataz(tel);
+    if (!capataz || !capataz.objetivo_id) return false;
+    const { data } = await supabase
+      .from('censos_stock')
+      .select('id')
+      .eq('periodo', periodoActual())
+      .eq('objetivo_id', capataz.objetivo_id)
+      .eq('estado', 'pendiente')
+      .maybeSingle();
+    return !!data;
+  } catch (err) {
+    console.error('[stock] error chequeando pedido pendiente:', err.message || err);
+    return false;
+  }
+}
+
+module.exports = { iniciarStock, tieneSesionActiva, continuarStock, periodoActual, tienePedidoPendiente };
