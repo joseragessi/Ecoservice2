@@ -673,6 +673,125 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
   }
 });
 
+// ── STOCK de maquinaria · censos por objetivo ──────────────────
+// El panel pide el stock por WhatsApp (notificarCapataz) y los capataces
+// responden por el bot (stock.js). Acá se listan los censos y se piden/reenvían.
+
+function periodoStockActual() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+}
+const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function mesLindo(periodo) {
+  const [a, m] = String(periodo).split('-').map(Number);
+  return (MESES_ES[(m || 1) - 1] || '') + ' ' + (a || '');
+}
+function mensajeStock(periodo) {
+  return `📋 *Stock de maquinaria — ${mesLindo(periodo)}*\n\n` +
+         `Necesitamos el listado de maquinaria de tu objetivo. ` +
+         `Respondé con la palabra *stock* seguida del listado, con cantidades y números de máquina.\n\n` +
+         `Ejemplo:\n_stock 3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_\n\n` +
+         `_EcoService · Logística_`;
+}
+
+router.get('/api/stock', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
+    const { data: censos, error: e1 } = await supabase
+      .from('censos_stock')
+      .select('*, objetivos(nombre), capataces(nombre), censos_stock_items(*)')
+      .eq('periodo', periodo)
+      .order('created_at', { ascending: true });
+    if (e1) throw e1;
+    const { data: pers, error: e2 } = await supabase
+      .from('censos_stock').select('periodo');
+    if (e2) throw e2;
+    const periodos = [...new Set([periodoStockActual(), ...(pers || []).map(p => p.periodo)])]
+      .sort().reverse();
+    res.json({ periodo, periodos, censos: censos || [] });
+  } catch (err) {
+    console.error('stock listar:', err);
+    res.status(500).json({ error: 'Error cargando el stock' });
+  }
+});
+
+// Pide el stock por WhatsApp. Sin objetivo_id: a todos los objetivos operativos
+// activos que aún no respondieron el período (crea el censo pendiente si no existe,
+// o reenvía si ya estaba pendiente). Con objetivo_id: solo a ese.
+router.post('/api/stock/pedir', auth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const periodo = String(body.periodo || '').trim() || periodoStockActual();
+
+    let qObjs = supabase.from('objetivos').select('id, nombre').eq('activo', true);
+    if (body.objetivo_id) qObjs = qObjs.eq('id', body.objetivo_id);
+    else qObjs = qObjs.eq('tipo', 'operativo');
+    const { data: objs, error: e1 } = await qObjs;
+    if (e1) throw e1;
+
+    const { data: caps, error: e2 } = await supabase
+      .from('capataces').select('id, nombre, telefono, objetivo_id').eq('activo', true);
+    if (e2) throw e2;
+
+    const { data: existentes, error: e3 } = await supabase
+      .from('censos_stock').select('id, objetivo_id, estado').eq('periodo', periodo);
+    if (e3) throw e3;
+    const porObj = {};
+    (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
+
+    const msg = mensajeStock(periodo);
+    let enviados = 0, sinCapataz = 0, yaRespondidos = 0;
+
+    for (const o of (objs || [])) {
+      const censo = porObj[o.id];
+      if (censo && censo.estado === 'respondido') { yaRespondidos++; continue; }
+      const capsObj = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
+      if (!capsObj.length) { sinCapataz++; continue; }
+
+      if (!censo) {
+        const { error } = await supabase.from('censos_stock')
+          .insert({ periodo, objetivo_id: o.id, estado: 'pendiente', origen: 'manual' });
+        if (error) { console.error('stock pedir insert:', error); continue; }
+      } else {
+        await supabase.from('censos_stock')
+          .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
+      }
+      for (const c of capsObj) await notificarCapataz(c.telefono, msg);
+      enviados++;
+    }
+    console.log(`[stock] pedido ${periodo}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos}`);
+    res.json({ enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos });
+  } catch (err) {
+    console.error('stock pedir:', err);
+    res.status(500).json({ error: 'Error pidiendo el stock' });
+  }
+});
+
+router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
+  try {
+    const { data: censo, error: e1 } = await supabase
+      .from('censos_stock').select('id, periodo, objetivo_id, estado').eq('id', req.params.id).single();
+    if (e1 || !censo) throw (e1 || new Error('Censo inexistente'));
+    if (censo.estado === 'respondido') return res.json({ enviados: 0, ya_respondido: true });
+
+    const { data: caps, error: e2 } = await supabase
+      .from('capataces').select('nombre, telefono')
+      .eq('activo', true).eq('objetivo_id', censo.objetivo_id);
+    if (e2) throw e2;
+    const conTel = (caps || []).filter(c => c.telefono);
+    if (!conTel.length) return res.json({ enviados: 0, sin_capataz: true });
+
+    const msg = mensajeStock(censo.periodo);
+    let enviados = 0;
+    for (const c of conTel) { if (await notificarCapataz(c.telefono, msg)) enviados++; }
+    await supabase.from('censos_stock')
+      .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
+    res.json({ enviados });
+  } catch (err) {
+    console.error('stock reenviar:', err);
+    res.status(500).json({ error: 'Error reenviando el pedido' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
