@@ -972,16 +972,27 @@ async function vStockInventario(view){
     const d=stockInv;const k=d.kpis||{};
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
-      <div class="view-desc">Inventario oficial de cada objetivo · el censo de ${mesStk(d.periodo)} se compara contra esto</div></div></div>
+      <div class="view-desc">Inventario oficial de cada objetivo · el censo de ${mesStk(d.periodo)} se compara contra esto</div></div>
+      <button class="btn" onclick="sembrarInv()">🌱 Sembrar desde el censo</button></div>
     ${tabsStk()}
+    ${k.huerfanos?`<div class="aviso-amarillo">${k.huerfanos} tipo${k.huerfanos>1?'s':''} de equipo que los capataces informaron todavía no está en el inventario oficial. Agregalos con el botón <b>+ Agregar</b> de cada fila, o sembralos todos de una.</div>`:''}
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Coinciden</div><div class="kpi-val green">${k.coinciden||0}</div><div class="kpi-sub">objetivos sin desvío</div></div>
       <div class="kpi ${k.faltantes?'':'plain'}"><div class="kpi-label">Faltantes</div><div class="kpi-val ${k.faltantes?'amber':''}">${k.faltantes||0}</div><div class="kpi-sub">máquinas no informadas</div></div>
       <div class="kpi plain"><div class="kpi-label">Sin inventario</div><div class="kpi-val">${k.sin_inventario||0}</div><div class="kpi-sub">objetivos que nunca censaron</div></div>
     </div>
     <div class="tablewrap">
-      <table><thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">Oficial</th><th class="num">Censo</th><th>Dif</th><th>Números</th><th style="width:90px"></th></tr></thead>
-      <tbody>${d.filas.length?d.filas.map(f=>`<tr>
+      <table><thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">Oficial</th><th class="num">Censo</th><th>Dif</th><th>Números</th><th style="width:120px"></th></tr></thead>
+      <tbody>${d.filas.length?d.filas.map(f=>f.huerfano?`<tr style="background:var(--papel)">
+        <td style="font-weight:500">${f.objetivo}</td>
+        <td>${f.tipo_equipo} <span class="badge b-blue" style="font-size:9.5px">nuevo</span></td>
+        <td class="num sub">—</td>
+        <td class="num">${f.censo}</td>
+        <td><span class="badge b-blue">sin inventario</span></td>
+        <td class="mono" style="font-size:11px;color:var(--tinta-3)">—</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn-salir" style="padding:4px 9px;font-size:11.5px;color:var(--brote-2)" onclick="incorporarInv('${f.objetivo_id}','${String(f.tipo_equipo).replace(/'/g,"\\'")}',${f.censo})">+ Agregar</button>
+        </td></tr>`:`<tr>
         <td style="font-weight:500">${f.objetivo}</td>
         <td>${f.tipo_equipo}</td>
         <td class="num">${f.cantidad}</td>
@@ -992,10 +1003,27 @@ async function vStockInventario(view){
           <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="editarInv(${f.id})">Editar</button>
           <button class="btn-salir" style="padding:4px 8px;font-size:11.5px;color:var(--rojo)" onclick="borrarInv(${f.id})" title="Borrar línea">✕</button>
         </td></tr>`).join('')
-        :'<tr><td colspan="7"><div class="sub" style="padding:14px">Todavía no hay inventario. Se siembra solo con el primer censo de cada objetivo.</div></td></tr>'}</tbody></table>
+        :'<tr><td colspan="7"><div class="sub" style="padding:14px">Todavía no hay inventario. Se siembra solo con el primer censo de cada objetivo, o tocá "Sembrar desde el censo".</div></td></tr>'}</tbody></table>
     </div>
     <div class="sub" style="margin-top:10px">🌱 El primer censo de cada objetivo siembra su inventario. Después el censo solo compara: para cambiar el oficial, editalo acá.</div>`;
   }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">No pude cargar el inventario. ${e.message||''}</div>`;}
+}
+async function sembrarInv(){
+  if(!confirm('Se crean las líneas de inventario que falten, tomando lo que informaron los capataces en este período.\nNo se pisa nada de lo que ya está cargado. ¿Dale?'))return;
+  try{
+    const r=await api('/api/stock/inventario/sembrar',{method:'POST',
+      body:JSON.stringify({periodo:stockInv?stockInv.periodo:''})});
+    alert(r.creadas?`Líneas creadas: ${r.creadas}`:'No había nada nuevo para sembrar.');
+    go('stock');
+  }catch(e){alert('No pude sembrar: '+(e.message||''));}
+}
+async function incorporarInv(objetivoId,tipo,cantidad){
+  if(!confirm(`Agregar "${tipo}" ×${cantidad} al inventario oficial de este objetivo?\nDespués podés editar la cantidad y los números.`))return;
+  try{
+    await api('/api/stock/inventario',{method:'POST',
+      body:JSON.stringify({objetivo_id:objetivoId,tipo_equipo:tipo,cantidad,numeros:[]})});
+    go('stock');
+  }catch(e){alert('No pude agregar: '+(e.message||''));}
 }
 function editarInv(id){
   const f=(stockInv.filas||[]).find(x=>x.id===id);if(!f)return;
