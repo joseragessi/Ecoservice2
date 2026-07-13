@@ -185,6 +185,21 @@ select.reasign:focus{border-color:var(--brote)}
 .chip-f:hover{border-color:var(--linea-2);color:var(--tinta)}
 .chip-f.on{background:var(--brote-soft);border-color:transparent;color:var(--brote-2)}
 .chip-f .c{font-family:'JetBrains Mono',monospace;opacity:.7;margin-left:4px}
+.chip-f .chip-x{margin-left:7px;opacity:.45;font-weight:700;padding:0 2px}
+.chip-f .chip-x:hover{opacity:1;color:var(--rojo)}
+
+/* KPIs clickeables (análisis de combustible) */
+.kpi.click{cursor:pointer;user-select:none;transition:.14s}
+.kpi.click:hover{border-color:var(--linea-2)}
+.kpi.click.on{border-color:var(--brote);box-shadow:0 0 0 1px var(--brote)}
+
+/* Buscador y orden de tabla (análisis) */
+.busca{background:var(--blanco);border:1px solid var(--linea);border-radius:8px;padding:8px 12px;
+  font-family:inherit;font-size:12.5px;outline:none;width:200px;box-shadow:var(--sombra)}
+.busca:focus{border-color:var(--brote)}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--tinta)}
+th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
 
 /* left filter sidebar (reparaciones) */
 .repwrap{display:grid;grid-template-columns:186px 1fr 368px;gap:16px;align-items:start}
@@ -620,6 +635,11 @@ let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
 let combRemFile=null;
 let combRemExtracted=null;
 let combAna=null;               // último análisis (para el detalle lateral)
+let combRemSel=null;            // selección de listados: null=último | 'todos' | [ids]
+let combAnaFiltro='';           // filtro por KPI: '' | 'sin' | 'desvio'
+let combAnaBusca='';            // búsqueda por patente
+let combAnaOrden={col:'litros_prov',dir:-1}; // orden de la tabla
+let combAnaSelKey=null;         // patente seleccionada (clave normalizada)
 
 async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
@@ -674,7 +694,9 @@ async function combRemGuardar(){
   if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   try{
     await api('/api/combustible/remito',{method:'POST',body:JSON.stringify(combRemExtracted)});
-    combRemStep='';combRemFile=null;combRemExtracted=null;go('combustible');
+    combRemStep='';combRemFile=null;combRemExtracted=null;
+    combRemSel=null;combAnaFiltro='';combAnaBusca=''; // el recién subido pasa a ser el default
+    go('combustible');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar y conciliar';}alert('No se pudo guardar: '+(e.message||''));}
 }
 async function vCombAnalisis(view,tabs){
@@ -716,40 +738,118 @@ async function vCombAnalisis(view,tabs){
   }
   // Vista de análisis — maestro-detalle: unidades a la izquierda, detalle al costado
   try{
-    combAna=await api('/api/combustible/analisis');
+    const qs=combRemSel==='todos'?'?ids=todos'
+      :(Array.isArray(combRemSel)&&combRemSel.length?'?ids='+combRemSel.join(','):'');
+    combAna=await api('/api/combustible/analisis'+qs);
     const a=combAna;const k=a.kpis||{};
-    const semaforo=u=>u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>';
+    combAnaSelKey=null; // el detalle se rearma al tocar una unidad
+    const aplicados=new Set(a.ids_aplicados||[]);
+    const chips=a.remitos.length>1?`<div class="filters">
+      <div class="chip-f ${combRemSel==='todos'?'on':''}" onclick="combRemSel='todos';go('combustible')">Todos <span class="c">${a.remitos.length}</span></div>
+      ${a.remitos.map(r=>`<div class="chip-f ${combRemSel!=='todos'&&aplicados.has(String(r.id))?'on':''}" onclick="anaToggleListado('${r.id}')">
+        ${r.proveedor||'Listado'} · ${fechaAR(r.periodo_desde)} → ${fechaAR(r.periodo_hasta)} <span class="c">${r.filas} filas</span>
+        <span class="chip-x" onclick="combRemBorrar(event,'${r.id}')" title="Eliminar listado">✕</span></div>`).join('')}
+    </div>`
+    :a.remitos.length===1?`<div class="filters">
+      <div class="chip-f on">${a.remitos[0].proveedor||'Listado'} · ${fechaAR(a.remitos[0].periodo_desde)} → ${fechaAR(a.remitos[0].periodo_hasta)} <span class="c">${a.remitos[0].filas} filas</span>
+      <span class="chip-x" onclick="combRemBorrar(event,'${a.remitos[0].id}')" title="Eliminar listado">✕</span></div>
+    </div>`:'';
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Análisis de consumo</div>
       <div class="view-desc">Listados del proveedor vs. tickets de los capataces · tocá una unidad para el detalle</div></div>
       <button class="btn" onclick="combRemStep='upload';combRemFile=null;go('combustible')">＋ Subir listado</button></div>
     ${tabs}
     ${a.remitos.length?'':'<div class="aviso-amarillo">Todavía no hay listados del proveedor cargados. Subí el primero para empezar a conciliar.</div>'}
+    ${chips}
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${Math.round(k.litros_prov||0)}</div><div class="kpi-sub">${k.entregas||0} entregas</div></div>
       <div class="kpi plain"><div class="kpi-label">Litros c/ ticket</div><div class="kpi-val">${Math.round(k.litros_ticket||0)}</div><div class="kpi-sub">cobertura ${k.cobertura_pct!=null?k.cobertura_pct+'%':'—'}</div></div>
-      <div class="kpi ${k.sin_ticket?'':'plain'}"><div class="kpi-label">Sin ticket</div><div class="kpi-val">${k.sin_ticket||0}</div><div class="kpi-sub">entregas sin comprobante</div></div>
-      <div class="kpi ${k.desvios?'':'plain'}"><div class="kpi-label">Desvíos</div><div class="kpi-val">${k.desvios||0}</div><div class="kpi-sub">litros no coinciden</div></div>
+      <div class="kpi click ${combAnaFiltro==='sin'?'on':''} ${k.sin_ticket?'':'plain'}" id="kpi-sin" onclick="anaSetFiltro('sin')" title="Filtrar unidades sin ticket"><div class="kpi-label">Sin ticket</div><div class="kpi-val">${k.sin_ticket||0}</div><div class="kpi-sub">entregas sin comprobante</div></div>
+      <div class="kpi click ${combAnaFiltro==='desvio'?'on':''} ${k.desvios?'':'plain'}" id="kpi-desvio" onclick="anaSetFiltro('desvio')" title="Filtrar unidades con desvío"><div class="kpi-label">Desvíos</div><div class="kpi-val">${k.desvios||0}</div><div class="kpi-sub">litros no coinciden</div></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <input class="busca" placeholder="Buscar patente…" value="${combAnaBusca.replace(/"/g,'&quot;')}" oninput="combAnaBusca=this.value;renderAnaTabla()">
+      <div class="sub" id="ana-count"></div>
     </div>
     <div class="split">
-      <div class="tablewrap">
-        <table><thead><tr><th>Patente</th><th class="num">Lt. proveedor</th><th class="num">Lt. tickets</th><th class="num">Dif.</th><th>Estado</th></tr></thead>
-        <tbody id="ana-list">${a.unidades.length?a.unidades.map((u,ix)=>`<tr onclick="selUniAna(${ix})" data-ix="${ix}" style="cursor:pointer">
-          <td><span class="uni-chip">${u.patente}</span></td>
-          <td class="num">${u.litros_prov}</td><td class="num">${u.litros_ticket}</td>
-          <td class="num" style="${Math.abs(u.dif)>1?'color:var(--rojo);font-weight:600':''}">${u.dif>0?'+':''}${u.dif}</td>
-          <td>${semaforo(u)}</td></tr>`).join('')
-          :'<tr><td colspan="5"><div class="sub" style="padding:14px">Sin datos aún.</div></td></tr>'}</tbody></table>
-      </div>
+      <div class="tablewrap" id="ana-tabla"></div>
       <div class="side" id="ana-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg><div>Elegí una unidad<br>para ver sus entregas y tickets</div></div></div>
     </div>`;
+    renderAnaTabla();
   }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el análisis. ${e.message||''}</div>`;}
 }
-function selUniAna(ix){
+function anaToggleListado(id){
   const a=combAna;if(!a)return;
-  const u=a.unidades[ix];if(!u)return;
-  document.querySelectorAll('#ana-list tr').forEach(t=>t.style.outline=(+t.dataset.ix===ix)?'2px solid var(--brote)':'none');
+  id=String(id);
+  let sel=combRemSel==='todos'?[]:
+    Array.isArray(combRemSel)?combRemSel.slice():(a.ids_aplicados||[]).slice();
+  if(combRemSel==='todos'){sel=[id];}          // desde "todos", quedarse solo con este
+  else if(sel.includes(id)){if(sel.length>1)sel=sel.filter(x=>x!==id);} // no dejar vacío
+  else sel.push(id);
+  combRemSel=sel;
+  go('combustible');
+}
+async function combRemBorrar(ev,id){
+  ev.stopPropagation();
+  if(!confirm('¿Eliminar este listado del proveedor?\nSe quita del análisis. Las cargas de los capataces no se tocan.'))return;
+  try{
+    await api('/api/combustible/remito/'+id,{method:'DELETE'});
+    if(Array.isArray(combRemSel)){
+      combRemSel=combRemSel.filter(x=>x!==String(id));
+      if(!combRemSel.length)combRemSel=null;
+    }
+    go('combustible');
+  }catch(e){alert('No se pudo eliminar: '+(e.message||''));}
+}
+function anaSetFiltro(f){
+  combAnaFiltro=combAnaFiltro===f?'':f;
+  const ks=document.getElementById('kpi-sin'),kd=document.getElementById('kpi-desvio');
+  if(ks)ks.classList.toggle('on',combAnaFiltro==='sin');
+  if(kd)kd.classList.toggle('on',combAnaFiltro==='desvio');
+  renderAnaTabla();
+}
+function anaOrdenar(col){
+  if(combAnaOrden.col===col)combAnaOrden.dir=-combAnaOrden.dir;
+  else combAnaOrden={col,dir:col==='patente'?1:-1};
+  renderAnaTabla();
+}
+function anaKey(p){const k=String(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');return k||'SINPAT';}
+function renderAnaTabla(){
+  const cont=document.getElementById('ana-tabla');
+  const a=combAna;if(!cont||!a)return;
+  let us=(a.unidades||[]).slice();
+  if(combAnaFiltro==='sin')us=us.filter(u=>u.sin_ticket>0);
+  if(combAnaFiltro==='desvio')us=us.filter(u=>u.sin_ticket===0&&Math.abs(u.dif)>1);
+  if(combAnaBusca.trim()){const b=anaKey(combAnaBusca);us=us.filter(u=>anaKey(u.patente).includes(b));}
+  const{col,dir}=combAnaOrden;
+  const rk=u=>u.sin_ticket>0?2:Math.abs(u.dif)>1?1:0;
+  us.sort((x,y)=>col==='patente'?dir*String(x.patente).localeCompare(String(y.patente))
+    :col==='estado'?dir*(rk(x)-rk(y))
+    :dir*((x[col]||0)-(y[col]||0)));
+  const arr=c=>combAnaOrden.col===c?`<span class="arr">${combAnaOrden.dir>0?'▲':'▼'}</span>`:'';
+  const semaforo=u=>u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>';
+  cont.innerHTML=`<table><thead><tr>
+    <th class="sortable" onclick="anaOrdenar('patente')">Patente${arr('patente')}</th>
+    <th class="num sortable" onclick="anaOrdenar('litros_prov')">Lt. proveedor${arr('litros_prov')}</th>
+    <th class="num sortable" onclick="anaOrdenar('litros_ticket')">Lt. tickets${arr('litros_ticket')}</th>
+    <th class="num sortable" onclick="anaOrdenar('dif')">Dif.${arr('dif')}</th>
+    <th class="sortable" onclick="anaOrdenar('estado')">Estado${arr('estado')}</th></tr></thead>
+  <tbody id="ana-list">${us.length?us.map(u=>{const key=anaKey(u.patente);
+    return `<tr onclick="selUniAna('${key}')" data-key="${key}" style="cursor:pointer;${key===combAnaSelKey?'outline:2px solid var(--brote)':''}">
+    <td><span class="uni-chip">${u.patente}</span></td>
+    <td class="num">${u.litros_prov}</td><td class="num">${u.litros_ticket}</td>
+    <td class="num" style="${Math.abs(u.dif)>1?'color:var(--rojo);font-weight:600':''}">${u.dif>0?'+':''}${u.dif}</td>
+    <td>${semaforo(u)}</td></tr>`;}).join('')
+    :`<tr><td colspan="5"><div class="sub" style="padding:14px">${(a.unidades||[]).length?'Ninguna unidad coincide con el filtro.':'Sin datos aún.'}</div></td></tr>`}</tbody></table>`;
+  const cnt=document.getElementById('ana-count');
+  if(cnt)cnt.textContent=us.length===(a.unidades||[]).length?us.length+' unidades':us.length+' de '+(a.unidades||[]).length+' unidades';
+}
+function selUniAna(key){
+  const a=combAna;if(!a)return;
   const nP=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const u=(a.unidades||[]).find(x=>anaKey(x.patente)===key);if(!u)return;
+  combAnaSelKey=key;
+  document.querySelectorAll('#ana-list tr').forEach(t=>t.style.outline=(t.dataset.key===key)?'2px solid var(--brote)':'none');
   const pat=nP(u.patente);
   // Entregas de esta unidad: con ticket, con desvío, y sin ticket
   const entregas=[
