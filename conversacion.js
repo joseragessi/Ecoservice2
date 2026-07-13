@@ -147,7 +147,8 @@ async function procesarMensaje(telefono, mensaje) {
     return `👋 Hola *${capataz.nombre}*. ¿Qué necesitás?\nRespondé con el número:\n\n` +
            `  1. ⛽ Cargar combustible\n` +
            `  2. 📦 Pedir insumos\n` +
-           `  3. 🔧 Reportar una reparación`;
+           `  3. 🔧 Reportar una reparación\n` +
+           `  4. 📋 Informar stock de maquinaria`;
   }
 
   const s = sesiones[tel];
@@ -167,7 +168,11 @@ async function procesarMensaje(telefono, mensaje) {
     if (op === '3') {
       return iniciarIncidencia(tel, s._capataz);
     }
-    return 'Respondé con *1* (combustible), *2* (insumos) o *3* (reparación).';
+    if (op === '4') {
+      limpiarSesion(tel);
+      return { __derivar: 'stock' };    // index.js arranca el flujo de stock
+    }
+    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación) o *4* (stock).';
   }
 
   // P1: tipo de equipo
