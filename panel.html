@@ -404,6 +404,7 @@ let token = localStorage.getItem('eco_token') || null;
 let objetivos = [];
 let insumosData = [], facturasData = [], repData = [], mecanicos = [];
 let filtroFact = 'pendiente', filtroIns = '';
+let insumoEntrega = null;   // pedido en el modal de entrega
 let repFEstado = '', repFPrio = '', repFMec = '';
 
 /* Estados y colores de reparaciones */
@@ -464,7 +465,7 @@ async function refrescarContadores(){
     const d=await api('/api/dashboard');
     const cf=document.getElementById('c-fact'), ci=document.getElementById('c-ins');
     if(cf) cf.textContent=d.facturas.pendientes;
-    if(ci) ci.textContent=d.insumos.pendientes;
+    if(ci) ci.textContent=d.insumos.pendientes+(d.insumos.en_compra||0);
   }catch(e){}
   try{
     const reps=await api('/api/reparaciones');
@@ -500,7 +501,7 @@ async function vDashboard(view){
     <div class="kpis">
       <div class="kpi amber"><div class="kpi-label">Facturas pendientes</div><div class="kpi-val amber">${d.facturas.pendientes}</div><div class="kpi-sub">${money0(d.facturas.total_pendiente)} por imputar</div></div>
       <div class="kpi"><div class="kpi-label">Facturas aprobadas</div><div class="kpi-val green">${d.facturas.aprobadas}</div><div class="kpi-sub">listas para pagar</div></div>
-      <div class="kpi amber"><div class="kpi-label">Insumos pendientes</div><div class="kpi-val amber">${d.insumos.pendientes}</div><div class="kpi-sub">${d.insumos.en_compra} en compra</div></div>
+      <div class="kpi amber"><div class="kpi-label">Insumos pendientes</div><div class="kpi-val amber">${d.insumos.pendientes+(d.insumos.en_compra||0)}</div><div class="kpi-sub">por entregar</div></div>
       <div class="kpi plain"><div class="kpi-label">Combustible del mes</div><div class="kpi-val">${d.combustible.cargas_mes}</div><div class="kpi-sub">${Number(d.combustible.litros_mes||0).toLocaleString('es-AR')} lt · ${d.combustible.sin_facturar} sin facturar</div></div>
     </div>
     <div class="grid g-2">
@@ -584,10 +585,13 @@ async function guardarFactura(id){
 /* ===== Insumos ===== */
 async function vInsumos(view){
   try{
-    const q=filtroIns?'?estado='+filtroIns:'';
-    insumosData=await api('/api/insumos'+q);
-    const chips=['','pendiente','en_compra','entregado'].map(e=>
-      `<div class="chip-f ${filtroIns===e?'on':''}" onclick="filtroIns='${e}';go('insumos')">${e?cap(e):'Todos'}</div>`).join('');
+    insumosData=await api('/api/insumos');
+    // 'en_compra' quedó como estado legacy: en la UI cuenta como pendiente.
+    const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
+    if(filtroIns==='pendiente')insumosData=insumosData.filter(esPend);
+    else if(filtroIns==='entregado')insumosData=insumosData.filter(p=>p.estado==='entregado');
+    const chips=[['','Todos'],['pendiente','Pendiente'],['entregado','Entregado']].map(([e,l])=>
+      `<div class="chip-f ${filtroIns===e?'on':''}" onclick="filtroIns='${e}';go('insumos')">${l}</div>`).join('');
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Pedidos de insumos</div>
       <div class="view-desc">Del pedido del capataz por WhatsApp hasta la entrega en depósito</div></div></div>
@@ -595,12 +599,12 @@ async function vInsumos(view){
     <div class="split">
       <div class="tablewrap"><table><thead><tr><th>Objetivo</th><th>Pedido</th><th style="width:170px">Estado</th></tr></thead>
         <tbody id="ins-body">${insumosData.length?insumosData.map((p,ix)=>{
-          const idx={pendiente:0,en_compra:1,entregado:2}[p.estado]??0;
+          const idx=p.estado==='entregado'?1:0;
           const items=(p.pedidos_insumos_items||[]).map(i=>i.item).join(', ');
           return `<tr onclick="selInsumo(${ix})" data-ix="${ix}">
             <td><div style="font-weight:600">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div><div class="sub">${p.capataces?p.capataces.nombre:''}</div></td>
             <td>${items||'—'}</td>
-            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,3,false)+'<div class="sub mono" style="margin-top:5px">'+cap(p.estado)+'</div>'}</td></tr>`;}).join('')
+            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?'Entregado':'Pendiente')+'</div>'}</td></tr>`;}).join('')
           :'<tr><td colspan="3"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>No hay pedidos.</div></div></td></tr>'}</tbody></table></div>
       <div class="side" id="ins-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>Elegí un pedido<br>para ver el detalle</div></div></div>
     </div>`;
@@ -609,20 +613,63 @@ async function vInsumos(view){
 function selInsumo(ix){
   const p=insumosData[ix];
   document.querySelectorAll('#ins-body tr').forEach(t=>t.classList.toggle('sel',+t.dataset.ix===ix));
-  const idx={pendiente:0,en_compra:1,entregado:2}[p.estado]??0;
+  const idx=p.estado==='entregado'?1:0;
   const items=(p.pedidos_insumos_items||[]).map(i=>`<div class="mcard-row"><span>${i.item}</span><b>${i.cantidad||'—'}</b></div>`).join('');
   let acc='';
-  if(p.estado==='pendiente')acc=`<button class="btn" style="width:100%;justify-content:center" onclick="cambiarInsumo('${p.id}','en_compra')">Marcar en compra →</button>`;
-  else if(p.estado==='en_compra')acc=`<button class="btn" style="width:100%;justify-content:center" onclick="cambiarInsumo('${p.id}','entregado')">Marcar entregado →</button>`;
+  if(p.estado!=='cancelado'&&p.estado!=='entregado')
+    acc=`<button class="btn" style="width:100%;justify-content:center" onclick="abrirEntrega(${ix})">Marcar entregado →</button>`;
   const cancelar=(p.estado!=='cancelado'&&p.estado!=='entregado')?`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px;color:var(--rojo);border-color:var(--rojo-soft)" onclick="cambiarInsumo('${p.id}','cancelado')">Cancelar pedido</button>`:'';
   document.getElementById('ins-side').innerHTML=`
     <div class="side-id">PEDIDO DE INSUMOS</div>
     <div class="side-title">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div>
     <div class="side-meta">Pedido por ${p.capataces?p.capataces.nombre:'—'} · ${fechaAR(p.created_at)}</div>
-    ${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,3,false)+railLabels(['Pendiente','En compra','Entregado'],idx)}
+    ${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+railLabels(['Pendiente','Entregado'],idx)}
     <div class="divider"></div>
     <div class="field-l" style="margin-bottom:8px">Materiales</div>${items||'<div class="sub">—</div>'}
     <div class="divider"></div>${acc}${cancelar}`;
+}
+// Modal de entrega: se entrega lo tildado, con cantidades editables.
+// A veces no hay todo lo que pidieron — lo que se guarda (y lo que le llega
+// al capataz por WhatsApp) es lo que realmente sale del depósito.
+function abrirEntrega(ix){
+  const p=insumosData[ix];if(!p)return;
+  insumoEntrega=p;
+  const items=p.pedidos_insumos_items||[];
+  document.getElementById('mm-titulo').textContent='Entregar · '+(p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—'));
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:10px">Destildá lo que no tenés y ajustá cantidades. Al capataz le llega el detalle de lo que se entrega.</div>
+    ${items.length?items.map((i,n)=>`
+      <div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--linea)">
+        <input type="checkbox" id="ent-ck-${n}" checked style="accent-color:var(--brote)">
+        <span style="flex:1;font-size:13px;font-weight:500">${i.item}</span>
+        <input id="ent-cant-${n}" value="${(i.cantidad||'').replace(/"/g,'&quot;')}" placeholder="cant." style="width:90px;background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:7px 9px;font-family:inherit;font-size:12px;outline:none">
+      </div>`).join(''):'<div class="sub">El pedido no tiene ítems cargados.</div>'}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" id="ent-btn" onclick="confirmarEntrega()">Entregar y avisar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function confirmarEntrega(){
+  const p=insumoEntrega;if(!p)return;
+  const orig=p.pedidos_insumos_items||[];
+  const items=orig.map((i,n)=>({
+    incluir:document.getElementById('ent-ck-'+n).checked,
+    item:i.item,
+    cantidad:document.getElementById('ent-cant-'+n).value.trim()||null,
+  })).filter(i=>i.incluir).map(({item,cantidad})=>({item,cantidad}));
+  if(orig.length&&!items.length){alert('No tildaste ningún material. Si no se entrega nada, cancelá el pedido.');return;}
+  const btn=document.getElementById('ent-btn');
+  if(btn){btn.disabled=true;btn.textContent='Entregando…';}
+  try{
+    await api('/api/insumos/'+p.id,{method:'POST',body:JSON.stringify({estado:'entregado',items})});
+    cerrarMaestro();insumoEntrega=null;
+    go('insumos');refrescarContadores();
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Entregar y avisar';}
+    alert('No pude entregar: '+(e.message||''));
+  }
 }
 async function cambiarInsumo(id,estado){
   try{await api('/api/insumos/'+id,{method:'POST',body:JSON.stringify({estado})});go('insumos');refrescarContadores();}
