@@ -300,7 +300,9 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
 router.get('/api/mecanicos', auth, async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('mecanicos').select('id, nombre, habilidades').eq('activo', true).order('nombre');
+      .from('mecanicos').select('id, nombre, habilidades').eq('activo', true)
+      .or('rol_app.is.null,rol_app.neq.panol')   // el pañol vive en esta tabla pero no repara
+      .order('nombre');
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
@@ -312,7 +314,7 @@ router.get('/api/mecanicos', auth, async (req, res) => {
 // ── MAESTROS · ABM de mecánicos, objetivos y capataces ────────
 // Lista blanca de campos editables por tabla (protege columnas críticas)
 const CAMPOS_MAESTRO = {
-  mecanicos: ['nombre', 'habilidades', 'activo', 'usuario'],
+  mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo'],
 };
