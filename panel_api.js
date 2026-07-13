@@ -565,11 +565,93 @@ router.post('/api/compras/duplicado', auth, async (req, res) => {
   }
 });
 
+// ── Comprobantes (PDF/imagen de la factura) ───────────────────
+// Se guardan en Supabase Storage, no en la fila: el listado de Compras trae
+// las 210 facturas de una, y meter los PDF adentro lo volvería inusable.
+// En la fila queda solo la ruta; el archivo se pide aparte al abrir la ficha.
+const BUCKET = 'comprobantes';
+
+// Sube el comprobante y devuelve la ruta. Se llama al guardar la factura.
+async function subirComprobante(fileData, fileType, nombre) {
+  if (!fileData) return null;
+  try {
+    const ext = (fileType || '').startsWith('image/')
+      ? (fileType.split('/')[1] || 'jpg').replace('jpeg', 'jpg')
+      : 'pdf';
+    const ruta = `${new Date().toISOString().slice(0, 7)}/${crypto.randomBytes(8).toString('hex')}.${ext}`;
+    const buf = Buffer.from(fileData, 'base64');
+    const { error } = await supabaseCompras.storage.from(BUCKET)
+      .upload(ruta, buf, { contentType: fileType || 'application/pdf', upsert: false });
+    if (error) { console.error('[comprobante] error subiendo:', error.message); return null; }
+    console.log(`[comprobante] subido ${ruta} (${Math.round(buf.length / 1024)}kb)`);
+    return { ruta, tipo: fileType || 'application/pdf', nombre: nombre || null,
+             subido_at: new Date().toISOString() };
+  } catch (err) {
+    console.error('[comprobante] error subiendo:', err.message || err);
+    return null;   // que falle el archivo no debe impedir guardar la factura
+  }
+}
+
+// URL firmada temporal para ver el comprobante (el bucket es privado)
+router.get('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
+  try {
+    const { data: row, error: e0 } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    if (e0 || !row) return res.status(404).json({ error: 'Factura inexistente' });
+    const inv = aplanar(row);
+    if (!inv.comprobante || !inv.comprobante.ruta) {
+      return res.status(404).json({ error: 'Esta factura no tiene comprobante adjunto' });
+    }
+    const { data, error } = await supabaseCompras.storage.from(BUCKET)
+      .createSignedUrl(inv.comprobante.ruta, 3600);   // 1 hora
+    if (error) throw error;
+    res.json({ url: data.signedUrl, tipo: inv.comprobante.tipo, nombre: inv.comprobante.nombre });
+  } catch (err) {
+    console.error('compras comprobante:', err);
+    res.status(500).json({ error: 'Error abriendo el comprobante' });
+  }
+});
+
+// Adjuntar (o reemplazar) el comprobante de una factura ya cargada
+router.post('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
+  try {
+    const { fileData, fileType, fileName } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
+    const { data: row, error: e0 } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    if (e0 || !row) return res.status(404).json({ error: 'Factura inexistente' });
+    const inv = aplanar(row);
+
+    const comp = await subirComprobante(fileData, fileType, fileName);
+    if (!comp) return res.status(500).json({ error: 'No se pudo subir el archivo' });
+
+    // Si ya tenía uno, borrar el viejo para no dejar basura
+    if (inv.comprobante && inv.comprobante.ruta) {
+      await supabaseCompras.storage.from(BUCKET).remove([inv.comprobante.ruta]).catch(() => {});
+    }
+    const nuevo = { ...inv, comprobante: comp };
+    delete nuevo.id; delete nuevo.created_at;
+    const { data, error } = await supabaseCompras
+      .from('facturas').update({ data: nuevo }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('compras adjuntar comprobante:', err);
+    res.status(500).json({ error: 'Error adjuntando el comprobante' });
+  }
+});
+
 router.post('/api/compras/factura', auth, async (req, res) => {
   try {
     const inv = req.body || {};
+    // El PDF/imagen viaja aparte de los datos; se sube a Storage y en la fila
+    // queda solo la ruta.
+    const { fileData, fileType, fileName, ...datos } = inv;
+    const comp = await subirComprobante(fileData, fileType, fileName);
+    if (comp) datos.comprobante = comp;
+
     const { data, error } = await supabaseCompras
-      .from('facturas').insert({ numero_factura: inv.numero_factura || null, data: inv })
+      .from('facturas').insert({ numero_factura: datos.numero_factura || null, data: datos })
       .select().single();
     if (error) throw error;
     res.json(aplanar(data));
@@ -605,6 +687,15 @@ router.put('/api/compras/factura/:id', auth, async (req, res) => {
 
 router.delete('/api/compras/factura/:id', auth, async (req, res) => {
   try {
+    // Borrar también el comprobante del bucket, para no dejar archivos huérfanos
+    const { data: row } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    const inv = row ? aplanar(row) : null;
+    if (inv && inv.comprobante && inv.comprobante.ruta) {
+      const { error: eDel } = await supabaseCompras.storage.from(BUCKET)
+        .remove([inv.comprobante.ruta]);
+      if (eDel) console.error('[comprobante] no pude borrar el archivo:', eDel.message);
+    }
     const { error } = await supabaseCompras.from('facturas').delete().eq('id', req.params.id);
     if (error) throw error;
     res.json({ ok: true });
