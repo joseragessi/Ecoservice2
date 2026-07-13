@@ -78,22 +78,25 @@ router.post('/api/app/login', async (req, res) => {
     if (!usuario || !clave) return res.status(400).json({ error: 'Faltan usuario y clave' });
     const exp = Date.now() + 30 * 24 * 60 * 60 * 1000;   // 30 días (es una app de campo)
 
-    // 1) ¿Pañol? (usuarios de variable de entorno)
+    // Usuarios de la app: viven todos en `mecanicos`, con rol_app = mecanico | panol.
+    // Se dan de alta desde el panel (Maestros → Mecánicos).
+    const { data: u } = await supabase
+      .from('mecanicos').select('id, nombre, clave_hash, activo, rol_app')
+      .eq('usuario', usuario).maybeSingle();
+    if (u && u.activo && verificarClave(clave, u.clave_hash)) {
+      const rol = u.rol_app === 'panol' ? 'panol' : 'mecanico';
+      return res.json({
+        token: firmar({ rol, mid: u.id, nombre: u.nombre, exp }),
+        rol, nombre: u.nombre,
+      });
+    }
+
+    // Compatibilidad: pañol por variable de entorno (PANOL_USERS), si se usó
     const panol = usuariosPanol();
     if (panol[usuario] && panol[usuario] === clave) {
       return res.json({ token: firmar({ rol: 'panol', usuario, exp }), rol: 'panol', nombre: 'Pañol' });
     }
 
-    // 2) ¿Mecánico? (tabla mecanicos, clave hasheada)
-    const { data: mec } = await supabase
-      .from('mecanicos').select('id, nombre, clave_hash, activo')
-      .eq('usuario', usuario).maybeSingle();
-    if (mec && mec.activo && verificarClave(clave, mec.clave_hash)) {
-      return res.json({
-        token: firmar({ rol: 'mecanico', mid: mec.id, nombre: mec.nombre, exp }),
-        rol: 'mecanico', nombre: mec.nombre,
-      });
-    }
     res.status(401).json({ error: 'Usuario o clave incorrectos' });
   } catch (err) {
     console.error('app login:', err);
@@ -252,7 +255,19 @@ router.get('/app/sw.js', (_req, res) => {
   res.type('application/javascript');
   res.sendFile(path.join(__dirname, 'app-sw.js'));
 });
-router.get('/app/icon-192.png', (_req, res) => res.sendFile(path.join(__dirname, 'app-icon-192.png')));
-router.get('/app/icon-512.png', (_req, res) => res.sendFile(path.join(__dirname, 'app-icon-512.png')));
+// Los iconos van embebidos en base64 (app_icons.js) en vez de como archivos
+// binarios: así se pueden subir al repo por la interfaz web de GitHub sin que
+// se corrompan, que es lo que rompía la instalación de la PWA.
+const ICONOS = require('./app_icons');
+function servirIcono(b64) {
+  return (_req, res) => {
+    const buf = Buffer.from(b64, 'base64');
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  };
+}
+router.get('/app/icon-192.png', servirIcono(ICONOS.icon192));
+router.get('/app/icon-512.png', servirIcono(ICONOS.icon512));
 
 module.exports = { router, hashClave };
