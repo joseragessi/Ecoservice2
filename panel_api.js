@@ -707,7 +707,26 @@ router.get('/api/stock', auth, async (req, res) => {
     if (e2) throw e2;
     const periodos = [...new Set([periodoStockActual(), ...(pers || []).map(p => p.periodo)])]
       .sort().reverse();
-    res.json({ periodo, periodos, censos: censos || [] });
+
+    // Candidatos para pedir stock: objetivos operativos activos, con su capataz
+    // y el estado del censo de este período (si ya existe).
+    const { data: objs, error: e3 } = await supabase
+      .from('objetivos').select('id, nombre, tipo').eq('activo', true).eq('tipo', 'operativo');
+    if (e3) throw e3;
+    const { data: caps, error: e4 } = await supabase
+      .from('capataces').select('nombre, telefono, objetivo_id').eq('activo', true);
+    if (e4) throw e4;
+    const estadoPorObj = {};
+    (censos || []).forEach(c => { estadoPorObj[c.objetivo_id] = c.estado; });
+    const candidatos = (objs || []).map(o => {
+      const cs = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
+      return { id: o.id, nombre: o.nombre,
+        capataces: cs.map(c => c.nombre),
+        sin_capataz: cs.length === 0,
+        estado: estadoPorObj[o.id] || null };
+    }).sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    res.json({ periodo, periodos, censos: censos || [], candidatos });
   } catch (err) {
     console.error('stock listar:', err);
     res.status(500).json({ error: 'Error cargando el stock' });
@@ -723,8 +742,13 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
     const periodo = String(body.periodo || '').trim() || periodoStockActual();
 
     let qObjs = supabase.from('objetivos').select('id, nombre').eq('activo', true);
-    if (body.objetivo_id) qObjs = qObjs.eq('id', body.objetivo_id);
-    else qObjs = qObjs.eq('tipo', 'operativo');
+    if (Array.isArray(body.objetivo_ids) && body.objetivo_ids.length) {
+      qObjs = qObjs.in('id', body.objetivo_ids);   // selección explícita del panel
+    } else if (body.objetivo_id) {
+      qObjs = qObjs.eq('id', body.objetivo_id);
+    } else {
+      qObjs = qObjs.eq('tipo', 'operativo');
+    }
     const { data: objs, error: e1 } = await qObjs;
     if (e1) throw e1;
 
