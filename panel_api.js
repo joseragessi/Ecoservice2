@@ -1042,6 +1042,128 @@ router.get('/api/stock/historico/:objetivo_id', auth, async (req, res) => {
   }
 });
 
+// Resumen por objetivo: una fila por objetivo operativo con sus totales y desvío.
+router.get('/api/stock/objetivos', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
+    const { data: objs, error: e1 } = await supabase
+      .from('objetivos').select('id, nombre').eq('activo', true).eq('tipo', 'operativo');
+    if (e1) throw e1;
+    const { data: inv, error: e2 } = await supabase
+      .from('stock_objetivo').select('objetivo_id, tipo_equipo, cantidad');
+    if (e2) throw e2;
+    const { data: censos, error: e3 } = await supabase
+      .from('censos_stock')
+      .select('objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad)')
+      .eq('periodo', periodo);
+    if (e3) throw e3;
+
+    const invPorObj = {};
+    (inv || []).forEach(r => {
+      invPorObj[r.objetivo_id] = invPorObj[r.objetivo_id] || { total: 0, tipos: {} };
+      invPorObj[r.objetivo_id].total += r.cantidad || 0;
+      invPorObj[r.objetivo_id].tipos[r.tipo_equipo] = r.cantidad || 0;
+    });
+    const cenPorObj = {};
+    (censos || []).forEach(c => { cenPorObj[c.objetivo_id] = c; });
+
+    const filas = (objs || []).map(o => {
+      const i = invPorObj[o.id] || { total: 0, tipos: {} };
+      const c = cenPorObj[o.id];
+      const respondio = c && c.estado === 'respondido';
+      const tiposCenso = {};
+      if (respondio) (c.censos_stock_items || []).forEach(it => {
+        tiposCenso[it.tipo_equipo] = (tiposCenso[it.tipo_equipo] || 0) + (it.cantidad || 0);
+      });
+      const totalCenso = Object.values(tiposCenso).reduce((s, v) => s + v, 0);
+      // Desvío por tipo (une los tipos del inventario y los del censo)
+      const todos = new Set([...Object.keys(i.tipos), ...Object.keys(tiposCenso)]);
+      let conDesvio = 0;
+      todos.forEach(t => { if ((tiposCenso[t] || 0) !== (i.tipos[t] || 0)) conDesvio++; });
+      return {
+        id: o.id, nombre: o.nombre,
+        capataz:      c && c.capataces ? c.capataces.nombre : null,
+        estado:       c ? c.estado : null,
+        respondido_at: c ? c.respondido_at : null,
+        oficial:      i.total,
+        censo:        respondio ? totalCenso : null,
+        dif:          respondio ? totalCenso - i.total : null,
+        tipos_desvio: respondio ? conDesvio : null,
+        sin_inventario: i.total === 0 && !Object.keys(i.tipos).length,
+      };
+    }).sort((a, b) => a.nombre.localeCompare(b.nombre));
+    res.json({ periodo, filas });
+  } catch (err) {
+    console.error('stock objetivos:', err);
+    res.status(500).json({ error: 'Error cargando los objetivos' });
+  }
+});
+
+// Ficha completa de un objetivo: inventario + censo del período + histórico.
+router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
+    const objetivoId = req.params.id;
+
+    const { data: obj, error: e0 } = await supabase
+      .from('objetivos').select('id, nombre').eq('id', objetivoId).single();
+    if (e0) throw e0;
+    const { data: inv, error: e1 } = await supabase
+      .from('stock_objetivo').select('*').eq('objetivo_id', objetivoId).order('tipo_equipo');
+    if (e1) throw e1;
+    const { data: censo, error: e2 } = await supabase
+      .from('censos_stock')
+      .select('*, capataces(nombre), censos_stock_items(*)')
+      .eq('objetivo_id', objetivoId).eq('periodo', periodo).maybeSingle();
+    if (e2) throw e2;
+    const { data: hist, error: e3 } = await supabase
+      .from('censos_stock')
+      .select('periodo, respondido_at, censos_stock_items(tipo_equipo, cantidad)')
+      .eq('objetivo_id', objetivoId).eq('estado', 'respondido')
+      .order('periodo', { ascending: false });
+    if (e3) throw e3;
+
+    const respondio = censo && censo.estado === 'respondido';
+    const tiposCenso = {};
+    const numsCenso = {};
+    if (respondio) (censo.censos_stock_items || []).forEach(i => {
+      tiposCenso[i.tipo_equipo] = (tiposCenso[i.tipo_equipo] || 0) + (i.cantidad || 0);
+      numsCenso[i.tipo_equipo] = (i.numeros || []);
+    });
+
+    // Filas comparadas: todo lo que está en inventario + lo que informó y no está
+    const filas = (inv || []).map(r => ({
+      id: r.id, tipo_equipo: r.tipo_equipo, cantidad: r.cantidad,
+      numeros: r.numeros || [], observacion: r.observacion, origen: r.origen,
+      censo: respondio ? (tiposCenso[r.tipo_equipo] || 0) : null,
+      censo_numeros: numsCenso[r.tipo_equipo] || [],
+      dif: respondio ? (tiposCenso[r.tipo_equipo] || 0) - r.cantidad : null,
+    }));
+    const enInv = new Set((inv || []).map(r => r.tipo_equipo));
+    Object.entries(tiposCenso).forEach(([t, c]) => {
+      if (enInv.has(t)) return;
+      filas.push({ id: null, tipo_equipo: t, cantidad: 0, numeros: [],
+        censo: c, censo_numeros: numsCenso[t] || [], dif: c, huerfano: true });
+    });
+    filas.sort((a, b) => a.tipo_equipo.localeCompare(b.tipo_equipo));
+
+    res.json({
+      objetivo: obj, periodo, filas,
+      censo: censo ? { estado: censo.estado, respondido_at: censo.respondido_at,
+        reenviado_at: censo.reenviado_at, id: censo.id,
+        capataz: censo.capataces ? censo.capataces.nombre : null } : null,
+      historico: (hist || []).map(h => ({
+        periodo: h.periodo, respondido_at: h.respondido_at,
+        items: h.censos_stock_items || [],
+        total: (h.censos_stock_items || []).reduce((s, i) => s + (i.cantidad || 0), 0),
+      })),
+    });
+  } catch (err) {
+    console.error('stock ficha objetivo:', err);
+    res.status(500).json({ error: 'Error cargando la ficha del objetivo' });
+  }
+});
+
 // ── Servir el panel (HTML estático) ───────────────────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
