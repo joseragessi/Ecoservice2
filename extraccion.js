@@ -1,9 +1,9 @@
 // Extrae los datos de un comprobante de combustible (remito o factura)
 // usando la API de Claude con visión. Devuelve un objeto JSON estructurado.
 
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
-// (podés bajarlo a un modelo más económico si querés; verificá el string
-//  actual del modelo en https://docs.claude.com/en/docs/about-claude/models)
+// Extracción = OCR estructurado: Haiku es mucho más rápido que Sonnet y
+// igual de preciso acá. Override con ANTHROPIC_MODEL_EXTRACT.
+const MODEL = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
 
 const PROMPT = `Sos un asistente que extrae datos de comprobantes de carga de combustible
 de estaciones de servicio de Argentina. Te paso la foto de un comprobante.
@@ -48,6 +48,7 @@ Si un dato no está o no se lee con seguridad, poné null. No inventes valores.`
  * @returns {Promise<object>} JSON estructurado del comprobante
  */
 async function extraerComprobante(imagenBuffer, mediaType) {
+  const t0 = Date.now();
   const base64 = imagenBuffer.toString('base64');
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -76,6 +77,7 @@ async function extraerComprobante(imagenBuffer, mediaType) {
   }
 
   const data = await resp.json();
+  console.log(`[remito] extraído en ${((Date.now() - t0) / 1000).toFixed(1)}s (${MODEL})`);
   const texto = (data.content || [])
     .filter(b => b.type === 'text')
     .map(b => b.text)
