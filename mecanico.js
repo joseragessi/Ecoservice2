@@ -37,7 +37,8 @@ async function asignarMecanico(tipoFalla, tipoEquipo) {
   const { data: mecanicos, error } = await supabase
     .from('mecanicos')
     .select('id, nombre, habilidades')
-    .eq('activo', true);
+    .eq('activo', true)
+    .or('rol_app.is.null,rol_app.neq.panol');   // el pañol usa la misma tabla pero no repara
 
   if (error || !mecanicos?.length) return null;
 
