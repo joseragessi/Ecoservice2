@@ -185,8 +185,6 @@ select.reasign:focus{border-color:var(--brote)}
 .chip-f:hover{border-color:var(--linea-2);color:var(--tinta)}
 .chip-f.on{background:var(--brote-soft);border-color:transparent;color:var(--brote-2)}
 .chip-f .c{font-family:'JetBrains Mono',monospace;opacity:.7;margin-left:4px}
-.chip-f .chip-x{margin-left:7px;opacity:.45;font-weight:700;padding:0 2px}
-.chip-f .chip-x:hover{opacity:1;color:var(--rojo)}
 
 /* KPIs clickeables (análisis de combustible) */
 .kpi.click{cursor:pointer;user-select:none;transition:.14s}
@@ -640,6 +638,8 @@ let combAnaFiltro='';           // filtro por KPI: '' | 'sin' | 'desvio'
 let combAnaBusca='';            // búsqueda por patente
 let combAnaOrden={col:'litros_prov',dir:-1}; // orden de la tabla
 let combAnaSelKey=null;         // patente seleccionada (clave normalizada)
+let combRemVer=null;            // id del listado con el detalle abierto
+let combRemFilas={};            // cache de filas por listado {id:[filas]}
 
 async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
@@ -695,7 +695,7 @@ async function combRemGuardar(){
   try{
     await api('/api/combustible/remito',{method:'POST',body:JSON.stringify(combRemExtracted)});
     combRemStep='';combRemFile=null;combRemExtracted=null;
-    combRemSel=null;combAnaFiltro='';combAnaBusca=''; // el recién subido pasa a ser el default
+    combRemSel=null;combAnaFiltro='';combAnaBusca='';combRemVer=null; // el recién subido pasa a ser el default
     go('combustible');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar y conciliar';}alert('No se pudo guardar: '+(e.message||''));}
 }
@@ -743,26 +743,15 @@ async function vCombAnalisis(view,tabs){
     combAna=await api('/api/combustible/analisis'+qs);
     const a=combAna;const k=a.kpis||{};
     combAnaSelKey=null; // el detalle se rearma al tocar una unidad
-    const aplicados=new Set(a.ids_aplicados||[]);
-    const chips=a.remitos.length>1?`<div class="filters">
-      <div class="chip-f ${combRemSel==='todos'?'on':''}" onclick="combRemSel='todos';go('combustible')">Todos <span class="c">${a.remitos.length}</span></div>
-      ${a.remitos.map(r=>`<div class="chip-f ${combRemSel!=='todos'&&aplicados.has(String(r.id))?'on':''}" onclick="anaToggleListado('${r.id}')">
-        ${r.proveedor||'Listado'} · ${fechaAR(r.periodo_desde)} → ${fechaAR(r.periodo_hasta)} <span class="c">${r.filas} filas</span>
-        <span class="chip-x" onclick="combRemBorrar(event,'${r.id}')" title="Eliminar listado">✕</span></div>`).join('')}
-    </div>`
-    :a.remitos.length===1?`<div class="filters">
-      <div class="chip-f on">${a.remitos[0].proveedor||'Listado'} · ${fechaAR(a.remitos[0].periodo_desde)} → ${fechaAR(a.remitos[0].periodo_hasta)} <span class="c">${a.remitos[0].filas} filas</span>
-      <span class="chip-x" onclick="combRemBorrar(event,'${a.remitos[0].id}')" title="Eliminar listado">✕</span></div>
-    </div>`:'';
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Análisis de consumo</div>
       <div class="view-desc">Listados del proveedor vs. tickets de los capataces · tocá una unidad para el detalle</div></div>
       <button class="btn" onclick="combRemStep='upload';combRemFile=null;go('combustible')">＋ Subir listado</button></div>
     ${tabs}
     ${a.remitos.length?'':'<div class="aviso-amarillo">Todavía no hay listados del proveedor cargados. Subí el primero para empezar a conciliar.</div>'}
-    ${chips}
+    <div id="ana-listados"></div>
     <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${Math.round(k.litros_prov||0)}</div><div class="kpi-sub">${k.entregas||0} entregas</div></div>
+      <div class="kpi"><div class="kpi-label">Litros s/ proveedor</div><div class="kpi-val">${Math.round(k.litros_prov||0)}</div><div class="kpi-sub">${k.entregas||0} entregas · <span id="ana-lst-count"></span></div></div>
       <div class="kpi plain"><div class="kpi-label">Litros c/ ticket</div><div class="kpi-val">${Math.round(k.litros_ticket||0)}</div><div class="kpi-sub">cobertura ${k.cobertura_pct!=null?k.cobertura_pct+'%':'—'}</div></div>
       <div class="kpi click ${combAnaFiltro==='sin'?'on':''} ${k.sin_ticket?'':'plain'}" id="kpi-sin" onclick="anaSetFiltro('sin')" title="Filtrar unidades sin ticket"><div class="kpi-label">Sin ticket</div><div class="kpi-val">${k.sin_ticket||0}</div><div class="kpi-sub">entregas sin comprobante</div></div>
       <div class="kpi click ${combAnaFiltro==='desvio'?'on':''} ${k.desvios?'':'plain'}" id="kpi-desvio" onclick="anaSetFiltro('desvio')" title="Filtrar unidades con desvío"><div class="kpi-label">Desvíos</div><div class="kpi-val">${k.desvios||0}</div><div class="kpi-sub">litros no coinciden</div></div>
@@ -775,18 +764,73 @@ async function vCombAnalisis(view,tabs){
       <div class="tablewrap" id="ana-tabla"></div>
       <div class="side" id="ana-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/><path d="M3 20h12M14 8h2.5a2 2 0 012 2v7a2 2 0 002 2 2 2 0 002-2v-9l-3-3"/></svg><div>Elegí una unidad<br>para ver sus entregas y tickets</div></div></div>
     </div>`;
+    renderAnaListados();
     renderAnaTabla();
   }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el análisis. ${e.message||''}</div>`;}
+}
+function renderAnaListados(){
+  const cont=document.getElementById('ana-listados');
+  const a=combAna;if(!cont||!a)return;
+  const cnt=document.getElementById('ana-lst-count');
+  if(!a.remitos.length){cont.innerHTML='';if(cnt)cnt.textContent='';return;}
+  const aplicados=new Set(a.ids_aplicados||[]);
+  const todos=a.remitos.every(r=>aplicados.has(String(r.id)));
+  if(cnt)cnt.textContent=aplicados.size+' de '+a.remitos.length+' listado'+(a.remitos.length>1?'s':'');
+  cont.innerHTML=`<div class="panel-title" style="margin-bottom:8px">Listados procesados</div>
+  <div class="tablewrap" style="margin-bottom:16px"><table>
+    <thead><tr>
+      <th style="width:34px"><input type="checkbox" ${todos?'checked':''} onchange="anaTodosListados(this.checked)" title="Incluir todos" style="accent-color:var(--brote)"></th>
+      <th>Proveedor</th><th>Período</th><th class="num">Registros</th><th class="num">Litros</th><th class="num">Total</th><th style="width:110px"></th>
+    </tr></thead>
+    <tbody>${a.remitos.map(r=>{
+      const id=String(r.id);const on=aplicados.has(id);
+      const fila=`<tr style="${on?'':'opacity:.5'}">
+        <td><input type="checkbox" ${on?'checked':''} onchange="anaToggleListado('${id}')" style="accent-color:var(--brote)"></td>
+        <td style="font-weight:500">${r.proveedor||'—'}</td>
+        <td class="mono" style="font-size:12px">${fechaAR(r.periodo_desde)} → ${fechaAR(r.periodo_hasta)}</td>
+        <td class="num">${r.filas}</td>
+        <td class="num">${Math.round(r.litros||0)}</td>
+        <td class="num money">${money0(r.total_general)}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn-salir" style="padding:4px 10px;font-size:11.5px" onclick="anaVerListado('${id}')">${combRemVer===id?'Cerrar':'Ver'}</button>
+          <button class="btn-salir" style="padding:4px 8px;font-size:11.5px;color:var(--rojo)" title="Eliminar listado" onclick="combRemBorrar(event,'${id}')">✕</button>
+        </td></tr>`;
+      if(combRemVer!==id)return fila;
+      const fs=combRemFilas[id];
+      const det=!fs?'<div class="sub" style="padding:10px 0">Cargando líneas…</div>'
+        :`<div style="max-height:320px;overflow:auto"><table style="font-size:11.5px">
+          <thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Chofer</th><th>Producto</th><th class="num">Litros</th></tr></thead>
+          <tbody>${fs.map(f=>`<tr><td class="mono">${fechaAR(f.fecha)}</td><td class="mono">${f.numero_remito||'—'}</td>
+            <td><span class="uni-chip">${f.patente||'—'}</span></td><td>${f.chofer||'—'}</td><td>${f.producto||'—'}</td>
+            <td class="num">${f.litros!=null?f.litros:'—'}</td></tr>`).join('')}</tbody></table></div>`;
+      return fila+`<tr><td></td><td colspan="6" style="padding:4px 8px 12px">${det}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+async function anaVerListado(id){
+  id=String(id);
+  combRemVer=combRemVer===id?null:id;
+  renderAnaListados();
+  if(combRemVer===id&&!combRemFilas[id]){
+    try{
+      const d=await api('/api/combustible/remito/'+id);
+      combRemFilas[id]=d.filas||[];
+    }catch(e){combRemFilas[id]=[];alert('No pude traer las líneas del listado.');}
+    if(combRemVer===id)renderAnaListados();
+  }
+}
+function anaTodosListados(marcado){
+  combRemSel=marcado?'todos':null; // destildar todos = volver al más reciente
+  combRemVer=null;
+  go('combustible');
 }
 function anaToggleListado(id){
   const a=combAna;if(!a)return;
   id=String(id);
-  let sel=combRemSel==='todos'?[]:
-    Array.isArray(combRemSel)?combRemSel.slice():(a.ids_aplicados||[]).slice();
-  if(combRemSel==='todos'){sel=[id];}          // desde "todos", quedarse solo con este
-  else if(sel.includes(id)){if(sel.length>1)sel=sel.filter(x=>x!==id);} // no dejar vacío
+  let sel=Array.isArray(combRemSel)?combRemSel.slice():(a.ids_aplicados||[]).slice();
+  if(sel.includes(id)){if(sel.length>1)sel=sel.filter(x=>x!==id);} // no dejar el análisis vacío
   else sel.push(id);
   combRemSel=sel;
+  combRemVer=null;
   go('combustible');
 }
 async function combRemBorrar(ev,id){
@@ -798,6 +842,8 @@ async function combRemBorrar(ev,id){
       combRemSel=combRemSel.filter(x=>x!==String(id));
       if(!combRemSel.length)combRemSel=null;
     }
+    if(combRemVer===String(id))combRemVer=null;
+    delete combRemFilas[String(id)];
     go('combustible');
   }catch(e){alert('No se pudo eliminar: '+(e.message||''));}
 }
