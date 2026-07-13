@@ -1,7 +1,9 @@
 // Extrae los datos de una factura de compra de un proveedor (foto o PDF)
 // usando la API de Claude. Devuelve un objeto JSON estructurado.
 
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+// Extracción = OCR estructurado, no razonamiento: Haiku es mucho más rápido
+// y con la misma precisión. Override con ANTHROPIC_MODEL_EXTRACT.
+const MODEL = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
 
 const PROMPT = `Sos un asistente que extrae datos de facturas de compra de proveedores
 en Argentina (facturas A, B o C). Te paso una foto o un PDF de la factura.
@@ -57,6 +59,7 @@ function bloqueArchivo(buffer, mediaType) {
  * @returns {Promise<object>} JSON estructurado de la factura
  */
 async function extraerFactura(buffer, mediaType) {
+  const t0 = Date.now();
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -80,6 +83,7 @@ async function extraerFactura(buffer, mediaType) {
   }
 
   const dataResp = await resp.json();
+  console.log(`[factura-bot] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s (${MODEL})`);
   const texto = (dataResp.content || [])
     .filter(b => b.type === 'text').map(b => b.text).join('');
   const limpio = texto.replace(/```json/gi, '').replace(/```/g, '').trim();
