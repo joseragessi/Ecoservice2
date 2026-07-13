@@ -4,6 +4,7 @@ const path    = require('path');
 const supabase = require('./supabase');
 const supabaseCompras = require('./supabase_compras');
 const { notificarCapataz } = require('./notificar');
+const { hashClave } = require('./app_api');
 
 const router = express.Router();
 
@@ -311,7 +312,7 @@ router.get('/api/mecanicos', auth, async (req, res) => {
 // ── MAESTROS · ABM de mecánicos, objetivos y capataces ────────
 // Lista blanca de campos editables por tabla (protege columnas críticas)
 const CAMPOS_MAESTRO = {
-  mecanicos: ['nombre', 'habilidades', 'activo'],
+  mecanicos: ['nombre', 'habilidades', 'activo', 'usuario'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo'],
 };
@@ -320,6 +321,8 @@ function filtrarCampos(tipo, body) {
   const permitidos = CAMPOS_MAESTRO[tipo] || [];
   const out = {};
   for (const k of permitidos) if (body[k] !== undefined) out[k] = body[k] === '' ? null : body[k];
+  // La clave de la app nunca se guarda en texto plano. Vacía = no se cambia.
+  if (tipo === 'mecanicos' && body.clave) out.clave_hash = hashClave(String(body.clave));
   return out;
 }
 
