@@ -936,16 +936,130 @@ function selUniAna(key){
 }
 
 /* ===== Stock de maquinaria ===== */
+let stockTab='censo';    // 'censo' | 'inventario' | 'consolidado'
 let stockPeriodo=null;   // null = período actual
 let stockData=null;      // último GET /api/stock (para el detalle lateral)
 let stockSelId=null;     // censo seleccionado
 let stockPedirSel=new Set(); // objetivos tildados en el modal de pedido
+let stockInv=null;       // inventario oficial
+let stockInvEdit=null;   // línea del inventario en edición
 
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK[(m||1)-1]||'';return n.charAt(0).toUpperCase()+n.slice(1)+' '+(a||'');}
 function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
+function tabsStk(){return `<div class="toggle-imp" style="margin-bottom:16px">
+  <button class="${stockTab==='censo'?'on':''}" onclick="stockTab='censo';go('stock')">Censo</button>
+  <button class="${stockTab==='inventario'?'on':''}" onclick="stockTab='inventario';go('stock')">Inventario</button>
+  <button class="${stockTab==='consolidado'?'on':''}" onclick="stockTab='consolidado';go('stock')">Consolidado</button>
+</div>`;}
+function difStk(d){
+  if(d==null)return'<span class="sub">—</span>';
+  if(d===0)return'<span class="badge b-green">ok</span>';
+  return`<span class="badge ${d<0?'b-red':'b-amber'}">${d>0?'+':''}${d}</span>`;
+}
 
 async function vStock(view){
+  if(stockTab==='inventario')return vStockInventario(view);
+  if(stockTab==='consolidado')return vStockConsolidado(view);
+  return vStockCenso(view);
+}
+
+/* ── Solapa Inventario: el stock oficial, editable, con desvío ── */
+async function vStockInventario(view){
+  try{
+    const per=stockPeriodo||'';
+    stockInv=await api('/api/stock/inventario'+(per?'?periodo='+encodeURIComponent(per):''));
+    const d=stockInv;const k=d.kpis||{};
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Inventario oficial de cada objetivo · el censo de ${mesStk(d.periodo)} se compara contra esto</div></div></div>
+    ${tabsStk()}
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Coinciden</div><div class="kpi-val green">${k.coinciden||0}</div><div class="kpi-sub">objetivos sin desvío</div></div>
+      <div class="kpi ${k.faltantes?'':'plain'}"><div class="kpi-label">Faltantes</div><div class="kpi-val ${k.faltantes?'amber':''}">${k.faltantes||0}</div><div class="kpi-sub">máquinas no informadas</div></div>
+      <div class="kpi plain"><div class="kpi-label">Sin inventario</div><div class="kpi-val">${k.sin_inventario||0}</div><div class="kpi-sub">objetivos que nunca censaron</div></div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">Oficial</th><th class="num">Censo</th><th>Dif</th><th>Números</th><th style="width:90px"></th></tr></thead>
+      <tbody>${d.filas.length?d.filas.map(f=>`<tr>
+        <td style="font-weight:500">${f.objetivo}</td>
+        <td>${f.tipo_equipo}</td>
+        <td class="num">${f.cantidad}</td>
+        <td class="num">${f.censo!=null?f.censo:'—'}</td>
+        <td>${difStk(f.dif)}</td>
+        <td class="mono" style="font-size:11px;color:var(--tinta-3)">${(f.numeros||[]).join(', ')||'—'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="editarInv(${f.id})">Editar</button>
+          <button class="btn-salir" style="padding:4px 8px;font-size:11.5px;color:var(--rojo)" onclick="borrarInv(${f.id})" title="Borrar línea">✕</button>
+        </td></tr>`).join('')
+        :'<tr><td colspan="7"><div class="sub" style="padding:14px">Todavía no hay inventario. Se siembra solo con el primer censo de cada objetivo.</div></td></tr>'}</tbody></table>
+    </div>
+    <div class="sub" style="margin-top:10px">🌱 El primer censo de cada objetivo siembra su inventario. Después el censo solo compara: para cambiar el oficial, editalo acá.</div>`;
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">No pude cargar el inventario. ${e.message||''}</div>`;}
+}
+function editarInv(id){
+  const f=(stockInv.filas||[]).find(x=>x.id===id);if(!f)return;
+  stockInvEdit=f;
+  document.getElementById('mm-titulo').textContent='Inventario · '+f.objetivo;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="mm-field"><label>Tipo de equipo</label><input value="${f.tipo_equipo}" disabled></div>
+    <div class="mm-field"><label>Cantidad oficial</label><input id="inv-cant" type="number" min="0" value="${f.cantidad}"></div>
+    <div class="mm-field"><label>Números de máquina</label><input id="inv-nums" value="${(f.numeros||[]).join(', ')}" placeholder="12, 15, 21"></div>
+    <div class="mm-field"><label>Observación</label><input id="inv-obs" value="${(f.observacion||'').replace(/"/g,'&quot;')}" placeholder="opcional"></div>
+    ${f.censo!=null?`<div class="sub">El capataz informó <b>${f.censo}</b> en ${mesStk(stockInv.periodo)}.</div>`:''}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" onclick="guardarInv()">Guardar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function guardarInv(){
+  if(!stockInvEdit)return;
+  const body={
+    cantidad:document.getElementById('inv-cant').value,
+    numeros:document.getElementById('inv-nums').value,
+    observacion:document.getElementById('inv-obs').value.trim()||null,
+  };
+  try{
+    await api('/api/stock/inventario/'+stockInvEdit.id,{method:'POST',body:JSON.stringify(body)});
+    cerrarMaestro();stockInvEdit=null;go('stock');
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
+}
+async function borrarInv(id){
+  if(!confirm('¿Borrar esta línea del inventario oficial?'))return;
+  try{await api('/api/stock/inventario/'+id,{method:'DELETE'});go('stock');}
+  catch(e){alert('No pude borrar: '+(e.message||''));}
+}
+
+/* ── Solapa Consolidado: toda la maquinaria de la empresa por tipo ── */
+async function vStockConsolidado(view){
+  try{
+    const per=stockPeriodo||'';
+    const d=await api('/api/stock/consolidado'+(per?'?periodo='+encodeURIComponent(per):''));
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Toda la maquinaria de EcoService, sumada por tipo · censo de ${mesStk(d.periodo)}</div></div></div>
+    ${tabsStk()}
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Total oficial</div><div class="kpi-val">${d.total_oficial||0}</div><div class="kpi-sub">máquinas en inventario</div></div>
+      <div class="kpi plain"><div class="kpi-label">Total informado</div><div class="kpi-val">${d.total_informado||0}</div><div class="kpi-sub">lo que censaron los capataces</div></div>
+      <div class="kpi ${d.total_informado-d.total_oficial?'':'plain'}"><div class="kpi-label">Diferencia</div><div class="kpi-val ${d.total_informado<d.total_oficial?'amber':''}">${d.total_informado-d.total_oficial>0?'+':''}${d.total_informado-d.total_oficial}</div><div class="kpi-sub">informado − oficial</div></div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr><th>Tipo de equipo</th><th class="num">Oficial</th><th class="num">Informado</th><th>Dif</th><th class="num">Objetivos</th></tr></thead>
+      <tbody>${d.filas.length?d.filas.map(f=>`<tr>
+        <td style="font-weight:500">${f.tipo_equipo}</td>
+        <td class="num">${f.oficial}</td><td class="num">${f.informado}</td>
+        <td>${difStk(f.dif)}</td>
+        <td class="num sub">${f.objetivos}</td></tr>`).join('')
+        :'<tr><td colspan="5"><div class="sub" style="padding:14px">Sin datos todavía.</div></td></tr>'}</tbody></table>
+    </div>`;
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">No pude armar el consolidado. ${e.message||''}</div>`;}
+}
+
+/* ── Solapa Censo (la original) ── */
+async function vStockCenso(view){
   try{
     const qs=stockPeriodo?'?periodo='+encodeURIComponent(stockPeriodo):'';
     stockData=await api('/api/stock'+qs);
@@ -962,7 +1076,8 @@ async function vStock(view){
       <div class="view-desc">Censo por objetivo · los capataces responden por WhatsApp con la palabra <b>stock</b></div></div>
       <div style="display:flex;gap:8px;align-items:center">${sel}
       <button class="btn" onclick="pedirStock()">📤 Pedir stock</button></div></div>
-    ${d.censos.length?'':'<div class="aviso-amarillo">Todavía no hay censos en este período. Tocá "Pedir stock" para mandarle el pedido por WhatsApp a los capataces de todos los objetivos operativos.</div>'}
+    ${tabsStk()}
+    ${d.censos.length?'':'<div class="aviso-amarillo">Todavía no hay censos en este período. Tocá "Pedir stock" para mandarle el pedido por WhatsApp a los capataces.</div>'}
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Respondieron</div><div class="kpi-val green">${resp.length}</div><div class="kpi-sub">de ${d.censos.length} objetivos${pct!=null?' · '+pct+'%':''}</div></div>
       <div class="kpi ${pend.length?'':'plain'}"><div class="kpi-label">Pendientes</div><div class="kpi-val ${pend.length?'amber':''}">${pend.length}</div><div class="kpi-sub">sin respuesta del capataz</div></div>
@@ -1006,7 +1121,29 @@ function selCenso(id){
           <div class="sub mono" style="font-size:11px">${i.numeros&&i.numeros.length?'N° '+i.numeros.join(', '):'sin números'}${i.observacion?' · '+i.observacion:''}</div></div>
           <div class="mono" style="font-size:15px;font-weight:600">${i.cantidad}</div>
         </div>`).join('')
-      :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}`;
+      :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}
+    <div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:10px">Histórico</div>
+    <div id="stk-hist"><div class="sub">Cargando…</div></div>`;
+  cargarHistorico(c.objetivo_id);
+}
+async function cargarHistorico(objetivoId){
+  const cont=document.getElementById('stk-hist');
+  if(!cont)return;
+  try{
+    const h=await api('/api/stock/historico/'+objetivoId);
+    const c2=document.getElementById('stk-hist');if(!c2)return;
+    c2.innerHTML=h.length?h.map(p=>`
+      <div class="queue-item" style="margin-bottom:6px">
+        <div style="flex:1"><div style="font-weight:600;font-size:12px">${mesStk(p.periodo)}</div>
+        <div class="sub" style="font-size:11px">${p.items.map(i=>i.tipo_equipo+' ×'+i.cantidad).join(' · ')||'sin equipos'}</div></div>
+        <div class="mono" style="font-size:13px">${p.total}</div>
+      </div>`).join('')
+      :'<div class="sub" style="padding:4px 0">Sin censos anteriores.</div>';
+  }catch(e){
+    const c2=document.getElementById('stk-hist');
+    if(c2)c2.innerHTML='<div class="sub">No pude cargar el histórico.</div>';
+  }
 }
 // Modal de selección: mostrar exactamente a quién se le va a mandar antes de disparar.
 function pedirStock(){
