@@ -2042,6 +2042,7 @@ async function vCompras(view){
           ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
         <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
         <td style="text-align:right;white-space:nowrap">
+          ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
           <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
         </td>
       </tr>`;}).join('');
@@ -2178,6 +2179,24 @@ function vComprasDetalle(view){
     </div>
   </div>
 
+  <div class="panel" style="margin-bottom:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="panel-title" style="margin:0">Comprobante</div>
+      ${inv.comprobante&&inv.comprobante.ruta?`
+        <div style="display:flex;gap:8px">
+          <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="abrirComprobante('${inv.id}')">↗ Abrir en pestaña</button>
+          <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="adjuntarComprobante('${inv.id}')">Reemplazar</button>
+        </div>`
+        :`<button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="adjuntarComprobante('${inv.id}')">＋ Adjuntar comprobante</button>`}
+    </div>
+    ${inv.comprobante&&inv.comprobante.ruta?`
+      <div id="comp-visor" style="border:1px solid var(--linea);border-radius:10px;overflow:hidden;background:var(--papel);min-height:440px;display:flex;align-items:center;justify-content:center">
+        <div class="sub">Cargando comprobante…</div>
+      </div>
+      <div class="sub" style="margin-top:6px;font-size:11px">${inv.comprobante.nombre||'archivo'} · adjuntado ${fechaAR(inv.comprobante.subido_at)}</div>`
+      :`<div class="sub" style="padding:14px 0">Esta factura no tiene el comprobante adjunto. Las que cargues de ahora en más lo guardan solas.</div>`}
+  </div>
+
   <div class="panel">
     <div class="panel-title" style="margin-bottom:10px">Ítems</div>
     ${(()=>{
@@ -2217,6 +2236,7 @@ function vComprasDetalle(view){
       ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}`;
     })()}
   </div>`;
+  if(inv.comprobante&&inv.comprobante.ruta)cargarVisorComprobante(inv.id);
 }
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
 // lo que el usuario venía editando para no perderlo.
@@ -2246,6 +2266,54 @@ function comprasSetEditMode(modo){
   }
   comprasEditMode=modo;
   go('compras');
+}
+
+// El bucket es privado: se pide una URL firmada (vale 1 hora) y se embebe.
+async function cargarVisorComprobante(id){
+  const cont=document.getElementById('comp-visor');
+  if(!cont)return;
+  try{
+    const d=await api('/api/compras/factura/'+id+'/comprobante');
+    const c=document.getElementById('comp-visor');
+    if(!c)return;
+    const esImg=String(d.tipo||'').startsWith('image/');
+    c.innerHTML=esImg
+      ?`<img src="${d.url}" style="max-width:100%;height:auto;display:block">`
+      :`<iframe src="${d.url}#view=FitH" style="width:100%;height:640px;border:none;display:block"></iframe>`;
+    c.style.minHeight='auto';c.style.display='block';
+  }catch(e){
+    const c=document.getElementById('comp-visor');
+    if(c)c.innerHTML=`<div class="sub" style="padding:20px">No pude cargar el comprobante. ${e.message||''}</div>`;
+  }
+}
+async function abrirComprobante(id){
+  try{
+    const d=await api('/api/compras/factura/'+id+'/comprobante');
+    window.open(d.url,'_blank');
+  }catch(e){alert('No pude abrir el comprobante: '+(e.message||''));}
+}
+// Adjuntar o reemplazar el comprobante de una factura ya cargada
+function adjuntarComprobante(id){
+  const inp=document.createElement('input');
+  inp.type='file';inp.accept='application/pdf,image/*';
+  inp.onchange=async()=>{
+    const f=inp.files[0];if(!f)return;
+    if(f.size>25*1024*1024){alert('El archivo supera los 25 MB.');return;}
+    const cont=document.getElementById('comp-visor');
+    if(cont)cont.innerHTML='<div class="sub" style="padding:20px">Subiendo…</div>';
+    try{
+      const b64=await new Promise((res,rej)=>{
+        const r=new FileReader();
+        r.onload=()=>res(String(r.result).split(',')[1]);
+        r.onerror=()=>rej(new Error('No pude leer el archivo'));
+        r.readAsDataURL(f);
+      });
+      const r=await api('/api/compras/factura/'+id+'/comprobante',{method:'POST',
+        body:JSON.stringify({fileData:b64,fileType:f.type||'application/pdf',fileName:f.name})});
+      comprasVer=r;go('compras');
+    }catch(e){alert('No pude subir el comprobante: '+(e.message||''));go('compras');}
+  };
+  inp.click();
 }
 
 async function guardarEdicionCompra(){
@@ -2408,6 +2476,10 @@ async function comprasGuardar(){
     assignments:comprasAssignMode==='per-item'?comprasAssignments:{},
     totalAssign:comprasAssignMode==='total'?comprasAssign:{objetivo:'',unidad:'',comentario:''},
     createdAt:new Date().toISOString(),
+    // El comprobante viaja aparte: el backend lo sube a Storage y guarda solo la ruta
+    fileData:comprasFile?comprasFile.data:null,
+    fileType:comprasFile?comprasFile.type:null,
+    fileName:comprasFile?comprasFile.name:null,
   };
   const btn=document.getElementById('cf-save');
   if(btn){btn.disabled=true;btn.textContent='Verificando…';}
