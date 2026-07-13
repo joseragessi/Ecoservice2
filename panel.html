@@ -949,6 +949,7 @@ function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK
 function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
 function tabsStk(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${stockTab==='censo'?'on':''}" onclick="stockTab='censo';go('stock')">Censo</button>
+  <button class="${stockTab==='objetivo'?'on':''}" onclick="stockTab='objetivo';go('stock')">Por objetivo</button>
   <button class="${stockTab==='inventario'?'on':''}" onclick="stockTab='inventario';go('stock')">Inventario</button>
   <button class="${stockTab==='consolidado'?'on':''}" onclick="stockTab='consolidado';go('stock')">Consolidado</button>
 </div>`;}
@@ -961,7 +962,103 @@ function difStk(d){
 async function vStock(view){
   if(stockTab==='inventario')return vStockInventario(view);
   if(stockTab==='consolidado')return vStockConsolidado(view);
+  if(stockTab==='objetivo')return vStockObjetivos(view);
   return vStockCenso(view);
+}
+
+/* ── Solapa Por objetivo: ficha completa de cada objetivo ── */
+let stockObjs=null,stockObjSel=null,stockFicha=null;
+async function vStockObjetivos(view){
+  try{
+    const per=stockPeriodo||'';
+    stockObjs=await api('/api/stock/objetivos'+(per?'?periodo='+encodeURIComponent(per):''));
+    const d=stockObjs;
+    const sem=o=>o.sin_inventario?'<span class="badge b-gray">sin inventario</span>'
+      :o.estado!=='respondido'?'<span class="badge b-red">no censó</span>'
+      :o.dif===0?'<span class="badge b-green">ok</span>'
+      :`<span class="badge ${o.dif<0?'b-red':'b-amber'}">${o.tipos_desvio} desvío${o.tipos_desvio>1?'s':''}</span>`;
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Ficha por objetivo · inventario, censo de ${mesStk(d.periodo)}, desvíos e histórico</div></div></div>
+    ${tabsStk()}
+    <div class="split">
+      <div class="tablewrap">
+        <table><thead><tr><th>Objetivo</th><th>Capataz</th><th class="num">Oficial</th><th class="num">Censo</th><th class="num">Dif</th><th>Estado</th></tr></thead>
+        <tbody id="obj-list">${d.filas.length?d.filas.map(o=>`<tr onclick="selObjStock('${o.id}')" data-id="${o.id}" style="cursor:pointer;${o.id===stockObjSel?'outline:2px solid var(--brote)':''}">
+          <td style="font-weight:500">${o.nombre}</td>
+          <td class="sub">${o.capataz||'—'}</td>
+          <td class="num">${o.oficial}</td>
+          <td class="num">${o.censo!=null?o.censo:'—'}</td>
+          <td class="num" style="${o.dif?'color:var(--rojo);font-weight:600':''}">${o.dif!=null?(o.dif>0?'+':'')+o.dif:'—'}</td>
+          <td>${sem(o)}</td></tr>`).join('')
+          :'<tr><td colspan="6"><div class="sub" style="padding:14px">No hay objetivos operativos.</div></td></tr>'}</tbody></table>
+      </div>
+      <div class="side" id="obj-ficha"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M4 7l2-3h12l2 3M4 7v13h16V7"/><path d="M9 11h6M9 15h6"/></svg><div>Elegí un objetivo<br>para ver su ficha completa</div></div></div>
+    </div>`;
+    if(stockObjSel)selObjStock(stockObjSel);
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">No pude cargar los objetivos. ${e.message||''}</div>`;}
+}
+async function selObjStock(id){
+  stockObjSel=String(id);
+  document.querySelectorAll('#obj-list tr').forEach(t=>t.style.outline=(t.dataset.id===stockObjSel)?'2px solid var(--brote)':'none');
+  const cont=document.getElementById('obj-ficha');
+  if(cont)cont.innerHTML='<div class="sub" style="padding:14px">Cargando ficha…</div>';
+  try{
+    const per=stockPeriodo||'';
+    const f=await api('/api/stock/objetivo/'+id+(per?'?periodo='+encodeURIComponent(per):''));
+    stockFicha=f;
+    const c=f.censo;
+    const box=document.getElementById('obj-ficha');
+    if(!box||stockObjSel!==String(id))return;
+    const totOf=f.filas.reduce((s,x)=>s+x.cantidad,0);
+    const totCen=f.filas.reduce((s,x)=>s+(x.censo||0),0);
+    box.innerHTML=`
+      <div class="side-id">FICHA · objetivo</div>
+      <div class="side-title">${f.objetivo.nombre}</div>
+      <div class="side-meta">${c?(c.estado==='respondido'
+          ?'Censó '+mesStk(f.periodo)+' · '+(c.capataz||'—')+' · '+horaStk(c.respondido_at)
+          :'Pedido enviado, sin respuesta')
+        :'Sin censo este período'}</div>
+      <div style="display:flex;gap:10px;margin:12px 0">
+        <div class="extract-field" style="flex:1"><label>Oficial</label><div class="val filled">${totOf}</div></div>
+        <div class="extract-field" style="flex:1"><label>Censo</label><div class="val ${c&&c.estado==='respondido'?'filled':''}">${c&&c.estado==='respondido'?totCen:'—'}</div></div>
+        <div class="extract-field" style="flex:1"><label>Dif</label><div class="val ${totCen-totOf?'filled':''}" style="${totCen-totOf<0?'color:var(--rojo)':''}">${c&&c.estado==='respondido'?(totCen-totOf>0?'+':'')+(totCen-totOf):'—'}</div></div>
+      </div>
+      ${c&&c.estado!=='respondido'?`<button class="btn" style="width:100%;margin-bottom:12px" onclick="reenviarStock('${c.id}')">↻ Reenviar pedido</button>`:''}
+      <div class="divider"></div>
+      <div class="panel-title" style="margin-bottom:10px">Maquinaria</div>
+      ${f.filas.length?f.filas.map(x=>`
+        <div class="queue-item" style="margin-bottom:8px;${x.huerfano?'background:var(--papel)':''}">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:12.5px">${x.tipo_equipo}${x.huerfano?' <span class="badge b-blue" style="font-size:9px">nuevo</span>':''}</div>
+            <div class="sub mono" style="font-size:11px">${x.huerfano?'no está en el inventario'
+              :'oficial '+x.cantidad+(x.censo!=null?' · informó '+x.censo:'')+((x.numeros||[]).length?' · N° '+x.numeros.join(', '):'')}</div>
+          </div>
+          ${x.huerfano
+            ?`<button class="btn-salir" style="padding:4px 8px;font-size:11px;color:var(--brote-2)" onclick="incorporarInv('${f.objetivo.id}','${String(x.tipo_equipo).replace(/'/g,"\\'")}',${x.censo})">+ Agregar</button>`
+            :`${difStk(x.dif)} <button class="btn-salir" style="padding:3px 7px;font-size:11px;margin-left:6px" onclick="editarInvFicha(${x.id})">✎</button>`}
+        </div>`).join('')
+        :'<div class="sub" style="padding:8px 0">Sin inventario ni censo todavía.</div>'}
+      <div class="divider"></div>
+      <div class="panel-title" style="margin-bottom:10px">Histórico</div>
+      ${f.historico.length?f.historico.map(h=>`
+        <div class="queue-item" style="margin-bottom:6px">
+          <div style="flex:1"><div style="font-weight:600;font-size:12px">${mesStk(h.periodo)}</div>
+          <div class="sub" style="font-size:11px">${h.items.map(i=>i.tipo_equipo+' ×'+i.cantidad).join(' · ')||'sin equipos'}</div></div>
+          <div class="mono" style="font-size:13px">${h.total}</div>
+        </div>`).join('')
+        :'<div class="sub" style="padding:4px 0">Sin censos anteriores.</div>'}`;
+  }catch(e){
+    const box=document.getElementById('obj-ficha');
+    if(box)box.innerHTML='<div class="sub" style="padding:14px">No pude cargar la ficha.</div>';
+  }
+}
+// Editar una línea del inventario desde la ficha (reusa el modal del inventario)
+function editarInvFicha(id){
+  const x=(stockFicha.filas||[]).find(f=>f.id===id);if(!x)return;
+  stockInvEdit={id:x.id,objetivo:stockFicha.objetivo.nombre,tipo_equipo:x.tipo_equipo,
+    cantidad:x.cantidad,numeros:x.numeros,observacion:x.observacion,censo:x.censo};
+  abrirModalInv(stockInvEdit,stockFicha.periodo);
 }
 
 /* ── Solapa Inventario: el stock oficial, editable, con desvío ── */
@@ -1028,13 +1125,16 @@ async function incorporarInv(objetivoId,tipo,cantidad){
 function editarInv(id){
   const f=(stockInv.filas||[]).find(x=>x.id===id);if(!f)return;
   stockInvEdit=f;
-  document.getElementById('mm-titulo').textContent='Inventario · '+f.objetivo;
+  abrirModalInv(f,stockInv.periodo);
+}
+function abrirModalInv(f,periodo){
+  document.getElementById('mm-titulo').textContent='Inventario · '+(f.objetivo||'');
   document.getElementById('mm-campos').innerHTML=`
     <div class="mm-field"><label>Tipo de equipo</label><input value="${f.tipo_equipo}" disabled></div>
     <div class="mm-field"><label>Cantidad oficial</label><input id="inv-cant" type="number" min="0" value="${f.cantidad}"></div>
     <div class="mm-field"><label>Números de máquina</label><input id="inv-nums" value="${(f.numeros||[]).join(', ')}" placeholder="12, 15, 21"></div>
     <div class="mm-field"><label>Observación</label><input id="inv-obs" value="${(f.observacion||'').replace(/"/g,'&quot;')}" placeholder="opcional"></div>
-    ${f.censo!=null?`<div class="sub">El capataz informó <b>${f.censo}</b> en ${mesStk(stockInv.periodo)}.</div>`:''}
+    ${f.censo!=null?`<div class="sub">El capataz informó <b>${f.censo}</b> en ${mesStk(periodo)}.</div>`:''}
     <div class="modal-acciones">
       <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
       <button class="btn" onclick="guardarInv()">Guardar</button>
