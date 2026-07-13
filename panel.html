@@ -583,9 +583,60 @@ async function guardarFactura(id){
 }
 
 /* ===== Insumos ===== */
+/* ===== Insumos · Indicadores ===== */
+let insTab='resumen', insIndPer='';
+function tabsIns(){return `<div class="toggle-imp" style="margin-bottom:16px">
+  <button class="${insTab==='resumen'?'on':''}" onclick="insTab='resumen';go('insumos')">Resumen</button>
+  <button class="${insTab==='indicadores'?'on':''}" onclick="insTab='indicadores';go('insumos')">Indicadores</button>
+</div>`;}
+
+function vInsInd(view,todas){
+  const meses=[...new Set(todas.map(p=>mesDe(p.created_at)))].filter(m=>m!=='sin fecha').sort().reverse();
+  const fs=insIndPer?todas.filter(p=>mesDe(p.created_at)===insIndPer):todas;
+  const pend=fs.filter(p=>p.estado==='pendiente'||p.estado==='en_compra');
+  const entreg=fs.filter(p=>p.estado==='entregado');
+  const items=fs.flatMap(p=>p.pedidos_insumos_items||[]);
+  // Top materiales: normalizados a minúsculas para juntar "Nafta" y "nafta"
+  const mat={};items.forEach(i=>{const k=String(i.item||'').trim().toLowerCase();
+    if(k)mat[k]=(mat[k]||0)+1;});
+  const topMat=Object.entries(mat).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);
+  const porObj={};fs.forEach(p=>{const k=p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'Sin asignar');
+    porObj[k]=(porObj[k]||0)+1;});
+  const topObj=Object.entries(porObj).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);
+  const porMes={};todas.forEach(p=>{const m=mesDe(p.created_at);if(m==='sin fecha')return;
+    porMes[m]=porMes[m]||{pedidos:0,items:0,entregados:0};porMes[m].pedidos++;
+    porMes[m].items+=(p.pedidos_insumos_items||[]).length;
+    if(p.estado==='entregado')porMes[m].entregados++;});
+  const evol=Object.entries(porMes).sort((a,b)=>a[0].localeCompare(b[0]));
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Insumos · Indicadores</div>
+    <div class="view-desc">Qué se pide, cuánto y desde dónde</div></div>
+    <select class="busca" style="width:auto" onchange="insIndPer=this.value;go('insumos')">
+      <option value="">Todo el período</option>
+      ${meses.map(m=>`<option value="${m}" ${m===insIndPer?'selected':''}>${mesStk(m)}</option>`).join('')}
+    </select></div>
+  ${tabsIns()}
+  <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+    <div class="kpi"><div class="kpi-label">Pedidos</div><div class="kpi-val">${fs.length}</div><div class="kpi-sub">${insIndPer?mesStk(insIndPer):'histórico'}</div></div>
+    <div class="kpi ${pend.length?'amber':'plain'}"><div class="kpi-label">Pendientes</div><div class="kpi-val ${pend.length?'amber':''}">${pend.length}</div><div class="kpi-sub">por entregar</div></div>
+    <div class="kpi plain"><div class="kpi-label">Entregados</div><div class="kpi-val green">${entreg.length}</div><div class="kpi-sub">${fs.length?Math.round(entreg.length*100/fs.length)+'% del total':'—'}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Materiales pedidos</div><div class="kpi-val">${items.length}</div><div class="kpi-sub">${topMat.length} distintos</div></div>
+  </div>
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel"><div class="panel-title">Materiales más pedidos</div>${barsGen(topMat,'var(--brote)',v=>v+' veces')}</div>
+    <div class="panel"><div class="panel-title">Pedidos por objetivo</div>${barsGen(topObj,'var(--diesel)',v=>v+' pedidos')}</div>
+  </div>
+  <div class="panel"><div class="panel-title">Evolución mensual</div>
+    <table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Pedidos</th><th class="num">Materiales</th><th class="num">Entregados</th></tr></thead>
+    <tbody>${evol.map(([m,v])=>`<tr><td class="mono">${m}</td><td class="num">${v.pedidos}</td>
+      <td class="num">${v.items}</td><td class="num">${v.entregados}</td></tr>`).join('')||'<tr><td colspan="4" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+  </div>`;
+}
+
 async function vInsumos(view){
   try{
     insumosData=await api('/api/insumos');
+    if(insTab==='indicadores'){vInsInd(view,insumosData);return;}
     // 'en_compra' quedó como estado legacy: en la UI cuenta como pendiente.
     const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
     if(filtroIns==='pendiente')insumosData=insumosData.filter(esPend);
@@ -595,6 +646,7 @@ async function vInsumos(view){
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Pedidos de insumos</div>
       <div class="view-desc">Del pedido del capataz por WhatsApp hasta la entrega en depósito</div></div></div>
+    ${tabsIns()}
     <div class="filters">${chips}</div>
     <div class="split">
       <div class="tablewrap"><table><thead><tr><th>Objetivo</th><th>Pedido</th><th style="width:170px">Estado</th></tr></thead>
@@ -1381,9 +1433,101 @@ async function reenviarStock(id){
 }
 
 /* ===== Reparaciones ===== */
+/* ===== Reparaciones · Indicadores ===== */
+let repTab='resumen', repIndPer='';
+
+// Barras genéricas para paneles de indicadores
+function barsGen(lista,color,fmt){
+  fmt=fmt||(v=>v);
+  return lista.slice(0,10).map(x=>{
+    const w=lista[0].valor?Math.max(2,Math.round(x.valor*100/lista[0].valor)):0;
+    return `<div style="margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+        <b style="font-weight:600">${String(x.nombre).length>42?String(x.nombre).slice(0,42)+'…':x.nombre}</b>
+        <span class="mono">${fmt(x.valor)}</span></div>
+      <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
+    </div>`;}).join('')||'<div class="sub" style="padding:10px 0">Sin datos</div>';
+}
+function mesDe(iso){return String(iso||'').slice(0,7)||'sin fecha';}
+function diasEntre(a,b){if(!a||!b)return null;const d=(new Date(b)-new Date(a))/86400000;return d>=0?d:null;}
+
+function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
+  <button class="${repTab==='resumen'?'on':''}" onclick="repTab='resumen';go('reparaciones')">Resumen</button>
+  <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
+</div>`;}
+
+function vRepInd(view){
+  const todas=repData||[];
+  const meses=[...new Set(todas.map(r=>mesDe(r.created_at)))].filter(m=>m!=='sin fecha').sort().reverse();
+  const fs=repIndPer?todas.filter(r=>mesDe(r.created_at)===repIndPer):todas;
+  const activas=fs.filter(r=>r.estado!=='finalizado');
+  const finalizadas=fs.filter(r=>r.estado==='finalizado');
+  // Tiempo de resolución: creada → finalizada
+  const tiempos=finalizadas.map(r=>diasEntre(r.created_at,r.fecha_finalizado)).filter(t=>t!=null);
+  const tProm=tiempos.length?tiempos.reduce((s,t)=>s+t,0)/tiempos.length:null;
+  const criticasAltas=activas.filter(r=>r.prioridad==='critico'||r.prioridad==='alta').length;
+  const agr=(lista,clave)=>{
+    const m={};lista.forEach(r=>{const k=clave(r)||'Sin asignar';m[k]=(m[k]||0)+1;});
+    return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);
+  };
+  // Por mecánico: activas, finalizadas y tiempo promedio propio
+  const mecs={};
+  fs.forEach(r=>{
+    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
+    mecs[k]=mecs[k]||{activas:0,finalizadas:0,tiempos:[]};
+    if(r.estado==='finalizado'){mecs[k].finalizadas++;
+      const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);}
+    else mecs[k].activas++;
+  });
+  const tablaMec=Object.entries(mecs).sort((a,b)=>(b[1].activas+b[1].finalizadas)-(a[1].activas+a[1].finalizadas))
+    .map(([n,v])=>{const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
+    return `<tr><td style="font-weight:500">${n}</td><td class="num">${v.activas}</td>
+      <td class="num">${v.finalizadas}</td>
+      <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
+  // Evolución: nuevas vs finalizadas por mes (sobre todas)
+  const porMes={};
+  todas.forEach(r=>{
+    const mN=mesDe(r.created_at);porMes[mN]=porMes[mN]||{nuevas:0,fin:0};porMes[mN].nuevas++;
+    if(r.estado==='finalizado'&&r.fecha_finalizado){const mF=mesDe(r.fecha_finalizado);
+      porMes[mF]=porMes[mF]||{nuevas:0,fin:0};porMes[mF].fin++;}
+  });
+  const evol=Object.entries(porMes).filter(([m])=>m!=='sin fecha').sort((a,b)=>a[0].localeCompare(b[0]));
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Reparaciones · Indicadores</div>
+    <div class="view-desc">Carga del taller, tiempos de resolución y distribución</div></div>
+    <select class="busca" style="width:auto" onchange="repIndPer=this.value;go('reparaciones')">
+      <option value="">Todo el período</option>
+      ${meses.map(m=>`<option value="${m}" ${m===repIndPer?'selected':''}>${mesStk(m)}</option>`).join('')}
+    </select></div>
+  ${tabsRep()}
+  <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+    <div class="kpi ${activas.length?'amber':''}"><div class="kpi-label">Activas</div><div class="kpi-val ${activas.length?'amber':''}">${activas.length}</div><div class="kpi-sub">en el taller ahora</div></div>
+    <div class="kpi"><div class="kpi-label">Finalizadas</div><div class="kpi-val green">${finalizadas.length}</div><div class="kpi-sub">${repIndPer?'creadas en '+mesStk(repIndPer):'histórico'}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Resolución promedio</div><div class="kpi-val">${tProm!=null?Math.round(tProm*10)/10:'—'}</div><div class="kpi-sub">días de creada a finalizada</div></div>
+    <div class="kpi ${criticasAltas?'':'plain'}"><div class="kpi-label">Crítico + alta</div><div class="kpi-val ${criticasAltas?'amber':''}">${criticasAltas}</div><div class="kpi-sub">activas con prioridad</div></div>
+  </div>
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel"><div class="panel-title">Por mecánico</div>
+      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Activas</th><th class="num">Finalizadas</th><th class="num">Resol. prom.</th></tr></thead>
+      <tbody>${tablaMec||'<tr><td colspan="4" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+    </div>
+    <div class="panel"><div class="panel-title">Evolución mensual</div>
+      <table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Nuevas</th><th class="num">Finalizadas</th><th class="num">Balance</th></tr></thead>
+      <tbody>${evol.map(([m,v])=>{const bal=v.fin-v.nuevas;
+        return `<tr><td class="mono">${m}</td><td class="num">${v.nuevas}</td><td class="num">${v.fin}</td>
+        <td class="num" style="${bal<0?'color:var(--rojo)':'color:var(--brote-2)'}">${bal>0?'+':''}${bal}</td></tr>`;}).join('')}</tbody></table>
+    </div>
+  </div>
+  <div class="grid g-2">
+    <div class="panel"><div class="panel-title">Por tipo de equipo</div>${barsGen(agr(fs,r=>r.equipos?(r.equipos.tipo||r.equipos.nombre):null),'var(--brote)')}</div>
+    <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen(agr(fs,r=>r.objetivos?r.objetivos.nombre:null),'var(--diesel)')}</div>
+  </div>`;
+}
+
 async function vReparaciones(view){
   try{
     repData=await api('/api/reparaciones');
+    if(repTab==='indicadores'){vRepInd(view);return;}
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
 }
@@ -1425,6 +1569,7 @@ function renderReparaciones(view){
       <div style="display:flex;gap:14px;font-size:12px" class="mono">
         <span style="color:#DC4A5B">● ${resumen.critico} crítico</span><span style="color:#D98A1F">● ${resumen.alta} alta</span>
         <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span></div></div>
+    ${tabsRep()}
     <div class="repwrap">
       <div class="rep-filters">
         <div class="fgroup-t">Estado</div>${fEstado}
