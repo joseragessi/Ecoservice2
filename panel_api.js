@@ -96,7 +96,8 @@ router.get('/api/dashboard', auth, async (req, res) => {
       m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return m[3] + '-' + String(m[2]).padStart(2, '0');
       return '';
     };
-    const totalFac = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0);
+    const totalFac = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0)
+      - (f.notas_credito || []).reduce((s, n) => s + (Number(n.total_sin_iva) || 0) + (Number(n.total_iva) || 0), 0);
     const gastoMes = compras.filter(f => mesFac(f) === periodo).reduce((s, f) => s + totalFac(f), 0);
     const gastoAnt = compras.filter(f => mesFac(f) === mesAnterior).reduce((s, f) => s + totalFac(f), 0);
 
@@ -528,6 +529,36 @@ router.post('/api/compras/extract', auth, async (req, res) => {
 });
 
 // Guardar una factura (con su asignación) en la base de compras
+// Clave de duplicado: mismo proveedor (por CUIT si hay, si no por nombre) y
+// mismo número de factura. Es la regla real: un proveedor no emite dos veces
+// el mismo número.
+function claveFactura(inv) {
+  const num = String(inv.numero_factura || '').replace(/[\s-]/g, '').toUpperCase();
+  const prov = String(inv.cuit || inv.proveedor || '').replace(/[\s-]/g, '').toUpperCase();
+  return num && prov ? `${prov}|${num}` : null;
+}
+
+// Chequeo previo: ¿ya existe esta factura? Se llama antes de guardar.
+router.post('/api/compras/duplicado', auth, async (req, res) => {
+  try {
+    const clave = claveFactura(req.body || {});
+    if (!clave) return res.json({ duplicado: false });
+    const { data, error } = await supabaseCompras.from('facturas').select('*');
+    if (error) throw error;
+    const existente = (data || []).map(aplanar)
+      .filter(f => !f.anulada)
+      .find(f => claveFactura(f) === clave);
+    res.json(existente
+      ? { duplicado: true, factura: { id: existente.id, fecha_factura: existente.fecha_factura,
+          proveedor: existente.proveedor, numero_factura: existente.numero_factura,
+          total: (Number(existente.total_sin_iva) || 0) + (Number(existente.total_iva) || 0) } }
+      : { duplicado: false });
+  } catch (err) {
+    console.error('compras duplicado:', err);
+    res.status(500).json({ error: 'Error verificando duplicados' });
+  }
+});
+
 router.post('/api/compras/factura', auth, async (req, res) => {
   try {
     const inv = req.body || {};
@@ -539,6 +570,107 @@ router.post('/api/compras/factura', auth, async (req, res) => {
   } catch (err) {
     console.error('compras crear factura:', err);
     res.status(500).json({ error: 'Error guardando la factura' });
+  }
+});
+
+// Editar una factura ya cargada (corregir montos, proveedor, imputación...)
+router.put('/api/compras/factura/:id', auth, async (req, res) => {
+  try {
+    const inv = req.body || {};
+    const { data: prev, error: e0 } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    if (e0 || !prev) return res.status(404).json({ error: 'Factura inexistente' });
+    // Se preservan los campos que el panel no manda (notas de crédito, etc.)
+    const anterior = aplanar(prev);
+    const nuevo = { ...anterior, ...inv, id: undefined, created_at: undefined,
+      editadoAt: new Date().toISOString() };
+    delete nuevo.id; delete nuevo.created_at;
+    const { data, error } = await supabaseCompras
+      .from('facturas')
+      .update({ numero_factura: nuevo.numero_factura || null, data: nuevo })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('compras editar factura:', err);
+    res.status(500).json({ error: 'Error editando la factura' });
+  }
+});
+
+router.delete('/api/compras/factura/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabaseCompras.from('facturas').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('compras borrar factura:', err);
+    res.status(500).json({ error: 'Error borrando la factura' });
+  }
+});
+
+// Nota de crédito: descuenta sobre una factura ya cargada. Se guarda DENTRO de
+// la factura (array `notas_credito`), así el neto siempre se calcula contra su
+// factura y no queda un documento suelto que haya que cruzar después.
+router.post('/api/compras/factura/:id/nota-credito', auth, async (req, res) => {
+  try {
+    const nc = req.body || {};
+    const neto = Number(nc.total_sin_iva) || 0;
+    const iva  = Number(nc.total_iva) || 0;
+    if (neto <= 0 && iva <= 0) return res.status(400).json({ error: 'La nota de crédito tiene que tener un monto' });
+
+    const { data: prev, error: e0 } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    if (e0 || !prev) return res.status(404).json({ error: 'Factura inexistente' });
+    const inv = aplanar(prev);
+
+    const notas = Array.isArray(inv.notas_credito) ? inv.notas_credito.slice() : [];
+    // No se puede acreditar más que el total de la factura
+    const totalFactura = (Number(inv.total_sin_iva) || 0) + (Number(inv.total_iva) || 0);
+    const yaAcreditado = notas.reduce((s, n) =>
+      s + (Number(n.total_sin_iva) || 0) + (Number(n.total_iva) || 0), 0);
+    if (yaAcreditado + neto + iva > totalFactura + 0.01) {
+      return res.status(400).json({
+        error: `La nota supera el saldo de la factura. Total ${totalFactura.toFixed(2)}, ya acreditado ${yaAcreditado.toFixed(2)}.` });
+    }
+
+    notas.push({
+      id: crypto.randomBytes(6).toString('hex'),
+      fecha: nc.fecha || new Date().toISOString().slice(0, 10),
+      numero: nc.numero || null,
+      motivo: nc.motivo || null,
+      total_sin_iva: neto,
+      total_iva: iva,
+      created_at: new Date().toISOString(),
+    });
+    const nuevo = { ...inv, notas_credito: notas };
+    delete nuevo.id; delete nuevo.created_at;
+
+    const { data, error } = await supabaseCompras
+      .from('facturas').update({ data: nuevo }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('compras nota credito:', err);
+    res.status(500).json({ error: 'Error guardando la nota de crédito' });
+  }
+});
+
+router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, res) => {
+  try {
+    const { data: prev, error: e0 } = await supabaseCompras
+      .from('facturas').select('*').eq('id', req.params.id).single();
+    if (e0 || !prev) return res.status(404).json({ error: 'Factura inexistente' });
+    const inv = aplanar(prev);
+    const notas = (inv.notas_credito || []).filter(n => String(n.id) !== String(req.params.ncid));
+    const nuevo = { ...inv, notas_credito: notas };
+    delete nuevo.id; delete nuevo.created_at;
+    const { data, error } = await supabaseCompras
+      .from('facturas').update({ data: nuevo }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(aplanar(data));
+  } catch (err) {
+    console.error('compras borrar nota credito:', err);
+    res.status(500).json({ error: 'Error borrando la nota de crédito' });
   }
 });
 
