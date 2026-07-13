@@ -391,7 +391,7 @@ th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
   <div class="modal">
     <h3 id="mm-titulo">Nuevo</h3>
     <div id="mm-campos"></div>
-    <div class="modal-acciones">
+    <div class="modal-acciones" id="mm-acciones">
       <button class="btn ghost" onclick="cerrarMaestro()">Cancelar</button>
       <button class="btn" onclick="guardarMaestro()">Guardar</button>
     </div>
@@ -939,6 +939,7 @@ function selUniAna(key){
 let stockPeriodo=null;   // null = período actual
 let stockData=null;      // último GET /api/stock (para el detalle lateral)
 let stockSelId=null;     // censo seleccionado
+let stockPedirSel=new Set(); // objetivos tildados en el modal de pedido
 
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK[(m||1)-1]||'';return n.charAt(0).toUpperCase()+n.slice(1)+' '+(a||'');}
@@ -1007,14 +1008,56 @@ function selCenso(id){
         </div>`).join('')
       :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}`;
 }
-async function pedirStock(){
-  const d=stockData;const per=d?d.periodo:'';
-  if(!confirm(`Se manda el pedido de stock de ${mesStk(per)} por WhatsApp a los capataces de todos los objetivos operativos que aún no respondieron. ¿Dale?`))return;
+// Modal de selección: mostrar exactamente a quién se le va a mandar antes de disparar.
+function pedirStock(){
+  const d=stockData;if(!d)return;
+  const cand=(d.candidatos||[]).filter(c=>c.estado!=='respondido');
+  const yaResp=(d.candidatos||[]).filter(c=>c.estado==='respondido').length;
+  const enviables=cand.filter(c=>!c.sin_capataz);
+  if(!enviables.length){
+    alert('No hay objetivos operativos a los que pedirles stock.\n'+
+      (yaResp?yaResp+' ya respondieron.\n':'')+
+      (cand.length?cand.length+' no tienen capataz con teléfono cargado.':'Revisá Maestros → Objetivos: solo se les pide a los de tipo "operativo".'));
+    return;
+  }
+  stockPedirSel=new Set(enviables.map(c=>c.id)); // por defecto todos los enviables
+  const filas=cand.map(c=>`<label class="mm-hab" style="padding:7px 0;border-bottom:1px solid var(--linea);display:flex;align-items:center;gap:9px">
+    <input type="checkbox" value="${c.id}" ${c.sin_capataz?'disabled':'checked'} onchange="stockTogglePedir('${c.id}',this.checked)" style="accent-color:var(--brote)">
+    <span style="flex:1"><b style="font-weight:600">${c.nombre}</b>
+      <span class="sub" style="display:block;font-size:11px">${c.sin_capataz?'⚠ sin capataz con teléfono':c.capataces.join(', ')}${c.estado==='pendiente'?' · ya se le pidió':''}</span></span>
+  </label>`).join('');
+  document.getElementById('mm-titulo').textContent='Pedir stock · '+mesStk(d.periodo);
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:10px">Se manda un WhatsApp a los capataces de los objetivos tildados. ${yaResp?'<b>'+yaResp+'</b> ya respondieron y no aparecen.':''}</div>
+    <div style="max-height:320px;overflow:auto">${filas}</div>
+    <div class="sub" id="stk-pedir-cnt" style="margin-top:10px"></div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" id="stk-pedir-btn" onclick="confirmarPedirStock()">Enviar</button>
+    </div>`;
+  document.getElementById('mm-bg').classList.add('abierto');
+  document.getElementById('mm-acciones').style.display='none'; // el modal de stock trae sus propios botones
+  stockPedirCnt();
+}
+function stockTogglePedir(id,on){on?stockPedirSel.add(id):stockPedirSel.delete(id);stockPedirCnt();}
+function stockPedirCnt(){
+  const c=document.getElementById('stk-pedir-cnt');
+  if(c)c.textContent=stockPedirSel.size+' objetivo'+(stockPedirSel.size===1?'':'s')+' seleccionado'+(stockPedirSel.size===1?'':'s');
+}
+async function confirmarPedirStock(){
+  if(!stockPedirSel.size){alert('No seleccionaste ningún objetivo.');return;}
+  const btn=document.getElementById('stk-pedir-btn');
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
   try{
-    const r=await api('/api/stock/pedir',{method:'POST',body:JSON.stringify({periodo:per})});
-    alert(`Pedidos enviados: ${r.enviados}\nYa habían respondido: ${r.ya_respondidos}\nObjetivos sin capataz con teléfono: ${r.sin_capataz}`);
+    const r=await api('/api/stock/pedir',{method:'POST',
+      body:JSON.stringify({periodo:stockData.periodo,objetivo_ids:[...stockPedirSel]})});
+    cerrarMaestro();
+    alert(`Pedidos enviados: ${r.enviados}`+(r.sin_capataz?`\nSin capataz con teléfono: ${r.sin_capataz}`:''));
     go('stock');
-  }catch(e){alert('No se pudo pedir el stock: '+(e.message||''));}
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Enviar';}
+    alert('No se pudo pedir el stock: '+(e.message||''));
+  }
 }
 async function reenviarStock(id){
   if(!confirm('¿Reenviar el pedido de stock a los capataces de este objetivo?'))return;
@@ -1150,7 +1193,11 @@ function cardMaestro(m,ix){
     sub=(m.habilidades||[]).length+' habilidades';
     extra='<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}">${h.toUpperCase()}</span>`).join('')+'</div>';
   }
-  if(maestroTab==='objetivos'){sub=m.activo?'Activo':'Inactivo';}
+  if(maestroTab==='objetivos'){
+    sub=m.activo?'Activo':'Inactivo';
+    const t=m.tipo||'operativo';
+    extra=`<div class="mcard-row"><span>Tipo</span><span class="badge ${t==='operativo'?'b-green':'b-gray'}">${t==='operativo'?'operativo':'imputación'}</span></div>`;
+  }
   if(maestroTab==='capataces'){
     sub=m.objetivos?m.objetivos.nombre:'sin objetivo';
     extra=`<div class="mcard-row"><span>Teléfono</span><b>${m.telefono||'—'}</b></div>${m.rol?`<div class="mcard-row"><span>Rol</span><b>${m.rol}</b></div>`:''}`;
@@ -1182,6 +1229,7 @@ function abrirModalMaestro(m){
     campos+=`<div class="mm-field"><label>Tipo</label><select id="mm-tipo"><option value="operativo" ${(m.tipo||'operativo')==='operativo'?'selected':''}>Operativo</option><option value="imputacion" ${m.tipo==='imputacion'?'selected':''}>Imputación</option></select></div>`;
   }
   document.getElementById('mm-campos').innerHTML=campos;
+  document.getElementById('mm-acciones').style.display='';  // el modal de stock las oculta
   document.getElementById('mm-bg').classList.add('abierto');
 }
 function cerrarMaestro(){document.getElementById('mm-bg').classList.remove('abierto');maestroEdit=null;}
