@@ -847,16 +847,43 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
     const censo = await censoPorObjetivo(periodo);
 
     const filas = (inv || []).map(r => {
-      const cen = (censo[r.objetivo_id] || {})[r.tipo_equipo];
+      // Si el objetivo respondió el censo y NO mencionó este tipo, informó 0
+      // (no "sin dato"). Solo es null si el objetivo no censó en el período.
+      const tiposDelObjetivo = censo[r.objetivo_id];
+      const cen = tiposDelObjetivo ? (tiposDelObjetivo[r.tipo_equipo] || 0) : null;
       return {
         id: r.id, objetivo_id: r.objetivo_id,
         objetivo: r.objetivos ? r.objetivos.nombre : '—',
         tipo_equipo: r.tipo_equipo, cantidad: r.cantidad,
         numeros: r.numeros || [], observacion: r.observacion, origen: r.origen,
-        censo: cen != null ? cen : null,
+        censo: cen,
         dif: cen != null ? cen - r.cantidad : null,
       };
-    }).sort((a, b) => a.objetivo.localeCompare(b.objetivo) || a.tipo_equipo.localeCompare(b.tipo_equipo));
+    });
+
+    // Huérfanos: tipos que el capataz informó pero que NO tienen línea en el
+    // inventario oficial (equipo nuevo, o el objetivo ya tenía otras líneas y la
+    // semilla no corre). Se muestran con oficial 0 y botón para incorporarlos.
+    const nombres = {};
+    (inv || []).forEach(r => { if (r.objetivos) nombres[r.objetivo_id] = r.objetivos.nombre; });
+    const faltanNombres = Object.keys(censo).filter(id => !nombres[id]);
+    if (faltanNombres.length) {
+      const { data: objsN } = await supabase
+        .from('objetivos').select('id, nombre').in('id', faltanNombres);
+      (objsN || []).forEach(o => { nombres[o.id] = o.nombre; });
+    }
+    const yaHay = new Set((inv || []).map(r => r.objetivo_id + '|' + r.tipo_equipo));
+    Object.entries(censo).forEach(([objId, tipos]) => {
+      Object.entries(tipos).forEach(([tipo, cant]) => {
+        if (yaHay.has(objId + '|' + tipo)) return;
+        filas.push({
+          id: null, objetivo_id: objId, objetivo: nombres[objId] || '—',
+          tipo_equipo: tipo, cantidad: 0, numeros: [], observacion: null,
+          origen: 'huerfano', censo: cant, dif: cant, huerfano: true,
+        });
+      });
+    });
+    filas.sort((a, b) => a.objetivo.localeCompare(b.objetivo) || a.tipo_equipo.localeCompare(b.tipo_equipo));
 
     // Objetivos operativos que todavía no tienen inventario (nunca censaron)
     const { data: objs, error: e2 } = await supabase
@@ -873,11 +900,53 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
         coinciden:      objetivosComparados.size - objetivosConDesvio.size,
         faltantes:      filas.reduce((s, f) => s + (f.dif != null && f.dif < 0 ? -f.dif : 0), 0),
         sin_inventario: sinInventario,
+        huerfanos:      filas.filter(f => f.huerfano).length,
       },
     });
   } catch (err) {
     console.error('stock inventario:', err);
     res.status(500).json({ error: 'Error cargando el inventario' });
+  }
+});
+
+// Siembra el inventario desde los censos respondidos del período: crea las
+// líneas que falten. NO pisa las existentes (idempotente). Cubre los objetivos
+// que censaron antes de que existiera el inventario y los tipos nuevos.
+router.post('/api/stock/inventario/sembrar', auth, async (req, res) => {
+  try {
+    const periodo = String((req.body || {}).periodo || '').trim() || periodoStockActual();
+    const { data: censos, error: e1 } = await supabase
+      .from('censos_stock')
+      .select('objetivo_id, censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+      .eq('periodo', periodo).eq('estado', 'respondido');
+    if (e1) throw e1;
+    const { data: inv, error: e2 } = await supabase
+      .from('stock_objetivo').select('objetivo_id, tipo_equipo');
+    if (e2) throw e2;
+    const yaHay = new Set((inv || []).map(r => r.objetivo_id + '|' + r.tipo_equipo));
+
+    const nuevas = [];
+    (censos || []).forEach(c => {
+      (c.censos_stock_items || []).forEach(i => {
+        const k = c.objetivo_id + '|' + i.tipo_equipo;
+        if (yaHay.has(k)) return;
+        yaHay.add(k);   // por si el censo repite el tipo
+        nuevas.push({
+          objetivo_id: c.objetivo_id, tipo_equipo: i.tipo_equipo,
+          cantidad: i.cantidad || 0, numeros: i.numeros || [],
+          observacion: i.observacion || null, origen: 'censo',
+        });
+      });
+    });
+    if (nuevas.length) {
+      const { error } = await supabase.from('stock_objetivo').insert(nuevas);
+      if (error) throw error;
+    }
+    console.log(`[stock] sembrado desde censo ${periodo}: ${nuevas.length} líneas nuevas`);
+    res.json({ creadas: nuevas.length });
+  } catch (err) {
+    console.error('stock sembrar:', err);
+    res.status(500).json({ error: 'Error sembrando el inventario' });
   }
 });
 
