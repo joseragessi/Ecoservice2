@@ -6,6 +6,8 @@ const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
         continuarConversacion } = require('./combustible');
 const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
         continuarInsumos } = require('./insumos');
+const { iniciarStock, tieneSesionActiva: tieneSesionStock,
+        continuarStock } = require('./stock');
 const { procesarFactura } = require('./facturas_bot');
 const panelApi = require('./panel_api');
 
@@ -26,6 +28,8 @@ const NUMERO_PROVEEDORES = process.env.TWILIO_NUMERO_PROVEEDORES;
 
 // Disparador de pedidos de insumos: el capataz arranca con "insumos" o "pedido".
 const RE_INSUMOS = /^(insumos|pedido)\b[\s:,\-]*/i;
+// Disparador de stock de maquinaria: el capataz arranca con "stock".
+const RE_STOCK = /^stock\b[\s:,\-]*/i;
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
@@ -58,16 +62,24 @@ app.post('/webhook', async (req, res) => {
         respuesta = await continuarConversacion(telefono, mensaje);
       } else if (tieneSesionInsumos(telefono)) {
         respuesta = await continuarInsumos(telefono, mensaje);
+      } else if (tieneSesionStock(telefono)) {
+        respuesta = await continuarStock(telefono, mensaje);
       } else if (RE_INSUMOS.test(mensaje.trim())) {
         // Arranca un pedido de insumos; le pasamos lo que escribió después de la palabra
         const resto = mensaje.trim().replace(RE_INSUMOS, '');
         respuesta = await iniciarInsumos(telefono, resto);
+      } else if (RE_STOCK.test(mensaje.trim())) {
+        // Arranca el envío de stock; le pasamos lo que escribió después de "stock"
+        const resto = mensaje.trim().replace(RE_STOCK, '');
+        respuesta = await iniciarStock(telefono, resto);
       } else {
         // Menú principal / flujo de incidencias (conversacion.js)
         respuesta = await procesarMensaje(telefono, mensaje);
-        // Si el capataz eligió "insumos" en el menú, arrancamos ese flujo
+        // Si el capataz eligió "insumos" o "stock" en el menú, arrancamos ese flujo
         if (respuesta && respuesta.__derivar === 'insumos') {
           respuesta = await iniciarInsumos(telefono, '');
+        } else if (respuesta && respuesta.__derivar === 'stock') {
+          respuesta = await iniciarStock(telefono, '');
         }
       }
     }
