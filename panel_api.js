@@ -688,8 +688,8 @@ function mesLindo(periodo) {
 function mensajeStock(periodo) {
   return `📋 *Stock de maquinaria — ${mesLindo(periodo)}*\n\n` +
          `Necesitamos el listado de maquinaria de tu objetivo. ` +
-         `Respondé con la palabra *stock* seguida del listado, con cantidades y números de máquina.\n\n` +
-         `Ejemplo:\n_stock 3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_\n\n` +
+         `Respondé este mensaje con el listado, poniendo cantidades y números de máquina.\n\n` +
+         `Ejemplo:\n_3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_\n\n` +
          `_EcoService · Logística_`;
 }
 
