@@ -1648,7 +1648,10 @@ function cardMaestro(m,ix){
   let sub='',extra='';
   if(maestroTab==='mecanicos'){
     sub=(m.habilidades||[]).length+' habilidades';
-    extra='<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}">${h.toUpperCase()}</span>`).join('')+'</div>';
+    extra='<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}`+'">'+h.toUpperCase()+'</span>').join('')+'</div>';
+    extra+=`<div class="mcard-row"><span>App</span>${m.usuario
+      ?`<span class="badge b-green mono" style="font-size:10px">${m.usuario}</span>`
+      :'<span class="badge b-gray">sin acceso</span>'}</div>`;
   }
   if(maestroTab==='objetivos'){
     sub=m.activo?'Activo':'Inactivo';
@@ -1675,6 +1678,11 @@ function abrirModalMaestro(m){
   let campos=`<div class="mm-field"><label>Nombre</label><input id="mm-nombre" value="${(m.nombre||'').replace(/"/g,'&quot;')}"></div>`;
   if(maestroTab==='mecanicos'){
     campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
+    campos+=`<div class="divider"></div>
+      <div class="field-l" style="margin-bottom:8px">Acceso a la app del taller</div>
+      <div class="mm-field"><label>Usuario</label><input id="mm-usuario" value="${(m.usuario||'').replace(/"/g,'&quot;')}" placeholder="ej: santiago" autocapitalize="none"></div>
+      <div class="mm-field"><label>Clave</label><input id="mm-clave" type="text" placeholder="${m.usuario?'dejar vacío para no cambiarla':'clave para entrar a la app'}"></div>
+      <div class="sub">La clave se guarda encriptada. Para cambiarla, escribí una nueva; si dejás el campo vacío, se mantiene la actual.</div>`;
   }
   if(maestroTab==='capataces'){
     campos+=`<div class="mm-field"><label>Teléfono</label><input id="mm-telefono" value="${m.telefono||''}" placeholder="549351..."></div>`;
@@ -1694,7 +1702,12 @@ async function guardarMaestro(){
   const nombre=document.getElementById('mm-nombre').value.trim();
   if(!nombre){alert('El nombre es obligatorio');return;}
   const body={nombre};
-  if(maestroTab==='mecanicos'){body.habilidades=[...document.querySelectorAll('#mm-campos input[type=checkbox]:checked')].map(c=>c.value);}
+  if(maestroTab==='mecanicos'){
+    body.habilidades=[...document.querySelectorAll('#mm-campos .mm-habs input[type=checkbox]:checked')].map(c=>c.value);
+    body.usuario=document.getElementById('mm-usuario').value.trim().toLowerCase()||null;
+    const cl=document.getElementById('mm-clave').value.trim();
+    if(cl)body.clave=cl;   // vacío = no cambiar la clave actual
+  }
   if(maestroTab==='capataces'){
     body.telefono=document.getElementById('mm-telefono').value.trim()||null;
     body.rol=document.getElementById('mm-rol').value.trim()||null;
