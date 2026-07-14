@@ -519,10 +519,15 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
 
     const montoSin = listaSin.reduce((s, x) => s + x.monto, 0);
 
+    // Objetivos disponibles para asignar desde el desplegable inline
+    const { data: objsDisp } = await supabase
+      .from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+
     res.json({
       remitos: sel.map(r => ({ id: r.id, proveedor: r.proveedor,
         periodo_desde: r.periodo_desde, periodo_hasta: r.periodo_hasta,
         total: r.total_general, filas: ((r.data && r.data.filas) || []).length })),
+      objetivos_disponibles: objsDisp || [],
       totales: {
         monto: totalMonto, litros: totalLitros, filas: totalFilas,
         asignado: totalMonto - montoSin,
@@ -537,6 +542,48 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
   } catch (err) {
     console.error('compras combustible consolidado:', err);
     res.status(500).json({ error: 'Error consolidando el combustible' });
+  }
+});
+
+// Asignar un objetivo a una patente. Se persiste en el MAESTRO de unidades
+// (no en una tabla aparte), así vale para todos los remitos futuros y además
+// el bot de combustible reconoce la unidad. Una sola fuente de verdad.
+router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
+  try {
+    const { patente, chofer, objetivo_id } = req.body || {};
+    if (!patente) return res.status(400).json({ error: 'Falta la patente' });
+    const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const p = normP(patente);
+
+    // ¿Ya existe la unidad? (comparando patentes normalizadas)
+    const { data: todas, error: e0 } = await supabase
+      .from('unidades').select('id, patente, responsable');
+    if (e0) throw e0;
+    const existente = (todas || []).find(u => normP(u.patente) === p);
+
+    if (existente) {
+      const patch = { objetivo_id: objetivo_id || null };
+      // Si la unidad no tenía responsable y el remito trae chofer, lo completamos
+      if (!existente.responsable && chofer) patch.responsable = chofer;
+      const { error } = await supabase.from('unidades').update(patch).eq('id', existente.id);
+      if (error) throw error;
+      console.log(`[combustible] unidad ${existente.patente} asignada a objetivo ${objetivo_id || 'ninguno'}`);
+      return res.json({ ok: true, creada: false });
+    }
+
+    // No existe: se crea, porque si aparece en el remito es una unidad que carga
+    const { error } = await supabase.from('unidades').insert({
+      patente: String(patente).trim(),
+      responsable: chofer || null,
+      objetivo_id: objetivo_id || null,
+      activo: true,
+    });
+    if (error) throw error;
+    console.log(`[combustible] unidad ${patente} creada y asignada`);
+    res.json({ ok: true, creada: true });
+  } catch (err) {
+    console.error('combustible asignar:', err);
+    res.status(500).json({ error: 'Error asignando el objetivo' });
   }
 });
 
