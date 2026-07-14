@@ -493,12 +493,23 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
           if (f.chofer)  o.choferes.add(f.chofer);
           if (via) o.vias.add(via);
         } else {
-          const k = normP(f.patente) + '|' + normN(f.chofer);
-          if (!sinAsignar[k]) sinAsignar[k] =
-            { patente: f.patente || null, chofer: f.chofer || null,
-              litros: 0, monto: 0, cargas: 0, fechas: [], productos: new Set() };
+          // Se agrupa por PATENTE normalizada, no por patente+chofer: el listado
+          // escribe el mismo chofer de formas distintas ("ARCE" / "ARCE SANTIAGO")
+          // y la misma patente con o sin guiones, y eso partía una unidad en varias filas.
+          const k = normP(f.patente) || ('SINPAT|' + normN(f.chofer));
+          if (!sinAsignar[k]) {
+            const u = porPatente[normP(f.patente)];   // ¿la unidad ya existe en el maestro?
+            sinAsignar[k] = {
+              patente: f.patente || null, chofer: f.chofer || null,
+              litros: 0, monto: 0, cargas: 0, fechas: [], productos: new Set(), choferes: new Set(),
+              // Si la unidad existe pero no tiene objetivo, lo decimos: no hay que
+              // crearla, solo falta completarle el objetivo.
+              unidad_conocida: u ? { codigo: u.codigo, responsable: u.responsable } : null,
+            };
+          }
           const s = sinAsignar[k];
           s.litros += litros; s.monto += monto; s.cargas++;
+          if (f.chofer) s.choferes.add(f.chofer);
           if (f.fecha && !s.fechas.includes(f.fecha)) s.fechas.push(f.fecha);
           if (f.producto) s.productos.add(f.producto);
         }
@@ -513,8 +524,8 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
     })).sort((a, b) => b.monto - a.monto);
 
     const listaSin = Object.values(sinAsignar).map(s => ({
-      ...s, productos: [...s.productos], pct: pct(s.monto),
-      fechas: s.fechas.sort(),
+      ...s, productos: [...s.productos], choferes: [...s.choferes],
+      pct: pct(s.monto), fechas: s.fechas.sort(),
     })).sort((a, b) => b.monto - a.monto);
 
     const montoSin = listaSin.reduce((s, x) => s + x.monto, 0);
