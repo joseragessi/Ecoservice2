@@ -1872,7 +1872,102 @@ let comprasIndData=null;    // cache de facturas para indicadores/export
 function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${comprasTab==='resumen'?'on':''}" onclick="comprasTab='resumen';go('compras')">Resumen</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
+  <button class="${comprasTab==='combustible'?'on':''}" onclick="comprasTab='combustible';go('compras')">Combustible</button>
 </div>`;}
+
+/* ===== Compras · Combustible por objetivo ===== */
+let cbSel='';        // ids de remitos seleccionados ('' = el más reciente)
+let cbData=null;
+
+async function vComprasCombustible(view){
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Consolidando…</div>';
+  try{
+    cbData=await api('/api/compras/combustible/consolidado'+(cbSel?'?ids='+encodeURIComponent(cbSel):''));
+    const d=cbData,t=d.totales;
+    const rems=await api('/api/compras/remitos');
+    const barra=(x,color)=>`<div style="height:6px;background:var(--papel);border-radius:3px;margin-top:4px">
+      <div style="height:6px;width:${Math.max(1,Math.round(x.pct))}%;background:${color};border-radius:3px"></div></div>`;
+
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Combustible por objetivo</div>
+      <div class="view-desc">Reparto del gasto de los remitos del proveedor · ${d.remitos.map(r=>r.proveedor||'—').join(', ')||'sin listados'}</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select class="busca" style="width:auto" onchange="cbSel=this.value;go('compras')">
+          <option value="">Último listado</option>
+          <option value="todos" ${cbSel==='todos'?'selected':''}>Todos los listados</option>
+          ${(rems||[]).map(r=>`<option value="${r.id}" ${cbSel===String(r.id)?'selected':''}>${r.proveedor||'—'} · ${r.periodo_desde||''} a ${r.periodo_hasta||''}</option>`).join('')}
+        </select>
+        <button class="btn" onclick="go('combustible')">＋ Subir remito</button>
+      </div></div>
+    ${tabsCompras()}
+    ${!d.remitos.length?'<div class="empty" style="height:220px"><div>No hay listados de combustible cargados.<br>Subí el listado del proveedor para ver el reparto por objetivo.</div></div>':`
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="kpi-label">Total del remito</div>
+        <div class="kpi-val" style="font-size:22px">${money0(t.monto)}</div>
+        <div class="kpi-sub">${Math.round(t.litros).toLocaleString('es-AR')} litros · ${t.filas} cargas</div></div>
+      <div class="kpi"><div class="kpi-label">Asignado</div>
+        <div class="kpi-val green" style="font-size:22px">${Math.round(t.pct_asignado)}%</div>
+        <div class="kpi-sub">${money0(t.asignado)} en ${t.objetivos} objetivos</div></div>
+      <div class="kpi ${t.sin_asignar?'amber':'plain'}"><div class="kpi-label">Sin objetivo</div>
+        <div class="kpi-val ${t.sin_asignar?'amber':''}" style="font-size:22px">${Math.round(t.pct_sin_asignar)}%</div>
+        <div class="kpi-sub">${money0(t.sin_asignar)} sin identificar</div></div>
+      <div class="kpi plain"><div class="kpi-label">Objetivos</div>
+        <div class="kpi-val" style="font-size:22px">${t.objetivos}</div>
+        <div class="kpi-sub">con consumo en el período</div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:18px">
+      <div class="panel-title" style="margin-bottom:12px">Gasto por objetivo</div>
+      ${d.objetivos.length?`<table style="font-size:12.5px"><thead><tr>
+        <th>Objetivo</th><th class="num">Litros</th><th class="num">Gasto</th><th style="width:170px">% del remito</th><th>Unidades / choferes</th></tr></thead>
+      <tbody>${d.objetivos.map(o=>`<tr>
+        <td style="font-weight:600">${o.nombre}<div class="sub" style="font-size:11px">${o.cargas} carga${o.cargas===1?'':'s'}</div></td>
+        <td class="num mono">${Math.round(o.litros).toLocaleString('es-AR')}</td>
+        <td class="num money">${money0(o.monto)}</td>
+        <td><div style="display:flex;align-items:center;gap:8px">
+          <b class="mono" style="min-width:44px">${(Math.round(o.pct*10)/10).toFixed(1)}%</b>
+          <div style="flex:1">${barra(o,'var(--brote)')}</div></div></td>
+        <td class="sub" style="font-size:11px">${[...o.unidades,...o.choferes].slice(0,3).join(' · ')||'—'}</td>
+      </tr>`).join('')}
+      <tr style="border-top:2px solid var(--linea)">
+        <td><b>Total asignado</b></td>
+        <td class="num mono"><b>${Math.round(d.objetivos.reduce((s,o)=>s+o.litros,0)).toLocaleString('es-AR')}</b></td>
+        <td class="num money"><b>${money0(t.asignado)}</b></td>
+        <td><b class="mono">${Math.round(t.pct_asignado)}%</b></td><td></td></tr>
+      </tbody></table>`
+      :'<div class="sub" style="padding:14px 0">Ninguna carga pudo asignarse a un objetivo.</div>'}
+    </div>
+
+    ${d.sin_asignar.length?`
+    <div class="panel" style="border-left:3px solid var(--ambar)">
+      <div class="panel-title" style="margin-bottom:6px">⚠ Cargas sin objetivo</div>
+      <div class="sub" style="margin-bottom:12px">No se pudo resolver a qué objetivo van. Para asignarlas, cargá la patente en <b>Maestros → Unidades</b> con su objetivo, o el chofer como responsable de esa unidad.</div>
+      <table style="font-size:12.5px"><thead><tr>
+        <th>Patente</th><th>Chofer</th><th class="num">Litros</th><th class="num">Gasto</th><th class="num">%</th><th>Fechas</th><th style="width:90px"></th></tr></thead>
+      <tbody>${d.sin_asignar.map(s=>`<tr>
+        <td class="mono" style="font-weight:600">${s.patente||'<span class="sub">sin patente</span>'}</td>
+        <td>${s.chofer||'<span class="sub">sin chofer</span>'}</td>
+        <td class="num mono">${Math.round(s.litros).toLocaleString('es-AR')}</td>
+        <td class="num money">${money0(s.monto)}</td>
+        <td class="num"><b style="color:var(--ambar)">${(Math.round(s.pct*10)/10).toFixed(1)}%</b></td>
+        <td class="sub" style="font-size:11px">${s.cargas} carga${s.cargas===1?'':'s'}${s.fechas.length?' · '+s.fechas[0]+(s.fechas.length>1?' a '+s.fechas[s.fechas.length-1]:''):''}</td>
+        <td style="text-align:right"><button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="go('maestros')">Asignar →</button></td>
+      </tr>`).join('')}
+      <tr style="border-top:2px solid var(--linea)">
+        <td colspan="3"><b>Total sin asignar</b></td>
+        <td class="num money"><b style="color:var(--ambar)">${money0(t.sin_asignar)}</b></td>
+        <td class="num"><b style="color:var(--ambar)">${Math.round(t.pct_sin_asignar)}%</b></td><td colspan="2"></td></tr>
+      </tbody></table>
+    </div>`:`
+    <div class="panel" style="border-left:3px solid var(--brote)">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+        <span style="font-size:19px">✅</span>
+        <div><div style="font-weight:600;font-size:14px">Todo el remito está asignado</div>
+        <div class="sub">Cada carga se resolvió a un objetivo por patente o por chofer.</div></div>
+      </div>
+    </div>`}`}`;
+  }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude consolidar. ${e.message||''}</div>`;}
+}
 
 // Mes de una factura, tolerante a fechas sucias ('2026-05-11', '03/06/2026', vacío)
 function mesInv(f){
@@ -2046,6 +2141,7 @@ async function vCompras(view){
   if(comprasMode==='carga'){vComprasCarga(view);return;}
   if(comprasMode==='detalle'){vComprasDetalle(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
+  if(comprasTab==='combustible'){vComprasCombustible(view);return;}
   try{
     comprasData=await api('/api/compras/facturas');
     const b=comprasBusca.trim().toLowerCase();
