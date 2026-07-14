@@ -1882,15 +1882,24 @@ let cbData=null;
 async function vComprasCombustible(view){
   view.innerHTML=tabsCompras()+'<div class="cargando-v">Consolidando…</div>';
   try{
-    cbData=await api('/api/compras/combustible/consolidado'+(cbSel?'?ids='+encodeURIComponent(cbSel):''));
-    const d=cbData,t=d.totales;
-    const rems=await api('/api/compras/remitos');
+    const [d,rems]=await Promise.all([
+      api('/api/compras/combustible/consolidado'+(cbSel?'?ids='+encodeURIComponent(cbSel):'')),
+      api('/api/compras/remitos'),
+    ]);
+    cbData=d;
+    const t=d.totales;
+    const objs=d.objetivos_disponibles||[];
     const barra=(x,color)=>`<div style="height:6px;background:var(--papel);border-radius:3px;margin-top:4px">
       <div style="height:6px;width:${Math.max(1,Math.round(x.pct))}%;background:${color};border-radius:3px"></div></div>`;
+    // Desplegable de objetivos: al elegir uno, la patente queda asignada para siempre
+    const selObj=(s,ix)=>`<select onchange="asignarObjetivo(${ix},this.value)" style="width:100%;font-size:11.5px;padding:6px 8px;border:1px solid var(--linea);border-radius:8px;background:var(--blanco);font-family:inherit">
+      <option value="">— elegir objetivo —</option>
+      ${objs.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
+    </select>`;
 
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible por objetivo</div>
-      <div class="view-desc">Reparto del gasto de los remitos del proveedor · ${d.remitos.map(r=>r.proveedor||'—').join(', ')||'sin listados'}</div></div>
+      <div class="view-desc">Reparto del gasto de los remitos del proveedor${d.remitos.length?' · '+[...new Set(d.remitos.map(r=>r.proveedor||'—'))].join(', '):''}</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <select class="busca" style="width:auto" onchange="cbSel=this.value;go('compras')">
           <option value="">Último listado</option>
@@ -1900,7 +1909,23 @@ async function vComprasCombustible(view){
         <button class="btn" onclick="go('combustible')">＋ Subir remito</button>
       </div></div>
     ${tabsCompras()}
-    ${!d.remitos.length?'<div class="empty" style="height:220px"><div>No hay listados de combustible cargados.<br>Subí el listado del proveedor para ver el reparto por objetivo.</div></div>':`
+
+    <div class="panel" style="margin-bottom:18px">
+      <div class="panel-title" style="margin-bottom:10px">Listados procesados</div>
+      ${(rems||[]).length?`<table style="font-size:12.5px"><thead><tr>
+        <th>Proveedor</th><th>Período</th><th class="num">Registros</th><th class="num">Litros</th><th class="num">Total</th><th style="width:80px"></th></tr></thead>
+      <tbody>${rems.map(r=>`<tr>
+        <td style="font-weight:600">${r.proveedor||'—'}</td>
+        <td class="mono sub">${r.periodo_desde||'?'} → ${r.periodo_hasta||'?'}</td>
+        <td class="num">${((r.data&&r.data.filas)||[]).length}</td>
+        <td class="num mono">${Math.round(((r.data&&r.data.filas)||[]).reduce((s,f)=>s+(Number(f.litros)||0),0)).toLocaleString('es-AR')}</td>
+        <td class="num money">${money0(r.total_general)}</td>
+        <td style="text-align:right"><button class="btn-salir" style="padding:4px 8px;font-size:11.5px;color:var(--rojo)" onclick="borrarRemitoCb('${r.id}','${(r.proveedor||'').replace(/'/g,"\\'")}')" title="Eliminar este listado">✕</button></td>
+      </tr>`).join('')}</tbody></table>`
+      :'<div class="sub" style="padding:10px 0">No hay listados cargados.</div>'}
+    </div>
+
+    ${!d.remitos.length?'<div class="empty" style="height:200px"><div>Elegí un listado para ver el reparto por objetivo.</div></div>':`
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
       <div class="kpi"><div class="kpi-label">Total del remito</div>
         <div class="kpi-val" style="font-size:22px">${money0(t.monto)}</div>
@@ -1935,23 +1960,23 @@ async function vComprasCombustible(view){
         <td class="num money"><b>${money0(t.asignado)}</b></td>
         <td><b class="mono">${Math.round(t.pct_asignado)}%</b></td><td></td></tr>
       </tbody></table>`
-      :'<div class="sub" style="padding:14px 0">Ninguna carga pudo asignarse a un objetivo.</div>'}
+      :'<div class="sub" style="padding:14px 0">Ninguna carga pudo asignarse todavía. Asignalas abajo.</div>'}
     </div>
 
     ${d.sin_asignar.length?`
     <div class="panel" style="border-left:3px solid var(--ambar)">
       <div class="panel-title" style="margin-bottom:6px">⚠ Cargas sin objetivo</div>
-      <div class="sub" style="margin-bottom:12px">No se pudo resolver a qué objetivo van. Para asignarlas, cargá la patente en <b>Maestros → Unidades</b> con su objetivo, o el chofer como responsable de esa unidad.</div>
+      <div class="sub" style="margin-bottom:12px">Elegí el objetivo de cada patente. <b>Queda guardado en Maestros → Unidades</b>, así los próximos remitos se asignan solos.</div>
       <table style="font-size:12.5px"><thead><tr>
-        <th>Patente</th><th>Chofer</th><th class="num">Litros</th><th class="num">Gasto</th><th class="num">%</th><th>Fechas</th><th style="width:90px"></th></tr></thead>
-      <tbody>${d.sin_asignar.map(s=>`<tr>
+        <th>Patente</th><th>Chofer</th><th class="num">Litros</th><th class="num">Gasto</th><th class="num">%</th><th>Cargas</th><th style="width:230px">Asignar objetivo</th></tr></thead>
+      <tbody>${d.sin_asignar.map((s,ix)=>`<tr id="sinobj-${ix}">
         <td class="mono" style="font-weight:600">${s.patente||'<span class="sub">sin patente</span>'}</td>
         <td>${s.chofer||'<span class="sub">sin chofer</span>'}</td>
         <td class="num mono">${Math.round(s.litros).toLocaleString('es-AR')}</td>
         <td class="num money">${money0(s.monto)}</td>
         <td class="num"><b style="color:var(--ambar)">${(Math.round(s.pct*10)/10).toFixed(1)}%</b></td>
-        <td class="sub" style="font-size:11px">${s.cargas} carga${s.cargas===1?'':'s'}${s.fechas.length?' · '+s.fechas[0]+(s.fechas.length>1?' a '+s.fechas[s.fechas.length-1]:''):''}</td>
-        <td style="text-align:right"><button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="go('maestros')">Asignar →</button></td>
+        <td class="sub" style="font-size:11px">${s.cargas}${s.fechas.length?' · '+s.fechas[0].slice(5)+(s.fechas.length>1?' a '+s.fechas[s.fechas.length-1].slice(5):''):''}</td>
+        <td>${s.patente?selObj(s,ix):'<span class="sub" style="font-size:11px">necesita patente</span>'}</td>
       </tr>`).join('')}
       <tr style="border-top:2px solid var(--linea)">
         <td colspan="3"><b>Total sin asignar</b></td>
@@ -1967,6 +1992,29 @@ async function vComprasCombustible(view){
       </div>
     </div>`}`}`;
   }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude consolidar. ${e.message||''}</div>`;}
+}
+// Asignar el objetivo de una patente: se guarda en el maestro de unidades,
+// así vale para todos los remitos futuros.
+async function asignarObjetivo(ix,objetivoId){
+  if(!objetivoId)return;
+  const s=(cbData.sin_asignar||[])[ix];if(!s)return;
+  const fila=document.getElementById('sinobj-'+ix);
+  if(fila)fila.style.opacity='.5';
+  try{
+    await api('/api/compras/combustible/asignar',{method:'POST',
+      body:JSON.stringify({patente:s.patente,chofer:s.chofer,objetivo_id:objetivoId})});
+    go('compras');   // recalcula: la fila desaparece y el objetivo suma
+  }catch(e){
+    if(fila)fila.style.opacity='1';
+    alert('No pude asignar: '+(e.message||''));
+  }
+}
+async function borrarRemitoCb(id,prov){
+  if(!confirm(`¿Eliminar el listado de ${prov||'este proveedor'}?\nSe borran todas sus cargas del consolidado. No se puede deshacer.`))return;
+  try{
+    await api('/api/combustible/remito/'+id,{method:'DELETE'});
+    cbSel='';go('compras');
+  }catch(e){alert('No pude eliminar: '+(e.message||''));}
 }
 
 // Mes de una factura, tolerante a fechas sucias ('2026-05-11', '03/06/2026', vacío)
