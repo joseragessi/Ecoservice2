@@ -414,6 +414,132 @@ router.get('/api/compras/listas', auth, async (req, res) => {
   }
 });
 
+// Consolidado de combustible por objetivo (submódulo de Compras).
+// Toma los listados/remitos del proveedor y reparte el gasto por objetivo.
+//
+// El objetivo de cada fila se resuelve en cascada, porque ninguna fuente sola
+// alcanza: el listado del proveedor trae patente y chofer, pero no el objetivo.
+//   1. Por PATENTE → unidad → objetivo asignado a esa unidad.
+//   2. Por CHOFER → unidad cuyo responsable es ese chofer → su objetivo.
+//   3. Por CHOFER → capataz con ese nombre → su objetivo.
+// Lo que no se resuelve se devuelve aparte, con chofer y patente, para que se
+// pueda identificar a mano.
+router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
+  try {
+    const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normN = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+
+    const { data: rems, error: e1 } = await supabaseCompras
+      .from('remitos_combustible').select('*').order('created_at', { ascending: false });
+    if (e1) throw e1;
+
+    // Selección: ?ids=uuid,uuid | ?ids=todos | sin parámetro = el más reciente
+    const idsParam = String(req.query.ids || '').trim();
+    let sel = rems || [];
+    if (idsParam && idsParam !== 'todos') {
+      const set = new Set(idsParam.split(',').map(s => s.trim()).filter(Boolean));
+      sel = sel.filter(r => set.has(String(r.id)));
+    } else if (!idsParam && sel.length > 1) {
+      sel = [sel[0]];
+    }
+
+    // Maestros para resolver el objetivo
+    const [uni, cap] = await Promise.all([
+      supabase.from('unidades').select('patente, codigo, responsable, objetivos(nombre)'),
+      supabase.from('capataces').select('nombre, objetivos(nombre)'),
+    ]);
+    if (uni.error) throw uni.error;
+    if (cap.error) throw cap.error;
+
+    const porPatente = {}, porResponsable = {}, porCapataz = {};
+    (uni.data || []).forEach(u => {
+      const obj = u.objetivos ? u.objetivos.nombre : null;
+      if (u.patente) porPatente[normP(u.patente)] = { objetivo: obj, codigo: u.codigo, responsable: u.responsable };
+      if (u.responsable && obj) porResponsable[normN(u.responsable)] = obj;
+    });
+    (cap.data || []).forEach(c => {
+      if (c.nombre && c.objetivos) porCapataz[normN(c.nombre)] = c.objetivos.nombre;
+    });
+
+    // Resolver cada fila
+    const resolver = (patente, chofer) => {
+      const p = normP(patente);
+      if (p && porPatente[p] && porPatente[p].objetivo)
+        return { objetivo: porPatente[p].objetivo, via: 'patente' };
+      const c = normN(chofer);
+      if (c && porResponsable[c]) return { objetivo: porResponsable[c], via: 'chofer (responsable de unidad)' };
+      if (c && porCapataz[c])     return { objetivo: porCapataz[c],     via: 'chofer (capataz)' };
+      return { objetivo: null, via: null };
+    };
+
+    const objetivos = {};    // nombre → { litros, monto, cargas, unidades:Set, choferes:Set }
+    const sinAsignar = {};   // patente|chofer → { patente, chofer, litros, monto, cargas, fechas }
+    let totalMonto = 0, totalLitros = 0, totalFilas = 0;
+
+    sel.forEach(r => {
+      const filas = (r.data && r.data.filas) || [];
+      filas.forEach(f => {
+        const litros = Number(f.litros) || 0;
+        const monto  = Number(f.total)  || 0;
+        totalMonto += monto; totalLitros += litros; totalFilas++;
+
+        const { objetivo, via } = resolver(f.patente, f.chofer);
+        if (objetivo) {
+          if (!objetivos[objetivo]) objetivos[objetivo] =
+            { nombre: objetivo, litros: 0, monto: 0, cargas: 0, unidades: new Set(), choferes: new Set(), vias: new Set() };
+          const o = objetivos[objetivo];
+          o.litros += litros; o.monto += monto; o.cargas++;
+          if (f.patente) o.unidades.add(String(f.patente).toUpperCase());
+          if (f.chofer)  o.choferes.add(f.chofer);
+          if (via) o.vias.add(via);
+        } else {
+          const k = normP(f.patente) + '|' + normN(f.chofer);
+          if (!sinAsignar[k]) sinAsignar[k] =
+            { patente: f.patente || null, chofer: f.chofer || null,
+              litros: 0, monto: 0, cargas: 0, fechas: [], productos: new Set() };
+          const s = sinAsignar[k];
+          s.litros += litros; s.monto += monto; s.cargas++;
+          if (f.fecha && !s.fechas.includes(f.fecha)) s.fechas.push(f.fecha);
+          if (f.producto) s.productos.add(f.producto);
+        }
+      });
+    });
+
+    const pct = m => totalMonto ? (m * 100 / totalMonto) : 0;
+    const listaObj = Object.values(objetivos).map(o => ({
+      nombre: o.nombre, litros: o.litros, monto: o.monto, cargas: o.cargas,
+      pct: pct(o.monto),
+      unidades: [...o.unidades], choferes: [...o.choferes], vias: [...o.vias],
+    })).sort((a, b) => b.monto - a.monto);
+
+    const listaSin = Object.values(sinAsignar).map(s => ({
+      ...s, productos: [...s.productos], pct: pct(s.monto),
+      fechas: s.fechas.sort(),
+    })).sort((a, b) => b.monto - a.monto);
+
+    const montoSin = listaSin.reduce((s, x) => s + x.monto, 0);
+
+    res.json({
+      remitos: sel.map(r => ({ id: r.id, proveedor: r.proveedor,
+        periodo_desde: r.periodo_desde, periodo_hasta: r.periodo_hasta,
+        total: r.total_general, filas: ((r.data && r.data.filas) || []).length })),
+      totales: {
+        monto: totalMonto, litros: totalLitros, filas: totalFilas,
+        asignado: totalMonto - montoSin,
+        sin_asignar: montoSin,
+        pct_asignado: pct(totalMonto - montoSin),
+        pct_sin_asignar: pct(montoSin),
+        objetivos: listaObj.length,
+      },
+      objetivos: listaObj,
+      sin_asignar: listaSin,
+    });
+  } catch (err) {
+    console.error('compras combustible consolidado:', err);
+    res.status(500).json({ error: 'Error consolidando el combustible' });
+  }
+});
+
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
