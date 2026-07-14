@@ -392,10 +392,34 @@ router.get('/api/mecanicos', auth, async (req, res) => {
 
 // ── MAESTROS · ABM de mecánicos, objetivos y capataces ────────
 // Lista blanca de campos editables por tabla (protege columnas críticas)
+// Listas para los desplegables de imputación de Compras.
+// Antes estaban hardcodeadas dentro del panel; ahora salen de los maestros.
+router.get('/api/compras/listas', auth, async (req, res) => {
+  try {
+    const [cc, un] = await Promise.all([
+      supabase.from('centros_costo').select('nombre').eq('activo', true).order('nombre'),
+      supabase.from('unidades').select('codigo, marca_modelo, patente, responsable')
+        .eq('activo', true).order('codigo'),
+    ]);
+    if (cc.error) throw cc.error;
+    if (un.error) throw un.error;
+    // La unidad se arma igual que antes: "U12 — Fiat Strada — AC770AY — Agustín"
+    const unidades = (un.data || []).map(u =>
+      [u.codigo, u.marca_modelo, u.patente, u.responsable].filter(Boolean).join(' — ')
+    ).filter(Boolean);
+    res.json({ objetivos: (cc.data || []).map(c => c.nombre), unidades });
+  } catch (err) {
+    console.error('compras listas:', err);
+    res.status(500).json({ error: 'Error cargando las listas de imputación' });
+  }
+});
+
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo'],
+  centros_costo: ['nombre', 'activo'],
+  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo'],
 };
 
 function filtrarCampos(tipo, body) {
@@ -412,8 +436,12 @@ router.get('/api/maestros/:tipo', auth, async (req, res) => {
   const tipo = req.params.tipo;
   if (!CAMPOS_MAESTRO[tipo]) return res.status(400).json({ error: 'Tipo inválido' });
   try {
-    const sel = tipo === 'capataces' ? '*, objetivos(nombre)' : '*';
-    const { data, error } = await supabase.from(tipo).select(sel).order('nombre');
+    const sel = tipo === 'capataces' ? '*, objetivos(nombre)'
+              : tipo === 'unidades'  ? '*, objetivos(nombre)'
+              : '*';
+    // `unidades` no tiene columna nombre: se ordena por código.
+    const orden = tipo === 'unidades' ? 'codigo' : 'nombre';
+    const { data, error } = await supabase.from(tipo).select(sel).order(orden);
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
