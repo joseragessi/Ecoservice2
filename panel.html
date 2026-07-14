@@ -1771,7 +1771,11 @@ function abrirModalMaestro(m){
        <div class="mm-field"><label>Marca y modelo</label><input id="mm-modelo" value="${(m.marca_modelo||'').replace(/"/g,'&quot;')}" placeholder="ej: Fiat Strada Cab.Simple Mod.2018"></div>
        <div class="mm-field"><label>Patente</label><input id="mm-patente" value="${(m.patente||'').replace(/"/g,'&quot;')}" placeholder="ej: AC770AY"></div>
        <div class="mm-field"><label>Responsable</label><input id="mm-responsable" value="${(m.responsable||'').replace(/"/g,'&quot;')}" placeholder="ej: Agustín Nóbrega"></div>
-       <div class="sub">La patente es la que usa el bot de combustible para reconocer la unidad en el ticket. Escribila igual que en el comprobante.</div>`
+       <div class="mm-field"><label>Objetivo</label><select id="mm-objetivo">
+         <option value="">— sin asignar —</option>
+         ${(objetivos||[]).map(o=>`<option value="${o.id}" ${String(m.objetivo_id)===String(o.id)?'selected':''}>${o.nombre}</option>`).join('')}
+       </select></div>
+       <div class="sub">El <b>objetivo</b> es lo que usa Compras para repartir el gasto de combustible. La <b>patente</b> es lo que usa el bot para reconocer la unidad en el ticket.</div>`
     : `<div class="mm-field"><label>Nombre</label><input id="mm-nombre" value="${(m.nombre||'').replace(/"/g,'&quot;')}"></div>`;
   if(maestroTab==='mecanicos'){
     campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
@@ -1809,6 +1813,7 @@ async function guardarMaestro(){
       marca_modelo:document.getElementById('mm-modelo').value.trim()||null,
       patente,
       responsable:document.getElementById('mm-responsable').value.trim()||null,
+      objetivo_id:document.getElementById('mm-objetivo').value||null,
     };
   }else{
     const nombre=document.getElementById('mm-nombre').value.trim();
@@ -1966,22 +1971,27 @@ async function vComprasCombustible(view){
     ${d.sin_asignar.length?`
     <div class="panel" style="border-left:3px solid var(--ambar)">
       <div class="panel-title" style="margin-bottom:6px">⚠ Cargas sin objetivo</div>
-      <div class="sub" style="margin-bottom:12px">Elegí el objetivo de cada patente. <b>Queda guardado en Maestros → Unidades</b>, así los próximos remitos se asignan solos.</div>
+      <div class="sub" style="margin-bottom:12px">La mayoría ya está en el maestro de Unidades: lo único que les falta es <b>a qué objetivo van</b>. Elegilo acá y queda guardado para siempre.</div>
       <table style="font-size:12.5px"><thead><tr>
-        <th>Patente</th><th>Chofer</th><th class="num">Litros</th><th class="num">Gasto</th><th class="num">%</th><th>Cargas</th><th style="width:230px">Asignar objetivo</th></tr></thead>
+        <th>Unidad / patente</th><th>Chofer</th><th class="num">Litros</th><th class="num">Gasto</th><th class="num">%</th><th style="width:240px">Objetivo</th></tr></thead>
       <tbody>${d.sin_asignar.map((s,ix)=>`<tr id="sinobj-${ix}">
-        <td class="mono" style="font-weight:600">${s.patente||'<span class="sub">sin patente</span>'}</td>
-        <td>${s.chofer||'<span class="sub">sin chofer</span>'}</td>
+        <td>
+          <div class="mono" style="font-weight:600">${s.patente||'<span class="sub">sin patente</span>'}</div>
+          ${s.unidad_conocida
+            ?`<div class="sub" style="font-size:11px;color:var(--brote-2)">✓ ${s.unidad_conocida.codigo||'unidad'} · solo falta el objetivo</div>`
+            :'<div class="sub" style="font-size:11px">no está en Unidades · se va a crear</div>'}
+        </td>
+        <td>${(s.choferes||[]).slice(0,2).join(' / ')||'<span class="sub">sin chofer</span>'}
+          <div class="sub" style="font-size:11px">${s.cargas} carga${s.cargas===1?'':'s'}</div></td>
         <td class="num mono">${Math.round(s.litros).toLocaleString('es-AR')}</td>
         <td class="num money">${money0(s.monto)}</td>
         <td class="num"><b style="color:var(--ambar)">${(Math.round(s.pct*10)/10).toFixed(1)}%</b></td>
-        <td class="sub" style="font-size:11px">${s.cargas}${s.fechas.length?' · '+s.fechas[0].slice(5)+(s.fechas.length>1?' a '+s.fechas[s.fechas.length-1].slice(5):''):''}</td>
         <td>${s.patente?selObj(s,ix):'<span class="sub" style="font-size:11px">necesita patente</span>'}</td>
       </tr>`).join('')}
       <tr style="border-top:2px solid var(--linea)">
         <td colspan="3"><b>Total sin asignar</b></td>
         <td class="num money"><b style="color:var(--ambar)">${money0(t.sin_asignar)}</b></td>
-        <td class="num"><b style="color:var(--ambar)">${Math.round(t.pct_sin_asignar)}%</b></td><td colspan="2"></td></tr>
+        <td class="num"><b style="color:var(--ambar)">${Math.round(t.pct_sin_asignar)}%</b></td><td></td></tr>
       </tbody></table>
     </div>`:`
     <div class="panel" style="border-left:3px solid var(--brote)">
