@@ -40,7 +40,20 @@ Devolvé exactamente esta estructura:
 
 Reglas de números: los importes vienen en formato argentino (miles con punto, decimales con coma).
 Convertilos a número con punto decimal. Ejemplos: "147.141,40" -> 147141.40 ; "76,9527" -> 76.9527.
-Si un dato no está o no se lee con seguridad, poné null. No inventes valores.`;
+
+MUY IMPORTANTE — cómo leer los litros en los remitos de surtidor:
+- En los remitos, cada línea de producto tiene el formato: LITROS.....(CÓDIGO)NOMBRE_PRODUCTO
+  Por ejemplo: "61,6549.....(1)UPOWER DIESEL" significa 61,65 litros (=61.6549) del producto "UPOWER DIESEL".
+  Otro ejemplo: "46,0070.....(11001)PUMA SUPER" son 46,00 litros (=46.007) de "PUMA SUPER".
+- Los LITROS son SIEMPRE el número que aparece ANTES de los puntos suspensivos y del nombre del producto, con coma decimal.
+- El número entre paréntesis "(1)", "(11001)", "(11008)" es el CÓDIGO INTERNO del producto de la estación.
+  NUNCA lo uses como litros, precio ni subtotal. Descartalo por completo.
+- El nombre del producto es el texto que sigue al paréntesis (ej "UPOWER DIESEL", "PUMA SUPER", "ION PUMA DIESEL").
+- Los puntos suspensivos "....." son solo relleno de impresión, no son parte de ningún número.
+
+El chofer suele figurar como "Chofer: APELLIDO NOMBRE". La patente como "Patente: XXXXX".
+Si un dato no está o no se lee con seguridad, poné null. No inventes valores, pero SÍ leé los litros
+del remito siguiendo la regla de arriba: casi siempre están presentes aunque el remito no tenga montos.`;
 
 /**
  * @param {Buffer} imagenBuffer - bytes de la imagen del comprobante
