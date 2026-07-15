@@ -31,4 +31,36 @@ async function notificarCapataz(telefono, texto) {
   }
 }
 
-module.exports = { notificarCapataz };
+/**
+ * Igual que notificarCapataz, pero para el PRIMER contacto de una conversación
+ * (ej. el pedido mensual de stock): como el capataz no le escribió nada al bot
+ * en las últimas 24hs, WhatsApp/Meta rechaza el texto libre (error 63016) y
+ * ese rechazo llega ASÍNCRONO — el create() ya devolvió éxito antes de saberlo.
+ * Por eso acá no hay fallback posible: se manda directo con el Content Template
+ * aprobado por Meta (contentSid), que si es genérico no necesita variables.
+ *
+ * @param {string} telefono   - teléfono del capataz
+ * @param {string} contentSid - SID del template aprobado (ej. "HXc8e60d...")
+ * @param {object} [variables] - variables del template, si las tiene (ej. {'1':'Juan'})
+ * @returns {Promise<boolean>}
+ */
+async function notificarCapatazTemplate(telefono, contentSid, variables) {
+  if (!telefono || !contentSid) return false;
+  const limpio = String(telefono).replace(/\D/g, '');
+  if (!limpio) return false;
+  try {
+    await client.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to:   'whatsapp:+' + limpio,
+      contentSid,
+      ...(variables ? { contentVariables: JSON.stringify(variables) } : {}),
+    });
+    console.log(`[NOTIF] template ${contentSid} enviada a ${limpio}`);
+    return true;
+  } catch (e) {
+    console.error(`[NOTIF] no se pudo enviar template a ${limpio}: ${e.code || ''} ${e.message}`);
+    return false;
+  }
+}
+
+module.exports = { notificarCapataz, notificarCapatazTemplate };
