@@ -3,7 +3,7 @@ const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
 const supabaseCompras = require('./supabase_compras');
-const { notificarCapataz } = require('./notificar');
+const { notificarCapataz, notificarCapatazTemplate } = require('./notificar');
 const { hashClave } = require('./app_api');
 
 const router = express.Router();
@@ -1276,6 +1276,12 @@ function mesLindo(periodo) {
   const [a, m] = String(periodo).split('-').map(Number);
   return (MESES_ES[(m || 1) - 1] || '') + ' ' + (a || '');
 }
+// Template de WhatsApp aprobado por Meta para el pedido de stock: es el primer
+// contacto de la conversación (el capataz no le escribió nada al bot en las
+// últimas 24hs), así que Meta exige un Content Template en vez de texto libre.
+// Configurable por env var para no tener que tocar código si se recrea el template.
+const TEMPLATE_STOCK = process.env.TWILIO_TEMPLATE_STOCK || 'HXc8e60dbab0ff3c5080d1e120d5eeca03';
+
 function mensajeStock(periodo, nombre) {
   const nom = (nombre || '').trim().split(' ')[0] || null;
   const saludo = nom ? `👋 Hola *${nom}*!\n\n` : '👋 Hola!\n\n';
@@ -1374,7 +1380,7 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
       }
       let algunoOk = false;
       for (const c of capsObj) {
-        const ok = await notificarCapataz(c.telefono, mensajeStock(periodo, c.nombre));
+        const ok = await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK);
         if (ok) algunoOk = true; else fallidos++;
       }
       if (algunoOk) enviados++;
@@ -1402,7 +1408,7 @@ router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
     if (!conTel.length) return res.json({ enviados: 0, sin_capataz: true });
 
     let enviados = 0;
-    for (const c of conTel) { if (await notificarCapataz(c.telefono, mensajeStock(censo.periodo, c.nombre))) enviados++; }
+    for (const c of conTel) { if (await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK)) enviados++; }
     await supabase.from('censos_stock')
       .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
     res.json({ enviados });
