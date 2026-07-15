@@ -74,11 +74,19 @@ function resumenProductos(datos) {
 /** Pregunta el destino del producto actual de la sesión. */
 function preguntarItem(sesion) {
   const it  = sesion.itemsComb[sesion.indice];
-  const pat = sesion.datos.patente;
-  const op1 = pat ? `A la unidad ${pat}` : 'A la unidad';
   const total = sesion.itemsComb.length;
   const pos = total > 1 ? ` (${sesion.indice + 1}/${total})` : '';
-  return `⛽ *${it.producto}* — ${it.litros ?? '—'} lt${pos}\n` +
+  // Si la IA no leyó los litros, se los pedimos al capataz antes del destino.
+  if (it.litros == null || it.litros === 0) {
+    sesion.paso = 'litros_item';
+    return `⛽ *${it.producto}*${pos}\n\n` +
+           `No pude leer los litros en el ticket. ¿Cuántos litros cargaste?\n` +
+           `Respondé solo el número (por ejemplo: 61,65).`;
+  }
+  sesion.paso = 'destino_item';
+  const pat = sesion.datos.patente;
+  const op1 = pat ? `A la unidad ${pat}` : 'A la unidad';
+  return `⛽ *${it.producto}* — ${it.litros} lt${pos}\n` +
          `¿A dónde va?\n1️⃣ ${op1}\n2️⃣ A bidones\n\nRespondé 1 o 2.`;
 }
 
@@ -257,6 +265,25 @@ async function continuarConversacion(telefono, mensaje) {
   const texto = (mensaje || '').trim();
   const nombre = sesion.capataz.nombre.split(' ')[0];
   const it = sesion.itemsComb[sesion.indice];
+
+  // El capataz responde los litros que la IA no pudo leer
+  if (sesion.paso === 'litros_item') {
+    // Acepta "61,65" y "61.65": si hay coma, el punto es separador de miles;
+    // si no hay coma, el punto es decimal (como lo escribiría cualquiera).
+    const limpio = texto.includes(',')
+      ? texto.replace(/\./g, '').replace(',', '.')
+      : texto.trim();
+    const n = parseFloat(limpio);
+    if (!isFinite(n) || n <= 0) {
+      return `No entendí el número. ¿Cuántos litros cargaste de ${it.producto}?\nRespondé solo el número (por ejemplo: 61,65).`;
+    }
+    if (n > 2000) {
+      return `${n} litros parece demasiado para una carga. Revisá el ticket y respondé solo los litros (por ejemplo: 61,65).`;
+    }
+    it.litros = n;
+    // Ya tenemos los litros: seguimos con el destino de este mismo producto.
+    return preguntarItem(sesion);
+  }
 
   if (sesion.paso === 'destino_item') {
     if (texto === '1') {
