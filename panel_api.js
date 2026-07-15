@@ -1356,7 +1356,7 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
     const porObj = {};
     (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
 
-    let enviados = 0, sinCapataz = 0, yaRespondidos = 0;
+    let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0;
 
     for (const o of (objs || [])) {
       const censo = porObj[o.id];
@@ -1372,11 +1372,15 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
         await supabase.from('censos_stock')
           .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
       }
-      for (const c of capsObj) await notificarCapataz(c.telefono, mensajeStock(periodo, c.nombre));
-      enviados++;
+      let algunoOk = false;
+      for (const c of capsObj) {
+        const ok = await notificarCapataz(c.telefono, mensajeStock(periodo, c.nombre));
+        if (ok) algunoOk = true; else fallidos++;
+      }
+      if (algunoOk) enviados++;
     }
-    console.log(`[stock] pedido ${periodo}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos}`);
-    res.json({ enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos });
+    console.log(`[stock] pedido ${periodo}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} fallidos=${fallidos}`);
+    res.json({ enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos });
   } catch (err) {
     console.error('stock pedir:', err);
     res.status(500).json({ error: 'Error pidiendo el stock' });
