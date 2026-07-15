@@ -1849,7 +1849,7 @@ async function guardarMaestro(){
   }
   if(maestroTab==='capataces'){
     body.telefono=document.getElementById('mm-telefono').value.trim()||null;
-    body.rol=document.getElementById('mm-rol').value.trim()||null;
+    body.rol=document.getElementById('mm-rol').value.trim().toLowerCase()||null;
     body.objetivo_id=document.getElementById('mm-objetivo').value||null;
   }
   if(maestroTab==='objetivos'){
