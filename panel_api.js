@@ -1010,15 +1010,23 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
     // JSON COMPACTO: con claves de una letra el modelo escribe ~40% menos tokens
     // de salida, y en un listado de 100 filas eso es la mayor parte del tiempo.
     // Se expanden a los nombres reales acá abajo.
-    const prompt = 'Esto es un LISTADO CONSOLIDADO de remitos de combustible de un proveedor argentino ' +
-      '(una fila por entrega: fecha, número de comprobante/remito, chofer, patente, artículo, litros, precio, total). ' +
+    const prompt = 'Esto es un comprobante de combustible de un proveedor argentino: puede ser ' +
+      'un LISTADO mensual (varias filas) o un TICKET de surtidor individual (una carga). ' +
       'Devolvé ÚNICAMENTE JSON compacto sin backticks, sin espacios ni saltos de línea innecesarios:\n' +
       '{"p":"proveedor","d":"YYYY-MM-DD","h":"YYYY-MM-DD","t":0.0,' +
       '"f":[["YYYY-MM-DD","nro_remito","patente","chofer","producto",litros,precio,total,"nro_factura"]]}\n' +
       'Donde: p=proveedor, d=período desde, h=período hasta, t=total general, f=filas.\n' +
       'Cada fila es un ARRAY en ese orden exacto: [fecha, nro_remito, patente, chofer, producto, litros, precio_unit, total, nro_factura].\n' +
-      'Reglas: el año de las fechas sacalo del encabezado del período. Una fila por cada línea de producto ' +
-      '(si un remito tiene 2 productos, son 2 filas con el mismo nro_remito). Patente tal como figura. ' +
+      'REGLAS IMPORTANTES SOBRE LOS LITROS:\n' +
+      '- Los litros son el número que apariciona ANTES del nombre del producto, con coma decimal. ' +
+      'Ejemplo: en "46,0070.....(11001)PUMA SUPER" los litros son 46,00 (=46.0), NO 11001.\n' +
+      '- El número entre paréntesis como "(11001)" o "(11008)" es el CÓDIGO INTERNO del producto de la estación. ' +
+      'NUNCA lo uses como litros ni como precio. Ignoralo por completo o descartalo.\n' +
+      '- La coma es separador decimal: "46,0070" son 46 litros con centésimos, no 460070. Convertí a punto: 46.007.\n' +
+      '- Si en el ticket no figura precio unitario ni total, dejalos en null. NO inventes montos.\n' +
+      'Otras reglas: el año de las fechas sacalo del encabezado o de la fecha del ticket. ' +
+      'Una fila por cada línea de producto (si hay 2 productos, son 2 filas con el mismo nro_remito). ' +
+      'Patente tal como figura. El chofer suele figurar como "Chofer: APELLIDO". ' +
       'Montos como números sin separador de miles. Campos ilegibles o ausentes: null.';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1062,7 +1070,23 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
               total: Number(f[7]) || 0, numero_factura: f[8] || null }
           : f),   // por si el modelo devolvió objetos igual
       };
-      console.log(`[listado] extraídas ${parsed.filas.length} filas de ${parsed.proveedor || '?'} en ${segs}s`);
+      // Red de seguridad: un tanque de camioneta rara vez pasa de ~150 litros y
+      // un bidón de 300. Si un litraje es absurdamente alto (típico cuando la IA
+      // confundió el código de producto con los litros, ej. 11001), lo marcamos
+      // para que el usuario lo revise en vez de meter basura al análisis.
+      let sospechosas = 0;
+      parsed.filas.forEach(f => {
+        if (f.litros > 2000) { f._litros_dudoso = true; sospechosas++; }
+        // Si litros y total son casi iguales y ambos son "redondos", suele ser
+        // el código pegado en las dos columnas.
+        if (f.litros > 2000 && f.total > 2000 && Math.abs(f.litros - f.total) < 1) {
+          f._litros_dudoso = true;
+        }
+      });
+      if (sospechosas) parsed._advertencia =
+        `${sospechosas} carga(s) tienen un litraje muy alto y pueden estar mal leídas. Revisalas antes de guardar.`;
+      console.log(`[listado] extraídas ${parsed.filas.length} filas de ${parsed.proveedor || '?'} en ${segs}s` +
+        (sospechosas ? ` · ${sospechosas} con litros dudosos` : ''));
       res.json(parsed);
     } catch (e) {
       console.error('[listado] respuesta no parseable (stop=' + (data.stop_reason || '?') + '):', txt.slice(0, 300));
