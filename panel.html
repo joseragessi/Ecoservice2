@@ -2104,7 +2104,8 @@ async function vComprasInd(view){
       porMes[m].total+=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);});
     const evol=Object.entries(porMes).sort((a,b)=>a[0].localeCompare(b[0]))
       .map(([m,v],i,arr)=>({mes:m,...v,
-        var:i>0&&arr[i-1][1].total?((v.total-arr[i-1][1].total)*100/arr[i-1][1].total):null}));
+        var:i>0&&arr[i-1][1].total?((v.total-arr[i-1][1].total)*100/arr[i-1][1].total):null}))
+      .reverse();
     const bars=(lista,color)=>lista.slice(0,10).map(x=>{
       const w=lista[0].total?Math.max(2,Math.round(x.total*100/lista[0].total)):0;
       return `<div style="margin-bottom:9px">
