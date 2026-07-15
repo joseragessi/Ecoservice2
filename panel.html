@@ -417,7 +417,17 @@ function hace(f){if(!f)return'';const d=Math.floor((Date.now()-new Date(f))/8640
 /* ===== Helpers ===== */
 const money  = n => n==null?'—':'$ '+Number(n).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const money0 = n => n==null?'—':'$ '+Number(n).toLocaleString('es-AR',{maximumFractionDigits:0});
-const fechaAR = f => f?new Date(f).toLocaleDateString('es-AR'):'—';
+const fechaAR = f => {
+  if(!f) return '—';
+  const s = String(f);
+  // Fecha pura (YYYY-MM-DD, sin hora, ej. cargas_combustible.fecha): parsear
+  // componentes directo, sin pasar por Date(), para no correrse con el timezone
+  // local del navegador (evita el bug de mostrar el día anterior).
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${parseInt(m[2],10)}/${m[1]}`;
+  const d = new Date(s);
+  return isNaN(d) ? '—' : d.toLocaleDateString('es-AR');
+};
 const cap = s => s?s.charAt(0).toUpperCase()+s.slice(1).replace(/_/g,' '):'';
 function railEstado(idx,total,amber){let s='';for(let i=0;i<total;i++)s+=`<div class="seg ${i<idx?'done':i===idx?'cur':''}"></div>`;return `<div class="rail-estado ${amber?'amber':''}">${s}</div>`}
 function railLabels(labels,idx){return `<div class="rail-labels">${labels.map((l,i)=>`<span class="${i===idx?'cur':''}">${l}</span>`).join('')}</div>`}
