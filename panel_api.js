@@ -1276,12 +1276,15 @@ function mesLindo(periodo) {
   const [a, m] = String(periodo).split('-').map(Number);
   return (MESES_ES[(m || 1) - 1] || '') + ' ' + (a || '');
 }
-function mensajeStock(periodo) {
-  return `📋 *Stock de maquinaria — ${mesLindo(periodo)}*\n\n` +
-         `Necesitamos el listado de maquinaria de tu objetivo. ` +
-         `Respondé este mensaje con el listado, poniendo cantidades y números de máquina.\n\n` +
+function mensajeStock(periodo, nombre) {
+  const nom = (nombre || '').trim().split(' ')[0] || null;
+  const saludo = nom ? `👋 Hola *${nom}*!\n\n` : '👋 Hola!\n\n';
+  return saludo +
+         `📋 *Stock de maquinaria — ${mesLindo(periodo)}*\n\n` +
+         `¿Nos pasás el listado de maquinaria de tu objetivo? Respondé este mismo mensaje ` +
+         `con las cantidades y los números de máquina.\n\n` +
          `Ejemplo:\n_3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_\n\n` +
-         `_EcoService · Logística_`;
+         `¡Gracias! 🙌\n_EcoService · Logística_`;
 }
 
 router.get('/api/stock', auth, async (req, res) => {
@@ -1353,7 +1356,6 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
     const porObj = {};
     (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
 
-    const msg = mensajeStock(periodo);
     let enviados = 0, sinCapataz = 0, yaRespondidos = 0;
 
     for (const o of (objs || [])) {
@@ -1370,7 +1372,7 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
         await supabase.from('censos_stock')
           .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
       }
-      for (const c of capsObj) await notificarCapataz(c.telefono, msg);
+      for (const c of capsObj) await notificarCapataz(c.telefono, mensajeStock(periodo, c.nombre));
       enviados++;
     }
     console.log(`[stock] pedido ${periodo}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos}`);
@@ -1395,9 +1397,8 @@ router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
     const conTel = (caps || []).filter(c => c.telefono);
     if (!conTel.length) return res.json({ enviados: 0, sin_capataz: true });
 
-    const msg = mensajeStock(censo.periodo);
     let enviados = 0;
-    for (const c of conTel) { if (await notificarCapataz(c.telefono, msg)) enviados++; }
+    for (const c of conTel) { if (await notificarCapataz(c.telefono, mensajeStock(censo.periodo, c.nombre))) enviados++; }
     await supabase.from('censos_stock')
       .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
     res.json({ enviados });
