@@ -1510,7 +1510,7 @@ async function confirmarPedirStock(){
     const r=await api('/api/stock/pedir',{method:'POST',
       body:JSON.stringify({periodo:stockData.periodo,objetivo_ids:[...stockPedirSel]})});
     cerrarMaestro();
-    alert(`Pedidos enviados: ${r.enviados}`+(r.sin_capataz?`\nSin capataz con teléfono: ${r.sin_capataz}`:''));
+    alert(`Pedidos enviados: ${r.enviados}`+(r.fallidos?`\n⚠ Fallaron: ${r.fallidos} (revisá Twilio)`:'')+(r.sin_capataz?`\nSin capataz con teléfono: ${r.sin_capataz}`:''));
     go('stock');
   }catch(e){
     if(btn){btn.disabled=false;btn.textContent='Enviar';}
