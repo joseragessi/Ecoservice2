@@ -99,7 +99,21 @@ async function extraerComprobante(imagenBuffer, mediaType) {
   // Por si el modelo envuelve el JSON en un bloque markdown, lo limpiamos.
   const limpio = texto.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-  return JSON.parse(limpio);
+  const parsed = JSON.parse(limpio);
+
+  // Red de seguridad para los litros. En los remitos de surtidor el litraje
+  // viene como "88,7870". Si la IA devuelve un número imposible (una carga real
+  // casi nunca supera ~500 litros), NO lo adivinamos —porque no sabemos cuántos
+  // decimales tenía—, lo marcamos como dudoso y el bot le preguntará al capataz.
+  (parsed.items || []).forEach(it => {
+    const l = Number(it.litros);
+    if (isFinite(l) && l > 500) {
+      it._litros_dudoso = true;
+      it.litros = null;   // fuerza a que el bot pregunte, en vez de guardar basura
+    }
+  });
+
+  return parsed;
 }
 
 module.exports = { extraerComprobante };
