@@ -1890,12 +1890,19 @@ function asignacionInv(inv){
   };
 }
 /* ===== Compras · Indicadores ===== */
-let comprasTab='resumen';   // 'resumen' | 'indicadores'
+let comprasTab='resumen';   // 'resumen' | 'cuenta' | 'indicadores' | 'combustible'
 let comprasIndPer='';       // '' = todo el período
 let comprasIndData=null;    // cache de facturas para indicadores/export
 
+/* ===== Compras · Estado de cuenta ===== */
+let ctaBusca='';      // buscador de proveedor
+let ctaProvSel=null;   // proveedor elegido para el detalle
+let ctaSoloPend=false; // filtro: solo proveedores con saldo pendiente
+let ctaData=null;      // cache de facturas
+
 function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${comprasTab==='resumen'?'on':''}" onclick="comprasTab='resumen';go('compras')">Resumen</button>
+  <button class="${comprasTab==='cuenta'?'on':''}" onclick="comprasTab='cuenta';go('compras')">Estado de cuenta</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
   <button class="${comprasTab==='combustible'?'on':''}" onclick="comprasTab='combustible';go('compras')">Combustible</button>
 </div>`;}
@@ -2091,6 +2098,103 @@ function calcIndicadores(fs){
     ranking,porObjetivo:agrupar('objetivo'),porUnidad:agrupar('unidad')};
 }
 
+/* ===== Compras · Estado de cuenta (por proveedor) ===== */
+// "pagada" es un campo nuevo que vive en el jsonb `data` de cada factura de
+// Compras — no existía hasta ahora, así que toda factura sin el campo cuenta
+// como pendiente por defecto (no como "sin dato").
+function statsProv(fs){
+  const bruto=f=>(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
+  const nc=f=>(f.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+  const neto=f=>bruto(f)-nc(f);
+  const total=fs.reduce((s,f)=>s+neto(f),0);
+  const pagado=fs.filter(f=>f.pagada).reduce((s,f)=>s+neto(f),0);
+  return {total,pagado,pendiente:total-pagado,docs:fs.length,pendDocs:fs.filter(f=>!f.pagada).length};
+}
+async function vComprasCuenta(view){
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Cargando…</div>';
+  try{
+    ctaData=await api('/api/compras/facturas');
+    renderCuenta(view);
+  }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude cargar el estado de cuenta. ${e.message||''}</div>`;}
+}
+function renderCuenta(view){
+  const todas=ctaData||[];
+  const porProv={};
+  todas.forEach(f=>{const k=f.proveedor||'Sin nombre';(porProv[k]=porProv[k]||[]).push(f);});
+  let provs=Object.entries(porProv).map(([nombre,fs])=>({nombre,fs,...statsProv(fs)}));
+  const b=ctaBusca.trim().toLowerCase();
+  if(b)provs=provs.filter(p=>p.nombre.toLowerCase().includes(b));
+  if(ctaSoloPend)provs=provs.filter(p=>p.pendiente>0.5);
+  provs.sort((a,b2)=>b2.pendiente-a.pendiente||b2.total-a.total);
+  const totGeneral=provs.reduce((s,p)=>s+p.total,0);
+  const totPag=provs.reduce((s,p)=>s+p.pagado,0);
+  const totPend=provs.reduce((s,p)=>s+p.pendiente,0);
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Compras · Estado de cuenta</div>
+    <div class="view-desc">Saldo por proveedor · qué está pagado y qué falta</div></div></div>
+  ${tabsCompras()}
+  <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+    <div class="kpi"><div class="kpi-label">Total facturado</div><div class="kpi-val" style="font-size:21px">${money0(totGeneral)}</div><div class="kpi-sub">${provs.reduce((s,p)=>s+p.docs,0)} facturas · ${provs.length} proveedores</div></div>
+    <div class="kpi plain"><div class="kpi-label">Pagado</div><div class="kpi-val green" style="font-size:21px">${money0(totPag)}</div><div class="kpi-sub">${totGeneral?Math.round(totPag*100/totGeneral)+'%':'—'}</div></div>
+    <div class="kpi ${totPend?'amber':'plain'}"><div class="kpi-label">Pendiente</div><div class="kpi-val ${totPend?'amber':''}" style="font-size:21px">${money0(totPend)}</div><div class="kpi-sub">por pagar</div></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <input class="busca" style="width:280px" placeholder="Buscar proveedor…" value="${ctaBusca.replace(/"/g,'&quot;')}" oninput="ctaBusca=this.value;renderCuenta(document.getElementById('view'))">
+    <div class="chip-f ${ctaSoloPend?'on':''}" onclick="ctaSoloPend=!ctaSoloPend;renderCuenta(document.getElementById('view'))">Solo con saldo pendiente</div>
+    <div class="sub">${provs.length} proveedor${provs.length===1?'':'es'}</div>
+  </div>
+  <div class="split">
+    <div class="tablewrap"><table><thead><tr><th>Proveedor</th><th class="num">Facturas</th><th class="num">Total</th><th class="num">Pagado</th><th class="num">Pendiente</th></tr></thead>
+    <tbody id="cta-list">${provs.length?provs.map(p=>`<tr onclick="selProvCta('${p.nombre.replace(/'/g,"\\'")}')" style="cursor:pointer;${p.nombre===ctaProvSel?'outline:2px solid var(--brote)':''}">
+      <td style="font-weight:600">${p.nombre}</td>
+      <td class="num">${p.docs}</td>
+      <td class="num money">${money0(p.total)}</td>
+      <td class="num money" style="color:var(--brote-2)">${p.pagado?money0(p.pagado):'—'}</td>
+      <td class="num money" style="${p.pendiente>0.5?'color:var(--rojo);font-weight:600':''}">${p.pendiente>0.5?money0(p.pendiente):'✓'}</td>
+    </tr>`).join(''):'<tr><td colspan="5"><div class="sub" style="padding:14px">Ningún proveedor coincide.</div></td></tr>'}</tbody></table></div>
+    <div class="side" id="cta-side">${ctaProvSel?'':'<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5z"/><path d="M14 2v6h6"/></svg><div>Elegí un proveedor<br>para ver sus facturas</div></div>'}</div>
+  </div>`;
+  if(ctaProvSel)pintarCtaSide();
+}
+function selProvCta(nombre){ctaProvSel=(ctaProvSel===nombre)?null:nombre;renderCuenta(document.getElementById('view'));}
+function pintarCtaSide(){
+  const cont=document.getElementById('cta-side');if(!cont)return;
+  const fs=(ctaData||[]).filter(f=>(f.proveedor||'Sin nombre')===ctaProvSel)
+    .sort((a,b)=>String(b.fecha_factura||'').localeCompare(String(a.fecha_factura||'')));
+  const s=statsProv(fs);
+  cont.innerHTML=`
+    <div class="side-id">PROVEEDOR</div>
+    <div class="side-title">${ctaProvSel}</div>
+    <div class="side-meta">${s.docs} factura${s.docs===1?'':'s'} · ${s.pendDocs} pendiente${s.pendDocs===1?'':'s'}</div>
+    <div style="display:flex;gap:10px;margin:12px 0">
+      <div class="extract-field" style="flex:1"><label>Total</label><div class="val filled">${money0(s.total)}</div></div>
+      <div class="extract-field" style="flex:1"><label>Pendiente</label><div class="val ${s.pendiente>0.5?'filled':''}" style="${s.pendiente>0.5?'color:var(--rojo)':''}">${money0(s.pendiente)}</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:10px">Facturas</div>
+    ${fs.map(f=>{
+      const bruto=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
+      const nc=(f.notas_credito||[]).reduce((s2,n)=>s2+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+      const neto=bruto-nc;
+      return `<div class="queue-item" style="margin-bottom:8px">
+        <div style="flex:1;cursor:pointer" onclick="verCompra('${f.id}')"><div style="font-weight:600;font-size:12.5px">${f.numero_factura||'s/n'} · ${fechaAR(f.fecha_factura)}</div>
+        <div class="sub mono" style="font-size:11px">${money0(neto)}${nc?' (con NC)':''}</div></div>
+        <button class="mini-btn" style="flex:0 0 auto;padding:6px 10px;${f.pagada?'color:var(--brote-2);border-color:var(--brote)':''}" onclick="togglePagada('${f.id}',${!f.pagada})">
+          ${f.pagada?'✓ Pagada':'Marcar pagada'}
+        </button>
+      </div>`;
+    }).join('')||'<div class="sub" style="padding:8px 0">Sin facturas.</div>'}`;
+}
+// Marca pagada/pendiente. Reutiliza el PUT de edición: mandar solo {pagada}
+// alcanza porque el backend mergea sobre lo que ya existe, no pisa el resto.
+async function togglePagada(id,valor){
+  try{
+    await api('/api/compras/factura/'+id,{method:'PUT',
+      body:JSON.stringify({pagada:valor,pagada_at:valor?new Date().toISOString():null})});
+    go('compras');
+  }catch(e){alert('No pude actualizar: '+(e.message||''));}
+}
+
 async function vComprasInd(view){
   try{
     comprasIndData=await api('/api/compras/facturas');
@@ -2219,6 +2323,7 @@ async function vCompras(view){
   await cargarListasCompras();   // los desplegables salen de Maestros
   if(comprasMode==='carga'){vComprasCarga(view);return;}
   if(comprasMode==='detalle'){vComprasDetalle(view);return;}
+  if(comprasTab==='cuenta'){vComprasCuenta(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
   if(comprasTab==='combustible'){vComprasCombustible(view);return;}
   try{
@@ -2253,6 +2358,7 @@ async function vCompras(view){
         <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
           ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
         <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
+        <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}</td>
         <td style="text-align:right;white-space:nowrap">
           ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
           <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
@@ -2283,7 +2389,7 @@ async function vCompras(view){
       <div class="sub">${invs.length} factura${invs.length===1?'':'s'}</div>
     </div>
     <div class="tabla-wrap">
-      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th><th style="width:70px"></th></tr></thead><tbody>${filas}</tbody></table>`
+      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th><th>Estado</th><th style="width:70px"></th></tr></thead><tbody>${filas}</tbody></table>`
         :`<div class="empty">${comprasBusca?'Ninguna factura coincide con la búsqueda.':'No hay facturas cargadas en la base de compras.'}</div>`}
     </div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar compras. ${e.message||''}</div>`;}
@@ -2339,10 +2445,12 @@ function vComprasDetalle(view){
     <div style="display:flex;gap:8px">
       ${ed?`<button class="btn-salir" onclick="cancelarEdicionCompra()">Cancelar</button>
             <button class="btn" onclick="guardarEdicionCompra()">Guardar cambios</button>`
-        :`<button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
+        :`<button class="btn-salir" style="${inv.pagada?'color:var(--brote-2);border-color:var(--brote)':''}" onclick="togglePagada('${inv.id}',${!inv.pagada})">${inv.pagada?'✓ Pagada':'Marcar pagada'}</button>
+          <button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
           <button class="btn" onclick="abrirNC()">＋ Nota de crédito</button>
           <button class="btn-salir" style="color:var(--rojo)" onclick="borrarCompra('${inv.id}')">Eliminar</button>`}
     </div></div>
+    ${!ed&&inv.pagada?'<div class="hint" style="margin-bottom:18px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg><div>Factura pagada'+(inv.pagada_at?' · '+fechaAR(inv.pagada_at):'')+'</div></div>':''}
 
   <div class="grid g-2" style="margin-bottom:18px">
     <div class="panel">
