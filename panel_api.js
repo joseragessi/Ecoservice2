@@ -5,6 +5,7 @@ const supabase = require('./supabase');
 const supabaseCompras = require('./supabase_compras');
 const { notificarCapataz, notificarCapatazTemplate } = require('./notificar');
 const { hashClave } = require('./app_api');
+const control = require('./control');
 
 const router = express.Router();
 
@@ -41,17 +42,38 @@ function verificar(token) {
   } catch { return null; }
 }
 
-function auth(req, res, next) {
+async function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   const payload = verificar(token);
   if (!payload) return res.status(401).json({ error: 'No autorizado' });
+  // Kill switch: con el PIN vencido, ningún módulo del panel opera. Se responde
+  // 423 (Locked) para que el front muestre la pantalla de bloqueo.
+  if (!(await control.estaOperativo())) {
+    return res.status(423).json({ error: 'Sistema bloqueado: PIN vencido. Renová SYSTEM_PIN en Railway.', bloqueado: true });
+  }
   req.usuario = payload.usuario;
   next();
 }
 
+// Estado del kill switch (público, sin auth): el panel lo consulta para mostrar
+// la pantalla de bloqueo o el aviso de vencimiento próximo.
+router.get('/api/control/estado', async (req, res) => {
+  try {
+    const st = await control.estado();
+    res.json(st);
+  } catch (e) {
+    res.json({ activo: false, bloqueado: false });   // fail-open
+  }
+});
+
 // ── Login ─────────────────────────────────────────────────────
-router.post('/api/login', (req, res) => {
+router.post('/api/login', async (req, res) => {
+  // Kill switch: con el PIN vencido no se puede ni entrar (vos ves la pantalla
+  // de bloqueo que te dice qué hacer).
+  if (!(await control.estaOperativo())) {
+    return res.status(423).json({ error: 'Sistema bloqueado: PIN vencido. Renová SYSTEM_PIN en Railway.', bloqueado: true });
+  }
   const { usuario, clave } = req.body || {};
   const users = usuarios();
   if (!usuario || !clave || users[usuario] !== clave) {
