@@ -437,6 +437,7 @@ async function api(ruta, opts={}) {
   const r = await fetch(ruta, { ...opts,
     headers:{ 'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{}), ...(opts.headers||{}) }});
   if (r.status===401){ salir(); throw new Error('Sesión vencida'); }
+  if (r.status===423){ mostrarBloqueo(); throw new Error('Sistema bloqueado'); }  // PIN vencido
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error||'Error');
   return r.json();
 }
@@ -448,6 +449,7 @@ async function entrar(){
   const err=document.getElementById('login-err'); err.textContent='';
   try{
     const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario,clave})});
+    if(r.status===423){mostrarBloqueo();return;}   // PIN vencido
     if(!r.ok){err.textContent='Usuario o clave incorrectos';return;}
     const d=await r.json(); token=d.token;
     localStorage.setItem('eco_token',token); localStorage.setItem('eco_user',d.usuario);
@@ -3058,8 +3060,50 @@ function vComprasCarga(view){
     </div>`;
 }
 
+/* ===== Kill switch (PIN de control) ===== */
+// Chequea el estado antes de dejar operar. Si está bloqueado, muestra una
+// pantalla de bloqueo a pantalla completa. Si falta poco, un cartel de aviso.
+async function chequearBloqueo(){
+  try{
+    const r=await fetch('/api/control/estado');
+    const st=await r.json();
+    if(st.bloqueado){mostrarBloqueo();return true;}
+    if(st.activo&&st.en_aviso)mostrarAvisoPin(st.dias_restantes);
+    return false;
+  }catch(e){return false;}   // fail-open: si no se puede consultar, no bloquea
+}
+function mostrarBloqueo(){
+  document.getElementById('login').classList.remove('show');
+  document.getElementById('app').classList.remove('show');
+  let bg=document.getElementById('bloqueo-bg');
+  if(!bg){
+    bg=document.createElement('div');bg.id='bloqueo-bg';
+    bg.style.cssText='position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:var(--papel);padding:24px';
+    bg.innerHTML=`<div style="max-width:440px;text-align:center;background:var(--blanco);border:1px solid var(--linea);border-radius:var(--r);padding:40px 34px;box-shadow:var(--sombra-lg)">
+      <div style="width:56px;height:56px;border-radius:14px;background:var(--rojo-soft);display:grid;place-items:center;margin:0 auto 18px">
+        <svg viewBox="0 0 24 24" width="28" fill="none" stroke="var(--rojo)" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+      <div style="font-size:20px;font-weight:700;margin-bottom:8px">Sistema bloqueado</div>
+      <div style="color:var(--tinta-2);font-size:13.5px;line-height:1.6">El PIN de control venció. El bot y el panel están inactivos hasta que se renueve.<br><br>
+        Para reactivar, cambiá la variable <b>SYSTEM_PIN</b> en Railway por un valor nuevo y redeployá.</div>
+    </div>`;
+    document.body.appendChild(bg);
+  }
+}
+function mostrarAvisoPin(dias){
+  if(document.getElementById('aviso-pin'))return;
+  const div=document.createElement('div');div.id='aviso-pin';
+  div.style.cssText='position:fixed;top:0;left:0;right:0;z-index:80;background:var(--diesel);color:#fff;padding:9px 18px;font-size:13px;text-align:center;font-weight:500;box-shadow:0 2px 8px rgba(0,0,0,.15)';
+  div.innerHTML=`⚠️ Faltan <b>${dias} día${dias===1?'':'s'}</b> para renovar el PIN de control (SYSTEM_PIN en Railway) o el sistema se bloquea.
+    <span onclick="this.parentElement.remove()" style="margin-left:14px;cursor:pointer;opacity:.85;text-decoration:underline">ocultar</span>`;
+  document.body.appendChild(div);
+}
+
 /* ===== Arranque ===== */
-if(token){document.getElementById('login').classList.remove('show');iniciar();}
+(async()=>{
+  const bloqueado=await chequearBloqueo();
+  if(bloqueado)return;   // no arrancamos nada si está vencido
+  if(token){document.getElementById('login').classList.remove('show');iniciar();}
+})();
 </script>
 </body>
 </html>
