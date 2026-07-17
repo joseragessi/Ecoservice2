@@ -2114,10 +2114,26 @@ async function vComprasCuenta(view){
   view.innerHTML=tabsCompras()+'<div class="cargando-v">Cargando…</div>';
   try{
     ctaData=await api('/api/compras/facturas');
-    renderCuenta(view);
+    // Shell fijo: el buscador vive ACÁ y nunca se vuelve a pintar, así el
+    // input no pierde el foco en cada letra (antes se recreaba el <input>
+    // en cada tecla porque todo el view se reescribía). Solo #cta-body se
+    // actualiza en cada cambio de filtro/selección.
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Compras · Estado de cuenta</div>
+      <div class="view-desc">Saldo por proveedor · qué está pagado y qué falta</div></div>
+      <button class="btn" onclick="exportarCtaResumenPDF()">⬇ Exportar resumen</button></div>
+    ${tabsCompras()}
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <input class="busca" style="width:280px" placeholder="Buscar proveedor…" value="${ctaBusca.replace(/"/g,'&quot;')}" oninput="ctaBusca=this.value;renderCtaBody()">
+      <div class="chip-f ${ctaSoloPend?'on':''}" onclick="ctaSoloPend=!ctaSoloPend;renderCtaBody()">Solo con saldo pendiente</div>
+      <div class="sub" id="cta-count"></div>
+    </div>
+    <div id="cta-body"></div>`;
+    renderCtaBody();
   }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude cargar el estado de cuenta. ${e.message||''}</div>`;}
 }
-function renderCuenta(view){
+function renderCtaBody(){
+  const cont=document.getElementById('cta-body');if(!cont)return;
   const todas=ctaData||[];
   const porProv={};
   todas.forEach(f=>{const k=f.proveedor||'Sin nombre';(porProv[k]=porProv[k]||[]).push(f);});
@@ -2129,19 +2145,13 @@ function renderCuenta(view){
   const totGeneral=provs.reduce((s,p)=>s+p.total,0);
   const totPag=provs.reduce((s,p)=>s+p.pagado,0);
   const totPend=provs.reduce((s,p)=>s+p.pendiente,0);
-  view.innerHTML=`
-  <div class="view-head"><div><div class="view-title">Compras · Estado de cuenta</div>
-    <div class="view-desc">Saldo por proveedor · qué está pagado y qué falta</div></div></div>
-  ${tabsCompras()}
-  <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+  const cnt=document.getElementById('cta-count');
+  if(cnt)cnt.textContent=provs.length+' proveedor'+(provs.length===1?'':'es');
+  cont.innerHTML=`
+  <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
     <div class="kpi"><div class="kpi-label">Total facturado</div><div class="kpi-val" style="font-size:21px">${money0(totGeneral)}</div><div class="kpi-sub">${provs.reduce((s,p)=>s+p.docs,0)} facturas · ${provs.length} proveedores</div></div>
     <div class="kpi plain"><div class="kpi-label">Pagado</div><div class="kpi-val green" style="font-size:21px">${money0(totPag)}</div><div class="kpi-sub">${totGeneral?Math.round(totPag*100/totGeneral)+'%':'—'}</div></div>
     <div class="kpi ${totPend?'amber':'plain'}"><div class="kpi-label">Pendiente</div><div class="kpi-val ${totPend?'amber':''}" style="font-size:21px">${money0(totPend)}</div><div class="kpi-sub">por pagar</div></div>
-  </div>
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-    <input class="busca" style="width:280px" placeholder="Buscar proveedor…" value="${ctaBusca.replace(/"/g,'&quot;')}" oninput="ctaBusca=this.value;renderCuenta(document.getElementById('view'))">
-    <div class="chip-f ${ctaSoloPend?'on':''}" onclick="ctaSoloPend=!ctaSoloPend;renderCuenta(document.getElementById('view'))">Solo con saldo pendiente</div>
-    <div class="sub">${provs.length} proveedor${provs.length===1?'':'es'}</div>
   </div>
   <div class="split">
     <div class="tablewrap"><table><thead><tr><th>Proveedor</th><th class="num">Facturas</th><th class="num">Total</th><th class="num">Pagado</th><th class="num">Pendiente</th></tr></thead>
@@ -2156,7 +2166,7 @@ function renderCuenta(view){
   </div>`;
   if(ctaProvSel)pintarCtaSide();
 }
-function selProvCta(nombre){ctaProvSel=(ctaProvSel===nombre)?null:nombre;renderCuenta(document.getElementById('view'));}
+function selProvCta(nombre){ctaProvSel=(ctaProvSel===nombre)?null:nombre;renderCtaBody();}
 function pintarCtaSide(){
   const cont=document.getElementById('cta-side');if(!cont)return;
   const fs=(ctaData||[]).filter(f=>(f.proveedor||'Sin nombre')===ctaProvSel)
@@ -2170,6 +2180,7 @@ function pintarCtaSide(){
       <div class="extract-field" style="flex:1"><label>Total</label><div class="val filled">${money0(s.total)}</div></div>
       <div class="extract-field" style="flex:1"><label>Pendiente</label><div class="val ${s.pendiente>0.5?'filled':''}" style="${s.pendiente>0.5?'color:var(--rojo)':''}">${money0(s.pendiente)}</div></div>
     </div>
+    <button class="btn ghost" style="width:100%;justify-content:center;margin-bottom:14px" onclick="exportarCtaProveedorPDF('${ctaProvSel.replace(/'/g,"\\'")}')">⬇ Exportar estado de cuenta</button>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Facturas</div>
     ${fs.map(f=>{
@@ -2191,8 +2202,121 @@ async function togglePagada(id,valor){
   try{
     await api('/api/compras/factura/'+id,{method:'PUT',
       body:JSON.stringify({pagada:valor,pagada_at:valor?new Date().toISOString():null})});
-    go('compras');
+    if(document.getElementById('cta-body')){
+      const ix=(ctaData||[]).findIndex(f=>String(f.id)===String(id));
+      if(ix>-1)ctaData[ix]={...ctaData[ix],pagada:valor,pagada_at:valor?new Date().toISOString():null};
+      renderCtaBody();
+    }else go('compras');
   }catch(e){alert('No pude actualizar: '+(e.message||''));}
+}
+
+/* ── Exportar Estado de cuenta a PDF (reporte imprimible, mismo estilo que Compras · Indicadores) ── */
+function ctaEstiloReporte(titulo,subtitulo){
+  return `<style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;margin:0;font-size:11px}
+    .letterhead{background:#159B51;color:#fff;padding:26px 32px;display:flex;justify-content:space-between;align-items:flex-end}
+    .letterhead h1{font-size:20px;margin:0}
+    .letterhead .sub{font-size:11.5px;opacity:.9;margin-top:3px}
+    .letterhead .fecha{font-size:11px;opacity:.85;text-align:right}
+    .body-pad{padding:26px 32px}
+    h2{font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#0F7E40;border-bottom:2px solid #0F7E40;padding-bottom:4px;margin:22px 0 10px}
+    .kpis{display:flex;gap:10px;margin-bottom:6px}
+    .kpi{flex:1;border:1px solid #ddd;border-radius:8px;padding:12px 14px}
+    .kpi b{display:block;font-size:16px;margin-top:3px}
+    .kpi span{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:#777}
+    table{width:100%;border-collapse:collapse;font-size:10.5px}
+    th{text-align:left;font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#777;border-bottom:1px solid #ccc;padding:6px 6px}
+    td{padding:6px 6px;border-bottom:1px solid #eee;vertical-align:top}
+    td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+    tr{page-break-inside:avoid}
+    .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:9.5px;font-weight:600}
+    .pill.ok{background:#E5F5EC;color:#0F7E40}
+    .pill.pend{background:#FBF0DC;color:#D98A1F}
+    @media print{h2{page-break-after:avoid}}
+  </style>`;
+}
+function exportarCtaResumenPDF(){
+  const todas=ctaData||[];
+  if(!todas.length){alert('No hay facturas cargadas.');return;}
+  const porProv={};
+  todas.forEach(f=>{const k=f.proveedor||'Sin nombre';(porProv[k]=porProv[k]||[]).push(f);});
+  let provs=Object.entries(porProv).map(([nombre,fs])=>({nombre,...statsProv(fs)}));
+  const b=ctaBusca.trim().toLowerCase();
+  if(b)provs=provs.filter(p=>p.nombre.toLowerCase().includes(b));
+  if(ctaSoloPend)provs=provs.filter(p=>p.pendiente>0.5);
+  provs.sort((a,b2)=>b2.pendiente-a.pendiente||b2.total-a.total);
+  const totGeneral=provs.reduce((s,p)=>s+p.total,0);
+  const totPag=provs.reduce((s,p)=>s+p.pagado,0);
+  const totPend=provs.reduce((s,p)=>s+p.pendiente,0);
+  const money=n=>'$ '+(Math.round(Number(n)*100)/100).toLocaleString('es-AR',{minimumFractionDigits:2});
+  const filas=provs.map(p=>`<tr>
+    <td style="font-weight:600">${p.nombre}</td>
+    <td class="r">${p.docs}</td>
+    <td class="r">${money(p.total)}</td>
+    <td class="r">${money(p.pagado)}</td>
+    <td class="r">${p.pendiente>0.5?`<b style="color:#D98A1F">${money(p.pendiente)}</b>`:money(0)}</td>
+    <td>${p.pendiente>0.5?'<span class="pill pend">Pendiente</span>':'<span class="pill ok">Al día</span>'}</td>
+  </tr>`).join('');
+  const w=window.open('','_blank');
+  if(!w){alert('El navegador bloqueó la ventana del reporte. Habilitá popups para este sitio.');return;}
+  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Estado de cuenta — EcoService</title>${ctaEstiloReporte()}</head><body>
+  <div class="letterhead"><div><h1>Estado de cuenta de proveedores</h1><div class="sub">EcoService · resumen general</div></div>
+    <div class="fecha">${new Date().toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba'})}${ctaSoloPend?'<br>Solo con saldo pendiente':''}${b?'<br>Filtro: "'+b+'"':''}</div></div>
+  <div class="body-pad">
+  <div class="kpis" style="margin-top:6px">
+    <div class="kpi"><span>Total facturado</span><b>${money(totGeneral)}</b></div>
+    <div class="kpi"><span>Pagado</span><b>${money(totPag)}</b></div>
+    <div class="kpi"><span>Pendiente</span><b style="color:#D98A1F">${money(totPend)}</b></div>
+    <div class="kpi"><span>Proveedores</span><b>${provs.length}</b></div>
+  </div>
+  <h2>Por proveedor</h2>
+  <table><thead><tr><th>Proveedor</th><th class="r">Facturas</th><th class="r">Total</th><th class="r">Pagado</th><th class="r">Pendiente</th><th>Estado</th></tr></thead>
+  <tbody>${filas}</tbody></table>
+  </div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script>
+  </body></html>`);
+  w.document.close();
+}
+function exportarCtaProveedorPDF(nombre){
+  const fs=(ctaData||[]).filter(f=>(f.proveedor||'Sin nombre')===nombre)
+    .sort((a,b)=>String(b.fecha_factura||'').localeCompare(String(a.fecha_factura||'')));
+  if(!fs.length){alert('Este proveedor no tiene facturas.');return;}
+  const s=statsProv(fs);
+  const money=n=>'$ '+(Math.round(Number(n)*100)/100).toLocaleString('es-AR',{minimumFractionDigits:2});
+  const filas=fs.map(f=>{
+    const bruto=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
+    const nc=(f.notas_credito||[]).reduce((s2,n)=>s2+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+    const neto=bruto-nc;
+    return `<tr>
+      <td>${fechaAR(f.fecha_factura)}</td>
+      <td>${f.numero_factura||'s/n'}</td>
+      <td class="r">${money(bruto)}</td>
+      <td class="r">${nc?'−'+money(nc):'—'}</td>
+      <td class="r"><b>${money(neto)}</b></td>
+      <td>${f.pagada?'<span class="pill ok">Pagada'+(f.pagada_at?' · '+fechaAR(f.pagada_at):'')+'</span>':'<span class="pill pend">Pendiente</span>'}</td>
+    </tr>`;
+  }).join('');
+  const w=window.open('','_blank');
+  if(!w){alert('El navegador bloqueó la ventana del reporte. Habilitá popups para este sitio.');return;}
+  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Estado de cuenta — ${nombre}</title>${ctaEstiloReporte()}</head><body>
+  <div class="letterhead"><div><h1>${nombre}</h1><div class="sub">Estado de cuenta · EcoService</div></div>
+    <div class="fecha">${new Date().toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba'})}</div></div>
+  <div class="body-pad">
+  <div class="kpis" style="margin-top:6px">
+    <div class="kpi"><span>Total facturado</span><b>${money(s.total)}</b></div>
+    <div class="kpi"><span>Pagado</span><b>${money(s.pagado)}</b></div>
+    <div class="kpi"><span>Saldo pendiente</span><b style="color:${s.pendiente>0.5?'#D98A1F':'#0F7E40'}">${money(s.pendiente)}</b></div>
+    <div class="kpi"><span>Facturas</span><b>${s.docs}</b></div>
+  </div>
+  <h2>Detalle de facturas</h2>
+  <table><thead><tr><th>Fecha</th><th>N° Factura</th><th class="r">Bruto</th><th class="r">NC</th><th class="r">Neto</th><th>Estado</th></tr></thead>
+  <tbody>${filas}</tbody>
+  <tr style="border-top:2px solid #ccc"><td colspan="4"><b>Total</b></td><td class="r"><b>${money(s.total)}</b></td><td></td></tr>
+  </table>
+  </div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script>
+  </body></html>`);
+  w.document.close();
 }
 
 async function vComprasInd(view){
