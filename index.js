@@ -11,6 +11,8 @@ const { iniciarStock, tieneSesionActiva: tieneSesionStock,
 const { procesarFactura } = require('./facturas_bot');
 const panelApi = require('./panel_api');
 const { router: appApi } = require('./app_api');
+const control = require('./control');
+const { notificarCapataz } = require('./notificar');
 
 const app  = express();
 app.use(express.urlencoded({ extended: false, limit: '25mb' }));
@@ -41,6 +43,13 @@ app.post('/webhook', async (req, res) => {
   const numMedia   = parseInt(req.body.NumMedia || '0', 10);
 
   const esProveedores = NUMERO_PROVEEDORES && paraNumero === NUMERO_PROVEEDORES;
+
+  // Kill switch: si el PIN venció, el bot no responde nada (salvo a tu propio
+  // número, para no dejarte a ciegas — ese aviso lo maneja el job de abajo).
+  if (!(await control.estaOperativo())) {
+    console.warn('[control] bot bloqueado (PIN vencido) — mensaje ignorado de', telefono);
+    return res.sendStatus(200);   // 200 para que Twilio no reintente
+  }
 
   console.log(`[IN] ${telefono} -> ${paraNumero} ${esProveedores ? '(proveedores)' : '(capataces)'}: ` +
               `${numMedia > 0 ? `[${numMedia} archivo(s)]` : mensaje}`);
@@ -115,3 +124,33 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`EcoService Bot corriendo en puerto ${PORT}`);
 });
+
+// ── Kill switch: chequeo al arrancar + aviso periódico por WhatsApp ──────────
+// Tu número (para el aviso de renovación). Formato: 549351... (sin whatsapp:)
+const ADMIN_TEL = process.env.SYSTEM_ADMIN_TEL;
+
+async function chequearControl() {
+  try {
+    const st = await control.estado(true);
+    if (!st.activo) return;   // kill switch desactivado (sin SYSTEM_PIN)
+    if (st.bloqueado) {
+      console.warn(`[control] ⛔ SISTEMA BLOQUEADO — PIN vencido. Renová SYSTEM_PIN en Railway.`);
+    } else {
+      console.log(`[control] PIN vigente — faltan ${st.dias_restantes} día(s) para el vencimiento.`);
+    }
+    // Aviso por WhatsApp cuando entra en la ventana de aviso (una vez por día)
+    if (ADMIN_TEL && await control.debeAvisar()) {
+      const ok = await notificarCapataz(ADMIN_TEL,
+        `⚠️ *EcoService — renovación de PIN*\n\n` +
+        `Faltan *${st.dias_restantes} día(s)* para que el sistema se bloquee.\n\n` +
+        `Renová el PIN cambiando la variable *SYSTEM_PIN* en Railway por un valor nuevo y redeployá. ` +
+        `Si no lo hacés, el bot y el panel dejan de funcionar.`);
+      if (ok) await control.marcarAvisoEnviado();
+    }
+  } catch (e) {
+    console.error('[control] error en chequeo:', e.message || e);
+  }
+}
+
+chequearControl();                          // al arrancar
+setInterval(chequearControl, 6 * 60 * 60 * 1000);  // cada 6 horas
