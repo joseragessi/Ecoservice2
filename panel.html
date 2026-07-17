@@ -2452,71 +2452,81 @@ async function vCompras(view){
   if(comprasTab==='combustible'){vComprasCombustible(view);return;}
   try{
     comprasData=await api('/api/compras/facturas');
-    const b=comprasBusca.trim().toLowerCase();
-    const invs=b?comprasData.filter(i=>{
-      const a=asignacionInv(i);
-      return [i.proveedor,i.numero_factura,i.cuit,a.obj,a.uni]
-        .some(v=>String(v||'').toLowerCase().includes(b));
-    }):comprasData;
-    const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
-    const totIva=invs.reduce((s,i)=>s+(Number(i.total_iva)||0),0);
-    const cm=new Date().toISOString().slice(0,7);
-    const totMes=invs.filter(i=>(i.fecha_factura||'').startsWith(cm)).reduce((s,i)=>s+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0)),0);
-    // ranking proveedores
-    const porProv={};
-    invs.forEach(i=>{const k=i.proveedor||'Sin nombre';porProv[k]=(porProv[k]||0)+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0));});
-    const ranking=Object.entries(porProv).map(([name,total])=>({name,total})).sort((a,b)=>b.total-a.total);
-    const top=ranking[0];
-
-    const filas=invs.map(inv=>{
-      const a=asignacionInv(inv);
-      const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
-      const nc=(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
-      const neto=bruto-nc;
-      return `<tr class="fila">
-        <td class="mono">${inv.fecha_factura||'—'}</td>
-        <td class="mono sub">${inv.numero_factura||'—'}</td>
-        <td><b>${inv.proveedor||'—'}</b>${inv.cuit?`<div class="sub mono">${inv.cuit}</div>`:''}</td>
-        <td class="money">${money0(inv.total_sin_iva)}</td>
-        <td class="money sub">${money0(inv.total_iva)}</td>
-        <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
-          ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
-        <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
-        <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}</td>
-        <td style="text-align:right;white-space:nowrap">
-          ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
-          <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
-        </td>
-      </tr>`;}).join('');
-
+    // Shell fijo: el buscador queda ACÁ afuera y nunca se vuelve a pintar
+    // (antes se recreaba en cada letra y perdía el foco). Solo #compras-body
+    // se actualiza en cada tecla.
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Compras</div>
       <div class="view-desc">Facturas de proveedores · base de compras</div></div>
       <button class="btn" onclick="comprasNueva()">＋ Nueva factura</button></div>
     ${tabsCompras()}
-    <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-val">${invs.length}</div><div class="kpi-sub">cargadas</div></div>
-      <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money0(totMes)}</div><div class="kpi-sub">${cm}</div></div>
-      <div class="kpi"><div class="kpi-label">Neto acumulado</div><div class="kpi-val">${money0(totNeto)}</div><div class="kpi-sub">IVA ${money0(totIva)}</div></div>
-      <div class="kpi plain"><div class="kpi-label">Top proveedor</div><div class="kpi-val" style="font-size:16px;font-weight:700">${top?top.name.slice(0,18):'—'}</div><div class="kpi-sub">${top?money0(top.total):''}</div></div>
-    </div>
-    <div class="grid g-2" style="margin-bottom:18px">
-      <div class="panel"><div class="panel-title">Ranking de proveedores</div>
-        ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money0(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
-      </div>
-      <div class="panel"><div class="panel-title">Últimas facturas</div>
-        ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
-      </div>
-    </div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-      <input class="busca" style="width:280px" placeholder="Buscar proveedor, N° factura, objetivo…" value="${comprasBusca.replace(/"/g,'&quot;')}" oninput="comprasBusca=this.value;go('compras')">
-      <div class="sub">${invs.length} factura${invs.length===1?'':'s'}</div>
+      <input class="busca" style="width:280px" placeholder="Buscar proveedor, N° factura, objetivo…" value="${comprasBusca.replace(/"/g,'&quot;')}" oninput="comprasBusca=this.value;renderComprasBody()">
+      <div class="sub" id="compras-count"></div>
     </div>
-    <div class="tabla-wrap">
-      ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th><th>Estado</th><th style="width:70px"></th></tr></thead><tbody>${filas}</tbody></table>`
-        :`<div class="empty">${comprasBusca?'Ninguna factura coincide con la búsqueda.':'No hay facturas cargadas en la base de compras.'}</div>`}
-    </div>`;
+    <div id="compras-body"></div>`;
+    renderComprasBody();
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar compras. ${e.message||''}</div>`;}
+}
+function renderComprasBody(){
+  const cont=document.getElementById('compras-body');if(!cont)return;
+  const b=comprasBusca.trim().toLowerCase();
+  const invs=b?comprasData.filter(i=>{
+    const a=asignacionInv(i);
+    return [i.proveedor,i.numero_factura,i.cuit,a.obj,a.uni]
+      .some(v=>String(v||'').toLowerCase().includes(b));
+  }):comprasData;
+  const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
+  const totIva=invs.reduce((s,i)=>s+(Number(i.total_iva)||0),0);
+  const cm=new Date().toISOString().slice(0,7);
+  const totMes=invs.filter(i=>(i.fecha_factura||'').startsWith(cm)).reduce((s,i)=>s+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0)),0);
+  const porProv={};
+  invs.forEach(i=>{const k=i.proveedor||'Sin nombre';porProv[k]=(porProv[k]||0)+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0));});
+  const ranking=Object.entries(porProv).map(([name,total])=>({name,total})).sort((a,b)=>b.total-a.total);
+  const top=ranking[0];
+  const cnt=document.getElementById('compras-count');
+  if(cnt)cnt.textContent=invs.length+' factura'+(invs.length===1?'':'s');
+
+  const filas=invs.map(inv=>{
+    const a=asignacionInv(inv);
+    const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+    const nc=(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+    const neto=bruto-nc;
+    return `<tr class="fila">
+      <td class="mono">${inv.fecha_factura||'—'}</td>
+      <td class="mono sub">${inv.numero_factura||'—'}</td>
+      <td><b>${inv.proveedor||'—'}</b>${inv.cuit?`<div class="sub mono">${inv.cuit}</div>`:''}</td>
+      <td class="money">${money0(inv.total_sin_iva)}</td>
+      <td class="money sub">${money0(inv.total_iva)}</td>
+      <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
+        ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
+      <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
+      <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">
+        ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
+        <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
+      </td>
+    </tr>`;}).join('');
+
+  cont.innerHTML=`
+  <div class="kpis">
+    <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-val">${invs.length}</div><div class="kpi-sub">cargadas</div></div>
+    <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money0(totMes)}</div><div class="kpi-sub">${cm}</div></div>
+    <div class="kpi"><div class="kpi-label">Neto acumulado</div><div class="kpi-val">${money0(totNeto)}</div><div class="kpi-sub">IVA ${money0(totIva)}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Top proveedor</div><div class="kpi-val" style="font-size:16px;font-weight:700">${top?top.name.slice(0,18):'—'}</div><div class="kpi-sub">${top?money0(top.total):''}</div></div>
+  </div>
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel"><div class="panel-title">Ranking de proveedores</div>
+      ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money0(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
+    </div>
+    <div class="panel"><div class="panel-title">Últimas facturas</div>
+      ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
+    </div>
+  </div>
+  <div class="tabla-wrap">
+    ${invs.length?`<table><thead><tr><th>Fecha</th><th>N° Fac.</th><th>Proveedor</th><th>Neto</th><th>IVA</th><th>Total</th><th>Objetivo / Unidad</th><th>Estado</th><th style="width:70px"></th></tr></thead><tbody>${filas}</tbody></table>`
+      :`<div class="empty">${comprasBusca?'Ninguna factura coincide con la búsqueda.':'No hay facturas cargadas en la base de compras.'}</div>`}
+  </div>`;
 }
 
 /* ===== Compras · detalle, edición y notas de crédito ===== */
