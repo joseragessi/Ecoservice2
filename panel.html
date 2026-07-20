@@ -429,6 +429,27 @@ const fechaAR = f => {
   return isNaN(d) ? '—' : d.toLocaleDateString('es-AR');
 };
 const cap = s => s?s.charAt(0).toUpperCase()+s.slice(1).replace(/_/g,' '):'';
+
+// ── Otros conceptos (percepciones IIBB, sellados, tasas, etc.) ──
+// Cada concepto tiene {concepto, monto, tipo, exento}. Los NO exentos se suman
+// al total a pagar; los exentos se muestran pero no suman.
+// Retrocompat: facturas viejas sin otros_conceptos → lista vacía, total igual que antes.
+function otrosPagables(f){
+  return (f&&f.otros_conceptos||[]).reduce((s,o)=>s+(o.exento?0:(Number(o.monto)||0)),0);
+}
+function otrosExentos(f){
+  return (f&&f.otros_conceptos||[]).reduce((s,o)=>s+(o.exento?(Number(o.monto)||0):0),0);
+}
+// Bruto = neto + IVA + otros conceptos pagables (sin descontar NC todavía)
+function brutoFactura(f){
+  return (Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0)+otrosPagables(f);
+}
+function ncFactura(f){
+  return (f.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+}
+// Total a pagar = bruto − notas de crédito
+function totalFactura(f){ return brutoFactura(f)-ncFactura(f); }
+
 function railEstado(idx,total,amber){let s='';for(let i=0;i<total;i++)s+=`<div class="seg ${i<idx?'done':i===idx?'cur':''}"></div>`;return `<div class="rail-estado ${amber?'amber':''}">${s}</div>`}
 function railLabels(labels,idx){return `<div class="rail-labels">${labels.map((l,i)=>`<span class="${i===idx?'cur':''}">${l}</span>`).join('')}</div>`}
 
@@ -2066,8 +2087,7 @@ function mesInv(f){
 // Reparte el total de una factura por objetivo o unidad. Si la imputación es por
 // ítem, distribuye proporcional al monto de cada ítem; si es total, va entero.
 function repartoInv(inv,campo){
-  const total=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0)
-    -(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+  const total=totalFactura(inv);
   if(inv.assignmentMode==='per-item'&&inv.assignments&&Object.keys(inv.assignments).length){
     const items=inv.items||[];
     const partes=Object.entries(inv.assignments).map(([ix,a])=>({a,peso:Math.abs(Number((items[+ix]||{}).monto_sin_iva))||1}));
@@ -2082,10 +2102,11 @@ function repartoInv(inv,campo){
 function ncDe(f){return (f.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);}
 function calcIndicadores(fs){
   const neto=f=>(Number(f.total_sin_iva)||0),iva=f=>(Number(f.total_iva)||0);
-  const tot=f=>neto(f)+iva(f)-ncDe(f);
+  const tot=f=>totalFactura(f);
   const totNeto=fs.reduce((s,f)=>s+neto(f),0),totIva=fs.reduce((s,f)=>s+iva(f),0);
   const totNC=fs.reduce((s,f)=>s+ncDe(f),0);
-  const totTot=totNeto+totIva-totNC;
+  const totOtros=fs.reduce((s,f)=>s+otrosPagables(f),0);
+  const totTot=totNeto+totIva+totOtros-totNC;
   const porProv={};fs.forEach(f=>{const k=f.proveedor||'Sin nombre';
     porProv[k]=porProv[k]||{docs:0,total:0};porProv[k].docs++;porProv[k].total+=tot(f);});
   const ranking=Object.entries(porProv).map(([nombre,v])=>({nombre,...v,pct:totTot?v.total*100/totTot:0}))
@@ -2105,11 +2126,8 @@ function calcIndicadores(fs){
 // Compras — no existía hasta ahora, así que toda factura sin el campo cuenta
 // como pendiente por defecto (no como "sin dato").
 function statsProv(fs){
-  const bruto=f=>(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
-  const nc=f=>(f.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
-  const neto=f=>bruto(f)-nc(f);
-  const total=fs.reduce((s,f)=>s+neto(f),0);
-  const pagado=fs.filter(f=>f.pagada).reduce((s,f)=>s+neto(f),0);
+  const total=fs.reduce((s,f)=>s+totalFactura(f),0);
+  const pagado=fs.filter(f=>f.pagada).reduce((s,f)=>s+totalFactura(f),0);
   return {total,pagado,pendiente:total-pagado,docs:fs.length,pendDocs:fs.filter(f=>!f.pagada).length};
 }
 async function vComprasCuenta(view){
@@ -2186,8 +2204,8 @@ function pintarCtaSide(){
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Facturas</div>
     ${fs.map(f=>{
-      const bruto=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
-      const nc=(f.notas_credito||[]).reduce((s2,n)=>s2+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+      const bruto=brutoFactura(f);
+      const nc=ncFactura(f);
       const neto=bruto-nc;
       return `<div class="queue-item" style="margin-bottom:8px">
         <div style="flex:1;cursor:pointer" onclick="verCompra('${f.id}')"><div style="font-weight:600;font-size:12.5px">${f.numero_factura||'s/n'} · ${fechaAR(f.fecha_factura)}</div>
@@ -2210,6 +2228,23 @@ async function togglePagada(id,valor){
       renderCtaBody();
     }else go('compras');
   }catch(e){alert('No pude actualizar: '+(e.message||''));}
+}
+// Marca un concepto (percepción/impuesto) como exento o pagable. Guarda toda la
+// lista otros_conceptos actualizada (el PUT mergea sobre el resto de la factura).
+async function toggleConcepto(id,ix,exento){
+  const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer
+    :(comprasData||[]).find(f=>String(f.id)===String(id));
+  if(!inv||!inv.otros_conceptos||!inv.otros_conceptos[ix])return;
+  const nuevos=inv.otros_conceptos.map((o,i)=>i===ix?{...o,exento}:o);
+  try{
+    const r=await api('/api/compras/factura/'+id,{method:'PUT',
+      body:JSON.stringify({otros_conceptos:nuevos})});
+    if(comprasVer&&String(comprasVer.id)===String(id))comprasVer=r;
+    // refrescar la lista en memoria para que Estado de cuenta/Resumen queden al día
+    const j=(comprasData||[]).findIndex(f=>String(f.id)===String(id));
+    if(j>-1)comprasData[j]=r;
+    go('compras');
+  }catch(e){alert('No pude actualizar el concepto: '+(e.message||''));}
 }
 
 /* ── Exportar Estado de cuenta a PDF (reporte imprimible, mismo estilo que Compras · Indicadores) ── */
@@ -2286,8 +2321,8 @@ function exportarCtaProveedorPDF(nombre){
   const s=statsProv(fs);
   const money=n=>'$ '+(Math.round(Number(n)*100)/100).toLocaleString('es-AR',{minimumFractionDigits:2});
   const filas=fs.map(f=>{
-    const bruto=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);
-    const nc=(f.notas_credito||[]).reduce((s2,n)=>s2+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+    const bruto=brutoFactura(f);
+    const nc=ncFactura(f);
     const neto=bruto-nc;
     return `<tr>
       <td>${fechaAR(f.fecha_factura)}</td>
@@ -2481,9 +2516,9 @@ function renderComprasBody(){
   const totNeto=invs.reduce((s,i)=>s+(Number(i.total_sin_iva)||0),0);
   const totIva=invs.reduce((s,i)=>s+(Number(i.total_iva)||0),0);
   const cm=new Date().toISOString().slice(0,7);
-  const totMes=invs.filter(i=>(i.fecha_factura||'').startsWith(cm)).reduce((s,i)=>s+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0)),0);
+  const totMes=invs.filter(i=>(i.fecha_factura||'').startsWith(cm)).reduce((s,i)=>s+totalFactura(i),0);
   const porProv={};
-  invs.forEach(i=>{const k=i.proveedor||'Sin nombre';porProv[k]=(porProv[k]||0)+((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0));});
+  invs.forEach(i=>{const k=i.proveedor||'Sin nombre';porProv[k]=(porProv[k]||0)+totalFactura(i);});
   const ranking=Object.entries(porProv).map(([name,total])=>({name,total})).sort((a,b)=>b.total-a.total);
   const top=ranking[0];
   const cnt=document.getElementById('compras-count');
@@ -2491,8 +2526,8 @@ function renderComprasBody(){
 
   const filas=invs.map(inv=>{
     const a=asignacionInv(inv);
-    const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
-    const nc=(inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
+    const bruto=brutoFactura(inv);
+    const nc=ncFactura(inv);
     const neto=bruto-nc;
     return `<tr class="fila">
       <td class="mono">${inv.fecha_factura||'—'}</td>
@@ -2522,7 +2557,7 @@ function renderComprasBody(){
       ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money0(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
     </div>
     <div class="panel"><div class="panel-title">Últimas facturas</div>
-      ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0((Number(i.total_sin_iva)||0)+(Number(i.total_iva)||0))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
+      ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0(totalFactura(i))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
     </div>
   </div>
   <div class="tabla-wrap">
@@ -2563,7 +2598,7 @@ function cancelarEdicionCompra(){
 function vComprasDetalle(view){
   const inv=comprasVer;if(!inv){volverCompras();return;}
   const a=asignacionInv(inv);
-  const bruto=(Number(inv.total_sin_iva)||0)+(Number(inv.total_iva)||0);
+  const bruto=brutoFactura(inv);
   const nc=ncTotal(inv);
   const neto=bruto-nc;
   const oo=COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}" ${o===a.obj?'selected':''}>${o}</option>`).join('');
@@ -2597,8 +2632,18 @@ function vComprasDetalle(view){
       <div class="mcard-row"><span>CUIT</span>${campo('ec-cuit',inv.cuit)}</div>
       <div class="mcard-row"><span>Neto</span>${campo('ec-neto',inv.total_sin_iva,'num')}</div>
       <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>
+      ${(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
+        <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
+        ${(inv.otros_conceptos||[]).map((o,ix)=>`
+          <div class="mcard-row" style="align-items:center">
+            <span style="display:flex;align-items:center;gap:7px">
+              <input type="checkbox" ${o.exento?'':'checked'} onchange="toggleConcepto('${inv.id}',${ix},!this.checked)" title="Tildado = se suma al total; destildado = exento" style="accent-color:var(--brote)">
+              <span style="${o.exento?'text-decoration:line-through;opacity:.5':''}">${o.concepto||cap(o.tipo||'otro')}${o.exento?' <span class="badge b-gray" style="font-size:9px">exento</span>':''}</span>
+            </span>
+            <b class="money" style="${o.exento?'opacity:.4;text-decoration:line-through':''}">${money(o.monto)}</b>
+          </div>`).join('')}`:''}
       <div class="divider"></div>
-      <div class="mcard-row"><span style="font-weight:600">Total factura</span><b class="money">${money(bruto)}</b></div>
+      <div class="mcard-row"><span style="font-weight:600">Total a pagar</span><b class="money">${money(bruto)}</b></div>
       ${nc?`<div class="mcard-row"><span style="color:var(--ambar)">Notas de crédito</span><b class="money" style="color:var(--ambar)">− ${money(nc)}</b></div>
         <div class="mcard-row" style="border-top:2px solid var(--linea);padding-top:8px">
           <span style="font-weight:700">Neto a pagar</span><b class="money" style="font-size:16px;color:var(--brote)">${money(neto)}</b></div>`:''}
@@ -2939,6 +2984,14 @@ async function comprasGuardar(){
     cuit:d.cuit||null,
     total_sin_iva:Number(d.total_sin_iva)||0,
     total_iva:Number(d.total_iva)||0,
+    // Otros conceptos detectados por la IA. Default: percepciones se pagan
+    // (exento=false), impuestos/tasas arrancan exentos (exento=true) porque
+    // en la mayoría de nuestras facturas de seguros estamos exentos — se puede
+    // cambiar con el check en el detalle.
+    otros_conceptos:(d.otros_conceptos||[]).map(o=>({
+      concepto:o.concepto||null, monto:Number(o.monto)||0, tipo:o.tipo||'otro',
+      exento: o.exento!=null ? !!o.exento : (o.tipo==='impuesto'),
+    })),
     items:d.items||[],
     assignmentMode:comprasAssignMode,
     assignments:comprasAssignMode==='per-item'?comprasAssignments:{},
@@ -3047,6 +3100,12 @@ function vComprasCarga(view){
           <table><thead><tr><th>Descripción</th><th class="tr">Neto</th><th class="tr">IVA</th></tr></thead>
           <tbody>${filasItems}<tr class="tot-row"><td><b>Total</b></td><td class="money tr"><b>${money0(d.total_sin_iva)}</b></td><td class="money tr"><b>${money0(d.total_iva)}</b></td></tr></tbody></table>
         </div>
+        ${(d.otros_conceptos||[]).length?`<div class="mm-label" style="margin-top:14px">Percepciones e impuestos</div>
+        <div class="tabla-wrap"><table><thead><tr><th>Concepto</th><th>Tipo</th><th class="tr">Monto</th></tr></thead>
+          <tbody>${(d.otros_conceptos).map(o=>`<tr><td>${o.concepto||'—'}</td>
+            <td><span class="badge ${o.tipo==='percepcion'?'b-blue':o.tipo==='impuesto'?'b-amber':'b-gray'}">${cap(o.tipo||'otro')}</span></td>
+            <td class="money tr">${money0(o.monto)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="sub" style="margin-top:6px">Las <b>percepciones</b> se suman al total; los <b>impuestos/tasas</b> arrancan exentos. Podés cambiar cuáles se pagan con el check en el detalle de la factura, después de guardar.</div>`:''}
       </div>
       <div>
         <div class="mm-label">Imputación</div>
