@@ -35,6 +35,22 @@ const RE_INSUMOS = /^(insumos|pedido)\b[\s:,\-]*/i;
 // Disparador de stock de maquinaria: el capataz arranca con "stock".
 const RE_STOCK = /^stock\b[\s:,\-]*/i;
 
+// ¿El texto parece un LISTADO de stock (equipos + números) y no un saludo?
+// Se usa para no confundir un "hola" con la respuesta al censo de stock.
+const SALUDOS = /^(hola|holaa+|buenas|buen d[ií]a|buenos d[ií]as|buenas tardes|buenas noches|hey|ola|q onda|que onda|menu|men[uú]|gracias|ok|dale|listo|si|s[ií]|no|test|prueba)\b/i;
+const RE_EQUIPO = /motoguada|guadaña|motosierra|extensible|soplad|tractor|giro cero|plana|toyota|camioneta|cami[oó]n|atego|hidrogr[uú]a|hidro gr[uú]a|carro|remolque|m[aá]quina|maquina|unidad/i;
+function pareceListadoStock(texto) {
+  const t = (texto || '').trim();
+  if (!t || t.length < 3) return false;
+  // Un saludo/comando corto NUNCA es un listado
+  if (SALUDOS.test(t) && t.length < 25) return false;
+  // Parece listado si menciona un tipo de equipo, o si tiene números de máquina
+  // (patrón "N° 12", "nro 4", o varios números sueltos como "12, 15 y 21").
+  const mencionaEquipo = RE_EQUIPO.test(t);
+  const tieneNumeros = /n[°º]\s*\d+|nro\.?\s*\d+|\b\d+\b.*\b\d+\b/i.test(t);
+  return mencionaEquipo || tieneNumeros;
+}
+
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
   const telefono   = req.body.From;
@@ -83,11 +99,12 @@ app.post('/webhook', async (req, res) => {
         // Arranca el envío de stock; le pasamos lo que escribió después de "stock"
         const resto = mensaje.trim().replace(RE_STOCK, '');
         respuesta = await iniciarStock(telefono, resto);
-      } else if (!/^(menu|menú)$/i.test(mensaje.trim()) && !/^[1-4]$/.test(mensaje.trim())
+      } else if (pareceListadoStock(mensaje.trim())
                  && await tienePedidoPendiente(telefono)) {
-        // Le pedimos el stock y todavía no respondió: cualquier texto libre que
-        // mande es su listado. No hace falta que escriba la palabra "stock".
-        // ("menu" o un dígito 1-4 siguen yendo al menú, para no encerrarlo.)
+        // Le pedimos el stock y todavía no respondió. Solo tratamos el texto como
+        // listado si REALMENTE parece uno (menciona equipos o números de máquina).
+        // Un "hola" o cualquier saludo NO se toma como listado: va al menú, así el
+        // capataz no queda encerrado en el flujo de stock.
         respuesta = await iniciarStock(telefono, mensaje.trim());
       } else {
         // Menú principal / flujo de incidencias (conversacion.js)
