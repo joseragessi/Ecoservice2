@@ -1,5 +1,6 @@
 const supabase           = require('./supabase');
 const { asignarMecanico } = require('./mecanico');
+const { calcularPrioridad } = require('./prioridad');
 
 const sesiones = {};
 const TIMEOUT_MS = 10 * 60 * 1000;
@@ -206,18 +207,19 @@ async function procesarMensaje(telefono, mensaje) {
     s.fallaLabel = fallas[num - 1];
     s.tipoFalla  = s.fallaLabel.toLowerCase();
     s.paso = 4;
-    return `*¿Cuál es el estado del equipo?*\n\n  1. 🔴 Está parado, no puede trabajar\n  2. 🟠 Puede trabajar pero necesita reparación mañana\n  3. ⚪ Puede esperar unos días para reparar\n  4. 🟢 Mantenimiento programado`;
+    return `*¿La máquina puede trabajar?*\n\n  1. 🔧 Sí, pero necesita reparación\n  2. 🛑 No, está parada`;
   }
 
-  // P4: prioridad
+  // P4: ¿puede trabajar? → dato objetivo (equipo_parado). La PRIORIDAD la
+  // calcula el sistema según la falla + tipo de equipo (el capataz no la elige,
+  // así nadie infla la urgencia y no se tapa el taller).
   if (s.paso === 4) {
     const op = texto.trim();
-    if (!['1','2','3','4'].includes(op)) {
-      return 'Respondé con 1, 2, 3 o 4 según el estado del equipo.';
+    if (!['1','2'].includes(op)) {
+      return 'Respondé con *1* (puede trabajar) o *2* (está parada).';
     }
-    const mapa = { '1': 'critico', '2': 'alta', '3': 'media', '4': 'baja' };
-    s.prioridad    = mapa[op];
-    s.equipoParado = op === '1';
+    s.equipoParado = op === '2';
+    s.prioridad    = calcularPrioridad(s.tipoDb, s.fallaLabel, s.equipoParado);
     s.paso = 5;
     return `*¿Querés agregar algún detalle adicional?*\nDescribilo o escribí "listo" para finalizar.`;
   }
@@ -284,7 +286,8 @@ async function procesarMensaje(telefono, mensaje) {
            `🔧 Equipo: ${s.tipoLabel}\n` +
            `🔢 Unidad: ${s.numeroUnidad}\n` +
            `🔩 Falla: ${s.fallaLabel}\n` +
-           `⚡ Prioridad: *${etiquetas[s.prioridad]}*\n` +
+           `${s.equipoParado ? '🛑 Estado: Parada\n' : '🔧 Estado: Puede trabajar\n'}` +
+           `⚡ Prioridad: *${etiquetas[s.prioridad]}* _(asignada por el sistema)_\n` +
            `📊 Estado: Pendiente\n` +
            `👨‍🔧 Asignado a mecánico\n\n` +
            `ID: \`${incidencia.id.slice(0, 8).toUpperCase()}\`\n\n` +
