@@ -118,7 +118,8 @@ router.get('/api/dashboard', auth, async (req, res) => {
       m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return m[3] + '-' + String(m[2]).padStart(2, '0');
       return '';
     };
-    const totalFac = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0)
+    const otrosPag = f => (f.otros_conceptos || []).reduce((s, o) => s + (o.exento ? 0 : (Number(o.monto) || 0)), 0);
+    const totalFac = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0) + otrosPag(f)
       - (f.notas_credito || []).reduce((s, n) => s + (Number(n.total_sin_iva) || 0) + (Number(n.total_iva) || 0), 0);
     const gastoMes = compras.filter(f => mesFac(f) === periodo).reduce((s, f) => s + totalFac(f), 0);
     const gastoAnt = compras.filter(f => mesFac(f) === mesAnterior).reduce((s, f) => s + totalFac(f), 0);
@@ -739,14 +740,21 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     const prompt = 'Analizá esta factura argentina y devolvé ÚNICAMENTE JSON sin backticks:\n' +
       '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","proveedor":"string","cuit":"string",' +
       '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"monto_iva":0.00}],' +
-      '"total_sin_iva":0.00,"total_iva":0.00}\n' +
+      '"total_sin_iva":0.00,"total_iva":0.00,' +
+      '"otros_conceptos":[{"concepto":"string","monto":0.00,"tipo":"percepcion|impuesto|otro"}]}\n' +
       'Reglas:\n' +
       '- Montos como números, sin separador de miles. Campos ilegibles: null.\n' +
       '- El IVA de cada ítem va en "monto_iva" (NO en "iva").\n' +
       '- Si la factura NO desglosa el IVA por ítem y solo lo trae en el total, ' +
       'prorrateá el IVA total entre los ítems proporcional a su monto_sin_iva, ' +
       'de modo que la suma de los monto_iva dé exactamente total_iva.\n' +
-      '- La suma de monto_sin_iva de los ítems tiene que dar total_sin_iva.';
+      '- La suma de monto_sin_iva de los ítems tiene que dar total_sin_iva.\n' +
+      '- "otros_conceptos": TODO monto extra que NO sea neto ni IVA. Incluí: percepciones ' +
+      '(IIBB/Ingresos Brutos de cualquier provincia, percepción IVA, ganancias), impuestos ' +
+      '(sellados, tasa SSN, servicios sociales, gastos notariales, impuestos internos, tasa municipal). ' +
+      'Poné el nombre tal como figura en "concepto". ' +
+      'tipo="percepcion" para percepciones, tipo="impuesto" para sellados/tasas/servicios, tipo="otro" para el resto. ' +
+      'Si no hay ninguno, devolvé otros_conceptos como lista vacía [].';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
