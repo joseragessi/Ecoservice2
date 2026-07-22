@@ -206,6 +206,7 @@ async function cargar(){
 // ── Render ──────────────────────────────────────────────
 function render(){
   if(rol==='panol')return renderPanol();
+  if(tab==='service')return renderService();
   const act=datos.filter(i=>i.estado!=='finalizado');
   const fin=datos.filter(i=>i.estado==='finalizado');
   const urg=act.filter(i=>i.prioridad==='critico'||i.prioridad==='alta').length;
@@ -214,10 +215,154 @@ function render(){
     <div class="kpi ${urg?'amber':''}"><div class="v">${urg}</div><div class="l">Urgentes</div></div>
     <div class="kpi green"><div class="v">${fin.length}</div><div class="l">Terminadas</div></div>`;
   $('tabs').innerHTML=[['activas','Activas',act.length],['finalizadas','Terminadas',fin.length]]
-    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('');
+    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
+    +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`;
   const lista=tab==='finalizadas'?fin:act;
   $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
     :'<div class="vacio">No tenés reparaciones acá.</div>';
+}
+
+/* ── Planilla de service: foto → IA → revisión → guardar ── */
+let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
+let svHist=null;      // historial de services del mecánico
+function renderService(){
+  $('kpis').innerHTML='';
+  $('tabs').innerHTML=[['activas','Activas',''],['finalizadas','Terminadas','']]
+    .map(([k,l])=>`<div class="tab" onclick="tab='${k}';svData=null;cargar()">${l}</div>`).join('')
+    +`<div class="tab on">🔧 Service</div>`;
+  if(svData)return renderSvRevision();
+  $('lista').innerHTML=`
+    <div class="card" style="padding:16px">
+      <h3 style="margin:0 0 6px">Planilla de service</h3>
+      <div class="desc" style="margin-bottom:12px">Sacale una foto a la planilla completada y la leo yo. Después revisás y guardás.</div>
+      <input type="file" id="sv-file" accept="image/*" capture="environment" style="display:none" onchange="svFoto(this)">
+      <button class="btn" onclick="$('sv-file').click()">📷 Fotografiar planilla</button>
+      <div class="desc" id="sv-msg" style="margin-top:10px"></div>
+    </div>
+    <div id="sv-hist"></div>`;
+  cargarSvHist();
+}
+async function cargarSvHist(){
+  try{
+    if(!svHist)svHist=await api('/api/app/services');
+    const c=$('sv-hist');if(!c)return;
+    c.innerHTML=svHist.length?'<div class="dl" style="margin:14px 4px 6px">Tus últimos services</div>'+
+      svHist.map(s=>{const d=s.data||{};return `<div class="card" style="padding:12px">
+        <b>${d.unidad||d.patente||'—'}</b> · ${d.marca_modelo||''}
+        <div class="meta">${d.fecha_service||''} · ${d.km_horas||''} · ${(d.repuestos_entregados||[]).length} repuestos</div>
+      </div>`;}).join(''):'';
+  }catch(e){}
+}
+// Comprime la foto en el celular (máx 1600px, JPEG) para que suba rápido y la
+// letra manuscrita siga legible para la IA.
+function svFoto(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  $('sv-msg').textContent='Leyendo la planilla… puede tardar unos segundos ⏳';
+  const img=new Image();
+  img.onload=async()=>{
+    const esc=Math.min(1,1600/Math.max(img.width,img.height));
+    const cv=document.createElement('canvas');
+    cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    const b64=cv.toDataURL('image/jpeg',0.85).split(',')[1];
+    try{
+      const d=await api('/api/app/service/extract',{method:'POST',
+        body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
+      if(d.__error){$('sv-msg').textContent=d.__error;return;}
+      svData=d;svData.tareas=svData.tareas||[];svData.repuestos_entregados=svData.repuestos_entregados||[];
+      render();
+    }catch(e){$('sv-msg').textContent='Error: '+e.message;}
+  };
+  img.src=URL.createObjectURL(f);
+  input.value='';
+}
+function svCampo(id,label,val){
+  return `<div style="margin-bottom:8px"><div class="dl">${label}</div>
+    <input type="text" id="${id}" value="${String(val||'').replace(/"/g,'&quot;')}"
+      style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px"></div>`;
+}
+function renderSvRevision(){
+  const d=svData;
+  $('lista').innerHTML=`
+    <div class="card" style="padding:16px">
+      <h3 style="margin:0 0 4px">Revisá lo que leí</h3>
+      <div class="desc" style="margin-bottom:12px">Corregí lo que haga falta antes de guardar.</div>
+      ${svCampo('sv-fecha','Fecha del service (AAAA-MM-DD)',d.fecha_service)}
+      ${svCampo('sv-unidad','Unidad / código interno',d.unidad)}
+      ${svCampo('sv-patente','Patente',d.patente)}
+      ${svCampo('sv-tipo','Tipo de unidad',d.tipo_unidad)}
+      ${svCampo('sv-marca','Marca / modelo',d.marca_modelo)}
+      ${svCampo('sv-km','Horas / Km',d.km_horas)}
+      <div class="dl" style="margin:12px 0 6px">Tareas realizadas</div>
+      <div id="sv-tareas">${d.tareas.map((t,i)=>svTareaRow(t,i)).join('')||'<div class="desc">Ninguna leída.</div>'}</div>
+      <button class="btn sec" style="margin-top:6px" onclick="svData.tareas.push({tarea:'',estado:'ok',repuestos:''});render()">＋ Agregar tarea</button>
+      <div class="dl" style="margin:12px 0 6px">Repuestos entregados</div>
+      <div id="sv-reps">${d.repuestos_entregados.map((r,i)=>svRepRow(r,i)).join('')||'<div class="desc">Ninguno leído.</div>'}</div>
+      <button class="btn sec" style="margin-top:6px" onclick="svData.repuestos_entregados.push({repuesto:'',marca:'',cantidad:1,codigo:''});render()">＋ Agregar repuesto</button>
+      ${svCampo('sv-obs','Observaciones',d.observaciones)}
+      <button class="btn" style="margin-top:12px" onclick="svGuardar()">✓ Guardar service</button>
+      <button class="btn sec" style="margin-top:8px" onclick="svData=null;render()">Cancelar</button>
+    </div>`;
+}
+function svTareaRow(t,i){
+  return `<div style="border:1px solid #e4e7e4;border-radius:8px;padding:8px;margin-bottom:6px">
+    <input type="text" id="sv-t-n-${i}" value="${String(t.tarea||'').replace(/"/g,'&quot;')}" placeholder="Tarea"
+      style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px;margin-bottom:5px">
+    <div style="display:flex;gap:6px">
+      <input type="text" id="sv-t-r-${i}" value="${String(t.repuestos||t.descripcion||'').replace(/"/g,'&quot;')}" placeholder="Repuestos / detalle"
+        style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+      <select id="sv-t-e-${i}" style="padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+        <option value="ok" ${t.estado!=='seguimiento'?'selected':''}>OK</option>
+        <option value="seguimiento" ${t.estado==='seguimiento'?'selected':''}>Seguim.</option>
+      </select>
+      <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.tareas.splice(${i},1);svLeer();render()">✕</button>
+    </div></div>`;
+}
+function svRepRow(r,i){
+  return `<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">
+    <input type="text" id="sv-r-n-${i}" value="${String(r.repuesto||'').replace(/"/g,'&quot;')}" placeholder="Repuesto"
+      style="flex:2;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+    <input type="text" id="sv-r-m-${i}" value="${String(r.marca||'').replace(/"/g,'&quot;')}" placeholder="Marca"
+      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+    <input type="text" id="sv-r-c-${i}" value="${r.cantidad!=null?r.cantidad:''}" placeholder="Cant" inputmode="numeric"
+      style="width:44px;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+    <input type="text" id="sv-r-k-${i}" value="${String(r.codigo||'').replace(/"/g,'&quot;')}" placeholder="Código"
+      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+    <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.repuestos_entregados.splice(${i},1);svLeer();render()">✕</button>
+  </div>`;
+}
+// Vuelca lo que hay en los inputs a svData (antes de borrar filas o guardar)
+function svLeer(){
+  const d=svData;if(!d)return;
+  d.fecha_service=$('sv-fecha')?.value.trim()||null;
+  d.unidad=$('sv-unidad')?.value.trim()||null;
+  d.patente=$('sv-patente')?.value.trim()||null;
+  d.tipo_unidad=$('sv-tipo')?.value.trim()||null;
+  d.marca_modelo=$('sv-marca')?.value.trim()||null;
+  d.km_horas=$('sv-km')?.value.trim()||null;
+  d.observaciones=$('sv-obs')?.value.trim()||null;
+  d.tareas=d.tareas.map((t,i)=>({
+    tarea:$('sv-t-n-'+i)?.value.trim()||t.tarea||'',
+    repuestos:$('sv-t-r-'+i)?.value.trim()||'',
+    estado:$('sv-t-e-'+i)?.value||t.estado||'ok',
+  })).filter(t=>t.tarea);
+  d.repuestos_entregados=d.repuestos_entregados.map((r,i)=>({
+    repuesto:$('sv-r-n-'+i)?.value.trim()||r.repuesto||'',
+    marca:$('sv-r-m-'+i)?.value.trim()||'',
+    cantidad:Number($('sv-r-c-'+i)?.value)||r.cantidad||1,
+    codigo:$('sv-r-k-'+i)?.value.trim()||'',
+  })).filter(r=>r.repuesto);
+}
+async function svGuardar(){
+  svLeer();
+  const d=svData;
+  if(!d.unidad&&!d.patente){toast('Cargá al menos la unidad o la patente');return;}
+  try{
+    await api('/api/app/service',{method:'POST',body:JSON.stringify(d)});
+    toast('Service guardado ✓');
+    svData=null;svHist=null;
+    render();
+  }catch(e){toast('Error: '+e.message);}
 }
 function cardIncidencia(i){
   const eq=i.equipos?(i.equipos.nombre||i.equipos.tipo||'Equipo'):'Equipo';
