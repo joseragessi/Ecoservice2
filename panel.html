@@ -1623,6 +1623,42 @@ async function vRepServices(view){
     if(svPanelSel)pintarSvSide();
   }catch(e){view.innerHTML=tabsRep()+`<div class="cargando-v">No pude cargar los services. ${e.message||''}</div>`;}
 }
+// PDF del pedido de repuestos de un service (para mandarle al proveedor):
+// solo los repuestos, con marca, cantidad y código. Mismo estilo que los
+// reportes de Estado de cuenta.
+function exportarSvRepuestosPDF(id){
+  const s=(svPanelData||[]).find(x=>x.id===id);if(!s)return;
+  const d=s.data||{};
+  const reps=(d.repuestos_entregados||[]).filter(r=>r.repuesto);
+  if(!reps.length){alert('Este service no tiene repuestos cargados.');return;}
+  const filas=reps.map(r=>`<tr>
+    <td style="font-weight:600">${r.repuesto||'—'}</td>
+    <td>${r.marca||'—'}</td>
+    <td class="r">${r.cantidad||1}</td>
+    <td style="font-family:monospace;font-weight:600">${r.codigo||'—'}</td>
+    <td>${r.observaciones||''}</td>
+  </tr>`).join('');
+  const w=window.open('','_blank');
+  if(!w){alert('El navegador bloqueó la ventana del reporte. Habilitá popups para este sitio.');return;}
+  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Pedido de repuestos — ${d.unidad||d.patente||''}</title>${ctaEstiloReporte()}</head><body>
+  <div class="letterhead"><div><h1>Pedido de repuestos</h1><div class="sub">EcoService · Logística</div></div>
+    <div class="fecha">${new Date().toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba'})}</div></div>
+  <div class="body-pad">
+  <div class="kpis" style="margin-top:6px">
+    <div class="kpi"><span>Unidad</span><b>${d.unidad||d.patente||'—'}</b></div>
+    <div class="kpi"><span>Marca / modelo</span><b>${d.marca_modelo||'—'}</b></div>
+    <div class="kpi"><span>Service del</span><b>${fechaAR(d.fecha_service)||'—'}</b></div>
+    <div class="kpi"><span>Km / Horas</span><b>${d.km_horas||'—'}</b></div>
+  </div>
+  <h2>Repuestos solicitados</h2>
+  <table><thead><tr><th>Repuesto</th><th>Marca</th><th class="r">Cantidad</th><th>Código</th><th>Observaciones</th></tr></thead>
+  <tbody>${filas}</tbody></table>
+  <p style="margin-top:22px;font-size:10.5px;color:#777">Solicitado según planilla de service cargada por ${s.mecanico_nombre||d.mecanico||'—'}.</p>
+  </div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script>
+  </body></html>`);
+  w.document.close();
+}
 function selSvPanel(id,tr){
   svPanelSel=id;
   document.querySelectorAll('#view .tablewrap tr').forEach(t=>t.style.outline='');
@@ -1642,6 +1678,7 @@ function pintarSvSide(){
       <div class="extract-field" style="flex:1"><label>Km/Hs del service</label><div class="val filled">${d.km_horas||'—'}</div></div>
       <div class="extract-field" style="flex:1"><label>Próximo service</label><div class="val ${d.proximo_service?'filled':''}">${d.proximo_service||'sin definir'}</div></div>
     </div>
+    <button class="btn ghost" style="width:100%;justify-content:center;margin-bottom:12px" onclick="exportarSvRepuestosPDF('${s.id}')">⬇ Pedido de repuestos (PDF)</button>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:8px">Tareas realizadas</div>
     ${(d.tareas||[]).length?(d.tareas||[]).map(t=>`<div class="queue-item">
