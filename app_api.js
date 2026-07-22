@@ -191,6 +191,106 @@ router.post('/api/app/incidencia/:id/comentario', authApp('mecanico'), async (re
   }
 });
 
+// ── PLANILLA DE SERVICE (foto → IA → revisión → guardar) ─────
+// El mecánico fotografía la planilla de papel; la IA la extrae y él revisa
+// antes de guardar. Tabla: services_unidades (data jsonb flexible, como facturas).
+const MODEL_SERVICE = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+
+router.post('/api/app/service/extract', authApp('mecanico'), async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta la foto' });
+    const part = { type: 'image', source: { type: 'base64', media_type: fileType || 'image/jpeg', data: fileData } };
+    const prompt = 'Esta es una foto de una "Planilla de Service de Unidades" de EcoService, ' +
+      'completada A MANO por un mecánico. Extraé los datos y devolvé ÚNICAMENTE JSON sin backticks:\n' +
+      '{"fecha_service":"YYYY-MM-DD","unidad":"string","tipo_unidad":"tractor|giro cero|camioneta|otro",' +
+      '"marca_modelo":"string","patente":"string","km_horas":"string",' +
+      '"tareas":[{"tarea":"string","descripcion":"string","repuestos":"string","estado":"ok|seguimiento"}],' +
+      '"repuestos_entregados":[{"repuesto":"string","marca":"string","cantidad":1,"codigo":"string","observaciones":"string"}],' +
+      '"mecanico":"string","observaciones":"string"}\n' +
+      'Reglas:\n' +
+      '- Es letra manuscrita: interpretá con cuidado. Si un campo es ilegible o está vacío, poné null.\n' +
+      '- En "tareas" incluí SOLO las filas del checklist que tengan algo escrito (descripción, repuestos o estado). ' +
+      'Usá el nombre impreso de la tarea (ej. "Cambio de aceite motor").\n' +
+      '- "estado": "ok" si dice OK, "seguimiento" si requiere seguimiento, null si no está claro.\n' +
+      '- En "repuestos_entregados" una entrada por fila escrita de la tabla de repuestos.\n' +
+      '- "tipo_unidad": el que esté tildado/marcado; si escribieron la marca (ej. Iveco) y no tildaron nada, deducilo (camión/camioneta→"camioneta", si no "otro").\n' +
+      '- "km_horas" como texto tal cual (ej. "40.279 km").\n' +
+      '- "mecanico": el nombre del mecánico responsable si está escrito.';
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model:      MODEL_SERVICE,
+        max_tokens: 3000,
+        messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
+      }),
+    });
+    const data = await resp.json();
+    const txt = (data.content || []).map(c => c.text || '').join('');
+    console.log(`[service] planilla extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+      `(${MODEL_SERVICE}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
+    try {
+      res.json(JSON.parse(txt.replace(/```json|```/g, '').trim()));
+    } catch (e) {
+      res.json({ __error: 'No pude leer la planilla. Sacá la foto más derecha y con buena luz, o cargá los datos a mano.' });
+    }
+  } catch (err) {
+    console.error('service extract:', err);
+    res.status(500).json({ error: 'Error extrayendo la planilla' });
+  }
+});
+
+// Guardar el service revisado. El mecánico que guarda queda registrado por token.
+router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    if (!d.unidad && !d.patente) return res.status(400).json({ error: 'Falta identificar la unidad (unidad o patente)' });
+    const fila = {
+      data: {
+        fecha_service:       d.fecha_service || null,
+        unidad:              d.unidad || null,
+        tipo_unidad:         d.tipo_unidad || null,
+        marca_modelo:        d.marca_modelo || null,
+        patente:             d.patente || null,
+        km_horas:            d.km_horas || null,
+        tareas:              Array.isArray(d.tareas) ? d.tareas : [],
+        repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
+        mecanico:            d.mecanico || req.app_user.nombre || null,
+        observaciones:       d.observaciones || null,
+      },
+      mecanico_id: req.app_user.mid || null,
+      mecanico_nombre: req.app_user.nombre || null,
+    };
+    const { data, error } = await supabase.from('services_unidades').insert(fila).select().single();
+    if (error) throw error;
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('service guardar:', err);
+    res.status(500).json({ error: 'Error guardando el service' });
+  }
+});
+
+// Últimos services cargados por este mecánico (para que vea su historial)
+router.get('/api/app/services', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('services_unidades').select('*')
+      .eq('mecanico_id', req.app_user.mid)
+      .order('created_at', { ascending: false }).limit(30);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app services:', err);
+    res.status(500).json({ error: 'Error cargando services' });
+  }
+});
+
 // ── PAÑOL ─────────────────────────────────────────────────────
 router.get('/api/app/pedidos', authApp('panol'), async (req, res) => {
   try {
