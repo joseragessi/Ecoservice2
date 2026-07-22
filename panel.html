@@ -2012,6 +2012,7 @@ let ctaData=null;      // cache de facturas
 function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${comprasTab==='resumen'?'on':''}" onclick="comprasTab='resumen';go('compras')">Resumen</button>
   <button class="${comprasTab==='cuenta'?'on':''}" onclick="comprasTab='cuenta';go('compras')">Estado de cuenta</button>
+  <button class="${comprasTab==='consumos'?'on':''}" onclick="comprasTab='consumos';go('compras')">Consumos</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
   <button class="${comprasTab==='combustible'?'on':''}" onclick="comprasTab='combustible';go('compras')">Combustible</button>
 </div>`;}
@@ -2442,6 +2443,114 @@ function exportarCtaProveedorPDF(nombre){
   w.document.close();
 }
 
+/* ── Compras · Consumos por objetivo ─────────────────────────
+   Responde "¿cuántas cadenas consumió tal objetivo?" con los datos que ya
+   están en las facturas: cada ítem hereda el objetivo de su asignación
+   (por ítem si existe, si no la de la factura completa). */
+let consObjSel='', consBusca='', consMes='', consArtSel=null;
+// Aplana todas las facturas a líneas {obj, uni, desc, cant, monto, fecha, prov, nro, invId}
+function consLineas(){
+  const out=[];
+  (comprasData||[]).forEach(f=>{
+    const tot=asignacionInv(f);
+    const items=(f.items||[]).length?f.items
+      :[{descripcion:'(factura sin detalle de ítems)',cantidad:1,
+         monto_sin_iva:Number(f.total_sin_iva)||0,monto_iva:Number(f.total_iva)||0}];
+    items.forEach((it,ix)=>{
+      const asg=(f.assignmentMode==='per-item'?(f.assignments||{})[ix]:null)||{};
+      out.push({
+        obj:asg.objetivo||tot.obj||'Sin asignar',
+        uni:asg.unidad||tot.uni||'',
+        desc:(it.descripcion||'(sin descripción)').trim(),
+        cant:Number(it.cantidad)||1,
+        monto:(Number(it.monto_sin_iva)||0)+(Number(it.monto_iva)||0),
+        fecha:f.fecha_factura||'',prov:f.proveedor||'—',nro:f.numero_factura||'s/n',invId:f.id,
+      });
+    });
+  });
+  return out;
+}
+async function vComprasConsumos(view){
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Cargando…</div>';
+  try{
+    comprasData=await api('/api/compras/facturas');
+    const lineas=consLineas();
+    const objetivos=[...new Set(lineas.map(l=>l.obj))].sort((a,b)=>a==='Sin asignar'?1:b==='Sin asignar'?-1:a.localeCompare(b));
+    if(!consObjSel||!objetivos.includes(consObjSel))consObjSel=objetivos[0]||'';
+    const meses=[...new Set(lineas.map(l=>String(l.fecha).slice(0,7)))].filter(m=>m&&m.length===7).sort().reverse();
+    // Shell fija: selector + buscador nunca se re-renderizan (foco a salvo)
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Compras · Consumos por objetivo</div>
+      <div class="view-desc">Qué se compró e imputó a cada objetivo, agrupado por artículo</div></div></div>
+    ${tabsCompras()}
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <select class="busca" style="width:220px" onchange="consObjSel=this.value;consArtSel=null;renderConsBody()">
+        ${objetivos.map(o=>`<option value="${o.replace(/"/g,'&quot;')}" ${o===consObjSel?'selected':''}>${o}</option>`).join('')}
+      </select>
+      <input class="busca" style="width:240px" placeholder="Buscar artículo (ej. cadena)…" value="${consBusca.replace(/"/g,'&quot;')}" oninput="consBusca=this.value;renderConsBody()">
+      <select class="busca" style="width:150px" onchange="consMes=this.value;renderConsBody()">
+        <option value="">Todo el período</option>
+        ${meses.map(m=>`<option value="${m}" ${m===consMes?'selected':''}>${m}</option>`).join('')}
+      </select>
+      <div class="sub" id="cons-count"></div>
+    </div>
+    <div id="cons-body"></div>`;
+    renderConsBody();
+  }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude cargar consumos. ${e.message||''}</div>`;}
+}
+function renderConsBody(){
+  const cont=document.getElementById('cons-body');if(!cont)return;
+  const b=consBusca.trim().toLowerCase();
+  let lineas=consLineas().filter(l=>l.obj===consObjSel);
+  if(consMes)lineas=lineas.filter(l=>String(l.fecha).startsWith(consMes));
+  if(b)lineas=lineas.filter(l=>l.desc.toLowerCase().includes(b));
+  // Agrupar por descripción (clave normalizada, se muestra la primera aparición)
+  const grupos={};
+  lineas.forEach(l=>{const k=l.desc.toLowerCase();
+    (grupos[k]=grupos[k]||{desc:l.desc,cant:0,monto:0,lineas:[]});
+    grupos[k].cant+=l.cant;grupos[k].monto+=l.monto;grupos[k].lineas.push(l);});
+  const arts=Object.entries(grupos).map(([k,g])=>({k,...g,facturas:new Set(g.lineas.map(x=>x.invId)).size}))
+    .sort((a,b2)=>b2.monto-a.monto);
+  const totMonto=arts.reduce((s,a)=>s+a.monto,0);
+  const totFacturas=new Set(lineas.map(l=>l.invId)).size;
+  const cnt=document.getElementById('cons-count');
+  if(cnt)cnt.textContent=arts.length+' artículo'+(arts.length===1?'':'s');
+  if(consArtSel&&!grupos[consArtSel])consArtSel=null;
+  cont.innerHTML=`
+  <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi"><div class="kpi-label">Consumido en ${consObjSel}</div><div class="kpi-val" style="font-size:21px">${money0(totMonto)}</div><div class="kpi-sub">${consMes||'todo el período'}${b?' · "'+b+'"':''}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Artículos distintos</div><div class="kpi-val" style="font-size:21px">${arts.length}</div><div class="kpi-sub">agrupados por descripción</div></div>
+    <div class="kpi plain"><div class="kpi-label">Facturas</div><div class="kpi-val" style="font-size:21px">${totFacturas}</div><div class="kpi-sub">involucradas</div></div>
+  </div>
+  <div class="split">
+    <div class="tablewrap"><table><thead><tr><th>Artículo</th><th class="num">Cantidad</th><th class="num">Monto</th><th class="num">Facturas</th></tr></thead>
+    <tbody>${arts.length?arts.map(a=>`<tr onclick="consArtSel=consArtSel==='${a.k.replace(/'/g,"\\'")}'?null:'${a.k.replace(/'/g,"\\'")}';renderConsBody()" style="cursor:pointer;${consArtSel===a.k?'outline:2px solid var(--brote)':''}">
+      <td style="font-weight:600">${a.desc.slice(0,70)}${a.desc.length>70?'…':''}</td>
+      <td class="num">${a.cant%1?a.cant.toFixed(2):a.cant}</td>
+      <td class="num money">${money0(a.monto)}</td>
+      <td class="num">${a.facturas}</td>
+    </tr>`).join(''):'<tr><td colspan="4"><div class="sub" style="padding:14px">'+(b?'Ningún artículo coincide con "'+consBusca+'" en este objetivo.':'Este objetivo no tiene compras imputadas'+(consMes?' en '+consMes:'')+'.')+'</div></td></tr>'}</tbody></table></div>
+    <div class="side" id="cons-side">${consArtSel?'':'<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg><div>Elegí un artículo<br>para ver sus facturas</div></div>'}</div>
+  </div>`;
+  if(consArtSel)pintarConsSide(grupos[consArtSel]);
+}
+function pintarConsSide(g){
+  const cont=document.getElementById('cons-side');if(!cont||!g)return;
+  const ls=g.lineas.slice().sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+  cont.innerHTML=`
+    <div class="side-id">ARTÍCULO</div>
+    <div class="side-title" style="font-size:14px">${g.desc}</div>
+    <div class="side-meta">${consObjSel} · ${g.cant%1?g.cant.toFixed(2):g.cant} unidades · ${money0(g.monto)}</div>
+    <div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:8px">Compras</div>
+    ${ls.map(l=>`<div class="queue-item" style="cursor:pointer" onclick="verCompra('${l.invId}')">
+      <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${l.prov}</div>
+      <div class="sub mono" style="font-size:11px">${l.nro} · ${fechaAR(l.fecha)}${l.uni?' · '+l.uni:''}</div></div>
+      <div style="text-align:right"><div class="money" style="font-size:12.5px">${money0(l.monto)}</div>
+      <div class="sub" style="font-size:11px">x${l.cant%1?l.cant.toFixed(2):l.cant}</div></div>
+    </div>`).join('')}`;
+}
+
 async function vComprasInd(view){
   try{
     comprasIndData=await api('/api/compras/facturas');
@@ -2571,6 +2680,7 @@ async function vCompras(view){
   if(comprasMode==='carga'){vComprasCarga(view);return;}
   if(comprasMode==='detalle'){vComprasDetalle(view);return;}
   if(comprasTab==='cuenta'){vComprasCuenta(view);return;}
+  if(comprasTab==='consumos'){vComprasConsumos(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
   if(comprasTab==='combustible'){vComprasCombustible(view);return;}
   try{
