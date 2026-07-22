@@ -84,7 +84,7 @@ router.post('/api/app/login', async (req, res) => {
       .from('mecanicos').select('id, nombre, clave_hash, activo, rol_app')
       .eq('usuario', usuario).maybeSingle();
     if (u && u.activo && verificarClave(clave, u.clave_hash)) {
-      const rol = u.rol_app === 'panol' ? 'panol' : 'mecanico';
+      const rol = u.rol_app === 'panol' ? 'panol' : u.rol_app === 'supervisor' ? 'supervisor' : 'mecanico';
       return res.json({
         token: firmar({ rol, mid: u.id, nombre: u.nombre, exp }),
         rol, nombre: u.nombre,
@@ -188,6 +188,21 @@ router.post('/api/app/incidencia/:id/comentario', authApp('mecanico'), async (re
   } catch (err) {
     console.error('app comentario:', err);
     res.status(500).json({ error: 'Error guardando la observación' });
+  }
+});
+
+// ── SUPERVISOR: pedidos de insumos (solo lectura) ─────────────
+router.get('/api/app/insumos-pedidos', authApp('supervisor'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('pedidos_insumos')
+      .select('*, pedidos_insumos_items(*), capataces(nombre), objetivos(nombre)')
+      .order('created_at', { ascending: false }).limit(200);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app insumos supervisor:', err);
+    res.status(500).json({ error: 'Error cargando pedidos' });
   }
 });
 
