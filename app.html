@@ -224,13 +224,16 @@ function render(){
 
 /* ── Planilla de service: foto → IA → revisión → guardar ── */
 let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
-let svHist=null;      // historial de services del mecánico
+let svHist=null;      // historial de services (todos los mecánicos)
+let svBusca='';       // filtro por unidad/patente
+let svAbierto=null;   // service expandido en el historial
 function renderService(){
   $('kpis').innerHTML='';
   $('tabs').innerHTML=[['activas','Activas',''],['finalizadas','Terminadas','']]
     .map(([k,l])=>`<div class="tab" onclick="tab='${k}';svData=null;cargar()">${l}</div>`).join('')
     +`<div class="tab on">🔧 Service</div>`;
   if(svData)return renderSvRevision();
+  // Shell fija: el buscador NO se re-renderiza (solo #sv-hist), así no pierde el foco
   $('lista').innerHTML=`
     <div class="card" style="padding:16px">
       <h3 style="margin:0 0 6px">Planilla de service</h3>
@@ -239,25 +242,51 @@ function renderService(){
       <button class="btn" onclick="$('sv-file').click()">📷 Fotografiar planilla</button>
       <div class="desc" id="sv-msg" style="margin-top:10px"></div>
     </div>
+    <div class="dl" style="margin:14px 4px 6px">Services realizados</div>
+    <input type="text" id="sv-busca" placeholder="🔍 Buscar por unidad o patente…" value="${svBusca.replace(/"/g,'&quot;')}"
+      oninput="svBusca=this.value;renderSvHist()"
+      style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-bottom:8px">
     <div id="sv-hist"></div>`;
   cargarSvHist();
 }
 async function cargarSvHist(){
   try{
     if(!svHist)svHist=await api('/api/app/services');
-    const c=$('sv-hist');if(!c)return;
-    c.innerHTML=svHist.length?'<div class="dl" style="margin:14px 4px 6px">Tus últimos services</div>'+
-      svHist.map(s=>{const d=s.data||{};
-        const tareas=(d.tareas||[]).map(t=>t.tarea).filter(Boolean).join(' · ');
-        const reps=(d.repuestos_entregados||[]).map(r=>`${r.repuesto||''}${r.marca?' '+r.marca:''}${r.cantidad?' x'+r.cantidad:''}`).filter(Boolean).join(' · ');
-        return `<div class="card" style="padding:12px">
-        <b>${d.unidad||d.patente||'—'}</b>${d.tipo_unidad?' · '+d.tipo_unidad:''}${d.marca_modelo?' · '+d.marca_modelo:''}
-        <div class="meta">${d.fecha_service||''}${d.patente&&d.unidad?' · '+d.patente:''} · ${d.km_horas||'s/km'}${d.proximo_service?' → próximo: '+d.proximo_service:''}</div>
-        ${tareas?`<div class="desc" style="margin-top:5px;font-size:12px">🔧 ${tareas}</div>`:''}
-        ${reps?`<div class="desc" style="margin-top:3px;font-size:12px">📦 ${reps}</div>`:''}
-        <div class="meta" style="margin-top:4px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}</div>
-      </div>`;}).join(''):'';
-  }catch(e){}
+    renderSvHist();
+  }catch(e){const c=$('sv-hist');if(c)c.innerHTML=`<div class="vacio">${e.message}</div>`;}
+}
+// Resumen del servicio: si tildó casi todo el checklist es un "service completo";
+// si no, muestra las primeras tareas + cuántas más hay.
+function svResumen(d){
+  const ts=(d.tareas||[]).map(t=>t.tarea).filter(Boolean);
+  if(!ts.length)return 'Sin tareas registradas';
+  if(ts.length>=8)return `Service completo · ${ts.length} tareas`;
+  const seg=(d.tareas||[]).filter(t=>t.estado==='seguimiento').length;
+  return ts.slice(0,3).join(' · ')+(ts.length>3?` · +${ts.length-3} más`:'')+(seg?` · ⚠ ${seg} en seguimiento`:'');
+}
+function renderSvHist(){
+  const c=$('sv-hist');if(!c)return;
+  const b=svBusca.trim().toLowerCase();
+  const lista=(svHist||[]).filter(s=>{const d=s.data||{};
+    return !b||[d.unidad,d.patente,d.marca_modelo].some(v=>String(v||'').toLowerCase().includes(b));});
+  c.innerHTML=lista.length?lista.map(s=>{
+    const d=s.data||{};const ab=svAbierto===s.id;
+    return `<div class="card" style="padding:12px" onclick="svAbierto=svAbierto==='${s.id}'?null:'${s.id}';renderSvHist()">
+      <b>${d.unidad||d.patente||'—'}</b>${d.tipo_unidad?' · '+d.tipo_unidad:''}${d.marca_modelo?' · '+d.marca_modelo:''}
+      <div class="meta">${d.fecha_service||''}${d.patente&&d.unidad?' · '+d.patente:''} · ${d.km_horas||'s/km'}${d.proximo_service?' → próximo: '+d.proximo_service:''}</div>
+      <div class="desc" style="margin-top:5px;font-size:12px">🔧 ${svResumen(d)}</div>
+      ${ab?`
+        <div class="dl" style="margin:10px 0 4px">Tareas</div>
+        ${(d.tareas||[]).map(t=>`<div class="desc" style="font-size:12px;padding:3px 0;border-bottom:1px solid #eef1ee">
+          ${t.estado==='seguimiento'?'⚠':'✓'} ${t.tarea||'—'}${t.repuestos?` · <span style="opacity:.7">${t.repuestos}</span>`:''}</div>`).join('')||'<div class="desc" style="font-size:12px">—</div>'}
+        <div class="dl" style="margin:10px 0 4px">Repuestos (con código)</div>
+        ${(d.repuestos_entregados||[]).map(r=>`<div class="desc" style="font-size:12px;padding:3px 0;border-bottom:1px solid #eef1ee">
+          📦 ${r.repuesto||'—'}${r.marca?' · '+r.marca:''} x${r.cantidad||1}${r.codigo?` · <b style="font-family:monospace">${r.codigo}</b>`:''}${r.observaciones?` · <span style="opacity:.7">${r.observaciones}</span>`:''}</div>`).join('')||'<div class="desc" style="font-size:12px">—</div>'}
+        ${d.observaciones?`<div class="dl" style="margin:10px 0 4px">Observaciones</div><div class="desc" style="font-size:12px">${d.observaciones}</div>`:''}
+      `:''}
+      <div class="meta" style="margin-top:5px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}${ab?'':' · <span style="opacity:.7">tocá para ver detalle</span>'}</div>
+    </div>`;}).join('')
+    :`<div class="vacio">${b?'Nada coincide con "'+svBusca+'".':'Todavía no hay services cargados.'}</div>`;
 }
 // Comprime la foto en el celular (máx 1600px, JPEG) para que suba rápido y la
 // letra manuscrita siga legible para la IA.
