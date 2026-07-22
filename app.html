@@ -271,6 +271,7 @@ function renderSupLista(){
 
 /* ── Planilla de service: foto → IA → revisión → guardar ── */
 let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
+let svEditId=null;    // id del service que se está editando (null = alta nueva)
 let svHist=null;      // historial de services (todos los mecánicos)
 let svBusca='';       // filtro por unidad/patente
 let svAbierto=null;   // service expandido en el historial
@@ -371,8 +372,9 @@ function renderSvHist(){
           📦 ${r.repuesto||'—'}${r.marca?' · '+r.marca:''} x${r.cantidad||1}${r.codigo?` · <b style="font-family:monospace">${r.codigo}</b>`:''}${r.observaciones?` · <span style="opacity:.7">${r.observaciones}</span>`:''}</div>`).join('')||'<div class="desc" style="font-size:12px">—</div>'}
         ${d.observaciones?`<div class="dl" style="margin:10px 0 4px">Observaciones</div><div class="desc" style="font-size:12px">${d.observaciones}</div>`:''}
         <button class="btn sec" style="margin-top:10px" onclick="event.stopPropagation();svPedido('${s.id}')">📤 Pedido de repuestos al proveedor</button>
+        <button class="btn sec" style="margin-top:8px" onclick="event.stopPropagation();svEditar('${s.id}')">✎ Editar service</button>
       `:''}
-      <div class="meta" style="margin-top:5px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}${ab?'':' · <span style="opacity:.7">tocá para ver detalle</span>'}</div>
+      <div class="meta" style="margin-top:5px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}${d.editado_por?' · ✎ editado por '+d.editado_por:''}${ab?'':' · <span style="opacity:.7">tocá para ver detalle</span>'}</div>
     </div>`;}).join('')
     :`<div class="vacio">${b?'Nada coincide con "'+svBusca+'".':'Todavía no hay services cargados.'}</div>`;
 }
@@ -408,8 +410,8 @@ function renderSvRevision(){
   const d=svData;
   $('lista').innerHTML=`
     <div class="card" style="padding:16px">
-      <h3 style="margin:0 0 4px">Revisá lo que leí</h3>
-      <div class="desc" style="margin-bottom:12px">Corregí lo que haga falta antes de guardar.</div>
+      <h3 style="margin:0 0 4px">${svEditId?'Editando service':'Revisá lo que leí'}</h3>
+      <div class="desc" style="margin-bottom:12px">${svEditId?'Corregí lo que haga falta y guardá.':'Corregí lo que haga falta antes de guardar.'}</div>
       ${svCampo('sv-fecha','Fecha del service (AAAA-MM-DD)',d.fecha_service)}
       ${svCampo('sv-unidad','Unidad / código interno',d.unidad)}
       ${svCampo('sv-patente','Patente',d.patente)}
@@ -424,8 +426,8 @@ function renderSvRevision(){
       <div id="sv-reps">${d.repuestos_entregados.map((r,i)=>svRepRow(r,i)).join('')||'<div class="desc">Ninguno leído.</div>'}</div>
       <button class="btn sec" style="margin-top:6px" onclick="svData.repuestos_entregados.push({repuesto:'',marca:'',cantidad:1,codigo:''});render()">＋ Agregar repuesto</button>
       ${svCampo('sv-obs','Observaciones',d.observaciones)}
-      <button class="btn" style="margin-top:12px" onclick="svGuardar()">✓ Guardar service</button>
-      <button class="btn sec" style="margin-top:8px" onclick="svData=null;render()">Cancelar</button>
+      <button class="btn" style="margin-top:12px" onclick="svGuardar()">✓ ${svEditId?'Guardar cambios':'Guardar service'}</button>
+      <button class="btn sec" style="margin-top:8px" onclick="svData=null;svEditId=null;render()">Cancelar</button>
     </div>`;
 }
 function svTareaRow(t,i){
@@ -478,15 +480,26 @@ function svLeer(){
     codigo:$('sv-r-k-'+i)?.value.trim()||'',
   })).filter(r=>r.repuesto);
 }
+// Cargar un service guardado en el formulario de revisión para corregirlo
+function svEditar(id){
+  const s=(svHist||[]).find(x=>x.id===id);if(!s)return;
+  const d=s.data||{};
+  svData={...d,
+    tareas:(d.tareas||[]).map(t=>({...t})),
+    repuestos_entregados:(d.repuestos_entregados||[]).map(r=>({...r}))};
+  svEditId=id;
+  render();
+}
 async function svGuardar(){
   svLeer();
   const d=svData;
   if(!d.unidad&&!d.patente){toast('Cargá al menos la unidad o la patente');return;}
   if(!d.proximo_service&&!confirm('No cargaste el PRÓXIMO service (km u horas). ¿Guardar igual?'))return;
   try{
-    await api('/api/app/service',{method:'POST',body:JSON.stringify(d)});
-    toast('Service guardado ✓');
-    svData=null;svHist=null;
+    if(svEditId)await api('/api/app/service/'+svEditId,{method:'PUT',body:JSON.stringify(d)});
+    else await api('/api/app/service',{method:'POST',body:JSON.stringify(d)});
+    toast(svEditId?'Service actualizado ✓':'Service guardado ✓');
+    svData=null;svEditId=null;svHist=null;
     render();
   }catch(e){toast('Error: '+e.message);}
 }
