@@ -6,11 +6,17 @@ const supabaseCompras = require('./supabase_compras');
 const { notificarCapataz, notificarCapatazTemplate } = require('./notificar');
 const { hashClave } = require('./app_api');
 const control = require('./control');
+const seg = require('./seguridad');
 
 const router = express.Router();
 
 // ── Auth: token firmado con HMAC (sin dependencias externas) ──
-const SECRET = process.env.PANEL_SECRET || 'cambiar-este-secret-en-railway';
+// SECRET de los tokens: SIEMPRE desde la env var. Si falta, se genera uno
+// aleatorio por arranque (los tokens caducan en cada redeploy, molesto pero
+// seguro) — jamás un default fijo que cualquiera pueda leer en el repo.
+const SECRET = process.env.PANEL_SECRET ||
+  (console.warn('[seguridad] PANEL_SECRET no seteada: usando secret aleatorio (las sesiones caen en cada redeploy)'),
+   crypto.randomBytes(32).toString('hex'));
 
 /** PANEL_USERS = "jose:clave123,owen:clave456" (fallback de emergencia: admin total) */
 function usuarios() {
@@ -103,6 +109,10 @@ router.post('/api/login', async (req, res) => {
   }
   const { usuario, clave } = req.body || {};
   if (!usuario || !clave) return res.status(401).json({ error: 'Usuario o clave incorrectos' });
+  // Anti fuerza bruta: 5 intentos fallidos por IP+usuario → 15 min bloqueado
+  if (seg.loginBloqueado(req, usuario)) {
+    return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos y probá de nuevo.' });
+  }
   const exp = Date.now() + 12 * 60 * 60 * 1000;   // 12h
 
   // 1) Usuarios de la tabla (dados de alta desde Maestros → Usuarios)
@@ -110,6 +120,7 @@ router.post('/api/login', async (req, res) => {
     const { data: u } = await supabase.from('usuarios_panel')
       .select('*').eq('usuario', String(usuario).trim()).maybeSingle();
     if (u && u.activo && verificarClavePanel(clave, u.clave_hash)) {
+      seg.loginOk(req, usuario);
       const mods = Array.isArray(u.modulos) ? u.modulos.filter(m => MODULOS_PANEL.includes(m)) : [];
       const token = firmar({ usuario: u.usuario, nombre: u.nombre, admin: !!u.admin, mods, exp });
       return res.json({ token, usuario: u.usuario, nombre: u.nombre, admin: !!u.admin, modulos: u.admin ? MODULOS_PANEL : mods });
@@ -119,9 +130,11 @@ router.post('/api/login', async (req, res) => {
   // 2) Fallback: PANEL_USERS (env) = admin total. Nunca depende de la DB.
   const users = usuarios();
   if (users[usuario] === clave) {
+    seg.loginOk(req, usuario);
     const token = firmar({ usuario, admin: true, mods: MODULOS_PANEL, exp });
     return res.json({ token, usuario, admin: true, modulos: MODULOS_PANEL });
   }
+  seg.loginFallido(req, usuario);
   res.status(401).json({ error: 'Usuario o clave incorrectos' });
 });
 
