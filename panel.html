@@ -473,25 +473,51 @@ async function entrar(){
     if(r.status===423){mostrarBloqueo();return;}   // PIN vencido
     if(!r.ok){err.textContent='Usuario o clave incorrectos';return;}
     const d=await r.json(); token=d.token;
-    localStorage.setItem('eco_token',token); localStorage.setItem('eco_user',d.usuario);
+    localStorage.setItem('eco_token',token); localStorage.setItem('eco_user',d.nombre||d.usuario);
+    localStorage.setItem('eco_mods',JSON.stringify(d.modulos||[]));
+    localStorage.setItem('eco_admin',d.admin?'1':'');
     iniciar();
   }catch(e){err.textContent='No pude conectar. Reintentá.';}
 }
 function salir(){
-  token=null; localStorage.removeItem('eco_token'); localStorage.removeItem('eco_user');
+  token=null; ['eco_token','eco_user','eco_mods','eco_admin'].forEach(k=>localStorage.removeItem(k));
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').classList.add('show');
 }
 document.getElementById('in-clave').addEventListener('keydown',e=>{if(e.key==='Enter')entrar();});
+
+// Permisos del usuario logueado. Sin dato guardado (sesión vieja) = admin,
+// que era el único esquema anterior. El backend valida igual (403 si no puede).
+function misModulos(){
+  if(localStorage.getItem('eco_admin')==='1')return null;   // null = todo
+  try{const m=JSON.parse(localStorage.getItem('eco_mods')||'null');return Array.isArray(m)?m:null;}
+  catch(e){return null;}
+}
+function puedeVer(mod){const m=misModulos();return m===null||m.includes(mod);}
+function toastPermiso(){alert('No tenés acceso a ese módulo. Pedile al administrador que te lo habilite.');}
+function aplicarPermisosNav(){
+  const m=misModulos();
+  document.querySelectorAll('.nav-item[data-v]').forEach(el=>{
+    el.style.display=puedeVer(el.dataset.v)?'':'none';
+  });
+  // Ocultar la etiqueta "Sistema" si Maestros no está permitido
+  document.querySelectorAll('.nav-label').forEach(l=>{
+    if(l.textContent.trim()==='Sistema')l.style.display=puedeVer('maestros')?'':'none';
+  });
+}
 
 async function iniciar(){
   document.getElementById('login').classList.remove('show');
   document.getElementById('app').classList.add('show');
   document.getElementById('user-name').textContent=localStorage.getItem('eco_user')||'';
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
+  aplicarPermisosNav();
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
   try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
-  go('dashboard'); refrescarContadores();
+  // Entrar por el primer módulo permitido (no siempre es el dashboard)
+  const orden=['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','maestros'];
+  go(orden.find(puedeVer)||'dashboard');
+  refrescarContadores();
 }
 async function refrescarContadores(){
   try{
@@ -510,6 +536,7 @@ async function refrescarContadores(){
 /* ===== Navegación ===== */
 const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
 function go(v){
+  if(!puedeVer(v)){toastPermiso();return;}
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   document.getElementById('crumb').textContent=CRUMB[v];
   const view=document.getElementById('view');
@@ -1858,6 +1885,89 @@ async function reasignarRep(id){
   catch(e){alert('No pude reasignar: '+e.message);}
 }
 
+/* ===== Usuarios del panel (solo admin) ===== */
+const MODS_PANEL=[['dashboard','Dashboard'],['facturas','Facturas'],['insumos','Insumos'],['combustible','Combustible'],['compras','Compras'],['reparaciones','Reparaciones'],['stock','Stock'],['maestros','Maestros']];
+let uPanelData=[], uPanelEdit=null;   // null=lista · {}=nuevo · {id,...}=edición
+async function vUsuariosPanel(view,tabs){
+  view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Maestros · Usuarios del panel</div>
+      <div class="view-desc">Quién entra al panel y qué módulos puede ver. La app del mecánico se administra en Mecánicos.</div></div>
+      <div class="spacer"></div>
+      <button class="btn" onclick="uPanelEdit={};renderUsuariosPanel()">＋ Nuevo usuario</button></div>
+    <div class="subtabs">${tabs.map(([v,l])=>`<div class="subtab ${maestroTab===v?'on':''}" onclick="maestroTab='${v}';vMaestros(document.getElementById('view'))">${l}</div>`).join('')}</div>
+    <div id="up-lista"><div class="cargando-v">Cargando…</div></div>`;
+  try{uPanelData=await api('/api/usuarios');}catch(e){
+    document.getElementById('up-lista').innerHTML=`<div class="cargando-v">${e.message||'No pude cargar usuarios.'}<br><span class="sub">¿Creaste la tabla usuarios_panel en Supabase?</span></div>`;return;}
+  renderUsuariosPanel();
+}
+function renderUsuariosPanel(){
+  const cont=document.getElementById('up-lista');if(!cont)return;
+  if(uPanelEdit){
+    const u=uPanelEdit;const esNuevo=!u.id;
+    cont.innerHTML=`<div class="panel" style="max-width:560px">
+      <div class="panel-title" style="margin-bottom:12px">${esNuevo?'Nuevo usuario':'Editar: '+u.usuario}</div>
+      <div class="mm-label">Usuario (para el login)</div>
+      <input class="busca" id="up-usuario" style="width:100%;margin-bottom:10px" value="${(u.usuario||'').replace(/"/g,'&quot;')}" ${esNuevo?'':'disabled'} placeholder="ej. soledad">
+      <div class="mm-label">Nombre</div>
+      <input class="busca" id="up-nombre" style="width:100%;margin-bottom:10px" value="${(u.nombre||'').replace(/"/g,'&quot;')}" placeholder="ej. Soledad — Administración">
+      <div class="mm-label">${esNuevo?'Clave':'Nueva clave (dejar vacío para no cambiarla)'}</div>
+      <input class="busca" id="up-clave" type="password" style="width:100%;margin-bottom:12px" placeholder="${esNuevo?'clave inicial':'sin cambio'}">
+      <div class="mm-label" style="margin-bottom:6px">Módulos que puede ver</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">
+        ${MODS_PANEL.map(([k,l])=>`<label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="up-m-${k}" ${(u.modulos||[]).includes(k)?'checked':''} style="accent-color:var(--brote)">${l}</label>`).join('')}
+      </div>
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-bottom:14px">
+        <input type="checkbox" id="up-admin" ${u.admin?'checked':''} style="accent-color:var(--brote)"><b>Administrador</b> <span class="sub">(ve todo y gestiona usuarios)</span></label>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="guardarUsuarioPanel()">Guardar</button>
+        <button class="btn-salir" onclick="uPanelEdit=null;renderUsuariosPanel()">Cancelar</button>
+      </div></div>`;
+    return;
+  }
+  cont.innerHTML=uPanelData.length?'<div class="cardgrid">'+uPanelData.map(u=>`
+    <div class="mcard ${u.activo?'':'off'}">
+      <div class="mcard-head"><div class="avatar">${(u.nombre||u.usuario||'?').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase()}</div>
+        <div><div class="mcard-title">${u.nombre||u.usuario}</div>
+        <div class="mcard-sub mono">${u.usuario} · ${u.activo?(u.admin?'Admin':'Activo'):'Desactivado'}</div></div></div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin:8px 0">
+        ${u.admin?'<span class="badge b-green">todos los módulos</span>'
+          :(u.modulos||[]).map(m=>`<span class="badge b-gray">${m}</span>`).join('')||'<span class="badge b-amber">sin módulos</span>'}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick='uPanelEdit=${JSON.stringify({id:u.id,usuario:u.usuario,nombre:u.nombre,modulos:u.modulos||[],admin:u.admin,activo:u.activo}).replace(/'/g,"&#39;")};renderUsuariosPanel()'>✎ Editar</button>
+        <button class="btn-salir" style="padding:5px 10px;font-size:12px;${u.activo?'color:var(--rojo)':''}" onclick="toggleUsuarioPanel('${u.id}',${!u.activo})">${u.activo?'Desactivar':'Reactivar'}</button>
+      </div>
+    </div>`).join('')+'</div>'
+    :'<div class="empty" style="height:200px"><div>No hay usuarios. Tocá "Nuevo usuario".<br><span class="sub">Los de PANEL_USERS (Railway) siguen entrando como admin.</span></div></div>';
+}
+async function guardarUsuarioPanel(){
+  const u=uPanelEdit||{};
+  const body={
+    id:u.id||null,
+    usuario:document.getElementById('up-usuario').value.trim(),
+    nombre:document.getElementById('up-nombre').value.trim(),
+    clave:document.getElementById('up-clave').value||null,
+    modulos:MODS_PANEL.map(([k])=>k).filter(k=>document.getElementById('up-m-'+k).checked),
+    admin:document.getElementById('up-admin').checked,
+    activo:u.activo!==false,
+  };
+  if(!body.usuario){alert('Falta el usuario');return;}
+  if(!u.id&&!body.clave){alert('Falta la clave inicial');return;}
+  try{
+    await api('/api/usuarios',{method:'POST',body:JSON.stringify(body)});
+    uPanelEdit=null;
+    vMaestros(document.getElementById('view'));
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
+}
+async function toggleUsuarioPanel(id,activo){
+  const u=uPanelData.find(x=>x.id===id);if(!u)return;
+  try{
+    await api('/api/usuarios',{method:'POST',body:JSON.stringify({id,usuario:u.usuario,nombre:u.nombre,modulos:u.modulos||[],admin:u.admin,activo})});
+    vMaestros(document.getElementById('view'));
+  }catch(e){alert('No pude actualizar: '+(e.message||''));}
+}
+
 /* ===== Maestros (ABM) ===== */
 const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica','Hidráulica'],['electrico','Eléctrico'],['soldadura','Soldadura'],['neumatico','Neumático'],['giro_cero','Giro cero'],['unidades','Unidades'],['tractores','Tractores'],['cortadora','Cortadora de pasto'],['general','General']];
 const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz',centros_costo:'centro de costo',unidades:'unidad'};
@@ -1868,6 +1978,8 @@ let maestroTab='mecanicos', maestrosData=[], maestroEdit=null;
 async function vMaestros(view){
   const tabs=[['mecanicos','Mecánicos'],['objetivos','Objetivos'],['capataces','Capataces'],
               ['centros_costo','Centros de costo'],['unidades','Unidades']];
+  if(misModulos()===null)tabs.push(['usuarios','Usuarios del panel']);   // solo admin
+  if(maestroTab==='usuarios'){vUsuariosPanel(view,tabs);return;}
   view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Maestros</div>
       <div class="view-desc">Alta, edición y baja de los datos base del sistema</div></div>
@@ -1903,8 +2015,9 @@ function cardMaestro(m,ix){
   }
   if(maestroTab==='mecanicos'){
     const esPanol=m.rol_app==='panol';
-    sub=esPanol?'Pañol · depósito':(m.habilidades||[]).length+' habilidades';
-    extra=esPanol?'':'<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}`+'">'+h.toUpperCase()+'</span>').join('')+'</div>';
+    const esSup=m.rol_app==='supervisor';
+    sub=esPanol?'Pañol · depósito':esSup?'Supervisor · insumos':(m.habilidades||[]).length+' habilidades';
+    extra=(esPanol||esSup)?'':'<div class="habs">'+(m.habilidades||[]).map(h=>`<span class="hab ${HAB_COLOR[h]||'b-gray'}`+'">'+h.toUpperCase()+'</span>').join('')+'</div>';
     extra+=`<div class="mcard-row"><span>App</span>${m.usuario
       ?`<span class="badge ${esPanol?'b-blue':'b-green'} mono" style="font-size:10px">${esPanol?'📦 ':''}${m.usuario}</span>`
       :'<span class="badge b-gray">sin acceso</span>'}</div>`;
@@ -1948,8 +2061,9 @@ function abrirModalMaestro(m){
     campos+=`<div class="divider"></div>
       <div class="field-l" style="margin-bottom:8px">Acceso a la app</div>
       <div class="mm-field"><label>Rol en la app</label><select id="mm-rolapp">
-        <option value="mecanico" ${(m.rol_app||'mecanico')!=='panol'?'selected':''}>Taller — ve sus reparaciones</option>
+        <option value="mecanico" ${(m.rol_app||'mecanico')!=='panol'&&m.rol_app!=='supervisor'?'selected':''}>Taller — ve sus reparaciones</option>
         <option value="panol" ${m.rol_app==='panol'?'selected':''}>Pañol — ve los pedidos de insumos</option>
+        <option value="supervisor" ${m.rol_app==='supervisor'?'selected':''}>Supervisor — ve todos los pedidos de insumos (solo lectura)</option>
       </select></div>
       <div class="mm-field"><label>Usuario</label><input id="mm-usuario" value="${(m.usuario||'').replace(/"/g,'&quot;')}" placeholder="ej: santiago" autocapitalize="none"></div>
       <div class="mm-field"><label>Clave</label><input id="mm-clave" type="text" placeholder="${m.usuario?'dejar vacío para no cambiarla':'clave para entrar a la app'}"></div>
