@@ -277,13 +277,13 @@ router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
   }
 });
 
-// Últimos services cargados por este mecánico (para que vea su historial)
+// Últimos services cargados (de TODOS los mecánicos: en el taller todos
+// necesitan ver qué service se le hizo a cada unidad)
 router.get('/api/app/services', authApp('mecanico'), async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('services_unidades').select('*')
-      .eq('mecanico_id', req.app_user.mid)
-      .order('created_at', { ascending: false }).limit(30);
+      .order('created_at', { ascending: false }).limit(100);
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
