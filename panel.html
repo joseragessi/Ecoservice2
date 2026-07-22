@@ -1570,8 +1570,74 @@ function diasEntre(a,b){if(!a||!b)return null;const d=(new Date(b)-new Date(a))/
 
 function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${repTab==='resumen'?'on':''}" onclick="repTab='resumen';go('reparaciones')">Resumen</button>
+  <button class="${repTab==='services'?'on':''}" onclick="repTab='services';go('reparaciones')">Services</button>
   <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
 </div>`;}
+
+/* ── Reparaciones · Services (planillas cargadas por foto desde la app) ── */
+let svPanelData=null, svPanelSel=null;
+async function vRepServices(view){
+  view.innerHTML=tabsRep()+'<div class="cargando-v">Cargando…</div>';
+  try{
+    svPanelData=await api('/api/services');
+    const svs=svPanelData||[];
+    // Agrupar por unidad (código interno o patente) para el resumen
+    const porUni={};
+    svs.forEach(s=>{const d=s.data||{};const k=d.unidad||d.patente||'—';(porUni[k]=porUni[k]||[]).push(s);});
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Reparaciones · Services</div>
+      <div class="view-desc">Planillas de service cargadas por los mecánicos desde la app (foto + IA)</div></div></div>
+    ${tabsRep()}
+    <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+      <div class="kpi"><div class="kpi-label">Services cargados</div><div class="kpi-val">${svs.length}</div><div class="kpi-sub">total</div></div>
+      <div class="kpi plain"><div class="kpi-label">Unidades con service</div><div class="kpi-val">${Object.keys(porUni).length}</div><div class="kpi-sub">distintas</div></div>
+      <div class="kpi plain"><div class="kpi-label">Último service</div><div class="kpi-val" style="font-size:16px">${svs[0]?fechaAR((svs[0].data||{}).fecha_service)||fechaAR(svs[0].created_at):'—'}</div><div class="kpi-sub">${svs[0]?((svs[0].data||{}).unidad||''):''}</div></div>
+    </div>
+    <div class="split">
+      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Unidad</th><th>Marca</th><th>Km/Horas</th><th>Repuestos</th><th>Mecánico</th></tr></thead>
+      <tbody>${svs.length?svs.map(s=>{const d=s.data||{};return `<tr onclick="selSvPanel('${s.id}',this)" style="cursor:pointer;${svPanelSel===s.id?'outline:2px solid var(--brote)':''}">
+        <td class="mono">${fechaAR(d.fecha_service)||fechaAR(s.created_at)}</td>
+        <td style="font-weight:600">${d.unidad||d.patente||'—'}${d.patente&&d.unidad?`<div class="sub mono">${d.patente}</div>`:''}</td>
+        <td>${d.marca_modelo||'—'}</td>
+        <td class="mono">${d.km_horas||'—'}</td>
+        <td class="num">${(d.repuestos_entregados||[]).length}</td>
+        <td>${s.mecanico_nombre||d.mecanico||'—'}</td>
+      </tr>`;}).join(''):'<tr><td colspan="6"><div class="sub" style="padding:14px">Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).</div></td></tr>'}</tbody></table></div>
+      <div class="side" id="sv-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg><div>Elegí un service<br>para ver el detalle</div></div></div>
+    </div>`;
+    if(svPanelSel)pintarSvSide();
+  }catch(e){view.innerHTML=tabsRep()+`<div class="cargando-v">No pude cargar los services. ${e.message||''}</div>`;}
+}
+function selSvPanel(id,tr){
+  svPanelSel=id;
+  document.querySelectorAll('#view .tablewrap tr').forEach(t=>t.style.outline='');
+  if(tr)tr.style.outline='2px solid var(--brote)';
+  pintarSvSide();
+}
+function pintarSvSide(){
+  const cont=document.getElementById('sv-side');if(!cont)return;
+  const s=(svPanelData||[]).find(x=>x.id===svPanelSel);if(!s)return;
+  const d=s.data||{};
+  cont.innerHTML=`
+    <div class="side-id">SERVICE</div>
+    <div class="side-title">${d.unidad||d.patente||'—'} ${d.marca_modelo?'· '+d.marca_modelo:''}</div>
+    <div class="side-meta">${fechaAR(d.fecha_service)||fechaAR(s.created_at)} · ${d.km_horas||'s/km'} · ${s.mecanico_nombre||d.mecanico||'—'}</div>
+    ${d.patente?`<div class="sub mono" style="margin-top:4px">Patente: ${d.patente}</div>`:''}
+    <div class="divider"></div>
+    <div class="panel-title" style="margin-bottom:8px">Tareas realizadas</div>
+    ${(d.tareas||[]).length?(d.tareas||[]).map(t=>`<div class="queue-item">
+      <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${t.tarea||'—'}</div>
+      ${t.repuestos?`<div class="sub" style="font-size:11px">${t.repuestos}</div>`:''}</div>
+      <span class="badge ${t.estado==='seguimiento'?'b-amber':'b-green'}">${t.estado==='seguimiento'?'Seguimiento':'OK'}</span>
+    </div>`).join(''):'<div class="sub">Sin tareas registradas.</div>'}
+    <div class="panel-title" style="margin:12px 0 8px">Repuestos entregados</div>
+    ${(d.repuestos_entregados||[]).length?(d.repuestos_entregados||[]).map(r=>`<div class="queue-item">
+      <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${r.repuesto||'—'}${r.marca?' · '+r.marca:''}</div>
+      ${r.codigo?`<div class="sub mono" style="font-size:11px">${r.codigo}</div>`:''}</div>
+      <div class="mono" style="font-size:12px">x${r.cantidad||1}</div>
+    </div>`).join(''):'<div class="sub">Sin repuestos registrados.</div>'}
+    ${d.observaciones?`<div class="panel-title" style="margin:12px 0 6px">Observaciones</div><div class="sub">${d.observaciones}</div>`:''}`;
+}
 
 function vRepInd(view){
   const todas=repData||[];
@@ -1644,6 +1710,7 @@ function vRepInd(view){
 async function vReparaciones(view){
   try{
     repData=await api('/api/reparaciones');
+    if(repTab==='services'){vRepServices(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
