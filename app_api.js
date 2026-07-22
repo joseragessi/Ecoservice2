@@ -9,9 +9,15 @@ const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
 const { notificarCapataz } = require('./notificar');
+const seg = require('./seguridad');
 
 const router = express.Router();
-const SECRET = process.env.PANEL_SECRET || 'cambiar-este-secret-en-railway';
+// SECRET de los tokens: SIEMPRE desde la env var. Si falta, se genera uno
+// aleatorio por arranque (los tokens caducan en cada redeploy, molesto pero
+// seguro) — jamás un default fijo que cualquiera pueda leer en el repo.
+const SECRET = process.env.PANEL_SECRET ||
+  (console.warn('[seguridad] PANEL_SECRET no seteada: usando secret aleatorio (las sesiones caen en cada redeploy)'),
+   crypto.randomBytes(32).toString('hex'));
 
 // ── Claves ────────────────────────────────────────────────────
 // Hash con salt por usuario. Formato guardado: "salt:hash".
@@ -76,6 +82,10 @@ router.post('/api/app/login', async (req, res) => {
     const usuario = String((req.body || {}).usuario || '').trim();
     const clave   = String((req.body || {}).clave || '');
     if (!usuario || !clave) return res.status(400).json({ error: 'Faltan usuario y clave' });
+    // Anti fuerza bruta: 5 intentos fallidos por IP+usuario → 15 min bloqueado
+    if (seg.loginBloqueado(req, usuario)) {
+      return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos y probá de nuevo.' });
+    }
     const exp = Date.now() + 30 * 24 * 60 * 60 * 1000;   // 30 días (es una app de campo)
 
     // Usuarios de la app: viven todos en `mecanicos`, con rol_app = mecanico | panol.
@@ -84,6 +94,7 @@ router.post('/api/app/login', async (req, res) => {
       .from('mecanicos').select('id, nombre, clave_hash, activo, rol_app')
       .eq('usuario', usuario).maybeSingle();
     if (u && u.activo && verificarClave(clave, u.clave_hash)) {
+      seg.loginOk(req, usuario);
       const rol = u.rol_app === 'panol' ? 'panol' : u.rol_app === 'supervisor' ? 'supervisor' : 'mecanico';
       return res.json({
         token: firmar({ rol, mid: u.id, nombre: u.nombre, exp }),
@@ -94,9 +105,11 @@ router.post('/api/app/login', async (req, res) => {
     // Compatibilidad: pañol por variable de entorno (PANOL_USERS), si se usó
     const panol = usuariosPanol();
     if (panol[usuario] && panol[usuario] === clave) {
+      seg.loginOk(req, usuario);
       return res.json({ token: firmar({ rol: 'panol', usuario, exp }), rol: 'panol', nombre: 'Pañol' });
     }
 
+    seg.loginFallido(req, usuario);
     res.status(401).json({ error: 'Usuario o clave incorrectos' });
   } catch (err) {
     console.error('app login:', err);
