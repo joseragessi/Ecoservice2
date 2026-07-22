@@ -1576,33 +1576,48 @@ function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
 
 /* ── Reparaciones · Services (planillas cargadas por foto desde la app) ── */
 let svPanelData=null, svPanelSel=null;
+// "40.279 km" → 40279 (sirve para km u horas; compara números declarados)
+function svNum(s){const n=Number(String(s||'').replace(/[^\d]/g,''));return n||0;}
+// Alerta del próximo service: compara el objetivo contra el mayor km/horas
+// declarado para esa unidad en cualquier planilla (el dato más nuevo que hay).
+function svBadgeProx(d,maxUni){
+  const p=svNum(d.proximo_service);
+  if(!p)return '<span class="badge b-gray">sin definir</span>';
+  const a=maxUni||svNum(d.km_horas);
+  if(a>=p)return `<span class="badge b-red">⚠ vencido · ${d.proximo_service}</span>`;
+  if(a>=p*0.9)return `<span class="badge b-amber">pronto · ${d.proximo_service}</span>`;
+  return `<span class="badge b-green">${d.proximo_service}</span> <span class="sub" style="font-size:10.5px">faltan ${(p-a).toLocaleString('es-AR')}</span>`;
+}
 async function vRepServices(view){
   view.innerHTML=tabsRep()+'<div class="cargando-v">Cargando…</div>';
   try{
     svPanelData=await api('/api/services');
     const svs=svPanelData||[];
-    // Agrupar por unidad (código interno o patente) para el resumen
+    // Agrupar por unidad (código interno o patente): resumen + mayor km declarado
     const porUni={};
     svs.forEach(s=>{const d=s.data||{};const k=d.unidad||d.patente||'—';(porUni[k]=porUni[k]||[]).push(s);});
+    const maxUni={};
+    Object.entries(porUni).forEach(([k,ss])=>{maxUni[k]=Math.max(...ss.map(s=>svNum((s.data||{}).km_horas)));});
+    const vencidos=svs.filter(s=>{const d=s.data||{};const k=d.unidad||d.patente||'—';
+      const p=svNum(d.proximo_service);return p&&maxUni[k]>=p;}).length;
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Reparaciones · Services</div>
       <div class="view-desc">Planillas de service cargadas por los mecánicos desde la app (foto + IA)</div></div></div>
     ${tabsRep()}
     <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
-      <div class="kpi"><div class="kpi-label">Services cargados</div><div class="kpi-val">${svs.length}</div><div class="kpi-sub">total</div></div>
-      <div class="kpi plain"><div class="kpi-label">Unidades con service</div><div class="kpi-val">${Object.keys(porUni).length}</div><div class="kpi-sub">distintas</div></div>
+      <div class="kpi"><div class="kpi-label">Services cargados</div><div class="kpi-val">${svs.length}</div><div class="kpi-sub">${Object.keys(porUni).length} unidades</div></div>
+      <div class="kpi ${vencidos?'amber':'plain'}"><div class="kpi-label">Próximo service vencido</div><div class="kpi-val ${vencidos?'amber':''}">${vencidos}</div><div class="kpi-sub">según km declarados</div></div>
       <div class="kpi plain"><div class="kpi-label">Último service</div><div class="kpi-val" style="font-size:16px">${svs[0]?fechaAR((svs[0].data||{}).fecha_service)||fechaAR(svs[0].created_at):'—'}</div><div class="kpi-sub">${svs[0]?((svs[0].data||{}).unidad||''):''}</div></div>
     </div>
     <div class="split">
-      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Unidad</th><th>Marca</th><th>Km/Horas</th><th>Repuestos</th><th>Mecánico</th></tr></thead>
-      <tbody>${svs.length?svs.map(s=>{const d=s.data||{};return `<tr onclick="selSvPanel('${s.id}',this)" style="cursor:pointer;${svPanelSel===s.id?'outline:2px solid var(--brote)':''}">
+      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Unidad / Patente</th><th>Km/Hs service</th><th>Próximo service</th><th>Mecánico</th></tr></thead>
+      <tbody>${svs.length?svs.map(s=>{const d=s.data||{};const k=d.unidad||d.patente||'—';return `<tr onclick="selSvPanel('${s.id}',this)" style="cursor:pointer;${svPanelSel===s.id?'outline:2px solid var(--brote)':''}">
         <td class="mono">${fechaAR(d.fecha_service)||fechaAR(s.created_at)}</td>
         <td style="font-weight:600">${d.unidad||d.patente||'—'}${d.patente&&d.unidad?`<div class="sub mono">${d.patente}</div>`:''}</td>
-        <td>${d.marca_modelo||'—'}</td>
         <td class="mono">${d.km_horas||'—'}</td>
-        <td class="num">${(d.repuestos_entregados||[]).length}</td>
+        <td>${svBadgeProx(d,maxUni[k])}</td>
         <td>${s.mecanico_nombre||d.mecanico||'—'}</td>
-      </tr>`;}).join(''):'<tr><td colspan="6"><div class="sub" style="padding:14px">Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).</div></td></tr>'}</tbody></table></div>
+      </tr>`;}).join(''):'<tr><td colspan="5"><div class="sub" style="padding:14px">Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).</div></td></tr>'}</tbody></table></div>
       <div class="side" id="sv-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg><div>Elegí un service<br>para ver el detalle</div></div></div>
     </div>`;
     if(svPanelSel)pintarSvSide();
@@ -1621,8 +1636,12 @@ function pintarSvSide(){
   cont.innerHTML=`
     <div class="side-id">SERVICE</div>
     <div class="side-title">${d.unidad||d.patente||'—'} ${d.marca_modelo?'· '+d.marca_modelo:''}</div>
-    <div class="side-meta">${fechaAR(d.fecha_service)||fechaAR(s.created_at)} · ${d.km_horas||'s/km'} · ${s.mecanico_nombre||d.mecanico||'—'}</div>
+    <div class="side-meta">${fechaAR(d.fecha_service)||fechaAR(s.created_at)}${d.tipo_unidad?' · '+d.tipo_unidad:''} · ${s.mecanico_nombre||d.mecanico||'—'}</div>
     ${d.patente?`<div class="sub mono" style="margin-top:4px">Patente: ${d.patente}</div>`:''}
+    <div style="display:flex;gap:10px;margin:12px 0">
+      <div class="extract-field" style="flex:1"><label>Km/Hs del service</label><div class="val filled">${d.km_horas||'—'}</div></div>
+      <div class="extract-field" style="flex:1"><label>Próximo service</label><div class="val ${d.proximo_service?'filled':''}">${d.proximo_service||'sin definir'}</div></div>
+    </div>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:8px">Tareas realizadas</div>
     ${(d.tareas||[]).length?(d.tareas||[]).map(t=>`<div class="queue-item">
