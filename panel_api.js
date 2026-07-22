@@ -355,6 +355,20 @@ router.get('/api/reparaciones', auth, async (req, res) => {
   }
 });
 
+// Planillas de service cargadas desde la app del mecánico (foto + IA)
+router.get('/api/services', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('services_unidades').select('*')
+      .order('created_at', { ascending: false }).limit(500);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('services:', err);
+    res.status(500).json({ error: 'Error cargando services' });
+  }
+});
+
 // Avanzar estado / reasignar mecánico
 const FECHA_ESTADO = {
   diagnostico:         'fecha_diagnostico',
