@@ -292,6 +292,40 @@ router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
   }
 });
 
+// Editar un service ya guardado (cualquier mecánico puede corregir; queda
+// registrado quién lo editó y cuándo)
+router.put('/api/app/service/:id', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    if (!d.unidad && !d.patente) return res.status(400).json({ error: 'Falta identificar la unidad (unidad o patente)' });
+    const { data: prev, error: e1 } = await supabase
+      .from('services_unidades').select('data').eq('id', req.params.id).single();
+    if (e1 || !prev) return res.status(404).json({ error: 'Service no encontrado' });
+    const data = {
+      ...prev.data,
+      fecha_service:        d.fecha_service || null,
+      unidad:               d.unidad || null,
+      tipo_unidad:          d.tipo_unidad || null,
+      marca_modelo:         d.marca_modelo || null,
+      patente:              d.patente || null,
+      km_horas:             d.km_horas || null,
+      proximo_service:      d.proximo_service || null,
+      tareas:               Array.isArray(d.tareas) ? d.tareas : [],
+      repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
+      observaciones:        d.observaciones || null,
+      editado_por:          req.app_user.nombre || null,
+      editado_at:           new Date().toISOString(),
+    };
+    const { error } = await supabase.from('services_unidades')
+      .update({ data }).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('service editar:', err);
+    res.status(500).json({ error: 'Error editando el service' });
+  }
+});
+
 // Últimos services cargados (de TODOS los mecánicos: en el taller todos
 // necesitan ver qué service se le hizo a cada unidad)
 router.get('/api/app/services', authApp('mecanico'), async (req, res) => {
