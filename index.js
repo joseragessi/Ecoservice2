@@ -13,10 +13,12 @@ const panelApi = require('./panel_api');
 const { router: appApi } = require('./app_api');
 const control = require('./control');
 const { notificarCapataz } = require('./notificar');
+const seg = require('./seguridad');
 
 const app  = express();
 app.use(express.urlencoded({ extended: false, limit: '25mb' }));
 app.use(express.json({ limit: '25mb' }));
+app.use(seg.headersSeguridad);
 
 // Panel de gestión (login + API + HTML), servido desde el mismo Express.
 app.use('/', appApi);     // PWA del taller y pañol (/app + /api/app/*)
@@ -53,6 +55,12 @@ function pareceListadoStock(texto) {
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
+  // Firma de Twilio: rechaza requests que no vengan realmente de Twilio
+  // (nadie puede simular mensajes de capataces posteando al webhook).
+  if (!seg.validarTwilio(req)) {
+    console.warn('[seguridad] webhook rechazado: firma de Twilio inválida');
+    return res.sendStatus(403);
+  }
   const telefono   = req.body.From;
   const paraNumero = req.body.To;
   const mensaje    = req.body.Body || '';
