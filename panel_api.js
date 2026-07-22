@@ -12,7 +12,7 @@ const router = express.Router();
 // ── Auth: token firmado con HMAC (sin dependencias externas) ──
 const SECRET = process.env.PANEL_SECRET || 'cambiar-este-secret-en-railway';
 
-/** PANEL_USERS = "jose:clave123,owen:clave456" */
+/** PANEL_USERS = "jose:clave123,owen:clave456" (fallback de emergencia: admin total) */
 function usuarios() {
   const raw = process.env.PANEL_USERS || '';
   const map = {};
@@ -21,6 +21,24 @@ function usuarios() {
     if (i > 0) map[par.slice(0, i).trim()] = par.slice(i + 1);
   });
   return map;
+}
+
+// ── Permisos por módulo ───────────────────────────────────────
+// Cada usuario del panel tiene una lista de módulos habilitados. El admin ve
+// todo. Los usuarios de PANEL_USERS (env) son admin siempre — así José nunca
+// puede quedar afuera aunque la tabla se rompa.
+const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','maestros'];
+function moduloDeRuta(p) {
+  if (p.startsWith('/api/dashboard'))     return 'dashboard';
+  if (p.startsWith('/api/facturas'))      return 'facturas';
+  if (p.startsWith('/api/insumos'))       return 'insumos';
+  if (p.startsWith('/api/combustible'))   return 'combustible';
+  if (p.startsWith('/api/compras'))       return 'compras';
+  if (p.startsWith('/api/reparaciones') || p.startsWith('/api/services')) return 'reparaciones';
+  if (p.startsWith('/api/stock'))         return 'stock';
+  if (p.startsWith('/api/maestros') || p.startsWith('/api/mecanicos') ||
+      p.startsWith('/api/objetivos') || p.startsWith('/api/usuarios')) return 'maestros';
+  return null;   // rutas generales: alcanza con estar logueado
 }
 
 function firmar(payload) {
@@ -52,7 +70,16 @@ async function auth(req, res, next) {
   if (!(await control.estaOperativo())) {
     return res.status(423).json({ error: 'Sistema bloqueado: PIN vencido. Renová SYSTEM_PIN en Railway.', bloqueado: true });
   }
+  // Permisos por módulo: admin ve todo; tokens viejos (sin mods) se tratan como
+  // admin por compatibilidad (eran los usuarios de PANEL_USERS).
+  const mods = Array.isArray(payload.mods) ? payload.mods : null;
+  const esAdmin = payload.admin === true || mods === null;
+  const modulo = moduloDeRuta(req.path);
+  if (modulo && !esAdmin && !mods.includes(modulo)) {
+    return res.status(403).json({ error: 'No tenés acceso a este módulo' });
+  }
   req.usuario = payload.usuario;
+  req.esAdmin = esAdmin;
   next();
 }
 
@@ -75,12 +102,79 @@ router.post('/api/login', async (req, res) => {
     return res.status(423).json({ error: 'Sistema bloqueado: PIN vencido. Renová SYSTEM_PIN en Railway.', bloqueado: true });
   }
   const { usuario, clave } = req.body || {};
+  if (!usuario || !clave) return res.status(401).json({ error: 'Usuario o clave incorrectos' });
+  const exp = Date.now() + 12 * 60 * 60 * 1000;   // 12h
+
+  // 1) Usuarios de la tabla (dados de alta desde Maestros → Usuarios)
+  try {
+    const { data: u } = await supabase.from('usuarios_panel')
+      .select('*').eq('usuario', String(usuario).trim()).maybeSingle();
+    if (u && u.activo && verificarClavePanel(clave, u.clave_hash)) {
+      const mods = Array.isArray(u.modulos) ? u.modulos.filter(m => MODULOS_PANEL.includes(m)) : [];
+      const token = firmar({ usuario: u.usuario, nombre: u.nombre, admin: !!u.admin, mods, exp });
+      return res.json({ token, usuario: u.usuario, nombre: u.nombre, admin: !!u.admin, modulos: u.admin ? MODULOS_PANEL : mods });
+    }
+  } catch (e) { /* tabla puede no existir aún: cae al fallback */ }
+
+  // 2) Fallback: PANEL_USERS (env) = admin total. Nunca depende de la DB.
   const users = usuarios();
-  if (!usuario || !clave || users[usuario] !== clave) {
-    return res.status(401).json({ error: 'Usuario o clave incorrectos' });
+  if (users[usuario] === clave) {
+    const token = firmar({ usuario, admin: true, mods: MODULOS_PANEL, exp });
+    return res.json({ token, usuario, admin: true, modulos: MODULOS_PANEL });
   }
-  const token = firmar({ usuario, exp: Date.now() + 12 * 60 * 60 * 1000 }); // 12h
-  res.json({ token, usuario });
+  res.status(401).json({ error: 'Usuario o clave incorrectos' });
+});
+
+// ── Usuarios del panel (solo admin) ───────────────────────────
+function hashClavePanel(clave) {
+  const salt = crypto.randomBytes(8).toString('hex');
+  const h = crypto.createHmac('sha256', salt).update(String(clave)).digest('hex');
+  return `${salt}$${h}`;
+}
+function verificarClavePanel(clave, guardado) {
+  if (!guardado || !guardado.includes('$')) return false;
+  const [salt, h] = guardado.split('$');
+  const calc = crypto.createHmac('sha256', salt).update(String(clave)).digest('hex');
+  return calc === h;
+}
+function soloAdmin(req, res, next) {
+  if (!req.esAdmin) return res.status(403).json({ error: 'Solo el administrador puede gestionar usuarios' });
+  next();
+}
+router.get('/api/usuarios', auth, soloAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('usuarios_panel')
+      .select('id, usuario, nombre, modulos, admin, activo, created_at')
+      .order('usuario');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Error cargando usuarios (¿existe la tabla usuarios_panel?)' }); }
+});
+router.post('/api/usuarios', auth, soloAdmin, async (req, res) => {
+  try {
+    const { id, usuario, nombre, clave, modulos, admin, activo } = req.body || {};
+    if (!usuario || !String(usuario).trim()) return res.status(400).json({ error: 'Falta el usuario' });
+    const fila = {
+      usuario: String(usuario).trim().toLowerCase(),
+      nombre: nombre || null,
+      modulos: (Array.isArray(modulos) ? modulos : []).filter(m => MODULOS_PANEL.includes(m)),
+      admin: !!admin,
+      activo: activo !== false,
+    };
+    if (clave) fila.clave_hash = hashClavePanel(clave);
+    let q;
+    if (id) q = supabase.from('usuarios_panel').update(fila).eq('id', id).select().single();
+    else {
+      if (!clave) return res.status(400).json({ error: 'Falta la clave para el usuario nuevo' });
+      q = supabase.from('usuarios_panel').insert(fila).select().single();
+    }
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('usuarios save:', err);
+    res.status(500).json({ error: err.message && err.message.includes('duplicate') ? 'Ya existe un usuario con ese nombre' : 'Error guardando usuario' });
+  }
 });
 
 // ── Dashboard ─────────────────────────────────────────────────
