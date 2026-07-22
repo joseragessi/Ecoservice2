@@ -247,9 +247,15 @@ async function cargarSvHist(){
     if(!svHist)svHist=await api('/api/app/services');
     const c=$('sv-hist');if(!c)return;
     c.innerHTML=svHist.length?'<div class="dl" style="margin:14px 4px 6px">Tus últimos services</div>'+
-      svHist.map(s=>{const d=s.data||{};return `<div class="card" style="padding:12px">
-        <b>${d.unidad||d.patente||'—'}</b> · ${d.marca_modelo||''}
-        <div class="meta">${d.fecha_service||''} · ${d.km_horas||''} · ${(d.repuestos_entregados||[]).length} repuestos</div>
+      svHist.map(s=>{const d=s.data||{};
+        const tareas=(d.tareas||[]).map(t=>t.tarea).filter(Boolean).join(' · ');
+        const reps=(d.repuestos_entregados||[]).map(r=>`${r.repuesto||''}${r.marca?' '+r.marca:''}${r.cantidad?' x'+r.cantidad:''}`).filter(Boolean).join(' · ');
+        return `<div class="card" style="padding:12px">
+        <b>${d.unidad||d.patente||'—'}</b>${d.tipo_unidad?' · '+d.tipo_unidad:''}${d.marca_modelo?' · '+d.marca_modelo:''}
+        <div class="meta">${d.fecha_service||''}${d.patente&&d.unidad?' · '+d.patente:''} · ${d.km_horas||'s/km'}${d.proximo_service?' → próximo: '+d.proximo_service:''}</div>
+        ${tareas?`<div class="desc" style="margin-top:5px;font-size:12px">🔧 ${tareas}</div>`:''}
+        ${reps?`<div class="desc" style="margin-top:3px;font-size:12px">📦 ${reps}</div>`:''}
+        <div class="meta" style="margin-top:4px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}</div>
       </div>`;}).join(''):'';
   }catch(e){}
 }
@@ -292,7 +298,8 @@ function renderSvRevision(){
       ${svCampo('sv-patente','Patente',d.patente)}
       ${svCampo('sv-tipo','Tipo de unidad',d.tipo_unidad)}
       ${svCampo('sv-marca','Marca / modelo',d.marca_modelo)}
-      ${svCampo('sv-km','Horas / Km',d.km_horas)}
+      ${svCampo('sv-km','Horas / Km del service',d.km_horas)}
+      ${svCampo('sv-prox','⏭ Próximo service (km u horas) — completalo vos',d.proximo_service)}
       <div class="dl" style="margin:12px 0 6px">Tareas realizadas</div>
       <div id="sv-tareas">${d.tareas.map((t,i)=>svTareaRow(t,i)).join('')||'<div class="desc">Ninguna leída.</div>'}</div>
       <button class="btn sec" style="margin-top:6px" onclick="svData.tareas.push({tarea:'',estado:'ok',repuestos:''});render()">＋ Agregar tarea</button>
@@ -340,6 +347,7 @@ function svLeer(){
   d.tipo_unidad=$('sv-tipo')?.value.trim()||null;
   d.marca_modelo=$('sv-marca')?.value.trim()||null;
   d.km_horas=$('sv-km')?.value.trim()||null;
+  d.proximo_service=$('sv-prox')?.value.trim()||null;
   d.observaciones=$('sv-obs')?.value.trim()||null;
   d.tareas=d.tareas.map((t,i)=>({
     tarea:$('sv-t-n-'+i)?.value.trim()||t.tarea||'',
@@ -357,6 +365,7 @@ async function svGuardar(){
   svLeer();
   const d=svData;
   if(!d.unidad&&!d.patente){toast('Cargá al menos la unidad o la patente');return;}
+  if(!d.proximo_service&&!confirm('No cargaste el PRÓXIMO service (km u horas). ¿Guardar igual?'))return;
   try{
     await api('/api/app/service',{method:'POST',body:JSON.stringify(d)});
     toast('Service guardado ✓');
