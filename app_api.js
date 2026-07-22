@@ -259,6 +259,7 @@ router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
         marca_modelo:        d.marca_modelo || null,
         patente:             d.patente || null,
         km_horas:            d.km_horas || null,
+        proximo_service:     d.proximo_service || null,
         tareas:              Array.isArray(d.tareas) ? d.tareas : [],
         repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
         mecanico:            d.mecanico || req.app_user.nombre || null,
