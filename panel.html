@@ -563,7 +563,7 @@ async function vDashboard(view){
     const pp=c.pendiente_pago||{};
     const paradas=t.paradas||[];
     const prio=t.por_prioridad||{};
-    const mm=n=>{n=Number(n)||0;return n>=1e6?'$ '+(n/1e6).toLocaleString('es-AR',{maximumFractionDigits:1})+'M':money0(n);};
+    const mm=n=>{n=Number(n)||0;return n>=1e6?'$'+(n/1e6).toLocaleString('es-AR',{minimumFractionDigits:1,maximumFractionDigits:1})+'M':money0(n);};
     const varPct=c.var_pct!=null?Math.round(c.var_pct):null;
 
     // Evolución (línea compacta)
@@ -588,12 +588,13 @@ async function vDashboard(view){
     objs=objs.filter(o=>o.nombre!=='Sin asignar').slice(0,4);
     if(sinAsig)objs.push(sinAsig);
     const objMax=Math.max(...objs.map(o=>o.total),1);
-    const barsObj=objs.length?objs.map(o=>{const esSA=o.nombre==='Sin asignar';
+    const rampVerde=['#1D9E75','#5DCAA5','#9FE1CB','#9FE1CB'];
+    const barsObj=objs.length?objs.map((o,ix)=>{const esSA=o.nombre==='Sin asignar';
       return `<div style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;${esSA?'color:var(--diesel)':''}">
-          <span>${o.nombre.slice(0,26)}</span><span class="mono">${mm(o.total)}</span></div>
+          <span style="font-weight:600">${o.nombre.slice(0,26)}</span><span class="mono">${mm(o.total)}</span></div>
         <div style="height:7px;background:var(--papel);border-radius:4px">
-          <div style="width:${Math.max(3,Math.round(o.total*100/objMax))}%;height:100%;background:${esSA?'var(--diesel)':'var(--brote)'};border-radius:4px"></div></div>
+          <div style="width:${Math.max(3,Math.round(o.total*100/objMax))}%;height:100%;background:${esSA?'#EF9F27':rampVerde[Math.min(ix,3)]};border-radius:4px"></div></div>
       </div>`;}).join('')
       :'<div class="sub" style="padding:10px 0">Sin compras imputadas este mes.</div>';
 
@@ -608,10 +609,10 @@ async function vDashboard(view){
 
     // Estilo compacto tipo mockup (todo clickeable)
     const kpi=(label,val,sub,extra,click)=>`
-      <div onclick="${click}" style="background:${extra&&extra.bg||'var(--papel)'};border-radius:10px;padding:12px 14px;cursor:pointer">
-        <div style="font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:${extra&&extra.col||'var(--tinta-3)'}">${label}</div>
-        <div style="font-size:22px;font-weight:700;margin-top:2px;font-family:var(--mono,monospace);color:${extra&&extra.col||'var(--tinta)'}">${val}</div>
-        <div style="font-size:11.5px;margin-top:2px;color:${extra&&extra.subCol||'var(--tinta-2)'}">${sub}</div>
+      <div onclick="${click}" style="background:${extra&&extra.bg||'var(--blanco)'};border:1px solid ${extra&&extra.bg?'transparent':'var(--linea)'};border-radius:10px;padding:12px 14px;cursor:pointer">
+        <div style="font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;font-weight:600;color:${extra&&extra.col||'var(--tinta-3)'}">${label}</div>
+        <div style="font-size:23px;font-weight:700;margin-top:3px;color:${extra&&extra.col||'var(--tinta)'}">${val}</div>
+        <div style="font-size:11.5px;margin-top:3px;color:${extra&&extra.subCol||'var(--tinta-2)'}">${sub}</div>
       </div>`;
 
     view.innerHTML=`
@@ -635,17 +636,17 @@ async function vDashboard(view){
     <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:10px;margin-bottom:10px">
       <div class="panel" style="padding:14px 16px;cursor:pointer" onclick="comprasTab='indicadores';go('compras')">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-          <div style="font-size:13.5px;font-weight:600">🛒 Compras · evolución del gasto</div>
+          <div style="font-size:13.5px;font-weight:600"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;vertical-align:-2px;margin-right:4px"><circle cx="9" cy="20" r="1.5"/><circle cx="17" cy="20" r="1.5"/><path d="M3 4h2l2.5 12h10L20 8H6.2"/></svg>Compras · evolución del gasto</div>
           <div class="sub" style="font-size:11px">últimos 6 meses</div></div>
         ${svgEvol}</div>
       <div class="panel" style="padding:14px 16px;cursor:pointer" onclick="comprasTab='consumos';go('compras')">
-        <div style="font-size:13.5px;font-weight:600;margin-bottom:10px">Objetivos con mayor gasto · ${mesCorto(d.periodo)}</div>
+        <div style="font-size:13.5px;font-weight:600;margin-bottom:10px">Objetivos con mayor gasto · ${new Date().toLocaleDateString('es-AR',{month:'long'})}</div>
         ${barsObj}</div>
     </div>
 
     <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:10px">
       <div class="panel" style="padding:14px 16px">
-        <div style="font-size:13.5px;font-weight:600;margin-bottom:9px;cursor:pointer" onclick="go('reparaciones')">🔧 Taller · reparaciones activas</div>
+        <div style="font-size:13.5px;font-weight:600;margin-bottom:9px;cursor:pointer" onclick="go('reparaciones')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;vertical-align:-2px;margin-right:4px"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>Taller · reparaciones activas</div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
           ${[['critico','crítico','var(--rojo)','var(--rojo-soft)'],['alta','alta','var(--diesel)','var(--diesel-soft)'],['media','media','var(--tinta-2)','var(--papel)'],['baja','baja','var(--brote-2)','var(--brote-soft)']].map(([k,l,col,bg])=>`
           <div style="flex:1;background:${bg};border-radius:9px;padding:7px;text-align:center;cursor:pointer" onclick="repFPrio='${k}';go('reparaciones')">
@@ -656,13 +657,13 @@ async function vDashboard(view){
         ${listaParadas}</div>
       <div style="display:flex;flex-direction:column;gap:10px">
         <div class="panel" style="flex:1;display:flex;align-items:center;gap:12px;cursor:pointer;padding:12px 16px" onclick="go('insumos')">
-          <div style="font-size:20px">📦</div>
+          <div style="color:var(--tinta-2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:20px;height:20px;vertical-align:-2px;margin-right:4px"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></div>
           <div style="flex:1"><div style="font-weight:600;font-size:13px">Insumos</div>
             <div class="sub" style="font-size:12px">${a.insumos_pendientes||0} pendiente${(a.insumos_pendientes||0)===1?'':'s'} de entrega</div></div>
           ${a.insumos_pendientes?`<span class="badge b-amber">${a.insumos_pendientes}</span>`:'<span class="badge b-green">✓</span>'}</div>
         <div class="panel" style="flex:1;display:flex;align-items:center;gap:12px;cursor:pointer;padding:12px 16px" onclick="go('stock')">
-          <div style="font-size:20px">📋</div>
-          <div style="flex:1"><div style="font-weight:600;font-size:13px">Censo de stock · ${mesCorto(d.periodo)}</div>
+          <div style="color:var(--tinta-2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:20px;height:20px;vertical-align:-2px;margin-right:4px"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4a2 2 0 012-2h2a2 2 0 012 2M9 10h6M9 14h6"/></svg></div>
+          <div style="flex:1"><div style="font-weight:600;font-size:13px">Censo de stock · ${new Date().toLocaleDateString('es-AR',{month:'long'})}</div>
             <div style="height:7px;background:var(--papel);border-radius:4px;margin-top:5px">
               <div style="width:${st.total?Math.round((st.respondieron||0)*100/st.total):0}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>
           <span class="sub mono" style="font-size:12px">${st.respondieron||0}/${st.total||0}</span></div>
