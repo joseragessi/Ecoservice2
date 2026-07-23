@@ -104,4 +104,31 @@ async function notificarCapatazTemplate(telefono, contentSid, variables) {
   }
 }
 
-module.exports = { notificarCapataz, notificarCapatazTemplate };
+// ── Mensajes de avance de estado para el capataz ─────────────
+// Cada estado tiene su mensaje propio; si el mecánico dejó un comentario,
+// se incluye textual para que el capataz sepa el detalle real.
+function mensajeEstadoIncidencia(estado, { equipo, unidad, mecanico, comentario }) {
+  const cab = `🔧 Equipo: ${equipo || '—'}\n` +
+              (unidad ? `🔢 Unidad: ${unidad}\n` : '') +
+              (mecanico ? `👨‍🔧 Mecánico: ${mecanico}\n` : '');
+  const nota = comentario ? `\n💬 Nota del mecánico:\n_"${comentario}"_\n` : '';
+  const pie = `\n_EcoService · Taller_`;
+  switch (estado) {
+    case 'diagnostico':
+      return `🔍 *Tu reporte está en diagnóstico*\n\n${cab}` +
+             `\nEl mecánico está revisando el equipo para determinar la falla.${nota}${pie}`;
+    case 'esperando_repuestos':
+      return `⏳ *Esperando repuestos*\n\n${cab}` +
+             `\nSe identificó la falla y hacen falta repuestos. La reparación sigue apenas lleguen.${nota}${pie}`;
+    case 'en_reparacion':
+      return `🛠 *En reparación*\n\n${cab}` +
+             `\nYa se está trabajando en el equipo.${nota}${pie}`;
+    case 'finalizado':
+      return `✅ *Reparación finalizada*\n\n${cab}` +
+             `\nTu incidencia fue resuelta. El equipo está listo para retirar/usar.${nota}${pie}`;
+    default:
+      return null;
+  }
+}
+
+module.exports = { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia };
