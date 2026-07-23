@@ -291,7 +291,6 @@ function renderService(){
       <div class="desc" id="sv-msg" style="margin-top:10px"></div>
     </div>
     <div class="dl" style="margin:14px 4px 6px">Services realizados</div>
-    <div id="sv-alertas"></div>
     <input type="text" id="sv-busca" placeholder="🔍 Buscar por unidad o patente…" value="${svBusca.replace(/"/g,'&quot;')}"
       oninput="svBusca=this.value;renderSvHist()"
       style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-bottom:8px">
@@ -313,28 +312,6 @@ function svResumen(d){
   const seg=(d.tareas||[]).filter(t=>t.estado==='seguimiento').length;
   return ts.slice(0,3).join(' · ')+(ts.length>3?` · +${ts.length-3} más`:'')+(seg?` · ⚠ ${seg} en seguimiento`:'');
 }
-// "40.279 km" → 40279 (compara números declarados, sirve para km u horas)
-function svNum(s){const n=Number(String(s||'').replace(/[^\d]/g,''));return n||0;}
-// Alertas de próximos services: por unidad, compara el mayor km/hs declarado
-// contra el próximo service del service más reciente. Vencido = rojo, cerca = amarillo.
-function renderSvAlertas(){
-  const c=$('sv-alertas');if(!c)return;
-  const porUni={};
-  (svHist||[]).forEach(s=>{const d=s.data||{};const k=d.unidad||d.patente||'—';
-    (porUni[k]=porUni[k]||[]).push(s);});   // svHist ya viene ordenado: [0] es el más nuevo
-  const avisos=[];
-  Object.entries(porUni).forEach(([k,ss])=>{
-    const ult=(ss[0].data||{});
-    const p=svNum(ult.proximo_service);if(!p)return;
-    const max=Math.max(...ss.map(s=>svNum((s.data||{}).km_horas)));
-    if(max>=p)avisos.push({k,cls:'#C0392B',bg:'#FDEDEB',txt:`service VENCIDO · llegó a ${max.toLocaleString('es-AR')} y el próximo era a ${p.toLocaleString('es-AR')}`});
-    else if(max>=p*0.9)avisos.push({k,cls:'#B9770E',bg:'#FCF3DE',txt:`service cerca · ${max.toLocaleString('es-AR')} de ${p.toLocaleString('es-AR')} (faltan ${(p-max).toLocaleString('es-AR')})`});
-  });
-  c.innerHTML=avisos.length?avisos.map(a=>`
-    <div style="background:${a.bg};border-left:4px solid ${a.cls};border-radius:8px;padding:9px 11px;margin-bottom:6px;font-size:12.5px;color:${a.cls}">
-      ⚠ <b>${a.k}</b> — ${a.txt}
-    </div>`).join(''):'';
-}
 // Arma el pedido de repuestos del service y lo comparte (o copia) para
 // mandárselo al proveedor tal cual.
 async function svPedido(id){
@@ -353,7 +330,6 @@ async function svPedido(id){
 }
 function renderSvHist(){
   const c=$('sv-hist');if(!c)return;
-  renderSvAlertas();
   const b=svBusca.trim().toLowerCase();
   const lista=(svHist||[]).filter(s=>{const d=s.data||{};
     return !b||[d.unidad,d.patente,d.marca_modelo].some(v=>String(v||'').toLowerCase().includes(b));});
