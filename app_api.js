@@ -8,7 +8,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
-const { notificarCapataz } = require('./notificar');
+const { notificarCapataz, mensajeEstadoIncidencia } = require('./notificar');
 const seg = require('./seguridad');
 
 const router = express.Router();
@@ -153,7 +153,7 @@ router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, r
     // Verificar que la incidencia sea suya antes de tocarla
     const { data: inc, error: e0 } = await supabase
       .from('incidencias')
-      .select('id, mecanico_id, equipos(nombre,tipo), capataces(nombre,telefono)')
+      .select('id, mecanico_id, numero_unidad, tipo_equipo, equipos(nombre,tipo), capataces(nombre,telefono)')
       .eq('id', req.params.id).single();
     if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
     if (String(inc.mecanico_id) !== String(req.app_user.mid)) {
@@ -167,15 +167,25 @@ router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, r
       .from('incidencias').update(patch).eq('id', req.params.id).select().single();
     if (error) throw error;
 
-    // Avisarle al capataz cuando la reparación se termina
+    // Aviso al capataz en cada avance (diagnóstico, esperando repuestos,
+    // en reparación, finalizado), con la última nota del mecánico si dejó una
     let notificado = false;
-    if (estado === 'finalizado' && inc.capataces && inc.capataces.telefono) {
-      const eq = inc.equipos ? (inc.equipos.nombre || inc.equipos.tipo) : 'el equipo';
-      notificado = await notificarCapataz(
-        inc.capataces.telefono,
-        `🔧 *Reparación terminada*\n\n${eq} ya está listo.\n` +
-        `Lo reparó ${req.app_user.nombre}.\n\n_EcoService · Taller_`
-      );
+    const AVISAN = ['diagnostico', 'esperando_repuestos', 'en_reparacion', 'finalizado'];
+    if (AVISAN.includes(estado) && inc.capataces && inc.capataces.telefono) {
+      let comentario = null;
+      try {
+        const { data: com } = await supabase.from('comentarios_incidencias')
+          .select('texto').eq('incidencia_id', req.params.id)
+          .order('created_at', { ascending: false }).limit(1).maybeSingle();
+        if (com) comentario = com.texto;
+      } catch (e) { /* sin comentarios */ }
+      const msg = mensajeEstadoIncidencia(estado, {
+        equipo:   inc.equipos ? (inc.equipos.nombre || inc.equipos.tipo) : (inc.tipo_equipo || 'el equipo'),
+        unidad:   inc.numero_unidad,
+        mecanico: req.app_user.nombre,
+        comentario,
+      });
+      if (msg) notificado = await notificarCapataz(inc.capataces.telefono, msg);
     }
     res.json({ ...data, _notificado: notificado });
   } catch (err) {
