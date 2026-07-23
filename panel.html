@@ -100,6 +100,10 @@ body{background:var(--papel);color:var(--tinta);
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:14px;margin-bottom:22px}
+.accion-card{display:flex;align-items:center;gap:12px;background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:12px 14px;transition:border-color .15s}
+.accion-card:hover{border-color:var(--brote)}
+.accion-n{font-size:22px;font-weight:700;font-family:var(--mono,monospace)}
+.accion-t{font-weight:600;font-size:13px}
 .kpi{background:var(--blanco);border:1px solid var(--linea);border-radius:var(--r);padding:17px 18px;
   box-shadow:var(--sombra);position:relative;overflow:hidden}
 .kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--brote);opacity:.85}
@@ -555,104 +559,117 @@ function go(v){
 async function vDashboard(view){
   try{
     const d=await api('/api/dashboard');
-    const a=d.acciones||{},c=d.compras||{},cb=d.combustible||{},t=d.taller||{},st=d.stock||{};
+    const a=d.acciones||{},c=d.compras||{},t=d.taller||{},st=d.stock||{};
+    const pp=c.pendiente_pago||{};
+    const paradas=t.paradas||[];
+    const prio=t.por_prioridad||{};
     // Lo que requiere acción: solo se muestra lo que efectivamente tiene algo pendiente
     const acciones=[
-      ['reparaciones_urgentes','Reparaciones urgentes',a.reparaciones_urgentes,'reparaciones','rojo','crítico o alta sin resolver'],
-      ['facturas_pendientes','Facturas por imputar',a.facturas_pendientes,'facturas','ambar','esperando imputación'],
-      ['insumos_pendientes','Insumos por entregar',a.insumos_pendientes,'insumos','ambar','pedidos en el pañol'],
-      ['stock_sin_responder','Stock sin responder',a.stock_sin_responder,'stock','ambar','capataces que no censaron'],
-      ['combustible_sin_facturar','Cargas sin facturar',a.combustible_sin_facturar,'combustible','ambar','remitos sin factura'],
-    ].filter(x=>x[2]>0);
-    const col={rojo:'var(--rojo)',ambar:'var(--ambar)'};
-    const varPct=c.var_pct;
-    const bars=(lista,color)=>lista.length?lista.slice(0,6).map(x=>{
-      const max=lista[0].valor||1;const w=Math.max(4,Math.round(x.valor*100/max));
-      return `<div style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-          <span style="font-weight:500">${x.nombre}</span><span class="mono">${x.valor}</span></div>
-        <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
-      </div>`;}).join(''):'<div class="sub" style="padding:10px 0">El taller está vacío.</div>';
+      a.stock_sin_responder?{n:a.stock_sin_responder,t:'Stock sin responder',d:'capataces que no censaron',v:'stock'}:null,
+      a.combustible_sin_facturar?{n:a.combustible_sin_facturar,t:'Cargas sin facturar',d:'remitos sin factura',v:'combustible'}:null,
+      a.facturas_pendientes?{n:a.facturas_pendientes,t:'Facturas por imputar',d:'esperando revisión',v:'facturas'}:null,
+      a.insumos_pendientes?{n:a.insumos_pendientes,t:'Pedidos de insumos',d:'sin entregar',v:'insumos'}:null,
+    ].filter(Boolean);
+
+    // Mini formato $ en millones para KPIs (los detalles muestran el número completo)
+    const mm=n=>{n=Number(n)||0;return n>=1e6?'$ '+(n/1e6).toLocaleString('es-AR',{maximumFractionDigits:1})+'M':money0(n);};
+    const varPct=c.var_pct!=null?Math.round(c.var_pct):null;
+
+    // Evolución: línea SVG con los 6 meses
+    const ev=(c.evolucion||[]);
+    const evMax=Math.max(...ev.map(e=>e.total),1);
+    const W=560,H=150,PX=34,PY=18;
+    const px=i=>PX+i*((W-PX*2)/Math.max(ev.length-1,1));
+    const py=v=>H-28-((v/evMax)*(H-28-PY));
+    const puntos=ev.map((e,i)=>px(i)+','+py(e.total)).join(' ');
+    const mesCorto=m=>['','ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][Number(String(m).slice(5,7))]||m;
+    const svgEvol=ev.length>1?`<svg viewBox="0 0 ${W} ${H}" style="width:100%">
+      <line x1="${PX}" y1="${H-28}" x2="${W-PX}" y2="${H-28}" stroke="var(--linea)" stroke-width="1"/>
+      <polyline points="${puntos}" fill="none" stroke="var(--brote)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      ${ev.map((e,i)=>{const ult=i===ev.length-1;return `<circle cx="${px(i)}" cy="${py(e.total)}" r="${ult?4.5:3}" fill="${ult?'var(--brote-2)':'var(--brote)'}" opacity="${ult?1:.55}"/>
+        ${ult?`<text x="${px(i)}" y="${py(e.total)-9}" text-anchor="end" style="font-size:11px;font-weight:700;fill:var(--tinta)">${mm(e.total)}</text>`:''}
+        <text x="${px(i)}" y="${H-11}" text-anchor="middle" style="font-size:10px;fill:var(--tinta-3);${ult?'font-weight:700;fill:var(--tinta)':''}">${mesCorto(e.mes)}</text>`;}).join('')}
+    </svg>`:'<div class="sub" style="padding:20px 0">Sin datos suficientes para la evolución.</div>';
+
+    // Objetivos con mayor gasto (top 4 + Sin asignar si existe)
+    let objs=(c.objetivos_gasto||[]);
+    const sinAsig=objs.find(o=>o.nombre==='Sin asignar');
+    objs=objs.filter(o=>o.nombre!=='Sin asignar').slice(0,4);
+    if(sinAsig)objs.push(sinAsig);
+    const objMax=Math.max(...objs.map(o=>o.total),1);
+    const barsObj=objs.length?objs.map(o=>{const esSA=o.nombre==='Sin asignar';
+      return `<div style="margin-bottom:9px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;${esSA?'color:var(--diesel)':''}">
+          <span>${o.nombre}</span><span class="mono">${mm(o.total)}</span></div>
+        <div style="height:7px;background:var(--papel);border-radius:4px">
+          <div style="width:${Math.max(3,Math.round(o.total*100/objMax))}%;height:100%;background:${esSA?'var(--diesel)':'var(--brote)'};border-radius:4px"></div></div>
+      </div>`;}).join('')
+      :'<div class="sub" style="padding:12px 0">Sin compras imputadas este mes.</div>';
+
+    // Paradas ahora (top 5)
+    const iconPrio={critico:'var(--rojo)',alta:'var(--diesel)',media:'var(--tinta-3)',baja:'var(--brote-2)'};
+    const listaParadas=paradas.length?paradas.slice(0,5).map(p=>`
+      <div class="queue-item">
+        <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${p.unidad?'🚚 ':''}${p.equipo}${p.falla?' · '+p.falla:''}</div>
+        <div class="sub" style="font-size:11px">${p.objetivo||''}</div></div>
+        <div class="mono" style="font-size:12px;font-weight:600;color:${p.dias>=3?'var(--rojo)':p.dias>=1?'var(--diesel)':'var(--tinta-2)'}">${p.dias} día${p.dias===1?'':'s'}</div>
+      </div>`).join('')
+      :'<div class="sub" style="padding:8px 0">No hay máquinas paradas. ✓</div>';
 
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Panel de gestión</div>
-      <div class="view-desc">Todo el gasto de campo en una sola superficie · ${mesStk(d.periodo)}</div></div></div>
+      <div class="view-desc">Compras y taller de un vistazo · ${new Date().toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div></div></div>
 
-    ${acciones.length?`
-    <div class="panel" style="margin-bottom:18px;border-left:3px solid var(--ambar)">
-      <div class="panel-title" style="margin-bottom:12px">⚠ Requiere tu atención</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">
-        ${acciones.map(([k,l,n,dest,cl,sub])=>`
-          <div onclick="go('${dest}')" style="cursor:pointer;background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:11px 13px;transition:.14s" onmouseover="this.style.borderColor='${col[cl]}'" onmouseout="this.style.borderColor='var(--linea)'">
-            <div style="display:flex;align-items:baseline;gap:8px">
-              <span class="mono" style="font-size:21px;font-weight:700;color:${col[cl]}">${n}</span>
-              <span style="font-size:12.5px;font-weight:600">${l}</span></div>
-            <div class="sub" style="font-size:11px;margin-top:2px">${sub} →</div>
-          </div>`).join('')}
-      </div>
-    </div>`:`
-    <div class="panel" style="margin-bottom:18px;border-left:3px solid var(--brote)">
-      <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-        <span style="font-size:19px">✅</span>
-        <div><div style="font-weight:600;font-size:14px">Todo al día</div>
-        <div class="sub">No hay nada pendiente de acción en ningún módulo.</div></div>
-      </div>
-    </div>`}
+    ${acciones.length?`<div class="panel" style="margin-bottom:16px">
+      <div class="panel-title">⚠ Requiere tu atención</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:10px">
+        ${acciones.map(x=>`<div class="accion-card" onclick="go('${x.v}')" style="cursor:pointer">
+          <div class="accion-n">${x.n}</div><div><div class="accion-t">${x.t}</div><div class="sub">${x.d} →</div></div></div>`).join('')}
+      </div></div>`:''}
 
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
-      <div class="kpi"><div class="kpi-label">Gasto del mes</div>
-        <div class="kpi-val" style="font-size:22px">${money0(c.gasto_mes||0)}</div>
-        <div class="kpi-sub">${varPct==null?'sin mes anterior para comparar'
-          :`<span style="color:${varPct>0?'var(--rojo)':'var(--brote-2)'};font-weight:600">${varPct>0?'▲':'▼'} ${Math.abs(Math.round(varPct))}%</span> vs mes anterior`}</div></div>
-      <div class="kpi plain"><div class="kpi-label">Combustible del mes</div>
-        <div class="kpi-val" style="font-size:22px">${Math.round(cb.litros_mes||0).toLocaleString('es-AR')}</div>
-        <div class="kpi-sub">litros · ${cb.cargas_mes||0} cargas</div></div>
-      <div class="kpi ${t.activas?'amber':''}"><div class="kpi-label">Taller</div>
-        <div class="kpi-val ${t.activas?'amber':''}" style="font-size:22px">${t.activas||0}</div>
-        <div class="kpi-sub">activas · ${t.finalizadas_mes||0} cerradas este mes</div></div>
-      <div class="kpi plain"><div class="kpi-label">Resolución promedio</div>
-        <div class="kpi-val" style="font-size:22px">${t.resolucion_prom!=null?Math.round(t.resolucion_prom*10)/10:'—'}</div>
-        <div class="kpi-sub">días por reparación</div></div>
+      <div class="kpi"><div class="kpi-label">Gasto del mes</div><div class="kpi-val">${mm(c.gasto_mes)}</div>
+        <div class="kpi-sub" style="${varPct>0?'color:var(--rojo)':varPct<0?'color:var(--brote-2)':''}">${varPct!=null?(varPct>0?'▲ +':varPct<0?'▼ ':'')+varPct+'% vs mes anterior':'sin mes anterior'}</div></div>
+      <div class="kpi plain"><div class="kpi-label">Pendiente de pago</div><div class="kpi-val">${mm(pp.total)}</div>
+        <div class="kpi-sub">${pp.facturas||0} facturas · ${pp.proveedores||0} proveedores</div></div>
+      <div class="kpi ${paradas.length?'amber':'plain'}" onclick="go('reparaciones')" style="cursor:pointer">
+        <div class="kpi-label" style="${paradas.length?'color:var(--rojo)':''}">Máquinas paradas</div>
+        <div class="kpi-val" style="${paradas.length?'color:var(--rojo)':''}">${paradas.length}</div>
+        <div class="kpi-sub">${paradas.length?paradas.filter(p=>p.unidad).length+' unidad(es) · '+paradas.filter(p=>!p.unidad).length+' máquina(s)':'ninguna ✓'}</div></div>
+      <div class="kpi plain" onclick="go('reparaciones')" style="cursor:pointer"><div class="kpi-label">Taller</div><div class="kpi-val">${t.activas||0} activas</div>
+        <div class="kpi-sub">${t.resolucion_prom!=null?'resolución prom. '+t.resolucion_prom.toFixed(1)+' días':t.finalizadas_mes+' cerradas este mes'}</div></div>
     </div>
 
-    <div class="grid g-2" style="margin-bottom:18px">
-      <div class="panel">
-        <div class="panel-title" style="margin-bottom:12px">Carga del taller</div>
-        ${bars(t.carga_mecanicos||[],'var(--brote)')}
-        ${t.mas_vieja?`<div class="divider"></div>
-          <div class="sub" style="font-size:11px;margin-bottom:5px">LA MÁS VIEJA SIN RESOLVER</div>
-          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="go('reparaciones')">
-            <div><div style="font-weight:600;font-size:13px">${t.mas_vieja.equipo}</div>
-            <div class="sub" style="font-size:11.5px">${t.mas_vieja.objetivo}</div></div>
-            <span class="badge ${t.mas_vieja.dias>30?'b-red':'b-amber'}">${t.mas_vieja.dias} días</span>
-          </div>`:''}
-      </div>
-      <div class="panel">
-        <div class="panel-title" style="margin-bottom:12px">Censo de stock · ${mesStk(d.periodo)}</div>
-        ${st.total?`
-          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
-            <span class="mono" style="font-size:27px;font-weight:700;color:var(--brote)">${st.respondieron}</span>
-            <span class="sub">de ${st.total} objetivos respondieron</span>
-          </div>
-          <div style="height:8px;background:var(--papel);border-radius:4px;overflow:hidden;margin-bottom:8px">
-            <div style="height:8px;width:${st.total?Math.round(st.respondieron*100/st.total):0}%;background:var(--brote);border-radius:4px"></div>
-          </div>
-          ${st.pendientes?`<div class="sub" style="cursor:pointer" onclick="go('stock')"><b style="color:var(--ambar)">${st.pendientes} sin responder</b> · reenviarles el pedido →</div>`
-            :'<div class="sub">Censo completo ✓</div>'}`
-          :`<div class="sub" style="padding:8px 0">Todavía no pediste el stock de ${mesStk(d.periodo)}.</div>
-            <button class="btn" style="margin-top:10px" onclick="go('stock')">Pedir stock →</button>`}
-      </div>
+    <div class="grid" style="display:grid;grid-template-columns:1.35fr 1fr;gap:14px;margin-bottom:16px">
+      <div class="panel"><div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div class="panel-title">Compras · evolución del gasto</div><div class="sub" style="font-size:11px">últimos 6 meses</div></div>
+        ${svgEvol}</div>
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Objetivos con mayor gasto</div>${barsObj}</div>
     </div>
 
-    <div class="panel">
-      <div class="panel-title" style="margin-bottom:10px">Insumos esperando en el pañol</div>
-      ${(d.insumos_lista||[]).length?(d.insumos_lista).map(p=>`
-        <div class="queue-item" style="margin-bottom:7px;cursor:pointer" onclick="go('insumos')">
-          <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${p.objetivo}</div>
-          <div class="sub" style="font-size:11.5px">${p.items||'—'} · ${p.capataz}</div></div>
-          <span class="badge ${p.dias>7?'b-red':'b-gray'}">${p.dias===0?'hoy':p.dias+'d'}</span>
-        </div>`).join('')
-        :'<div class="sub" style="padding:10px 0">No hay pedidos pendientes. ✓</div>'}
+    <div class="grid" style="display:grid;grid-template-columns:1.35fr 1fr;gap:14px">
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Taller · reparaciones activas</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          ${[['critico','Crítico','var(--rojo)','var(--rojo-soft)'],['alta','Alta','var(--diesel)','var(--diesel-soft)'],['media','Media','var(--tinta-2)','var(--papel)'],['baja','Baja','var(--brote-2)','var(--brote-soft)']].map(([k,l,col,bg])=>`
+          <div style="flex:1;background:${bg};border-radius:9px;padding:8px;text-align:center;cursor:pointer" onclick="repFPrio='${k}';go('reparaciones')">
+            <div style="font-size:18px;font-weight:700;color:${col}">${prio[k]||0}</div>
+            <div style="font-size:10.5px;color:${col}">${l}</div></div>`).join('')}
+        </div>
+        <div class="field-l" style="margin-bottom:6px">Paradas ahora</div>
+        ${listaParadas}</div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="panel" style="flex:1;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="go('insumos')">
+          <div style="font-size:22px">📦</div>
+          <div style="flex:1"><div style="font-weight:600;font-size:13px">Insumos</div>
+            <div class="sub" style="font-size:12px">${a.insumos_pendientes||0} pendiente${(a.insumos_pendientes||0)===1?'':'s'} de entrega</div></div>
+          ${a.insumos_pendientes?`<span class="badge b-amber">${a.insumos_pendientes}</span>`:'<span class="badge b-green">✓</span>'}</div>
+        <div class="panel" style="flex:1;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="go('stock')">
+          <div style="font-size:22px">📋</div>
+          <div style="flex:1"><div style="font-weight:600;font-size:13px">Censo de stock · ${d.periodo||''}</div>
+            <div style="height:7px;background:var(--papel);border-radius:4px;margin-top:5px">
+              <div style="width:${st.total?Math.round((st.respondieron||0)*100/st.total):0}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>
+          <span class="sub mono" style="font-size:12px">${st.respondieron||0}/${st.total||0}</span></div>
+      </div>
     </div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el resumen. ${e.message||''}</div>`;}
 }
