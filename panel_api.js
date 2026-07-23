@@ -204,7 +204,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       supabase.from('facturas_proveedor').select('estado, total'),
       supabase.from('pedidos_insumos').select('estado, created_at, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item)'),
       supabase.from('cargas_combustible').select('estado, litros_total, fecha'),
-      supabase.from('incidencias').select('estado, prioridad, created_at, fecha_finalizado, mecanicos(nombre), equipos(nombre,tipo), objetivos(nombre)'),
+      supabase.from('incidencias').select('estado, prioridad, created_at, fecha_finalizado, equipo_parado, tipo_equipo, tipo_falla, numero_unidad, mecanicos(nombre), equipos(nombre,tipo), objetivos(nombre)'),
       supabase.from('censos_stock').select('periodo, estado').eq('periodo', periodo),
       supabase.from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo'),
       supabaseCompras.from('facturas').select('*'),
@@ -231,6 +231,51 @@ router.get('/api/dashboard', auth, async (req, res) => {
     const gastoMes = compras.filter(f => mesFac(f) === periodo).reduce((s, f) => s + totalFac(f), 0);
     const gastoAnt = compras.filter(f => mesFac(f) === mesAnterior).reduce((s, f) => s + totalFac(f), 0);
 
+    // ── Pendiente de pago (Estado de cuenta): facturas sin marcar pagada
+    const sinPagar = compras.filter(f => !f.pagada);
+    const pendPago = {
+      total: sinPagar.reduce((s, f) => s + totalFac(f), 0),
+      facturas: sinPagar.length,
+      proveedores: new Set(sinPagar.map(f => f.proveedor || 'Sin nombre')).size,
+    };
+
+    // ── Evolución del gasto: últimos 6 meses (incluye el actual)
+    const meses6 = [];
+    { const [a, m] = periodo.split('-').map(Number);
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(a, m - 1 - i, 1);
+        meses6.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+      } }
+    const evolucion = meses6.map(mes => ({
+      mes, total: compras.filter(f => mesFac(f) === mes).reduce((s, f) => s + totalFac(f), 0),
+    }));
+
+    // ── Gasto por objetivo del mes: reparte el total de cada factura según su
+    // imputación (por ítem o total), proporcional al monto de los ítems, así la
+    // suma de objetivos = gasto del mes. Sin imputación → "Sin asignar".
+    const porObj = {};
+    compras.filter(f => mesFac(f) === periodo).forEach(f => {
+      const tot = totalFac(f);
+      if (!tot) return;
+      const items = f.items || [];
+      const montoIt = it => (Number(it.monto_sin_iva) || 0) + (Number(it.monto_iva) || 0);
+      const objTotal = (f.totalAssign && f.totalAssign.objetivo) || null;
+      if (f.assignmentMode === 'per-item' && f.assignments && items.length) {
+        const sumIt = items.reduce((s, it) => s + montoIt(it), 0) || 1;
+        items.forEach((it, ix) => {
+          const asg = f.assignments[ix] || {};
+          const k = asg.objetivo || objTotal || 'Sin asignar';
+          porObj[k] = (porObj[k] || 0) + tot * (montoIt(it) / sumIt);
+        });
+      } else {
+        const k = objTotal || 'Sin asignar';
+        porObj[k] = (porObj[k] || 0) + tot;
+      }
+    });
+    const objetivosGasto = Object.entries(porObj).map(([nombre, total]) => ({ nombre, total }))
+      .sort((a, b) => b.total - a.total);
+    const sinAsignar = porObj['Sin asignar'] || 0;
+
     // ── Combustible del mes
     const cargasMes = cargas.filter(c => mesDe(c.fecha) === periodo);
 
@@ -251,6 +296,22 @@ router.get('/api/dashboard', auth, async (req, res) => {
       .sort((a, b) => b.valor - a.valor);
     // La más vieja sin resolver: la que más urge
     const masVieja = activas.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0] || null;
+
+    // ── Semáforo por prioridad + máquinas paradas ahora
+    const porPrio = { critico: 0, alta: 0, media: 0, baja: 0 };
+    activas.forEach(i => { if (porPrio[i.prioridad] != null) porPrio[i.prioridad]++; });
+    const esUnidad = i => /toyota|camioneta|cami[oó]n|atego|unidad/i.test(String(i.tipo_equipo || (i.equipos && i.equipos.tipo) || ''));
+    const paradas = activas.filter(i => i.equipo_parado)
+      .map(i => ({
+        equipo: [i.tipo_equipo || (i.equipos && (i.equipos.nombre || i.equipos.tipo)) || 'Equipo',
+                 i.numero_unidad ? 'N° ' + i.numero_unidad : ''].filter(Boolean).join(' '),
+        falla: i.tipo_falla || '',
+        objetivo: i.objetivos ? i.objetivos.nombre : '',
+        prioridad: i.prioridad,
+        unidad: esUnidad(i),
+        dias: Math.floor((Date.now() - new Date(i.created_at)) / 86400000),
+      }))
+      .sort((a, b) => b.dias - a.dias);
 
     // ── Stock: censo del período
     const censoResp = cuenta(cens, 'estado', 'respondido');
@@ -275,6 +336,10 @@ router.get('/api/dashboard', auth, async (req, res) => {
         var_pct: gastoAnt ? ((gastoMes - gastoAnt) * 100 / gastoAnt) : null,
         facturas_total: compras.length,
         por_imputar: suma(facturas.filter(f => f.estado === 'pendiente'), 'total'),
+        pendiente_pago: pendPago,
+        evolucion,
+        objetivos_gasto: objetivosGasto,
+        sin_asignar: sinAsignar,
       },
       combustible: {
         cargas_mes: cargasMes.length,
@@ -287,6 +352,8 @@ router.get('/api/dashboard', auth, async (req, res) => {
         finalizadas_mes: finMes.length,
         resolucion_prom: resolProm,
         carga_mecanicos: carga,
+        por_prioridad: porPrio,
+        paradas,
         mas_vieja: masVieja ? {
           equipo: masVieja.equipos ? (masVieja.equipos.nombre || masVieja.equipos.tipo) : 'Equipo',
           objetivo: masVieja.objetivos ? masVieja.objetivos.nombre : '—',
