@@ -1872,7 +1872,21 @@ function selRep(ix){
     <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="reasignarRep('${r.id}')">Guardar mecánico</button>
     <div class="divider"></div>
     <div class="field-l" style="margin-bottom:8px">Observaciones del mecánico</div>${comHTML}
+    <textarea id="rep-obs-nueva" placeholder="Agregar una observación… (viaja en el próximo aviso al capataz)" style="width:100%;box-sizing:border-box;margin-top:8px;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12.5px;min-height:56px;resize:vertical"></textarea>
+    <button class="btn ghost" style="width:100%;justify-content:center;margin-top:6px" onclick="agregarObsRep('${r.id}',${ix})">＋ Agregar observación</button>
     ${btnAvanzar}`;
+}
+async function agregarObsRep(id,ix){
+  const ta=document.getElementById('rep-obs-nueva');
+  const texto=(ta&&ta.value||'').trim();
+  if(!texto){alert('Escribí la observación primero.');return;}
+  try{
+    const nuevo=await api('/api/reparaciones/'+id+'/comentario',{method:'POST',body:JSON.stringify({texto})});
+    // Actualizar en memoria y repintar el detalle sin recargar toda la vista
+    const r=window._repFiltrada[ix];
+    (r.comentarios_incidencias=r.comentarios_incidencias||[]).push(nuevo);
+    selRep(ix);
+  }catch(e){alert('No pude guardar: '+e.message);}
 }
 async function avanzarRep(id,estado){
   try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({estado})});await vReparaciones(document.getElementById('view'));refrescarContadores();}
