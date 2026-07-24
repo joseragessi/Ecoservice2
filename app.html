@@ -504,7 +504,24 @@ function cardIncidencia(i){
       ${obs.length?obs.map(c=>`<div class="obs">${c.texto}
         <div class="m">${c.mecanico_nombre||'—'} · ${hace(c.created_at)}</div></div>`).join('')
         :'<div class="desc">Sin observaciones todavía.</div>'}
+      <div class="dl">Repuestos necesarios</div>
+      ${(function(){const rp=(i.repuestos_taller||[]).find(x=>x.estado!=='entregado')||(i.repuestos_taller||[])[0];
+        if(!rp)return fin?'<div class="desc">Sin pedido de repuestos.</div>':'<div class="desc" id="rp-vacio-'+i.id+'">Sin pedido todavía.</div>';
+        const est={a_comprar:['🕐 A comprar','#B9770E'],comprado:['🛒 Comprado · en camino','#2471A3'],entregado:['✅ Entregado — repuestos en el taller','#1E8449']}[rp.estado]||[rp.estado,'#666'];
+        return `<div class="desc" style="color:${est[1]};font-weight:600;font-size:12.5px">${est[0]}</div>`+
+          (rp.items||[]).map(x=>`<div class="desc" style="font-size:12px">x${x.cantidad||1} ${x.descripcion}${x.codigo?' · '+x.codigo:''}</div>`).join('');})()}
       ${fin?'':`
+        <div id="rp-form-${i.id}" style="display:none;margin-top:6px">
+          <div id="rp-hint-${i.id}" class="desc" style="display:none;font-size:12px;color:#1E8449;margin-bottom:5px"></div>
+          <div id="rp-filas-${i.id}"></div>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="btn sec" style="flex:1;margin:0" onclick="rpAddFila('${i.id}')">＋ otra fila</button>
+            <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${i.id}')">✨ Sugerir de nuevo</button>
+          </div>
+          <textarea id="rp-nota-${i.id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)"></textarea>
+          <button class="btn" onclick="rpGuardar('${i.id}')">Guardar pedido de repuestos</button>
+        </div>
+        <button class="btn sec" id="rp-toggle-${i.id}" onclick="rpAbrir('${i.id}')">🛒 ${(i.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Pedir'} repuestos</button>
         <textarea id="obs-${i.id}" placeholder="Agregá una observación…"></textarea>
         <button class="btn sec" onclick="comentar('${i.id}')">Guardar observación</button>
         ${sig?`<button class="btn" onclick="avanzar('${i.id}','${sig}')">${sig==='finalizado'?'✓ Terminar reparación':'Pasar a '+LABEL[sig]}</button>`:''}
@@ -571,6 +588,51 @@ async function avanzar(id,estado){
       :'→ '+LABEL[estado]);
     await cargar();
   }catch(e){toast(e.message);}
+}
+/* ── Pedido de repuestos desde la reparación ── */
+function rpFilaHTML(x){
+  x=x||{};
+  return `<div style="display:flex;gap:5px;margin-bottom:5px">
+    <input class="rp-cant" type="text" inputmode="numeric" value="${x.cantidad||1}" style="width:42px;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;text-align:center">
+    <input class="rp-desc" type="text" placeholder="Repuesto" value="${String(x.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
+    <input class="rp-cod" type="text" placeholder="Código" value="${String(x.codigo||'').replace(/"/g,'&quot;')}" style="flex:1;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
+  </div>`;
+}
+function rpAddFila(id){document.getElementById('rp-filas-'+id).insertAdjacentHTML('beforeend',rpFilaHTML());}
+function rpAbrir(id){
+  const i=datos.find(x=>String(x.id)===String(id));
+  const rp=i&&(i.repuestos_taller||[]).find(x=>x.estado!=='entregado');
+  document.getElementById('rp-filas-'+id).innerHTML=(rp&&rp.items&&rp.items.length?rp.items:[{},{}]).map(rpFilaHTML).join('');
+  document.getElementById('rp-nota-'+id).value=rp&&rp.nota||'';
+  document.getElementById('rp-form-'+id).style.display='';
+  document.getElementById('rp-toggle-'+id).style.display='none';
+  // Sin pedido previo → la IA analiza la falla y propone la lista (editable)
+  if(!rp)rpSugerir(id);
+}
+async function rpSugerir(id){
+  const hint=document.getElementById('rp-hint-'+id);
+  if(hint){hint.style.display='';hint.textContent='✨ Analizando la falla y los comentarios…';}
+  try{
+    const s=await api('/api/app/incidencia/'+id+'/repuestos/sugerir',{method:'POST',body:'{}'});
+    document.getElementById('rp-filas-'+id).innerHTML=(s.items||[]).map(rpFilaHTML).join('')||rpFilaHTML();
+    if(hint)hint.textContent='✨ '+(s.razon||'Sugerido según la falla')+' — revisá, corregí o agregá lo que falte.';
+  }catch(e){
+    if(hint)hint.textContent='No pude sugerir esta vez — cargalo a mano.';
+  }
+}
+async function rpGuardar(id){
+  const items=[...document.querySelectorAll('#rp-filas-'+id+' > div')].map(f=>({
+    cantidad:Number(f.querySelector('.rp-cant').value)||1,
+    descripcion:f.querySelector('.rp-desc').value.trim(),
+    codigo:f.querySelector('.rp-cod').value.trim(),
+  })).filter(x=>x.descripcion);
+  if(!items.length){toast('Cargá al menos un repuesto');return;}
+  const nota=document.getElementById('rp-nota-'+id).value.trim();
+  try{
+    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota})});
+    toast('Pedido enviado a compras ✓');
+    abierta=id;cargar();
+  }catch(e){toast('Error: '+e.message);}
 }
 async function comentar(id){
   const t=$('obs-'+id);const texto=(t.value||'').trim();
