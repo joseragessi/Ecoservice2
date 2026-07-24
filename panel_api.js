@@ -1552,7 +1552,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
 
     // 2) Cargas de los capataces (base bot), acotadas al rango de los listados
     let q = supabase.from('cargas_combustible')
-      .select('*, cargas_combustible_items(*), unidades(patente,codigo,marca), capataces(nombre), proveedores(nombre)')
+      .select('*, cargas_combustible_items(*), unidades(patente,codigo,marca), capataces(nombre), proveedores(nombre), objetivos(nombre)')
       .neq('estado', 'anulada');
     const fechas = filas.map(f => f.fecha).filter(Boolean).sort();
     if (fechas.length) q = q.gte('fecha', fechas[0]).lte('fecha', fechas[fechas.length - 1]);
@@ -1588,7 +1588,8 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       const lt = Number(c.litros_total) || 0;
       const dif = Math.round((g.litros - lt) * 100) / 100;
       const fila = { ...g, carga_id: c.id, litros_ticket: lt, dif,
-        capataz: c.capataces ? c.capataces.nombre : null };
+        capataz: c.capataces ? c.capataces.nombre : null,
+        objetivo: c.objetivos ? c.objetivos.nombre : null };
       if (Math.abs(dif) > 1) desvios.push(fila); else matcheadas.push(fila);
     });
     const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado');
@@ -1634,7 +1635,8 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       unidades, sin_ticket: sinTicket, desvios, matcheadas,
       sin_respaldo: sinRespaldo.map(c => ({ id: c.id, fecha: c.fecha, numero_remito: c.numero_remito,
         patente: (c.unidades && c.unidades.patente) || c.patente_raw, litros: c.litros_total,
-        capataz: c.capataces ? c.capataces.nombre : null, proveedor: c.proveedores ? c.proveedores.nombre : null })),
+        capataz: c.capataces ? c.capataces.nombre : null, proveedor: c.proveedores ? c.proveedores.nombre : null,
+        objetivo: c.objetivos ? c.objetivos.nombre : null })),
     });
   } catch (err) {
     console.error('combustible analisis:', err);
