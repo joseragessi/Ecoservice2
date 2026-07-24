@@ -485,7 +485,7 @@ router.get('/api/combustible', auth, async (req, res) => {
   try {
     let q = supabase
       .from('cargas_combustible')
-      .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente), objetivos(nombre)')
+      .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente), objetivos(nombre), capataces(nombre)')
       .order('fecha', { ascending: false })
       .limit(200);
     if (req.query.estado) q = q.eq('estado', req.query.estado);
