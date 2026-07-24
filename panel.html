@@ -1884,6 +1884,7 @@ function selRep(ix){
       <div style="display:flex;gap:6px;margin-top:4px">
         <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepAddFila()">＋ otra fila</button>
         <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepSugerir('${r.id}')">✨ Sugerir de nuevo</button>
+        <button class="btn ghost" style="flex:0 0 auto;justify-content:center;font-size:12px" onclick="document.getElementById('rep-rep-filas').innerHTML=repRepFila()">🗑</button>
       </div>
       <textarea id="rep-rep-nota" placeholder="Nota para quien compra (opcional)" style="width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12px;min-height:44px"></textarea>
       <button class="btn" style="width:100%;justify-content:center;margin-top:6px" onclick="repRepGuardar('${r.id}',${ix})">Guardar pedido de repuestos</button>
@@ -1902,6 +1903,7 @@ function repRepFila(i){
     <input class="rr-cant" type="text" inputmode="numeric" value="${i.cantidad||1}" style="width:40px;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px;text-align:center">
     <input class="rr-desc" type="text" placeholder="Repuesto" value="${(i.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px">
     <input class="rr-cod" type="text" placeholder="Código" value="${(i.codigo||'').replace(/"/g,'&quot;')}" style="flex:1;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px">
+    <button class="btn ghost" style="padding:4px 9px;flex:0 0 auto" onclick="this.parentElement.remove()">✕</button>
   </div>`;
 }
 function repRepAddFila(){document.getElementById('rep-rep-filas').insertAdjacentHTML('beforeend',repRepFila());}
@@ -2809,16 +2811,19 @@ function renderRt(){
   if(!kp||!ls)return;
   const all=rtData||[];
   const cnt=e=>all.filter(p=>p.estado===e);
-  const items=e=>cnt(e).reduce((s,p)=>s+(p.items||[]).length,0);
+  const abiertos=all.filter(p=>p.estado!=='entregado');
+  const itFaltan=abiertos.reduce((s,p)=>s+(p.items||[]).filter(i=>!i.comprado).length,0);
+  const itComprados=abiertos.reduce((s,p)=>s+(p.items||[]).filter(i=>i.comprado).length,0);
+  const repFaltan=abiertos.filter(p=>(p.items||[]).some(i=>!i.comprado)).length;
   const sem=Date.now()-7*86400000;
   const entSem=all.filter(p=>p.estado==='entregado'&&p.entregado_at&&new Date(p.entregado_at)>sem);
   kp.innerHTML=`<div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
-    <div class="kpi ${items('a_comprar')?'amber':'plain'}" onclick="rtEstado='a_comprar';renderRt()" style="cursor:pointer">
-      <div class="kpi-label">A comprar</div><div class="kpi-val" style="${items('a_comprar')?'color:var(--diesel)':''}">${items('a_comprar')} ítems</div>
-      <div class="kpi-sub">de ${cnt('a_comprar').length} reparación${cnt('a_comprar').length===1?'':'es'}</div></div>
+    <div class="kpi ${itFaltan?'amber':'plain'}" onclick="rtEstado='a_comprar';renderRt()" style="cursor:pointer">
+      <div class="kpi-label">Falta comprar</div><div class="kpi-val" style="${itFaltan?'color:var(--diesel)':''}">${itFaltan} ítems</div>
+      <div class="kpi-sub">de ${repFaltan} reparación${repFaltan===1?'':'es'}</div></div>
     <div class="kpi plain" onclick="rtEstado='comprado';renderRt()" style="cursor:pointer">
-      <div class="kpi-label">Comprados · en camino</div><div class="kpi-val">${items('comprado')} ítems</div>
-      <div class="kpi-sub">${cnt('comprado').length} reparación${cnt('comprado').length===1?'':'es'} esperando</div></div>
+      <div class="kpi-label">Comprados · en camino</div><div class="kpi-val">${itComprados} ítems</div>
+      <div class="kpi-sub">${cnt('comprado').length} pedido${cnt('comprado').length===1?'':'s'} completo${cnt('comprado').length===1?'':'s'}</div></div>
     <div class="kpi plain" onclick="rtEstado='entregado';renderRt()" style="cursor:pointer">
       <div class="kpi-label">Entregados al taller</div><div class="kpi-val">${entSem.reduce((s,p)=>s+(p.items||[]).length,0)} ítems</div>
       <div class="kpi-sub">esta semana</div></div>
@@ -2832,7 +2837,7 @@ function renderRt(){
       ...(p.items||[]).map(i=>i.descripcion+' '+(i.codigo||''))].join(' ').toLowerCase();
     return txt.includes(b);
   });
-  const EST={a_comprar:['A COMPRAR','b-amber'],comprado:['COMPRADO','b-blue'],entregado:['✓ ENTREGADO','b-green']};
+  const EST={a_comprar:['A COMPRAR','b-amber'],comprado:['✓ TODO COMPRADO','b-blue'],entregado:['✓ ENTREGADO','b-green']};
   ls.innerHTML=lista.length?lista.map(p=>{
     const inc=p.incidencias||{};
     const eq=[inc.tipo_equipo||(inc.equipos&&(inc.equipos.nombre||inc.equipos.tipo))||'Equipo',
@@ -2840,24 +2845,43 @@ function renderRt(){
     const dias=Math.floor((Date.now()-new Date(p.created_at))/86400000);
     const [etq,cls]=EST[p.estado]||[p.estado,'b-gray'];
     const done=p.estado==='entregado';
+    const its=p.items||[];
+    const nComp=its.filter(i=>i.comprado).length;
+    const parcial=!done&&nComp>0&&nComp<its.length;
     return `<div class="panel" style="margin-bottom:10px;${done?'opacity:.62':''}">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span class="badge ${PRIO_BADGE[inc.prioridad]||'b-gray'}">${cap(inc.prioridad||'—')}</span>
         <span style="font-weight:700;font-size:13.5px">${eq}</span>
         <span class="sub" style="font-size:12px">${inc.objetivos?inc.objetivos.nombre:''}</span>
         <div style="flex:1"></div>
-        <span class="badge ${cls}">${etq}${done&&p.entregado_at?' · '+fechaAR(p.entregado_at):''}</span>
+        ${parcial?`<span class="badge b-amber">PARCIAL · ${nComp}/${its.length} comprados</span>`:`<span class="badge ${cls}">${etq}${done&&p.entregado_at?' · '+fechaAR(p.entregado_at):''}</span>`}
       </div>
       <div class="sub" style="font-size:12px;margin:5px 0 8px">👨‍🔧 ${inc.mecanicos?inc.mecanicos.nombre:(p.pedido_por||'—')} · pedido ${dias===0?'hoy':'hace '+dias+' día'+(dias===1?'':'s')}${!done&&dias>=3?' <b style="color:var(--rojo)">⚠</b>':''}</div>
-      ${(p.items||[]).map(i=>`<div style="font-size:12.5px;padding:2px 0"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> <b>${i.descripcion}</b>${i.codigo?' · <span class="mono" style="color:var(--tinta-3)">'+i.codigo+'</span>':''}</div>`).join('')}
+      ${its.map((i,idx)=>done
+        ?`<div style="font-size:12.5px;padding:2px 0"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> <b>${i.descripcion}</b>${i.codigo?' · <span class="mono" style="color:var(--tinta-3)">'+i.codigo+'</span>':''}</div>`
+        :`<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;cursor:pointer">
+            <input type="checkbox" ${i.comprado?'checked':''} onchange="rtItem('${p.id}',${idx},this.checked)" style="accent-color:var(--brote)">
+            <span style="${i.comprado?'':'font-weight:600'}"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> ${i.descripcion}${i.codigo?' · <span class="mono" style="color:var(--tinta-3)">'+i.codigo+'</span>':''}</span>
+            ${i.comprado?'<span class="badge b-green" style="font-size:10px">comprado</span>':'<span class="badge b-amber" style="font-size:10px">falta</span>'}
+          </label>`).join('')}
       ${p.nota?`<div style="background:var(--papel);border-left:3px solid var(--tinta-3);border-radius:6px;padding:7px 10px;font-size:12px;font-style:italic;margin-top:7px">💬 "${p.nota}" — ${(p.pedido_por||'').replace('Panel · ','')}</div>`:''}
-      ${!done?`<div style="display:flex;gap:8px;margin-top:10px">
-        ${p.estado==='a_comprar'?`<button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="rtAvanzar('${p.id}','comprado')">✓ Marcar comprado</button>`
-          :`<button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="rtAvanzar('${p.id}','entregado')">📦 Marcar entregado al taller</button>`}
+      ${!done?`<div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+        ${p.estado!=='comprado'?`<button class="btn ghost" style="padding:7px 14px;font-size:12.5px" onclick="rtAvanzar('${p.id}','comprado')">✓ Marcar todo comprado</button>`:''}
+        ${p.estado==='comprado'
+          ?`<button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="rtAvanzar('${p.id}','entregado')">📦 Marcar entregado al taller</button>`
+          :`<span class="sub" style="font-size:11.5px">Se entrega al taller cuando esté todo comprado</span>`}
         <button class="btn ghost" style="padding:7px 14px;font-size:12.5px" onclick="go('reparaciones')">Ver reparación →</button>
       </div>`:''}
     </div>`;}).join('')
     :`<div class="empty" style="height:160px"><div>${b||rtEstado?'Ningún pedido coincide.':'No hay pedidos de repuestos.<br><span class=\"sub\">Se cargan desde la app del mecánico o desde el detalle de una reparación.</span>'}</div></div>`;
+}
+async function rtItem(id,idx,comprado){
+  try{
+    const actualizado=await api('/api/compras/repuestos/'+id+'/item',{method:'POST',body:JSON.stringify({index:idx,comprado})});
+    const p=(rtData||[]).find(x=>x.id===id);
+    if(p){p.items=actualizado.items;p.estado=actualizado.estado;}
+    renderRt();
+  }catch(e){alert('No pude actualizar: '+e.message);renderRt();}
 }
 async function rtAvanzar(id,estado){
   try{
