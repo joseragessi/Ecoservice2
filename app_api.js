@@ -246,7 +246,14 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
     }
     // Si ya hay un pedido sin entregar para esta reparación, se actualiza
     const { data: prev } = await supabase.from('repuestos_taller')
-      .select('id').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+      .select('id, items').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+    // Si se edita un pedido existente, conservar los tildes de "comprado" que
+    // ya haya puesto compras (match por descripción)
+    if (prev && Array.isArray(prev.items)) {
+      const marcados = {};
+      prev.items.forEach(i => { if (i.comprado) marcados[String(i.descripcion || '').toLowerCase()] = true; });
+      items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
+    }
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: req.app_user.nombre };
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
