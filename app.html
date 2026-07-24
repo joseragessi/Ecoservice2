@@ -507,9 +507,12 @@ function cardIncidencia(i){
       <div class="dl">Repuestos necesarios</div>
       ${(function(){const rp=(i.repuestos_taller||[]).find(x=>x.estado!=='entregado')||(i.repuestos_taller||[])[0];
         if(!rp)return fin?'<div class="desc">Sin pedido de repuestos.</div>':'<div class="desc" id="rp-vacio-'+i.id+'">Sin pedido todavía.</div>';
-        const est={a_comprar:['🕐 A comprar','#B9770E'],comprado:['🛒 Comprado · en camino','#2471A3'],entregado:['✅ Entregado — repuestos en el taller','#1E8449']}[rp.estado]||[rp.estado,'#666'];
+        const its=rp.items||[];const nc=its.filter(x=>x.comprado).length;
+        const parcial=rp.estado==='a_comprar'&&nc>0;
+        const est=parcial?['🛒 Comprados '+nc+'/'+its.length+' · faltan '+(its.length-nc),'#B9770E']
+          :({a_comprar:['🕐 A comprar','#B9770E'],comprado:['🛒 Todo comprado · en camino','#2471A3'],entregado:['✅ Entregado — repuestos en el taller','#1E8449']}[rp.estado]||[rp.estado,'#666']);
         return `<div class="desc" style="color:${est[1]};font-weight:600;font-size:12.5px">${est[0]}</div>`+
-          (rp.items||[]).map(x=>`<div class="desc" style="font-size:12px">x${x.cantidad||1} ${x.descripcion}${x.codigo?' · '+x.codigo:''}</div>`).join('');})()}
+          its.map(x=>`<div class="desc" style="font-size:12px">${rp.estado!=='entregado'?(x.comprado?'✅ ':'⬜ '):''}x${x.cantidad||1} ${x.descripcion}${x.codigo?' · '+x.codigo:''}</div>`).join('');})()}
       ${fin?'':`
         <div id="rp-form-${i.id}" style="display:none;margin-top:6px">
           <div id="rp-hint-${i.id}" class="desc" style="display:none;font-size:12px;color:#1E8449;margin-bottom:5px"></div>
@@ -517,6 +520,7 @@ function cardIncidencia(i){
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="btn sec" style="flex:1;margin:0" onclick="rpAddFila('${i.id}')">＋ otra fila</button>
             <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${i.id}')">✨ Sugerir de nuevo</button>
+            <button class="btn sec" style="flex:0 0 auto;margin:0" onclick="rpVaciar('${i.id}')">🗑 Vaciar</button>
           </div>
           <textarea id="rp-nota-${i.id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)"></textarea>
           <button class="btn" onclick="rpGuardar('${i.id}')">Guardar pedido de repuestos</button>
@@ -596,6 +600,7 @@ function rpFilaHTML(x){
     <input class="rp-cant" type="text" inputmode="numeric" value="${x.cantidad||1}" style="width:42px;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;text-align:center">
     <input class="rp-desc" type="text" placeholder="Repuesto" value="${String(x.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
     <input class="rp-cod" type="text" placeholder="Código" value="${String(x.codigo||'').replace(/"/g,'&quot;')}" style="flex:1;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
+    <button class="btn sec" style="padding:6px 10px;margin:0;flex:0 0 auto" onclick="this.parentElement.remove()">✕</button>
   </div>`;
 }
 function rpAddFila(id){document.getElementById('rp-filas-'+id).insertAdjacentHTML('beforeend',rpFilaHTML());}
@@ -619,6 +624,11 @@ async function rpSugerir(id){
   }catch(e){
     if(hint)hint.textContent='No pude sugerir esta vez — cargalo a mano.';
   }
+}
+function rpVaciar(id){
+  document.getElementById('rp-filas-'+id).innerHTML=rpFilaHTML();
+  const hint=document.getElementById('rp-hint-'+id);
+  if(hint){hint.style.display='';hint.textContent='Lista vacía — cargá los repuestos que necesités.';}
 }
 async function rpGuardar(id){
   const items=[...document.querySelectorAll('#rp-filas-'+id+' > div')].map(f=>({
