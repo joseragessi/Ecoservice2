@@ -65,6 +65,42 @@ async function resolverObjetivo(texto, capataz) {
   return match ? { id: match.id, nombre: match.nombre } : null;
 }
 
+// ── Detección de doble carga ─────────────────────────────────
+// Un remito puede llegar dos veces (el capataz reenvía la foto, o dos fotos
+// del mismo papel con lecturas de OCR apenas distintas). Antes de guardar se
+// busca: (a) mismo número de comprobante, o (b) misma fecha + mismos litros +
+// mismo capataz o misma patente. Si aparece, se le pregunta al capataz.
+function numNorm(n) {
+  const d = String(n || '').replace(/\D/g, '').replace(/^0+/, '');
+  return d || null;
+}
+async function buscarDuplicado(datos, capatazId, litrosTotal) {
+  try {
+    const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    const { data: recientes } = await supabase.from('cargas_combustible')
+      .select('id, fecha, numero_remito, numero_factura, litros_total, patente_raw, capataz_id, capataces(nombre), proveedores(nombre)')
+      .neq('estado', 'anulada').gte('fecha', desde)
+      .order('fecha', { ascending: false }).limit(300);
+    const num = numNorm(datos.numero);
+    const pat = normalizarPatente(datos.patente || '');
+    for (const c of (recientes || [])) {
+      // (a) Mismo número de comprobante
+      if (num && (numNorm(c.numero_remito) === num || numNorm(c.numero_factura) === num)) {
+        return { carga: c, motivo: 'mismo número de comprobante' };
+      }
+      // (b) Misma fecha + mismos litros + mismo capataz o misma patente
+      const litOk = litrosTotal && c.litros_total &&
+        Math.abs(Number(c.litros_total) - Number(litrosTotal)) < 0.01;
+      const patOk = pat && normalizarPatente(c.patente_raw || '') === pat;
+      const capOk = capatazId && String(c.capataz_id) === String(capatazId);
+      if (c.fecha === datos.fecha && litOk && (capOk || patOk)) {
+        return { carga: c, motivo: 'misma fecha, mismos litros' };
+      }
+    }
+  } catch (e) { console.error('buscarDuplicado:', e); }
+  return null;
+}
+
 function resumenProductos(datos) {
   return (datos.items || [])
     .map(i => `  • ${i.producto}: ${i.litros ?? '—'} lt`)
@@ -231,6 +267,23 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
     : `📄 Remito ${datos.numero} — sin facturar`;
   const encabezado = `📸 Leí tu comprobante, *${nombre}*:\n\n⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n\n`;
 
+  // ¿Ya está cargado? (reenvío de la misma foto o dos fotos del mismo remito)
+  const litrosTot = itemsComb.reduce((s, i) => s + (Number(i.litros) || 0), 0) || Number(datos.litros) || null;
+  const dup = await buscarDuplicado(datos, capataz.id, litrosTot);
+  if (dup) {
+    sesiones[tel] = {
+      paso: 'confirmar_dup', datos, mediaUrl, capataz, unidad,
+      itemsComb, indice: 0, imputaciones: [],
+    };
+    const c = dup.carga;
+    const quien = c.capataces ? c.capataces.nombre.split(' ')[0] : 'alguien';
+    return `${encabezado}⚠️ *Ojo: esto parece estar cargado ya* (${dup.motivo}).\n\n` +
+           `Registrado antes: ${c.proveedores ? c.proveedores.nombre : ''} · ` +
+           `${c.numero_remito || c.numero_factura || 's/n'} · ${c.litros_total || '—'} lt · ` +
+           `lo cargó ${quien}.\n\n` +
+           `¿Qué hago?\n*1.* Es una carga NUEVA, registrala igual\n*2.* Es la misma, descartala`;
+  }
+
   // Si no hay productos de combustible que discriminar, guardo directo.
   if (itemsComb.length === 0) {
     const sesion = { datos, mediaUrl, capataz, unidad, itemsComb: [], imputaciones: [] };
@@ -265,6 +318,28 @@ async function continuarConversacion(telefono, mensaje) {
   const texto = (mensaje || '').trim();
   const nombre = sesion.capataz.nombre.split(' ')[0];
   const it = sesion.itemsComb[sesion.indice];
+
+  // Confirmación de posible doble carga
+  if (sesion.paso === 'confirmar_dup') {
+    if (texto === '1') {
+      // Es una carga distinta: sigue el flujo normal
+      if (sesion.itemsComb.length === 0) {
+        const carga = await guardarCarga(sesion);
+        delete sesiones[tel];
+        if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+        return `✅ Registrada, *${nombre}*.`;
+      }
+      sesion.paso = 'destino_item';
+      const intro = sesion.itemsComb.length > 1
+        ? `Tenés ${sesion.itemsComb.length} productos. Te pregunto uno por uno.\n\n` : '';
+      return intro + preguntarItem(sesion);
+    }
+    if (texto === '2') {
+      delete sesiones[tel];
+      return `👍 Listo, *${nombre}*, la descarté. No se registró nada.`;
+    }
+    return `Respondé *1* (es una carga nueva) o *2* (es la misma, descartar).`;
+  }
 
   // El capataz responde los litros que la IA no pudo leer
   if (sesion.paso === 'litros_item') {
