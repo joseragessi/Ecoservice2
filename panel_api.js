@@ -516,7 +516,7 @@ router.get('/api/reparaciones', auth, async (req, res) => {
   try {
     let q = supabase
       .from('incidencias')
-      .select('*, equipos(nombre,tipo,codigo), capataces(nombre), objetivos(nombre), mecanicos(nombre,habilidades), comentarios_incidencias(mecanico_nombre,texto,created_at)')
+      .select('*, equipos(nombre,tipo,codigo), capataces(nombre), objetivos(nombre), mecanicos(nombre,habilidades), comentarios_incidencias(mecanico_nombre,texto,created_at), repuestos_taller(id,items,nota,estado,created_at)')
       .order('created_at', { ascending: false });
     if (req.query.estado) q = q.eq('estado', req.query.estado);
     if (req.query.prioridad) q = q.eq('prioridad', req.query.prioridad);
@@ -526,6 +526,71 @@ router.get('/api/reparaciones', auth, async (req, res) => {
   } catch (err) {
     console.error('reparaciones:', err);
     res.status(500).json({ error: 'Error cargando reparaciones' });
+  }
+});
+
+// ── Repuestos de taller (lo que hay que comprar para reparar) ─
+// El pedido nace en la reparación (mecánico desde la app o vos desde el
+// panel) y se gestiona en Compras → Repuestos.
+router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
+  try {
+    const items = (Array.isArray((req.body || {}).items) ? req.body.items : [])
+      .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim() }))
+      .filter(i => i.descripcion);
+    if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
+    const { data: prev } = await supabase.from('repuestos_taller')
+      .select('id').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+    const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: 'Panel · ' + (req.usuario || 'admin') };
+    let q;
+    if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id }).select().single();
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('rep repuestos:', err);
+    res.status(500).json({ error: 'Error guardando el pedido (¿existe la tabla repuestos_taller?)' });
+  }
+});
+
+// Sugerencia IA de repuestos (misma lógica que en la app del mecánico)
+router.post('/api/reparaciones/:id/repuestos/sugerir', auth, async (req, res) => {
+  try {
+    const { sugerirRepuestos } = require('./repuestos_ia');
+    res.json(await sugerirRepuestos(req.params.id));
+  } catch (err) {
+    console.error('rep repuestos sugerir:', err);
+    res.status(500).json({ error: 'No pude armar la sugerencia. Cargalo a mano.' });
+  }
+});
+
+router.get('/api/compras/repuestos', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('repuestos_taller')
+      .select('*, incidencias(id, prioridad, estado, equipo_parado, numero_unidad, tipo_equipo, created_at, equipos(nombre,tipo), objetivos(nombre), mecanicos(nombre))')
+      .order('created_at', { ascending: false }).limit(300);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('compras repuestos:', err);
+    res.status(500).json({ error: 'Error cargando repuestos (¿existe la tabla repuestos_taller?)' });
+  }
+});
+
+router.post('/api/compras/repuestos/:id/estado', auth, async (req, res) => {
+  try {
+    const estado = String((req.body || {}).estado || '');
+    if (!['a_comprar', 'comprado', 'entregado'].includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+    const patch = { estado };
+    if (estado === 'comprado') patch.comprado_at = new Date().toISOString();
+    if (estado === 'entregado') patch.entregado_at = new Date().toISOString();
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('repuestos estado:', err);
+    res.status(500).json({ error: 'Error actualizando el pedido' });
   }
 });
 
