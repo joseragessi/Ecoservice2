@@ -529,6 +529,23 @@ router.get('/api/reparaciones', auth, async (req, res) => {
   }
 });
 
+// Agregar una observación desde el panel (queda en el mismo hilo que las del
+// mecánico y viaja en el próximo aviso de estado al capataz)
+router.post('/api/reparaciones/:id/comentario', auth, async (req, res) => {
+  try {
+    const texto = String((req.body || {}).texto || '').trim();
+    if (!texto) return res.status(400).json({ error: 'Falta el texto' });
+    const { data, error } = await supabase.from('comentarios_incidencias')
+      .insert({ incidencia_id: req.params.id, mecanico_nombre: 'Panel · ' + (req.usuario || 'admin'), texto })
+      .select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('rep comentario panel:', err);
+    res.status(500).json({ error: 'Error guardando la observación' });
+  }
+});
+
 // Planillas de service cargadas desde la app del mecánico (foto + IA)
 router.get('/api/services', auth, async (req, res) => {
   try {
