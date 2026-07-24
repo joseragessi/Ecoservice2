@@ -203,7 +203,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
     const [fact, ins, carg, reps, censos, objs, invFact] = await Promise.all([
       supabase.from('facturas_proveedor').select('estado, total'),
       supabase.from('pedidos_insumos').select('estado, created_at, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item)'),
-      supabase.from('cargas_combustible').select('estado, litros_total, fecha'),
+      supabase.from('cargas_combustible').select('estado, litros_total, fecha').neq('estado', 'anulada'),
       supabase.from('incidencias').select('estado, prioridad, created_at, fecha_finalizado, equipo_parado, tipo_equipo, tipo_falla, numero_unidad, mecanicos(nombre), equipos(nombre,tipo), objetivos(nombre)'),
       supabase.from('censos_stock').select('periodo, estado').eq('periodo', periodo),
       supabase.from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo'),
@@ -488,13 +488,47 @@ router.get('/api/combustible', auth, async (req, res) => {
       .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente), objetivos(nombre), capataces(nombre)')
       .order('fecha', { ascending: false })
       .limit(200);
+    // Por defecto las anuladas no se muestran (se ven con el filtro "Anulada")
     if (req.query.estado) q = q.eq('estado', req.query.estado);
+    else q = q.neq('estado', 'anulada');
     const { data, error } = await q;
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
     console.error('combustible:', err);
     res.status(500).json({ error: 'Error cargando combustible' });
+  }
+});
+
+// Anular una carga (ej. remito cargado dos veces). No se borra: queda como
+// "anulada" para auditoría y deja de contar en listados y análisis.
+router.post('/api/combustible/:id/anular', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('cargas_combustible')
+      .update({ estado: 'anulada' }).eq('id', req.params.id).select('id').single();
+    if (error) throw error;
+    console.log(`[combustible] carga ${req.params.id} anulada por ${req.usuario}`);
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('anular carga:', err);
+    res.status(500).json({ error: 'Error anulando la carga' });
+  }
+});
+
+// Restaurar una carga anulada por error: vuelve a su estado natural
+// (facturada si tiene número de factura, si no sin_facturar)
+router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
+  try {
+    const { data: c } = await supabase.from('cargas_combustible')
+      .select('numero_factura').eq('id', req.params.id).single();
+    const estado = c && c.numero_factura ? 'facturada' : 'sin_facturar';
+    const { error } = await supabase.from('cargas_combustible')
+      .update({ estado }).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true, estado });
+  } catch (err) {
+    console.error('restaurar carga:', err);
+    res.status(500).json({ error: 'Error restaurando la carga' });
   }
 });
 
