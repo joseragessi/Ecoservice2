@@ -901,28 +901,41 @@ async function vCombustible(view){
   try{
     const q=filtroComb?'?estado='+filtroComb:'';
     const cs=await api('/api/combustible'+q);
-    const chips=['','sin_facturar','facturada'].map(e=>
+    const chips=['','sin_facturar','facturada','anulada'].map(e=>
       `<div class="chip-f ${filtroComb===e?'on':''}" onclick="filtroComb='${e}';go('combustible')">${e?cap(e):'Todas'}</div>`).join('');
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible</div>
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div></div>
     ${tabs}
     <div class="filters">${chips}</div>
-    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th></tr></thead>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th><th></th></tr></thead>
       <tbody>${cs.length?cs.map(c=>{
         const items=(c.cargas_combustible_items||[]).map(i=>{
           const dest=i.destino==='bidon'?'<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones</span>':'<span class="uni-chip">unidad</span>';
           return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;}).join('<br>');
-        return `<tr><td class="mono">${fechaAR(c.fecha)}</td>
+        const anulada=c.estado==='anulada';
+        return `<tr style="${anulada?'opacity:.55':''}"><td class="mono">${fechaAR(c.fecha)}</td>
           <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}</div></td>
           <td>${c.capataces?c.capataces.nombre:'—'}</td>
           <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
           <td><span class="uni-chip">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></td>
           <td style="font-size:12px">${items||'—'}</td>
           <td class="num">${c.litros_total?c.litros_total+' lt':'—'}</td>
-          <td><span class="badge ${c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td></tr>`;}).join('')
-        :'<tr><td colspan="8"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
+          <td><span class="badge ${anulada?'b-red':c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td>
+          <td class="num">${anulada
+            ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="restaurarCarga('${c.id}')">Restaurar</button>`
+            :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo)" onclick="anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
+        :'<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
+}
+async function anularCarga(id,num,litros){
+  if(!confirm(`¿Anular la carga ${num}${litros?' ('+litros+' lt)':''}?\n\nNo se borra: queda como "anulada" y deja de contar en los análisis. La podés restaurar desde el filtro Anulada.`))return;
+  try{await api('/api/combustible/'+id+'/anular',{method:'POST',body:'{}'});go('combustible');}
+  catch(e){alert('No pude anular: '+e.message);}
+}
+async function restaurarCarga(id){
+  try{await api('/api/combustible/'+id+'/restaurar',{method:'POST',body:'{}'});go('combustible');}
+  catch(e){alert('No pude restaurar: '+e.message);}
 }
 
 /* ===== Combustible · Análisis y conciliación ===== */
