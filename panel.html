@@ -1197,14 +1197,16 @@ function selUniAna(key){
     ${entregas.length?entregas.map(e=>`
       <div class="queue-item" style="margin-bottom:8px">
         <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(e.fecha)} · ${Math.round(e.litros*100)/100} lt</div>
-        <div class="sub mono" style="font-size:11px">${e.numero_remito||'s/n'}${e.chofer?' · '+e.chofer:''}</div></div>
+        <div class="sub mono" style="font-size:11px">${e.numero_remito||'s/n'}${e.chofer?' · '+e.chofer:''}</div>
+        ${e.capataz||e.objetivo?`<div class="sub" style="font-size:11px">👷 ${e.capataz||'—'}${e.objetivo?' → '+e.objetivo:''}</div>`:''}</div>
         ${chip(e)}
       </div>`).join(''):'<div class="sub" style="padding:8px 0">Sin entregas del proveedor para esta unidad.</div>'}
     ${sinResp.length?`<div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Tickets sin respaldo del proveedor</div>
     ${sinResp.map(c=>`<div class="queue-item" style="margin-bottom:8px">
       <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(c.fecha)} · ${c.litros||'?'} lt</div>
-      <div class="sub mono" style="font-size:11px">${c.numero_remito||'s/n'}${c.capataz?' · '+c.capataz:''}</div></div>
+      <div class="sub mono" style="font-size:11px">${c.numero_remito||'s/n'}</div>
+      <div class="sub" style="font-size:11px">👷 ${c.capataz||'—'}${c.objetivo?' → '+c.objetivo:''}</div></div>
       <span class="badge b-amber">revisar</span></div>`).join('')}`:''}`;
 }
 
