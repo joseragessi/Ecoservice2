@@ -908,18 +908,20 @@ async function vCombustible(view){
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div></div>
     ${tabs}
     <div class="filters">${chips}</div>
-    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th></tr></thead>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th></tr></thead>
       <tbody>${cs.length?cs.map(c=>{
         const items=(c.cargas_combustible_items||[]).map(i=>{
           const dest=i.destino==='bidon'?'<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones</span>':'<span class="uni-chip">unidad</span>';
           return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;}).join('<br>');
         return `<tr><td class="mono">${fechaAR(c.fecha)}</td>
           <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}</div></td>
+          <td>${c.capataces?c.capataces.nombre:'—'}</td>
+          <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
           <td><span class="uni-chip">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></td>
           <td style="font-size:12px">${items||'—'}</td>
           <td class="num">${c.litros_total?c.litros_total+' lt':'—'}</td>
           <td><span class="badge ${c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td></tr>`;}).join('')
-        :'<tr><td colspan="6"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
+        :'<tr><td colspan="8"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
 }
 
