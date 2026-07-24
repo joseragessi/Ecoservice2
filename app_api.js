@@ -131,9 +131,10 @@ router.get('/api/app/mis-incidencias', authApp('mecanico'), async (req, res) => 
   try {
     const { data, error } = await supabase
       .from('incidencias')
-      .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, ' +
+      .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, numero_unidad, ' +
               'equipos(nombre,tipo,codigo), objetivos(nombre), capataces(nombre,telefono), ' +
-              'comentarios_incidencias(mecanico_nombre,texto,created_at)')
+              'comentarios_incidencias(mecanico_nombre,texto,created_at), ' +
+              'repuestos_taller(id,items,nota,estado,created_at)')
       .eq('mecanico_id', req.app_user.mid)
       .order('created_at', { ascending: false })
       .limit(150);
@@ -211,6 +212,51 @@ router.post('/api/app/incidencia/:id/comentario', authApp('mecanico'), async (re
   } catch (err) {
     console.error('app comentario:', err);
     res.status(500).json({ error: 'Error guardando la observación' });
+  }
+});
+
+// Sugerencia IA: analiza la falla + comentarios y propone la lista probable
+// (editable — el mecánico agrega/borra/corrige antes de mandar)
+router.post('/api/app/incidencia/:id/repuestos/sugerir', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data: inc } = await supabase.from('incidencias')
+      .select('mecanico_id').eq('id', req.params.id).single();
+    if (!inc || String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    const { sugerirRepuestos } = require('./repuestos_ia');
+    res.json(await sugerirRepuestos(req.params.id));
+  } catch (err) {
+    console.error('app repuestos sugerir:', err);
+    res.status(500).json({ error: 'No pude armar la sugerencia. Cargalo a mano.' });
+  }
+});
+
+// Pedir repuestos para una reparación (crea o reemplaza el pedido pendiente)
+router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req, res) => {
+  try {
+    const items = (Array.isArray((req.body || {}).items) ? req.body.items : [])
+      .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim() }))
+      .filter(i => i.descripcion);
+    if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
+    const { data: inc } = await supabase.from('incidencias')
+      .select('mecanico_id').eq('id', req.params.id).single();
+    if (!inc || String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    // Si ya hay un pedido sin entregar para esta reparación, se actualiza
+    const { data: prev } = await supabase.from('repuestos_taller')
+      .select('id').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+    const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: req.app_user.nombre };
+    let q;
+    if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id }).select().single();
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('app repuestos:', err);
+    res.status(500).json({ error: 'Error guardando el pedido de repuestos' });
   }
 });
 
