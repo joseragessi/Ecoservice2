@@ -539,7 +539,14 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
       .filter(i => i.descripcion);
     if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
     const { data: prev } = await supabase.from('repuestos_taller')
-      .select('id').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+      .select('id, items').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+    // Si se edita un pedido existente, conservar los tildes de "comprado" que
+    // ya haya puesto compras (match por descripción)
+    if (prev && Array.isArray(prev.items)) {
+      const marcados = {};
+      prev.items.forEach(i => { if (i.comprado) marcados[String(i.descripcion || '').toLowerCase()] = true; });
+      items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
+    }
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: 'Panel · ' + (req.usuario || 'admin') };
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
@@ -577,12 +584,44 @@ router.get('/api/compras/repuestos', auth, async (req, res) => {
   }
 });
 
+// Marcar UN ítem como comprado / pendiente (compra parcial). El pedido pasa a
+// "comprado" recién cuando todos los ítems están tildados; si falta alguno,
+// sigue pendiente en "a_comprar".
+router.post('/api/compras/repuestos/:id/item', auth, async (req, res) => {
+  try {
+    const idx = Number((req.body || {}).index);
+    const comprado = !!(req.body || {}).comprado;
+    const { data: ped } = await supabase.from('repuestos_taller')
+      .select('items, estado').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    const items = Array.isArray(ped.items) ? ped.items : [];
+    if (!items[idx]) return res.status(400).json({ error: 'Ítem inválido' });
+    items[idx] = { ...items[idx], comprado };
+    const todos = items.length && items.every(i => i.comprado);
+    const patch = { items, estado: ped.estado === 'entregado' ? 'entregado' : (todos ? 'comprado' : 'a_comprar') };
+    if (todos && ped.estado !== 'entregado') patch.comprado_at = new Date().toISOString();
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('repuestos item:', err);
+    res.status(500).json({ error: 'Error actualizando el ítem' });
+  }
+});
+
 router.post('/api/compras/repuestos/:id/estado', auth, async (req, res) => {
   try {
     const estado = String((req.body || {}).estado || '');
     if (!['a_comprar', 'comprado', 'entregado'].includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
     const patch = { estado };
-    if (estado === 'comprado') patch.comprado_at = new Date().toISOString();
+    if (estado === 'comprado') {
+      // Marcar todo comprado de una: tildar todos los ítems
+      const { data: ped } = await supabase.from('repuestos_taller')
+        .select('items').eq('id', req.params.id).single();
+      if (ped) patch.items = (Array.isArray(ped.items) ? ped.items : []).map(i => ({ ...i, comprado: true }));
+      patch.comprado_at = new Date().toISOString();
+    }
     if (estado === 'entregado') patch.entregado_at = new Date().toISOString();
     const { data, error } = await supabase.from('repuestos_taller')
       .update(patch).eq('id', req.params.id).select().single();
