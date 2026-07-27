@@ -207,6 +207,8 @@ async function imputarFactura(f, letra) {
       direccion: 'S/D',
       telefono: '0',
       cuit: cuitLimpio(f.cuit) || undefined,
+      // La condición RI exige n° de Ingresos Brutos: convención habitual = CUIT
+      ingresosbrutos: cuitLimpio(f.cuit) || '0',
       codigocondicioniva: alta.codigocondicioniva,
       codigoclaseproveedor: alta.codigoclaseproveedor,
       codigoprovincia: alta.codigoprovincia,
