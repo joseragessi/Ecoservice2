@@ -223,19 +223,26 @@ async function imputarFactura(f, letra) {
     // existente (plantilla) para garantizar valores válidos de SU instalación;
     // se pueden pisar con envs FLEXXUS_CONDICION_IVA / FLEXXUS_CLASE_PROVEEDOR.
     const alta = await datosAltaProveedor();
+    const razon = String(f.proveedor || '').trim() || ('PROVEEDOR ' + (cuitLimpio(f.cuit) || 'S/D'));
     proveedor = {
       codigoproveedor: (cuitLimpio(f.cuit) || ('ECO' + String(Date.now()).slice(-8))).slice(0, 15),
-      razonsocial: (f.proveedor || 'PROVEEDOR SIN NOMBRE').slice(0, 50),
-      direccion: 'S/D',
-      telefono: '0',
+      razonsocial: razon.slice(0, 50),
+      direccion: (String(f.direccion || '').trim() || 'S/D').slice(0, 50),
+      telefono: (String(f.telefono || '').trim() || '0').slice(0, 50),
       cuit: cuitLimpio(f.cuit) || undefined,
-      // La condición RI exige n° de Ingresos Brutos: convención habitual = CUIT
       ingresosbrutos: cuitLimpio(f.cuit) || '0',
-      codigocondicioniva: alta.codigocondicioniva,
-      codigoclaseproveedor: alta.codigoclaseproveedor,
-      codigoprovincia: alta.codigoprovincia,
-      codigolocalidad: alta.codigolocalidad,
+      codigocondicioniva: String(alta.codigocondicioniva),
+      codigoclaseproveedor: String(alta.codigoclaseproveedor),
+      codigoprovincia: String(alta.codigoprovincia),
+      codigolocalidad: String(alta.codigolocalidad),
     };
+    // Guarda de seguridad: si algún requerido quedó vacío, no mandamos basura
+    const faltan = ['codigoproveedor', 'razonsocial', 'direccion', 'telefono', 'codigocondicioniva', 'codigoclaseproveedor', 'codigoprovincia', 'codigolocalidad']
+      .filter(k => proveedor[k] == null || proveedor[k] === '');
+    if (faltan.length) {
+      throw new Error('No puedo dar de alta el proveedor: faltan ' + faltan.join(', ') +
+        '. Datos que resolví: ' + JSON.stringify(alta) + '. Cargá el proveedor manualmente en Flexxus o configurá las envs FLEXXUS_CONDICION_IVA / FLEXXUS_CLASE_PROVEEDOR.');
+    }
   }
 
   // Productos: ítems reales como concepto libre (sin catálogo de artículos)
@@ -293,7 +300,11 @@ async function imputarFactura(f, letra) {
     }));
   }
 
-  const resp = await flx('/comprobantescompras', { method: 'POST', body: JSON.stringify(body) });
+  const resp = await flx('/comprobantescompras', { method: 'POST', body: JSON.stringify(body) }).catch(e => {
+    // Adjuntamos qué proveedor se mandó, para diagnosticar rechazos del alta
+    e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']';
+    throw e;
+  });
   console.log(`[flexxus] factura ${f.numero_factura} imputada (${body.tipocomprobante} ${body.numerocomprobante}, prov ${provExistente ? provExistente.codigoproveedor : 'NUEVO'})`);
   return {
     ok: true,
