@@ -295,6 +295,16 @@ async function imputarFactura(f, letra) {
   const venc = f.fecha_vencimiento ||
     new Date(new Date(fecha).getTime() + 30 * 86400000).toISOString().slice(0, 10);
 
+  // Multiplazo: si el proveedor existente tiene uno fijo en su ficha, hay que
+  // respetarlo (Flexxus lo exige); si no, usamos el default configurado.
+  let multiplazo = Number(process.env.FLEXXUS_MULTIPLAZO);
+  if (provExistente) {
+    const fijo = provExistente.multiplazofijo;
+    const propio = provExistente.codigomultiplazo;
+    if (fijo != null && fijo !== 0 && fijo !== '' && Number(fijo) > 0) multiplazo = Number(fijo);
+    else if (propio != null && Number(propio) > 0) multiplazo = Number(propio);
+  }
+
   const body = {
     tipocomprobante: 'F' + (letra || 'A'),
     numerocomprobante: Number(String(f.numero_factura || '').replace(/\D/g, '')) || Date.now() % 1e9,
@@ -302,7 +312,7 @@ async function imputarFactura(f, letra) {
     fechaimputable: fecha,
     fechavencimiento: venc,
     codigousuario: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER,
-    codigomultiplazo: Number(process.env.FLEXXUS_MULTIPLAZO),
+    codigomultiplazo: multiplazo,
     codigodeposito: process.env.FLEXXUS_DEPOSITO,
     tipofactura: 1,                       // 1 = cuenta corriente (se paga después)
     facturaporconcepto: true,
@@ -325,7 +335,8 @@ async function imputarFactura(f, letra) {
 
   const resp = await flx('/comprobantescompras', { method: 'POST', body: JSON.stringify(body) }).catch(e => {
     // Adjuntamos qué proveedor se mandó, para diagnosticar rechazos del alta
-    e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']';
+    e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']' +
+      '\n[multiplazo enviado: ' + multiplazo + ']';
     throw e;
   });
   console.log(`[flexxus] factura ${f.numero_factura} imputada (${body.tipocomprobante} ${body.numerocomprobante}, prov ${provExistente ? provExistente.codigoproveedor : 'NUEVO'})`);
