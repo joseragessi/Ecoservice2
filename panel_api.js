@@ -1070,7 +1070,25 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
     }
     const { imputarFactura } = require('./flexxus');
-    const r = await imputarFactura(f, letra);
+    let r;
+    try {
+      r = await imputarFactura(f, letra);
+    } catch (e) {
+      // Si Flexxus dice que el comprobante YA existe, es que ya está imputado:
+      // lo marcamos como tal en vez de mostrar el error técnico.
+      if (/ya existe/i.test(e.message || '')) {
+        const flexxus = {
+          ok: true, fecha: new Date().toISOString(), ya_existia: true,
+          tipocomprobante: 'F' + letra,
+          numerocomprobante: Number(String(f.numero_factura || '').replace(/\D/g, '')) || null,
+          por: req.usuario || 'panel',
+        };
+        await supabaseCompras.from('facturas')
+          .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
+        return res.json({ ok: true, flexxus, ya_existia: true });
+      }
+      throw e;
+    }
     const flexxus = {
       ok: true, fecha: new Date().toISOString(),
       tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
