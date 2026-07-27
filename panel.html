@@ -3145,7 +3145,7 @@ async function imputarFlexxus(id){
     const orig=comprasData.find(i=>String(i.id)===String(id));
     if(orig)orig.flexxus=r.flexxus;
     if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
-    alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':''));
+    alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':'\n(Proveedor existente: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
     go('compras');
   }catch(e){alert('Flexxus dijo que no:\n\n'+(e.message||'error desconocido'));}
 }
@@ -3450,7 +3450,16 @@ async function guardarEdicionCompra(){
   }catch(e){alert('No pude guardar: '+(e.message||''));}
 }
 async function borrarCompra(id){
-  if(!confirm('¿Eliminar esta factura? No se puede deshacer.'))return;
+  const inv=comprasData.find(i=>String(i.id)===String(id))||comprasVer;
+  if(inv&&inv.flexxus&&inv.flexxus.ok){
+    if(!confirm('⚠️ ATENCIÓN: esta factura ya está imputada en Flexxus ('+
+      (inv.flexxus.tipocomprobante||'')+' '+(inv.flexxus.numerocomprobante||'')+').\n\n'+
+      'Eliminarla acá la saca de tu panel, PERO el comprobante SIGUE en Flexxus — los dos sistemas van a quedar descoordinados.\n\n'+
+      'Para anular un comprobante ya cargado se hace una NOTA DE CRÉDITO en el ERP, no se borra.\n\n'+
+      '¿Eliminar igual solo del panel?'))return;
+  } else {
+    if(!confirm('¿Eliminar esta factura? No se puede deshacer.'))return;
+  }
   try{await api('/api/compras/factura/'+id,{method:'DELETE'});volverCompras();}
   catch(e){alert('No pude eliminar: '+(e.message||''));}
 }
