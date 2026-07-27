@@ -216,7 +216,30 @@ async function imputarFactura(f, letra) {
   const provExistente = await buscarProveedorPorCuit(f.cuit, f.proveedor);
   let proveedor;
   if (provExistente) {
-    proveedor = { codigoproveedor: provExistente.codigoproveedor };
+    // Flexxus revalida el objeto proveedor completo aunque exista, así que
+    // reenviamos SUS PROPIOS datos (los del GET) tal cual, solo garantizando
+    // que los requeridos no vayan vacíos. No inventamos nada del proveedor.
+    const p = provExistente;
+    proveedor = {
+      codigoproveedor: String(p.codigoproveedor),
+      razonsocial: String(p.razonsocial || f.proveedor || 'PROVEEDOR').slice(0, 50),
+      direccion: (String(p.direccion || '').trim() || 'S/D').slice(0, 50),
+      telefono: (String(p.telefono || '').trim() || '0').slice(0, 50),
+      cuit: cuitLimpio(p.cuit || f.cuit) || undefined,
+      ingresosbrutos: String(p.ingresosbrutos || cuitLimpio(p.cuit) || '0'),
+      codigocondicioniva: String(p.condicioniva || codDe(p, 'tipoivacompra.codigotipo') || ''),
+      codigoclaseproveedor: String(p.codigoclaseproveedor || ''),
+      codigoprovincia: String(p.codigoprovincia || codDe(p, 'provincia.codigoprovincia') || ''),
+      codigolocalidad: String(p.codigolocalidad || codDe(p, 'localidades.codigolocalidad') || ''),
+    };
+    // Si al proveedor existente le faltara algún requerido, lo completamos con
+    // la plantilla/tablas (mismo mecanismo que el alta), sin inventar.
+    const faltan0 = ['codigocondicioniva', 'codigoclaseproveedor', 'codigoprovincia', 'codigolocalidad']
+      .filter(k => !proveedor[k]);
+    if (faltan0.length) {
+      const alta = await datosAltaProveedor();
+      for (const k of faltan0) proveedor[k] = String(alta[k]);
+    }
   } else {
     // Alta: el schema exige codigoproveedor + direccion + telefono + condición
     // IVA + clase + provincia + localidad. Los códigos salen de un proveedor
