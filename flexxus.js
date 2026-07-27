@@ -60,8 +60,14 @@ async function flx(path, opts = {}, reint = true) {
   const texto = await r.text();
   let d; try { d = JSON.parse(texto); } catch (e) { d = { raw: texto }; }
   if (!r.ok) {
-    const msg = (d && (d.message || d.error)) || texto.slice(0, 200) || ('HTTP ' + r.status);
-    const err = new Error(msg); err.status = r.status; err.data = d;
+    // Flexxus a veces devuelve message/errors como array de objetos: desarmarlos
+    const plano = (x) => typeof x === 'string' ? x
+      : (x && (x.message || x.msg || x.descripcion)) || JSON.stringify(x);
+    let m = d && (d.message ?? d.error ?? d.errors ?? (Array.isArray(d) ? d : null));
+    if (Array.isArray(m)) m = m.map(plano).join('\n· ');
+    else if (m && typeof m === 'object') m = plano(m);
+    const msg = m || texto.slice(0, 300) || ('HTTP ' + r.status);
+    const err = new Error(String(msg)); err.status = r.status; err.data = d;
     throw err;
   }
   return d;
@@ -91,9 +97,15 @@ async function imputarFactura(f, letra) {
   const neto = Number(f.total_sin_iva) || 0;
   const iva  = Number(f.total_iva) || 0;
   const otros = f.otros_conceptos || [];
-  const percepciones = otros.filter(o => !o.exento && (Number(o.monto) || 0) > 0);
+  // Percepción de verdad: por el tipo que clasificó la IA, o si el texto lo dice.
+  // Lo demás no exento (bonificaciones, redondeos, "otro") NO va a percepciones:
+  // entra como línea de concepto libre para que el total cierre igual.
+  const esPerc = o => o.tipo === 'percepcion' || /percep/i.test(String(o.concepto || ''));
+  const percepciones = otros.filter(o => !o.exento && esPerc(o) && (Number(o.monto) || 0) !== 0);
+  const otrosLibres  = otros.filter(o => !o.exento && !esPerc(o) && (Number(o.monto) || 0) !== 0);
   const exento = otros.filter(o => o.exento).reduce((s, o) => s + (Number(o.monto) || 0), 0);
-  const totPerc = percepciones.reduce((s, o) => s + (Number(o.monto) || 0), 0);
+  const totPerc  = percepciones.reduce((s, o) => s + (Number(o.monto) || 0), 0);
+  const totOtros = otrosLibres.reduce((s, o) => s + (Number(o.monto) || 0), 0);
 
   if (percepciones.length && !process.env.FLEXXUS_CODIGO_PERCEPCION) {
     // Sin fallback configurado igual intentamos mapear por tipo (ver abajo);
@@ -140,6 +152,13 @@ async function imputarFactura(f, letra) {
   const sumaProd = productos.reduce((s, p) => s + p.preciototal, 0);
   const ajuste = Math.round((neto - sumaProd) * 100) / 100;
   if (Math.abs(ajuste) >= 0.01 && Math.abs(ajuste) < 1) productos[productos.length - 1].preciototal += ajuste;
+  // Bonificaciones y otros conceptos no-percepción: líneas de concepto libre
+  otrosLibres.forEach(o => productos.push({
+    codigoarticulo: '*',
+    descripcion: String(o.concepto || 'Otro concepto').slice(0, 200),
+    cantidad: 1,
+    preciototal: Math.round((Number(o.monto) || 0) * 100) / 100,
+  }));
 
   const fecha = f.fecha_factura || new Date().toISOString().slice(0, 10);
   const venc = f.fecha_vencimiento ||
@@ -160,7 +179,7 @@ async function imputarFactura(f, letra) {
     productos,
     exento: Math.round(exento * 100) / 100,
     observaciones: 'Imputada desde Panel EcoService',
-    total: Math.round((neto + iva + totPerc + exento) * 100) / 100,
+    total: Math.round((neto + iva + totPerc + totOtros + exento) * 100) / 100,
   };
   if (iva > 0) {
     body.calculaiva = true;
