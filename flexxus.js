@@ -295,14 +295,19 @@ async function imputarFactura(f, letra) {
   const venc = f.fecha_vencimiento ||
     new Date(new Date(fecha).getTime() + 30 * 86400000).toISOString().slice(0, 10);
 
-  // Multiplazo: si el proveedor existente tiene uno fijo en su ficha, hay que
-  // respetarlo (Flexxus lo exige); si no, usamos el default configurado.
+  // Multiplazo: si el proveedor tiene condición de pago fija, hay que usar la
+  // suya (Flexxus la exige). multiplazofijo suele ser un flag (1 = tiene fija);
+  // el código real está en codigomultiplazo. Probamos en ese orden.
   let multiplazo = Number(process.env.FLEXXUS_MULTIPLAZO);
+  let multiplazoOrigen = 'default env';
   if (provExistente) {
-    const fijo = provExistente.multiplazofijo;
-    const propio = provExistente.codigomultiplazo;
-    if (fijo != null && fijo !== 0 && fijo !== '' && Number(fijo) > 0) multiplazo = Number(fijo);
-    else if (propio != null && Number(propio) > 0) multiplazo = Number(propio);
+    const propio = Number(provExistente.codigomultiplazo);
+    const fijoFlag = provExistente.multiplazofijo;
+    // Si tiene un código de multiplazo propio válido, usarlo (cubre el caso de
+    // multiplazo fijo, que es justo lo que Flexxus está exigiendo)
+    if (propio > 0) { multiplazo = propio; multiplazoOrigen = 'proveedor.codigomultiplazo'; }
+    // Si multiplazofijo trae un código > 1 (no es flag), respetarlo
+    if (Number(fijoFlag) > 1) { multiplazo = Number(fijoFlag); multiplazoOrigen = 'proveedor.multiplazofijo'; }
   }
 
   const body = {
@@ -336,7 +341,9 @@ async function imputarFactura(f, letra) {
   const resp = await flx('/comprobantescompras', { method: 'POST', body: JSON.stringify(body) }).catch(e => {
     // Adjuntamos qué proveedor se mandó, para diagnosticar rechazos del alta
     e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']' +
-      '\n[multiplazo enviado: ' + multiplazo + ']';
+      '\n[multiplazo enviado: ' + multiplazo + ' (origen: ' + multiplazoOrigen + ')]' +
+      (provExistente ? '\n[proveedor tiene: codigomultiplazo=' + provExistente.codigomultiplazo +
+        ', multiplazofijo=' + provExistente.multiplazofijo + ', plazopordefecto=' + provExistente.plazopordefecto + ']' : '');
     throw e;
   });
   console.log(`[flexxus] factura ${f.numero_factura} imputada (${body.tipocomprobante} ${body.numerocomprobante}, prov ${provExistente ? provExistente.codigoproveedor : 'NUEVO'})`);
