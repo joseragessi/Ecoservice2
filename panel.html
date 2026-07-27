@@ -3050,6 +3050,7 @@ async function vCompras(view){
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Compras</div>
       <div class="view-desc">Facturas de proveedores · base de compras</div></div>
+      <button class="btn-salir" style="margin-right:8px" onclick="probarFlexxus()">⚙ Flexxus</button>
       <button class="btn" onclick="comprasNueva()">＋ Nueva factura</button></div>
     ${tabsCompras()}
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -3131,6 +3132,40 @@ let comprasEditMode='total'; // 'total' | 'per-item' (imputación al editar)
 function ncTotal(inv){
   return (inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
 }
+/* ── Flexxus ── */
+async function imputarFlexxus(id){
+  const letra=prompt('¿Qué letra es la factura? (A, B o C)','A');
+  if(letra===null)return;
+  const L=String(letra).trim().toUpperCase();
+  if(!['A','B','C'].includes(L)){alert('Letra inválida. Tiene que ser A, B o C.');return;}
+  if(!confirm('Se va a crear el comprobante F'+L+' en Flexxus con los datos de esta factura (ítems, IVA, percepciones). ¿Continuar?'))return;
+  try{
+    const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L})});
+    const orig=comprasData.find(i=>String(i.id)===String(id));
+    if(orig)orig.flexxus=r.flexxus;
+    if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
+    alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':''));
+    go('compras');
+  }catch(e){alert('Flexxus dijo que no:\n\n'+(e.message||'error desconocido'));}
+}
+async function probarFlexxus(){
+  const w=window.open('','_blank','width=680,height=760');
+  if(!w){alert('Habilitá popups para ver el diagnóstico.');return;}
+  w.document.write('<title>Flexxus · diagnóstico</title><body style="font-family:monospace;padding:18px;font-size:13px">Probando conexión con Flexxus…</body>');
+  try{
+    const d=await api('/api/flexxus/estado');
+    const tabla=(t,l)=>`<h3 style="margin:14px 0 4px">${t}</h3>`+((l||[]).length
+      ?'<table border="0" cellpadding="4" style="border-collapse:collapse;font-size:12px">'+l.map(x=>`<tr style="border-bottom:1px solid #eee"><td><b>${x.codigo??x.error??''}</b></td><td>${x.descripcion||''}</td></tr>`).join('')+'</table>'
+      :'<div>—</div>');
+    w.document.body.innerHTML=`<h2>✓ Conexión OK</h2>
+      <div>URL: ${d.url}<br>Usuario API: ${d.usuario}</div>
+      <h3 style="margin:14px 0 4px">Config actual (variables en Railway)</h3>
+      <table cellpadding="4" style="border-collapse:collapse;font-size:12px">${Object.entries(d.config).map(([k,v])=>`<tr style="border-bottom:1px solid #eee"><td>${k}</td><td><b>${v}</b></td></tr>`).join('')}</table>
+      ${tabla('Depósitos disponibles (FLEXXUS_DEPOSITO)',d.depositos)}
+      ${tabla('Condiciones de pago (FLEXXUS_MULTIPLAZO)',d.multiplazos)}
+      ${tabla('Percepciones (FLEXXUS_CODIGO_PERCEPCION)',d.percepciones)}`;
+  }catch(e){w.document.body.innerHTML='<h2>✗ Falló la conexión</h2><pre style="white-space:pre-wrap">'+(e.message||'')+'</pre>';}
+}
 function verCompra(id){
   const orig=comprasData.find(i=>String(i.id)===String(id));
   if(!orig)return;
@@ -3173,9 +3208,13 @@ function vComprasDetalle(view){
             <button class="btn" onclick="guardarEdicionCompra()">Guardar cambios</button>`
         :`<button class="btn-salir" style="${inv.pagada?'color:var(--brote-2);border-color:var(--brote)':''}" onclick="togglePagada('${inv.id}',${!inv.pagada})">${inv.pagada?'✓ Pagada':'Marcar pagada'}</button>
           <button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
+          ${inv.flexxus&&inv.flexxus.ok
+            ?''
+            :`<button class="btn-salir" style="color:#7B3FA0;border-color:#C9A6E0" onclick="imputarFlexxus('${inv.id}')">⇪ Imputar a Flexxus</button>`}
           <button class="btn" onclick="abrirNC()">＋ Nota de crédito</button>
           <button class="btn-salir" style="color:var(--rojo)" onclick="borrarCompra('${inv.id}')">Eliminar</button>`}
     </div></div>
+    ${!ed&&inv.flexxus&&inv.flexxus.ok?`<div class="hint" style="margin-bottom:12px;border-color:#C9A6E0"><svg viewBox="0 0 24 24" fill="none" stroke="#7B3FA0" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg><div>Imputada en Flexxus · ${inv.flexxus.tipocomprobante||''} ${inv.flexxus.numerocomprobante||''} · ${fechaAR(inv.flexxus.fecha)} por ${inv.flexxus.por||''}${inv.flexxus.proveedor_creado?' · proveedor creado en Flexxus':''}</div></div>`:''}
     ${!ed&&inv.pagada?'<div class="hint" style="margin-bottom:18px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg><div>Factura pagada'+(inv.pagada_at?' · '+fechaAR(inv.pagada_at):'')+'</div></div>':''}
 
   <div class="grid g-2" style="margin-bottom:18px">
