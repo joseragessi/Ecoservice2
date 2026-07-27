@@ -3094,7 +3094,8 @@ function renderComprasBody(){
       <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
         ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
       <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
-      <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}</td>
+      <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}
+        ${inv.flexxus&&inv.flexxus.ok?'<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div>':''}</td>
       <td style="text-align:right;white-space:nowrap">
         ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
         <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
