@@ -86,6 +86,27 @@ async function buscarProveedorPorCuit(cuit) {
   } catch (e) { return null; }
 }
 
+// Un proveedor cualquiera existente, como plantilla de códigos válidos
+// (condición IVA, clase, provincia, localidad) para las altas nuevas.
+let _plantillaProv = null;
+async function plantillaProveedor() {
+  if (_plantillaProv) return _plantillaProv;
+  try {
+    const d = await flx('/proveedores?limit=1');
+    const l = d.data || d || [];
+    _plantillaProv = (Array.isArray(l) && l[0]) || {};
+  } catch (e) { _plantillaProv = {}; }
+  return _plantillaProv;
+}
+const codDe = (obj, ...claves) => {
+  for (const k of claves) {
+    if (obj == null) break;
+    const v = k.split('.').reduce((o, p) => (o == null ? o : o[p]), obj);
+    if (v != null && v !== '') return String(v);
+  }
+  return null;
+};
+
 // ── Imputar factura de Compras como comprobante de compra ────
 // f = el jsonb `data` de la factura del panel. letra = 'A'|'B'|'C'.
 async function imputarFactura(f, letra) {
@@ -133,9 +154,29 @@ async function imputarFactura(f, letra) {
   // Proveedor: si existe por CUIT, mandamos SOLO su código (así Flexxus no pisa
   // sus datos); si no existe, mandamos lo mínimo y Flexxus lo crea.
   const provExistente = await buscarProveedorPorCuit(f.cuit);
-  const proveedor = provExistente
-    ? { codigoproveedor: provExistente.codigoproveedor }
-    : { razonsocial: (f.proveedor || 'PROVEEDOR SIN NOMBRE').slice(0, 100), cuit: cuitLimpio(f.cuit) || undefined };
+  let proveedor;
+  if (provExistente) {
+    proveedor = { codigoproveedor: provExistente.codigoproveedor };
+  } else {
+    // Alta: el schema exige codigoproveedor + direccion + telefono + condición
+    // IVA + clase + provincia + localidad. Los códigos salen de un proveedor
+    // existente (plantilla) para garantizar valores válidos de SU instalación;
+    // se pueden pisar con envs FLEXXUS_CONDICION_IVA / FLEXXUS_CLASE_PROVEEDOR.
+    const pl = await plantillaProveedor();
+    proveedor = {
+      codigoproveedor: (cuitLimpio(f.cuit) || ('ECO' + String(Date.now()).slice(-8))).slice(0, 15),
+      razonsocial: (f.proveedor || 'PROVEEDOR SIN NOMBRE').slice(0, 50),
+      direccion: 'S/D',
+      telefono: '0',
+      cuit: cuitLimpio(f.cuit) || undefined,
+      codigocondicioniva: process.env.FLEXXUS_CONDICION_IVA ||
+        codDe(pl, 'codigocondicioniva', 'condicionIva.codigocondicioniva', 'condicioniva.codigocondicioniva') || '1',
+      codigoclaseproveedor: process.env.FLEXXUS_CLASE_PROVEEDOR ||
+        codDe(pl, 'codigoclaseproveedor', 'claseProveedor.codigoclaseproveedor') || '1',
+      codigoprovincia: codDe(pl, 'codigoprovincia', 'provincia.codigoprovincia') || '001',
+      codigolocalidad: codDe(pl, 'codigolocalidad', 'localidad.codigolocalidad') || '1',
+    };
+  }
 
   // Productos: ítems reales como concepto libre (sin catálogo de artículos)
   const items = (f.items || []).filter(i => i.descripcion);
@@ -215,6 +256,19 @@ async function probarConexion() {
   out.depositos    = await trae('/depositos',   x => ({ codigo: x.codigodeposito, descripcion: x.descripcion }));
   out.multiplazos  = await trae('/multiplazos', x => ({ codigo: x.codigomultiplazo, descripcion: x.descripcion }));
   out.percepciones = await trae('/percepciones', x => ({ codigo: x.codigopercepcion, descripcion: x.descripcion }));
+  out.clases_proveedor = await trae('/clasesproveedores', x => ({ codigo: x.codigoclaseproveedor, descripcion: x.descripcion }));
+  // Plantilla para altas de proveedor (códigos que se copiarían de un existente)
+  try {
+    _plantillaProv = null;
+    const pl = await plantillaProveedor();
+    out.alta_proveedor_usaria = {
+      codigocondicioniva: process.env.FLEXXUS_CONDICION_IVA || codDe(pl, 'codigocondicioniva', 'condicionIva.codigocondicioniva', 'condicioniva.codigocondicioniva') || '1',
+      codigoclaseproveedor: process.env.FLEXXUS_CLASE_PROVEEDOR || codDe(pl, 'codigoclaseproveedor', 'claseProveedor.codigoclaseproveedor') || '1',
+      codigoprovincia: codDe(pl, 'codigoprovincia', 'provincia.codigoprovincia') || '001',
+      codigolocalidad: codDe(pl, 'codigolocalidad', 'localidad.codigolocalidad') || '1',
+      plantilla: pl.razonsocial || '(ninguno encontrado)',
+    };
+  } catch (e) { out.alta_proveedor_usaria = { error: e.message }; }
   out.config = {
     FLEXXUS_CODIGO_USUARIO: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER || '(falta)',
     FLEXXUS_MULTIPLAZO: process.env.FLEXXUS_MULTIPLAZO || '(falta)',
