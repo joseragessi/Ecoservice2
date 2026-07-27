@@ -76,14 +76,36 @@ async function flx(path, opts = {}, reint = true) {
 // ── Proveedores ──────────────────────────────────────────────
 function cuitLimpio(c) { return String(c || '').replace(/\D/g, ''); }
 
-async function buscarProveedorPorCuit(cuit) {
+async function buscarProveedorPorCuit(cuit, razonSocial) {
   const c = cuitLimpio(cuit);
-  if (!c) return null;
-  try {
-    const d = await flx('/proveedores?cuit=' + encodeURIComponent(c));
-    const lista = d.data || d || [];
-    return Array.isArray(lista) && lista.length ? lista[0] : null;
-  } catch (e) { return null; }
+  // 1) Por CUIT: probamos sin guiones y con el formato AR con guiones, porque
+  // Flexxus puede tenerlo guardado de cualquiera de las dos formas.
+  const variantes = [];
+  if (c) {
+    variantes.push(c);
+    if (c.length === 11) variantes.push(c.slice(0, 2) + '-' + c.slice(2, 10) + '-' + c.slice(10));
+  }
+  for (const v of variantes) {
+    try {
+      const d = await flx('/proveedores?cuit=' + encodeURIComponent(v));
+      const lista = d.data || d || [];
+      if (Array.isArray(lista) && lista.length) {
+        const match = lista.find(p => cuitLimpio(p.cuit) === c) || lista[0];
+        if (match) return match;
+      }
+    } catch (e) { /* probamos la siguiente variante */ }
+  }
+  // 2) Respaldo por razón social EXACTA (útil si el CUIT vino mal en la factura)
+  if (razonSocial) {
+    try {
+      const d = await flx('/proveedores?razonsocial=' + encodeURIComponent(razonSocial.trim()));
+      const lista = d.data || d || [];
+      const rs = razonSocial.trim().toLowerCase();
+      const match = (Array.isArray(lista) ? lista : []).find(p => String(p.razonsocial || '').trim().toLowerCase() === rs);
+      if (match) return match;
+    } catch (e) { /* sin match por nombre */ }
+  }
+  return null;
 }
 
 // Un proveedor cualquiera existente, como plantilla de códigos válidos
@@ -191,7 +213,7 @@ async function imputarFactura(f, letra) {
 
   // Proveedor: si existe por CUIT, mandamos SOLO su código (así Flexxus no pisa
   // sus datos); si no existe, mandamos lo mínimo y Flexxus lo crea.
-  const provExistente = await buscarProveedorPorCuit(f.cuit);
+  const provExistente = await buscarProveedorPorCuit(f.cuit, f.proveedor);
   let proveedor;
   if (provExistente) {
     proveedor = { codigoproveedor: provExistente.codigoproveedor };
@@ -278,6 +300,7 @@ async function imputarFactura(f, letra) {
     tipocomprobante: body.tipocomprobante,
     numerocomprobante: body.numerocomprobante,
     proveedor_codigo: provExistente ? provExistente.codigoproveedor : null,
+    proveedor_nombre: provExistente ? provExistente.razonsocial : null,
     proveedor_creado: !provExistente,
     respuesta: resp,
   };
