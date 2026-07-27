@@ -296,18 +296,17 @@ async function imputarFactura(f, letra) {
     new Date(new Date(fecha).getTime() + 30 * 86400000).toISOString().slice(0, 10);
 
   // Multiplazo: si el proveedor tiene condición de pago fija, hay que usar la
-  // suya (Flexxus la exige). multiplazofijo suele ser un flag (1 = tiene fija);
-  // el código real está en codigomultiplazo. Probamos en ese orden.
+  // suya (Flexxus la exige). multiplazofijo es un booleano (true = tiene fija);
+  // cuando es true, el código está en plazopordefecto. Fallback: codigomultiplazo.
   let multiplazo = Number(process.env.FLEXXUS_MULTIPLAZO);
   let multiplazoOrigen = 'default env';
   if (provExistente) {
+    const tieneFijo = provExistente.multiplazofijo === true || Number(provExistente.multiplazofijo) === 1;
+    const porDefecto = Number(provExistente.plazopordefecto);
     const propio = Number(provExistente.codigomultiplazo);
-    const fijoFlag = provExistente.multiplazofijo;
-    // Si tiene un código de multiplazo propio válido, usarlo (cubre el caso de
-    // multiplazo fijo, que es justo lo que Flexxus está exigiendo)
-    if (propio > 0) { multiplazo = propio; multiplazoOrigen = 'proveedor.codigomultiplazo'; }
-    // Si multiplazofijo trae un código > 1 (no es flag), respetarlo
-    if (Number(fijoFlag) > 1) { multiplazo = Number(fijoFlag); multiplazoOrigen = 'proveedor.multiplazofijo'; }
+    if (tieneFijo && porDefecto > 0) { multiplazo = porDefecto; multiplazoOrigen = 'proveedor.plazopordefecto (fijo)'; }
+    else if (propio > 0) { multiplazo = propio; multiplazoOrigen = 'proveedor.codigomultiplazo'; }
+    else if (porDefecto > 0) { multiplazo = porDefecto; multiplazoOrigen = 'proveedor.plazopordefecto'; }
   }
 
   const body = {
