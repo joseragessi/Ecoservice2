@@ -296,17 +296,25 @@ async function imputarFactura(f, letra) {
     new Date(new Date(fecha).getTime() + 30 * 86400000).toISOString().slice(0, 10);
 
   // Multiplazo: si el proveedor tiene condición de pago fija, hay que usar la
-  // suya (Flexxus la exige). multiplazofijo es un booleano (true = tiene fija);
-  // cuando es true, el código está en plazopordefecto. Fallback: codigomultiplazo.
+  // suya (Flexxus la exige). El código real está en el objeto multiplazo anidado
+  // (multiplazo.codigomultiplazo). El listado no siempre lo expande, así que si
+  // el proveedor tiene multiplazofijo consultamos su detalle individual.
   let multiplazo = Number(process.env.FLEXXUS_MULTIPLAZO);
   let multiplazoOrigen = 'default env';
   if (provExistente) {
     const tieneFijo = provExistente.multiplazofijo === true || Number(provExistente.multiplazofijo) === 1;
-    const porDefecto = Number(provExistente.plazopordefecto);
-    const propio = Number(provExistente.codigomultiplazo);
-    if (tieneFijo && porDefecto > 0) { multiplazo = porDefecto; multiplazoOrigen = 'proveedor.plazopordefecto (fijo)'; }
-    else if (propio > 0) { multiplazo = propio; multiplazoOrigen = 'proveedor.codigomultiplazo'; }
-    else if (porDefecto > 0) { multiplazo = porDefecto; multiplazoOrigen = 'proveedor.plazopordefecto'; }
+    let cod = codDe(provExistente, 'multiplazo.codigomultiplazo', 'codigomultiplazo');
+    // Si tiene fijo pero el listado no trajo el código, pedir el detalle
+    if (tieneFijo && (cod == null || Number(cod) <= 0)) {
+      try {
+        const d = await flx('/proveedores/' + encodeURIComponent(provExistente.codigoproveedor));
+        const det = (d.data && (Array.isArray(d.data) ? d.data[0] : d.data)) || d;
+        cod = codDe(det, 'multiplazo.codigomultiplazo', 'codigomultiplazo') || cod;
+        if (det && det.plazopordefecto != null && (cod == null || Number(cod) <= 0)) cod = det.plazopordefecto;
+      } catch (e) { /* sin detalle */ }
+    }
+    if (cod != null && Number(cod) > 0) { multiplazo = Number(cod); multiplazoOrigen = tieneFijo ? 'proveedor (fijo)' : 'proveedor'; }
+    else if (Number(provExistente.plazopordefecto) > 0) { multiplazo = Number(provExistente.plazopordefecto); multiplazoOrigen = 'proveedor.plazopordefecto'; }
   }
 
   const body = {
@@ -341,7 +349,8 @@ async function imputarFactura(f, letra) {
     // Adjuntamos qué proveedor se mandó, para diagnosticar rechazos del alta
     e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']' +
       '\n[multiplazo enviado: ' + multiplazo + ' (origen: ' + multiplazoOrigen + ')]' +
-      (provExistente ? '\n[proveedor tiene: codigomultiplazo=' + provExistente.codigomultiplazo +
+      (provExistente ? '\n[proveedor tiene: multiplazo=' + JSON.stringify(provExistente.multiplazo) +
+        ', codigomultiplazo=' + provExistente.codigomultiplazo +
         ', multiplazofijo=' + provExistente.multiplazofijo + ', plazopordefecto=' + provExistente.plazopordefecto + ']' : '');
     throw e;
   });
