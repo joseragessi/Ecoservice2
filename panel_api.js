@@ -1046,6 +1046,45 @@ function aplanar(row) {
   return { ...(data || {}), ...duros };
 }
 
+// ── Flexxus ERP ───────────────────────────────────────────────
+// "Probar conexión": login + lista de códigos (depósitos, multiplazos,
+// percepciones) para configurar las variables en Railway.
+router.get('/api/flexxus/estado', auth, async (req, res) => {
+  try {
+    const { probarConexion } = require('./flexxus');
+    res.json(await probarConexion());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Imputar una factura de Compras en Flexxus (manual, desde el detalle)
+router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
+  try {
+    const letra = ['A', 'B', 'C'].includes((req.body || {}).letra) ? req.body.letra : 'A';
+    const { data: fila, error: e0 } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (e0 || !fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    if (f.flexxus && f.flexxus.ok && !(req.body || {}).force) {
+      return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
+    }
+    const { imputarFactura } = require('./flexxus');
+    const r = await imputarFactura(f, letra);
+    const flexxus = {
+      ok: true, fecha: new Date().toISOString(),
+      tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
+      proveedor_creado: r.proveedor_creado, por: req.usuario || 'panel',
+    };
+    await supabaseCompras.from('facturas')
+      .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
+    res.json({ ok: true, flexxus });
+  } catch (err) {
+    console.error('flexxus imputar:', err.message);
+    res.status(500).json({ error: err.message || 'Error imputando en Flexxus' });
+  }
+});
+
 router.get('/api/compras/facturas', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
