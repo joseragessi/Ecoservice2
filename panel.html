@@ -3164,7 +3164,10 @@ async function probarFlexxus(){
       <table cellpadding="4" style="border-collapse:collapse;font-size:12px">${Object.entries(d.config).map(([k,v])=>`<tr style="border-bottom:1px solid #eee"><td>${k}</td><td><b>${v}</b></td></tr>`).join('')}</table>
       ${tabla('Depósitos disponibles (FLEXXUS_DEPOSITO)',d.depositos)}
       ${tabla('Condiciones de pago (FLEXXUS_MULTIPLAZO)',d.multiplazos)}
-      ${tabla('Percepciones (FLEXXUS_CODIGO_PERCEPCION)',d.percepciones)}`;
+      ${tabla('Percepciones (FLEXXUS_CODIGO_PERCEPCION)',d.percepciones)}
+      ${tabla('Clases de proveedor (FLEXXUS_CLASE_PROVEEDOR)',d.clases_proveedor)}
+      <h3 style="margin:14px 0 4px">Alta de proveedor nuevo usaría</h3>
+      <table cellpadding="4" style="border-collapse:collapse;font-size:12px">${Object.entries(d.alta_proveedor_usaria||{}).map(([k,v])=>`<tr style="border-bottom:1px solid #eee"><td>${k}</td><td><b>${v}</b></td></tr>`).join('')}</table>`;
   }catch(e){w.document.body.innerHTML='<h2>✗ Falló la conexión</h2><pre style="white-space:pre-wrap">'+(e.message||'')+'</pre>';}
 }
 function verCompra(id){
