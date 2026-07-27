@@ -1074,7 +1074,8 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
     const flexxus = {
       ok: true, fecha: new Date().toISOString(),
       tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
-      proveedor_creado: r.proveedor_creado, por: req.usuario || 'panel',
+      proveedor_creado: r.proveedor_creado, proveedor_codigo: r.proveedor_codigo,
+      proveedor_nombre: r.proveedor_nombre, por: req.usuario || 'panel',
     };
     await supabaseCompras.from('facturas')
       .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
