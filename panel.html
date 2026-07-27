@@ -3147,7 +3147,14 @@ async function imputarFlexxus(id){
     if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
     alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':'\n(Proveedor existente: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
     go('compras');
-  }catch(e){alert('Flexxus dijo que no:\n\n'+(e.message||'error desconocido'));}
+  }catch(e){
+    const msg=e.message||'error desconocido';
+    if(msg.length>180){
+      const w=window.open('','_blank','width=680,height=560');
+      if(w){w.document.write('<title>Flexxus · error</title><body style="font-family:monospace;padding:18px;font-size:13px;white-space:pre-wrap">Flexxus rechazó la imputación:\n\n'+msg.replace(/</g,'&lt;')+'</body>');return;}
+    }
+    alert('Flexxus dijo que no:\n\n'+msg);
+  }
 }
 async function probarFlexxus(){
   const w=window.open('','_blank','width=680,height=760');
