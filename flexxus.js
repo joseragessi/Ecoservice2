@@ -96,7 +96,26 @@ async function imputarFactura(f, letra) {
   const totPerc = percepciones.reduce((s, o) => s + (Number(o.monto) || 0), 0);
 
   if (percepciones.length && !process.env.FLEXXUS_CODIGO_PERCEPCION) {
-    throw new Error('La factura tiene percepciones: configurá FLEXXUS_CODIGO_PERCEPCION en Railway (usá "Probar conexión" para ver los códigos)');
+    // Sin fallback configurado igual intentamos mapear por tipo (ver abajo);
+    // solo falla si alguna percepción no matchea ningún tipo conocido.
+  }
+
+  // Mapear cada percepción a su código de Flexxus según el texto del concepto.
+  // Códigos reales de la instalación EcoService: PER IVA / PER IIBB / PER SUSS / PER GAN.
+  // Fallback: FLEXXUS_CODIGO_PERCEPCION (env). Si no hay match ni fallback → error claro.
+  const codigoPercepcion = (concepto) => {
+    const t = String(concepto || '').toLowerCase();
+    if (/suss|seguridad social/.test(t)) return 'PER SUSS';
+    if (/iibb|ingresos brutos|ing\.?\s*brutos|rentas/.test(t)) return 'PER IIBB';
+    if (/ganancia/.test(t)) return 'PER GAN';
+    if (/iva/.test(t)) return 'PER IVA';
+    return process.env.FLEXXUS_CODIGO_PERCEPCION || null;
+  };
+  for (const o of percepciones) {
+    if (!codigoPercepcion(o.concepto)) {
+      throw new Error(`No sé a qué código de percepción de Flexxus mapear "${o.concepto}". ` +
+        'Configurá FLEXXUS_CODIGO_PERCEPCION en Railway como fallback, o corregí el concepto en la factura.');
+    }
   }
 
   // Proveedor: si existe por CUIT, mandamos SOLO su código (así Flexxus no pisa
@@ -149,7 +168,7 @@ async function imputarFactura(f, letra) {
   }
   if (percepciones.length) {
     body.percepciones = percepciones.map(o => ({
-      codigopercepcion: process.env.FLEXXUS_CODIGO_PERCEPCION,
+      codigopercepcion: codigoPercepcion(o.concepto),
       monto: Math.round((Number(o.monto) || 0) * 100) / 100,
     }));
   }
