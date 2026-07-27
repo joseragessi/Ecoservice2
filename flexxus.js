@@ -107,6 +107,44 @@ const codDe = (obj, ...claves) => {
   return null;
 };
 
+// Resuelve los códigos requeridos para dar de alta un proveedor:
+// env → campo del proveedor plantilla (nombres REALES del GET /proveedores:
+// condicioniva plano, localidades.codigolocalidad) → consulta a la tabla
+// correspondiente de Flexxus. Nunca inventa un código.
+async function datosAltaProveedor() {
+  const pl = await plantillaProveedor();
+  const out = {
+    codigocondicioniva: process.env.FLEXXUS_CONDICION_IVA ||
+      codDe(pl, 'condicioniva', 'tipoivacompra.codigotipo'),
+    codigoclaseproveedor: process.env.FLEXXUS_CLASE_PROVEEDOR ||
+      codDe(pl, 'codigoclaseproveedor'),
+    codigoprovincia: codDe(pl, 'codigoprovincia', 'provincia.codigoprovincia'),
+    codigolocalidad: codDe(pl, 'codigolocalidad', 'localidades.codigolocalidad'),
+    plantilla: pl.razonsocial || null,
+  };
+  // Faltantes: buscarlos en las tablas de Flexxus (preferimos "inscripto")
+  if (!out.codigocondicioniva) {
+    try {
+      const d = await flx('/tiposivacompras');
+      const l = d.data || d || [];
+      const ri = l.find(x => /inscri/i.test(x.descripcion || '')) || l[0];
+      if (ri) out.codigocondicioniva = String(ri.codigotipo);
+    } catch (e) { /* sigue null */ }
+  }
+  if (!out.codigoclaseproveedor) {
+    try {
+      const d = await flx('/clasesproveedores');
+      const l = d.data || d || [];
+      if (l[0]) out.codigoclaseproveedor = String(l[0].codigoclaseproveedor);
+    } catch (e) { /* sigue null */ }
+  }
+  for (const k of ['codigocondicioniva', 'codigoclaseproveedor', 'codigoprovincia', 'codigolocalidad']) {
+    if (!out[k]) throw new Error('No pude resolver ' + k + ' para dar de alta el proveedor. ' +
+      'Configurá FLEXXUS_CONDICION_IVA / FLEXXUS_CLASE_PROVEEDOR en Railway (mirá "Probar conexión").');
+  }
+  return out;
+}
+
 // ── Imputar factura de Compras como comprobante de compra ────
 // f = el jsonb `data` de la factura del panel. letra = 'A'|'B'|'C'.
 async function imputarFactura(f, letra) {
@@ -162,19 +200,17 @@ async function imputarFactura(f, letra) {
     // IVA + clase + provincia + localidad. Los códigos salen de un proveedor
     // existente (plantilla) para garantizar valores válidos de SU instalación;
     // se pueden pisar con envs FLEXXUS_CONDICION_IVA / FLEXXUS_CLASE_PROVEEDOR.
-    const pl = await plantillaProveedor();
+    const alta = await datosAltaProveedor();
     proveedor = {
       codigoproveedor: (cuitLimpio(f.cuit) || ('ECO' + String(Date.now()).slice(-8))).slice(0, 15),
       razonsocial: (f.proveedor || 'PROVEEDOR SIN NOMBRE').slice(0, 50),
       direccion: 'S/D',
       telefono: '0',
       cuit: cuitLimpio(f.cuit) || undefined,
-      codigocondicioniva: process.env.FLEXXUS_CONDICION_IVA ||
-        codDe(pl, 'codigocondicioniva', 'condicionIva.codigocondicioniva', 'condicioniva.codigocondicioniva') || '1',
-      codigoclaseproveedor: process.env.FLEXXUS_CLASE_PROVEEDOR ||
-        codDe(pl, 'codigoclaseproveedor', 'claseProveedor.codigoclaseproveedor') || '1',
-      codigoprovincia: codDe(pl, 'codigoprovincia', 'provincia.codigoprovincia') || '001',
-      codigolocalidad: codDe(pl, 'codigolocalidad', 'localidad.codigolocalidad') || '1',
+      codigocondicioniva: alta.codigocondicioniva,
+      codigoclaseproveedor: alta.codigoclaseproveedor,
+      codigoprovincia: alta.codigoprovincia,
+      codigolocalidad: alta.codigolocalidad,
     };
   }
 
@@ -257,17 +293,11 @@ async function probarConexion() {
   out.multiplazos  = await trae('/multiplazos', x => ({ codigo: x.codigomultiplazo, descripcion: x.descripcion }));
   out.percepciones = await trae('/percepciones', x => ({ codigo: x.codigopercepcion, descripcion: x.descripcion }));
   out.clases_proveedor = await trae('/clasesproveedores', x => ({ codigo: x.codigoclaseproveedor, descripcion: x.descripcion }));
-  // Plantilla para altas de proveedor (códigos que se copiarían de un existente)
+  out.condiciones_iva = await trae('/tiposivacompras', x => ({ codigo: x.codigotipo, descripcion: x.descripcion }));
+  // Códigos que usaría el alta de un proveedor nuevo (misma lógica que imputar)
   try {
     _plantillaProv = null;
-    const pl = await plantillaProveedor();
-    out.alta_proveedor_usaria = {
-      codigocondicioniva: process.env.FLEXXUS_CONDICION_IVA || codDe(pl, 'codigocondicioniva', 'condicionIva.codigocondicioniva', 'condicioniva.codigocondicioniva') || '1',
-      codigoclaseproveedor: process.env.FLEXXUS_CLASE_PROVEEDOR || codDe(pl, 'codigoclaseproveedor', 'claseProveedor.codigoclaseproveedor') || '1',
-      codigoprovincia: codDe(pl, 'codigoprovincia', 'provincia.codigoprovincia') || '001',
-      codigolocalidad: codDe(pl, 'codigolocalidad', 'localidad.codigolocalidad') || '1',
-      plantilla: pl.razonsocial || '(ninguno encontrado)',
-    };
+    out.alta_proveedor_usaria = await datosAltaProveedor();
   } catch (e) { out.alta_proveedor_usaria = { error: e.message }; }
   out.config = {
     FLEXXUS_CODIGO_USUARIO: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER || '(falta)',
