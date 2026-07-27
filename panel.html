@@ -3145,7 +3145,11 @@ async function imputarFlexxus(id){
     const orig=comprasData.find(i=>String(i.id)===String(id));
     if(orig)orig.flexxus=r.flexxus;
     if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
-    alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':'\n(Proveedor existente: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
+    if(r.ya_existia){
+      alert('Esta factura ya estaba imputada en Flexxus.\nLa marqué como imputada en el panel.');
+    }else{
+      alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':'\n(Proveedor existente: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
+    }
     go('compras');
   }catch(e){
     const msg=e.message||'error desconocido';
