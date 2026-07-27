@@ -403,6 +403,43 @@ th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
 </div>
 
 <script>
+/* ===== UI: toast + diálogos propios (reemplazan alert/confirm/prompt) ===== */
+function toast(msg,tipo){
+  let c=document.getElementById('toast-cont');
+  if(!c){c=document.createElement('div');c.id='toast-cont';
+    c.style.cssText='position:fixed;top:16px;right:16px;z-index:200;display:flex;flex-direction:column;gap:8px';
+    document.body.appendChild(c);}
+  const col=tipo==='error'?'var(--rojo)':tipo==='info'?'var(--tinta-2)':'var(--brote)';
+  const t=document.createElement('div');
+  t.style.cssText='background:var(--blanco);border-left:4px solid '+col+';box-shadow:var(--sombra-lg);border-radius:10px;padding:12px 16px;font-size:13.5px;max-width:340px;white-space:pre-line;opacity:0;transform:translateX(12px);transition:.2s';
+  t.textContent=msg;
+  c.appendChild(t);requestAnimationFrame(()=>{t.style.opacity=1;t.style.transform='none';});
+  setTimeout(()=>{t.style.opacity=0;t.style.transform='translateX(12px)';setTimeout(()=>t.remove(),250);},tipo==='error'?6000:4000);
+}
+function uiDialog({titulo,cuerpo,ok='Aceptar',cancel='Cancelar',danger,input}){
+  return new Promise(res=>{
+    const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=180;
+    bg.innerHTML=`<div class="modal" style="max-width:420px">
+      <h3>${titulo||''}</h3>
+      <div style="font-size:13.5px;color:var(--tinta-2);white-space:pre-line;line-height:1.5">${cuerpo||''}</div>
+      ${input!=null?`<input id="ui-inp" value="${String(input).replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box;margin-top:12px;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit">`:''}
+      <div class="modal-acciones">
+        ${cancel?`<button class="btn ghost" id="ui-no">${cancel}</button>`:''}
+        <button class="btn" id="ui-si" style="${danger?'background:var(--rojo);border-color:var(--rojo)':''}">${ok}</button>
+      </div></div>`;
+    document.body.appendChild(bg);
+    const inp=bg.querySelector('#ui-inp');if(inp){inp.focus();inp.select();}
+    const cerrar=v=>{bg.remove();res(v);};
+    bg.querySelector('#ui-si').onclick=()=>cerrar(input!=null?(inp?inp.value:''):true);
+    const no=bg.querySelector('#ui-no');if(no)no.onclick=()=>cerrar(input!=null?null:false);
+    bg.addEventListener('click',e=>{if(e.target===bg)cerrar(input!=null?null:false);});
+    if(inp)inp.addEventListener('keydown',e=>{if(e.key==='Enter')bg.querySelector('#ui-si').click();});
+  });
+}
+const uiConfirm=(cuerpo,opts={})=>uiDialog({titulo:opts.titulo||'Confirmar',cuerpo,ok:opts.ok||'Sí',cancel:opts.cancel||'Cancelar',danger:opts.danger});
+const uiAlert=(cuerpo,titulo)=>uiDialog({titulo:titulo||'',cuerpo,cancel:''});
+const uiPrompt=(cuerpo,valor,titulo)=>uiDialog({titulo:titulo||'',cuerpo,input:valor==null?'':valor,ok:'Aceptar'});
+
 /* ===== Estado ===== */
 let token = localStorage.getItem('eco_token') || null;
 let objetivos = [];
@@ -3135,52 +3172,55 @@ function ncTotal(inv){
 }
 /* ── Flexxus ── */
 async function imputarFlexxus(id){
-  const letra=prompt('¿Qué letra es la factura? (A, B o C)','A');
+  const letra=await uiPrompt('¿Qué letra es la factura? (A, B o C)','A','Imputar a Flexxus');
   if(letra===null)return;
   const L=String(letra).trim().toUpperCase();
-  if(!['A','B','C'].includes(L)){alert('Letra inválida. Tiene que ser A, B o C.');return;}
-  if(!confirm('Se va a crear el comprobante F'+L+' en Flexxus con los datos de esta factura (ítems, IVA, percepciones). ¿Continuar?'))return;
+  if(!['A','B','C'].includes(L)){toast('Letra inválida. Tiene que ser A, B o C.','error');return;}
+  if(!await uiConfirm('Se va a crear el comprobante F'+L+' en Flexxus con los datos de esta factura (ítems, IVA, percepciones).','¿Continuar?',{ok:'Imputar'}))return;
   try{
     const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L})});
     const orig=comprasData.find(i=>String(i.id)===String(id));
     if(orig)orig.flexxus=r.flexxus;
     if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
     if(r.ya_existia){
-      alert('Esta factura ya estaba imputada en Flexxus.\nLa marqué como imputada en el panel.');
+      toast('Esta factura ya estaba imputada en Flexxus. La marqué como imputada.','info');
     }else{
-      alert('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(El proveedor no existía: se creó en Flexxus)':'\n(Proveedor existente: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
+      toast('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(Proveedor creado en Flexxus)':'\n(Proveedor: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
     }
     go('compras');
   }catch(e){
     const msg=e.message||'error desconocido';
-    if(msg.length>180){
-      const w=window.open('','_blank','width=680,height=560');
-      if(w){w.document.write('<title>Flexxus · error</title><body style="font-family:monospace;padding:18px;font-size:13px;white-space:pre-wrap">Flexxus rechazó la imputación:\n\n'+msg.replace(/</g,'&lt;')+'</body>');return;}
-    }
-    alert('Flexxus dijo que no:\n\n'+msg);
+    if(msg.length>180)await uiAlert(msg.replace(/</g,'&lt;'),'Flexxus rechazó la imputación');
+    else toast('Flexxus: '+msg,'error');
   }
 }
 async function probarFlexxus(){
-  const w=window.open('','_blank','width=680,height=760');
-  if(!w){alert('Habilitá popups para ver el diagnóstico.');return;}
-  w.document.write('<title>Flexxus · diagnóstico</title><body style="font-family:monospace;padding:18px;font-size:13px">Probando conexión con Flexxus…</body>');
+  toast('Probando conexión con Flexxus…','info');
   try{
     const d=await api('/api/flexxus/estado');
-    const tabla=(t,l)=>`<h3 style="margin:14px 0 4px">${t}</h3>`+((l||[]).length
-      ?'<table border="0" cellpadding="4" style="border-collapse:collapse;font-size:12px">'+l.map(x=>`<tr style="border-bottom:1px solid #eee"><td><b>${x.codigo??x.error??''}</b></td><td>${x.descripcion||''}</td></tr>`).join('')+'</table>'
-      :'<div>—</div>');
-    w.document.body.innerHTML=`<h2>✓ Conexión OK</h2>
-      <div>URL: ${d.url}<br>Usuario API: ${d.usuario}</div>
-      <h3 style="margin:14px 0 4px">Config actual (variables en Railway)</h3>
-      <table cellpadding="4" style="border-collapse:collapse;font-size:12px">${Object.entries(d.config).map(([k,v])=>`<tr style="border-bottom:1px solid #eee"><td>${k}</td><td><b>${v}</b></td></tr>`).join('')}</table>
-      ${tabla('Depósitos disponibles (FLEXXUS_DEPOSITO)',d.depositos)}
+    const tabla=(t,l)=>`<div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">${t}</div>`+((l||[]).length
+      ?'<div style="max-height:150px;overflow:auto;border:1px solid var(--linea);border-radius:8px">'+(l||[]).map(x=>`<div style="display:flex;gap:10px;padding:4px 9px;border-bottom:1px solid var(--papel);font-size:12px"><b style="min-width:90px;font-family:var(--mono,monospace)">${x.codigo??x.error??''}</b><span>${x.descripcion||''}</span></div>`).join('')+'</div>'
+      :'<div class="sub">—</div>');
+    const cfg=Object.entries(d.config||{}).map(([k,v])=>`<div style="display:flex;gap:10px;padding:3px 0;font-size:12px"><span style="min-width:210px">${k}</span><b>${v}</b></div>`).join('');
+    const alta=Object.entries(d.alta_proveedor_usaria||{}).map(([k,v])=>`<div style="display:flex;gap:10px;padding:3px 0;font-size:12px"><span style="min-width:180px">${k}</span><b>${v}</b></div>`).join('');
+    const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=180;
+    bg.innerHTML=`<div class="modal" style="max-width:560px">
+      <h3>⚙ Flexxus · diagnóstico</h3>
+      <div style="font-size:12.5px;color:var(--brote-2);font-weight:600;margin-bottom:2px">✓ Conexión OK</div>
+      <div class="sub" style="font-size:12px">URL: ${d.url}<br>Usuario API: ${d.usuario}</div>
+      <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Config actual (variables en Railway)</div>${cfg}
+      ${tabla('Depósitos (FLEXXUS_DEPOSITO)',d.depositos)}
       ${tabla('Condiciones de pago (FLEXXUS_MULTIPLAZO)',d.multiplazos)}
       ${tabla('Percepciones (FLEXXUS_CODIGO_PERCEPCION)',d.percepciones)}
       ${tabla('Clases de proveedor (FLEXXUS_CLASE_PROVEEDOR)',d.clases_proveedor)}
       ${tabla('Condiciones de IVA (FLEXXUS_CONDICION_IVA)',d.condiciones_iva)}
-      <h3 style="margin:14px 0 4px">Alta de proveedor nuevo usaría</h3>
-      <table cellpadding="4" style="border-collapse:collapse;font-size:12px">${Object.entries(d.alta_proveedor_usaria||{}).map(([k,v])=>`<tr style="border-bottom:1px solid #eee"><td>${k}</td><td><b>${v}</b></td></tr>`).join('')}</table>`;
-  }catch(e){w.document.body.innerHTML='<h2>✗ Falló la conexión</h2><pre style="white-space:pre-wrap">'+(e.message||'')+'</pre>';}
+      <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Alta de proveedor nuevo usaría</div>${alta}
+      <div class="modal-acciones"><button class="btn" id="fx-cerrar">Cerrar</button></div>
+    </div>`;
+    document.body.appendChild(bg);
+    bg.querySelector('#fx-cerrar').onclick=()=>bg.remove();
+    bg.addEventListener('click',e=>{if(e.target===bg)bg.remove();});
+  }catch(e){await uiAlert((e.message||'No pude conectar con Flexxus.'),'✗ Falló la conexión');}
 }
 function verCompra(id){
   const orig=comprasData.find(i=>String(i.id)===String(id));
@@ -3463,16 +3503,16 @@ async function guardarEdicionCompra(){
 async function borrarCompra(id){
   const inv=comprasData.find(i=>String(i.id)===String(id))||comprasVer;
   if(inv&&inv.flexxus&&inv.flexxus.ok){
-    if(!confirm('⚠️ ATENCIÓN: esta factura ya está imputada en Flexxus ('+
+    if(!await uiConfirm('Esta factura ya está imputada en Flexxus ('+
       (inv.flexxus.tipocomprobante||'')+' '+(inv.flexxus.numerocomprobante||'')+').\n\n'+
       'Eliminarla acá la saca de tu panel, PERO el comprobante SIGUE en Flexxus — los dos sistemas van a quedar descoordinados.\n\n'+
-      'Para anular un comprobante ya cargado se hace una NOTA DE CRÉDITO en el ERP, no se borra.\n\n'+
-      '¿Eliminar igual solo del panel?'))return;
+      'Para anular un comprobante ya cargado se hace una NOTA DE CRÉDITO en el ERP, no se borra.',
+      '⚠️ Factura imputada en Flexxus',{ok:'Eliminar igual',danger:true}))return;
   } else {
-    if(!confirm('¿Eliminar esta factura? No se puede deshacer.'))return;
+    if(!await uiConfirm('¿Eliminar esta factura? No se puede deshacer.','Eliminar factura',{ok:'Eliminar',danger:true}))return;
   }
   try{await api('/api/compras/factura/'+id,{method:'DELETE'});volverCompras();}
-  catch(e){alert('No pude eliminar: '+(e.message||''));}
+  catch(e){toast('No pude eliminar: '+(e.message||''),'error');}
 }
 function abrirNC(){
   const inv=comprasVer;if(!inv)return;
