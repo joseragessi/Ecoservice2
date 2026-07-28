@@ -532,6 +532,88 @@ router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
   }
 });
 
+// ── Viajes / bateas (roll off) ────────────────────────────────
+router.get('/api/viajes', auth, async (req, res) => {
+  try {
+    let q = supabase.from('viajes_bateas')
+      .select('*, capataces(nombre), unidades(patente)')
+      .order('fecha', { ascending: false }).limit(300);
+    if (req.query.desde) q = q.gte('fecha', req.query.desde);
+    if (req.query.hasta) q = q.lte('fecha', req.query.hasta);
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('viajes:', err);
+    res.status(500).json({ error: 'Error cargando viajes (¿existe la tabla viajes_bateas?)' });
+  }
+});
+
+router.get('/api/viajes/indicadores', auth, async (req, res) => {
+  try {
+    const desde = req.query.desde || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const hasta = req.query.hasta || new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase.from('viajes_bateas')
+      .select('*, capataces(nombre), unidades(patente)')
+      .gte('fecha', desde).lte('fecha', hasta).order('fecha', { ascending: false });
+    if (error) throw error;
+    const viajes = data || [];
+
+    const kmTotal = viajes.reduce((s, v) => s + (Number(v.km) || 0), 0);
+    const bateasTotal = viajes.reduce((s, v) => s + (Number(v.total_bateas) || 0), 0);
+    const puntosTotal = viajes.reduce((s, v) => s + (Number(v.puntos_bajada) || 0), 0);
+    const jornadas = viajes.length;
+
+    // Por chofer
+    const porChofer = {};
+    viajes.forEach(v => {
+      const k = v.capataces ? v.capataces.nombre : 'Sin chofer';
+      const o = porChofer[k] || (porChofer[k] = { chofer: k, km: 0, bateas: 0, puntos: 0, jornadas: 0 });
+      o.km += Number(v.km) || 0; o.bateas += Number(v.total_bateas) || 0;
+      o.puntos += Number(v.puntos_bajada) || 0; o.jornadas++;
+    });
+
+    // Bateas por objetivo (suma de todas las paradas)
+    const porObjetivo = {};
+    viajes.forEach(v => (v.paradas || []).forEach(p => {
+      const k = p.objetivo_nombre || 'Sin objetivo';
+      porObjetivo[k] = (porObjetivo[k] || 0) + (Number(p.bateas) || 0);
+    }));
+
+    res.json({
+      periodo: { desde, hasta },
+      kpis: {
+        km_total: Math.round(kmTotal * 10) / 10,
+        bateas_total: bateasTotal,
+        puntos_total: puntosTotal,
+        jornadas,
+        km_por_batea: bateasTotal ? Math.round((kmTotal / bateasTotal) * 10) / 10 : null,
+        bateas_por_jornada: jornadas ? Math.round((bateasTotal / jornadas) * 10) / 10 : null,
+        km_por_punto: puntosTotal ? Math.round((kmTotal / puntosTotal) * 10) / 10 : null,
+      },
+      por_chofer: Object.values(porChofer).map(o => ({
+        ...o, km: Math.round(o.km * 10) / 10,
+        km_por_batea: o.bateas ? Math.round((o.km / o.bateas) * 10) / 10 : null,
+      })).sort((a, b) => b.km - a.km),
+      por_objetivo: Object.entries(porObjetivo).map(([nombre, bateas]) => ({ nombre, bateas }))
+        .sort((a, b) => b.bateas - a.bateas),
+    });
+  } catch (err) {
+    console.error('viajes indicadores:', err);
+    res.status(500).json({ error: 'Error calculando indicadores' });
+  }
+});
+
+router.post('/api/viajes/:id/anular', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('viajes_bateas').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Error eliminando el viaje' });
+  }
+});
+
 // ── Objetivos (para los selectores de imputación) ─────────────
 router.get('/api/objetivos', auth, async (req, res) => {
   try {
