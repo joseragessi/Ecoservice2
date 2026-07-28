@@ -1052,20 +1052,20 @@ async function vBateas(view){
       <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
     </div>
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
-      ${kpi('KM recorridos',(k.km_total||0).toLocaleString('es-AR')+' km',k.jornadas+' jornada(s)')}
-      ${kpi('Bateas trasladadas',k.bateas_total||0,(k.bateas_por_jornada||0)+' por jornada')}
-      ${kpi('Puntos de bajada',k.puntos_total||0,'objetivos atendidos')}
-      ${kpi('KM por batea',(k.km_por_batea!=null?k.km_por_batea:'—'),'eficiencia de traslado')}
+      ${kpi('KM recorridos',(k.km_total||0).toLocaleString('es-AR')+' km',k.dias_activos+' día(s) con viajes')}
+      ${kpi('Puntos totales',k.puntos_total||0,'descargas en objetivos')}
+      ${kpi('M³ transportados',(k.m3_total||0).toLocaleString('es-AR')+' m³',(k.bateas_total||0)+' bateas × 14 m³')}
+      ${kpi('Bateas promedio/día',(k.bateas_promedio_dia!=null?k.bateas_promedio_dia:'—'),'por día con actividad')}
     </div>
     <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Por chofer</div>
-        ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">KM</th><th class="num">Bateas</th><th class="num">Puntos</th><th class="num">Jorn.</th><th class="num">km/batea</th></tr></thead><tbody>
-          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km.toLocaleString('es-AR')}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td><td class="num mono">${c.km_por_batea??'—'}</td></tr>`).join('')}
+        ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">KM</th><th class="num">Bateas</th><th class="num">M³</th><th class="num">Puntos</th><th class="num">Días</th></tr></thead><tbody>
+          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km.toLocaleString('es-AR')}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.m3.toLocaleString('es-AR')}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td></tr>`).join('')}
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
         ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
-          return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas}</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
+          return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
           :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
       </div>
     </div>
