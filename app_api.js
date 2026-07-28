@@ -267,6 +267,78 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
   }
 });
 
+// ── SUPERVISOR de objetivos ───────────────────────────────────
+// Ve las incidencias abiertas de los objetivos que tiene a cargo, agrupadas
+// por objetivo; puede abrir el detalle (estados) y "reclamar la prisa".
+router.get('/api/app/supervisor/incidencias', authApp('supervisor'), async (req, res) => {
+  try {
+    // Objetivos a cargo del supervisor (guardados en mecanicos.objetivos_cargo)
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+    if (!aCargo.length) return res.json({ objetivos: [], sin_asignar: true });
+
+    const { data, error } = await supabase.from('incidencias')
+      .select('id, estado, prioridad, descripcion, created_at, equipo_parado, numero_unidad, tipo_equipo, tipo_falla, reclamada, reclamada_at, objetivo_id, objetivos(nombre), equipos(nombre,tipo), mecanicos(nombre), comentarios_incidencias(texto,mecanico_nombre,created_at)')
+      .in('objetivo_id', aCargo)
+      .neq('estado', 'finalizado')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    // Agrupar por objetivo
+    const porObj = {};
+    (data || []).forEach(i => {
+      const oid = String(i.objetivo_id);
+      const o = porObj[oid] || (porObj[oid] = {
+        objetivo_id: oid, objetivo: i.objetivos ? i.objetivos.nombre : 'Sin objetivo',
+        incidencias: [], abiertas: 0, criticas: 0, reclamadas: 0,
+      });
+      const ult = (i.comentarios_incidencias || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      o.incidencias.push({
+        id: i.id, estado: i.estado, prioridad: i.prioridad,
+        equipo: i.tipo_equipo || (i.equipos && (i.equipos.nombre || i.equipos.tipo)) || 'Equipo',
+        unidad: i.numero_unidad, falla: i.tipo_falla, descripcion: i.descripcion,
+        parado: i.equipo_parado, mecanico: i.mecanicos ? i.mecanicos.nombre : null,
+        dias: Math.floor((Date.now() - new Date(i.created_at)) / 86400000),
+        reclamada: !!i.reclamada, ultima_nota: ult ? ult.texto : null,
+      });
+      o.abiertas++;
+      if (i.prioridad === 'critico') o.criticas++;
+      if (i.reclamada) o.reclamadas++;
+    });
+    // Ordenar objetivos por criticidad
+    const objetivos = Object.values(porObj).sort((a, b) => (b.criticas - a.criticas) || (b.abiertas - a.abiertas));
+    res.json({ objetivos });
+  } catch (err) {
+    console.error('supervisor incidencias:', err);
+    res.status(500).json({ error: 'Error cargando incidencias' });
+  }
+});
+
+router.post('/api/app/supervisor/incidencia/:id/reclamar', authApp('supervisor'), async (req, res) => {
+  try {
+    // Solo puede reclamar incidencias de sus objetivos
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+    const { data: inc } = await supabase.from('incidencias')
+      .select('objetivo_id, reclamada').eq('id', req.params.id).maybeSingle();
+    if (!inc || !aCargo.includes(String(inc.objetivo_id))) {
+      return res.status(403).json({ error: 'Esa incidencia no es de tus objetivos' });
+    }
+    const nuevo = !inc.reclamada;   // toggle
+    const patch = nuevo
+      ? { reclamada: true, reclamada_at: new Date().toISOString(), reclamada_por: req.app_user.nombre }
+      : { reclamada: false, reclamada_at: null, reclamada_por: null };
+    const { error } = await supabase.from('incidencias').update(patch).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true, reclamada: nuevo });
+  } catch (err) {
+    console.error('supervisor reclamar:', err);
+    res.status(500).json({ error: 'Error al reclamar' });
+  }
+});
+
 // ── SUPERVISOR: pedidos de insumos (solo lectura) ─────────────
 router.get('/api/app/insumos-pedidos', authApp('supervisor'), async (req, res) => {
   try {
