@@ -1054,7 +1054,7 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
-  capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo'],
+  capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id'],
   centros_costo: ['nombre', 'activo'],
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo'],
 };
