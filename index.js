@@ -9,6 +9,7 @@ const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
 const { iniciarStock, tieneSesionActiva: tieneSesionStock,
         continuarStock, tienePedidoPendiente } = require('./stock');
 const { procesarFactura } = require('./facturas_bot');
+const { iniciarViajes, continuarViajes, tieneSesionViajes } = require('./viajes');
 const panelApi = require('./panel_api');
 const { router: appApi } = require('./app_api');
 const control = require('./control');
@@ -36,6 +37,7 @@ const NUMERO_PROVEEDORES = process.env.TWILIO_NUMERO_PROVEEDORES;
 const RE_INSUMOS = /^(insumos|pedido)\b[\s:,\-]*/i;
 // Disparador de stock de maquinaria: el capataz arranca con "stock".
 const RE_STOCK = /^stock\b[\s:,\-]*/i;
+const RE_VIAJES = /^(viaje|viajes|bateas?|odometro|od[oó]metro)\b[\s:,\-]*/i;
 
 // ¿El texto parece un LISTADO de stock (equipos + números) y no un saludo?
 // Se usa para no confundir un "hola" con la respuesta al censo de stock.
@@ -99,6 +101,11 @@ app.post('/webhook', async (req, res) => {
         respuesta = await continuarInsumos(telefono, mensaje);
       } else if (tieneSesionStock(telefono)) {
         respuesta = await continuarStock(telefono, mensaje);
+      } else if (tieneSesionViajes(telefono)) {
+        respuesta = await continuarViajes(telefono, mensaje);
+      } else if (RE_VIAJES.test(mensaje.trim())) {
+        const resto = mensaje.trim().replace(RE_VIAJES, '');
+        respuesta = await iniciarViajes(telefono, resto);
       } else if (RE_INSUMOS.test(mensaje.trim())) {
         // Arranca un pedido de insumos; le pasamos lo que escribió después de la palabra
         const resto = mensaje.trim().replace(RE_INSUMOS, '');
@@ -122,6 +129,8 @@ app.post('/webhook', async (req, res) => {
           respuesta = await iniciarInsumos(telefono, '');
         } else if (respuesta && respuesta.__derivar === 'stock') {
           respuesta = await iniciarStock(telefono, '');
+        } else if (respuesta && respuesta.__derivar === 'viajes') {
+          respuesta = await iniciarViajes(telefono, '');
         }
       }
     }
