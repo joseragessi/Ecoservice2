@@ -954,8 +954,10 @@ async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
     <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
     <button class="${combTab==='analisis'?'on':''}" onclick="combTab='analisis';go('combustible')">Análisis de consumo</button>
+    <button class="${combTab==='viajes'?'on':''}" onclick="combTab='viajes';go('combustible')">Viajes · bateas</button>
   </div>`;
   if(combTab==='analisis'){return vCombAnalisis(view,tabs);}
+  if(combTab==='viajes'){return vViajes(view,tabs);}
   try{
     const q=filtroComb?'?estado='+filtroComb:'';
     const cs=await api('/api/combustible'+q);
@@ -1030,6 +1032,68 @@ async function combRemGuardar(){
     go('combustible');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar y conciliar';}alert('No se pudo guardar: '+(e.message||''));}
 }
+/* ── Combustible · Viajes / bateas (roll off) ── */
+let viajesDesde='', viajesHasta='';
+async function vViajes(view,tabs){
+  view.innerHTML=tabs+'<div class="cargando-v">Cargando…</div>';
+  const hoy=new Date().toISOString().slice(0,10);
+  const desde=viajesDesde||new Date(Date.now()-30*86400000).toISOString().slice(0,10);
+  const hasta=viajesHasta||hoy;
+  try{
+    const [ind,lista]=await Promise.all([
+      api('/api/viajes/indicadores?desde='+desde+'&hasta='+hasta),
+      api('/api/viajes?desde='+desde+'&hasta='+hasta),
+    ]);
+    const k=ind.kpis||{};
+    const kpi=(label,val,sub)=>`<div class="kpi plain"><div class="kpi-label">${label}</div><div class="kpi-val">${val}</div><div class="kpi-sub">${sub||''}</div></div>`;
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Combustible</div>
+      <div class="view-desc">Viajes de roll off · km, bateas y puntos de bajada por chofer</div></div></div>
+    ${tabs}
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+      <span class="sub">Desde</span><input type="date" value="${desde}" onchange="viajesDesde=this.value;go('combustible')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
+      <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('combustible')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
+    </div>
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
+      ${kpi('KM recorridos',(k.km_total||0).toLocaleString('es-AR')+' km',k.jornadas+' jornada(s)')}
+      ${kpi('Bateas trasladadas',k.bateas_total||0,(k.bateas_por_jornada||0)+' por jornada')}
+      ${kpi('Puntos de bajada',k.puntos_total||0,'objetivos atendidos')}
+      ${kpi('KM por batea',(k.km_por_batea!=null?k.km_por_batea:'—'),'eficiencia de traslado')}
+    </div>
+    <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Por chofer</div>
+        ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">KM</th><th class="num">Bateas</th><th class="num">Puntos</th><th class="num">Jorn.</th><th class="num">km/batea</th></tr></thead><tbody>
+          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km.toLocaleString('es-AR')}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td><td class="num mono">${c.km_por_batea??'—'}</td></tr>`).join('')}
+        </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
+      </div>
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
+        ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
+          return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas}</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
+          :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
+      </div>
+    </div>
+    <div class="panel-title" style="margin-bottom:8px">Detalle de jornadas</div>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Unidad</th><th class="num">Odóm. ini</th><th class="num">Odóm. fin</th><th class="num">KM</th><th class="num">Bateas</th><th>Paradas</th><th></th></tr></thead>
+      <tbody>${lista.length?lista.map(v=>`<tr>
+        <td class="mono">${fechaAR(v.fecha)}</td>
+        <td>${v.capataces?v.capataces.nombre:'—'}</td>
+        <td><span class="uni-chip">${v.unidades?v.unidades.patente:(v.patente_raw||'—')}</span></td>
+        <td class="num mono">${v.odometro_inicio!=null?Number(v.odometro_inicio).toLocaleString('es-AR'):'—'}</td>
+        <td class="num mono">${v.odometro_fin!=null?Number(v.odometro_fin).toLocaleString('es-AR'):'—'}</td>
+        <td class="num mono"><b>${v.km!=null?Number(v.km).toLocaleString('es-AR'):'—'}</b></td>
+        <td class="num mono">${v.total_bateas||0}</td>
+        <td style="font-size:12px">${(v.paradas||[]).map(p=>p.objetivo_nombre+' ('+p.bateas+')').join(', ')||'—'}</td>
+        <td class="num"><button class="btn ghost" style="padding:4px 9px;font-size:11px;color:var(--rojo)" onclick="anularViaje('${v.id}')">✕</button></td>
+      </tr>`).join('')
+        :'<tr><td colspan="9"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot escribiendo "viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
+  }catch(e){view.innerHTML=tabs+`<div class="cargando-v">${e.message||'No pude cargar los viajes.'}<br><span class="sub">¿Creaste la tabla viajes_bateas en Supabase?</span></div>`;}
+}
+async function anularViaje(id){
+  if(!await uiConfirm('¿Eliminar esta jornada de viaje?','Eliminar viaje',{ok:'Eliminar',danger:true}))return;
+  try{await api('/api/viajes/'+id+'/anular',{method:'POST',body:'{}'});go('combustible');}
+  catch(e){toast('No pude eliminar: '+e.message,'error');}
+}
+
 async function vCombAnalisis(view,tabs){
   // Flujo de subida del listado
   if(combRemStep==='upload'){
