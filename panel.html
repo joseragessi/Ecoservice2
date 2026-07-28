@@ -360,8 +360,8 @@ th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
       <div class="nav-item on" data-v="dashboard" onclick="go('dashboard')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</div>
       <div class="nav-label">Módulos</div>
-      <div class="nav-item" data-v="facturas" onclick="go('facturas')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>Facturas <span class="nav-count" id="c-fact">0</span></div>
+      <div class="nav-item" data-v="bateas" onclick="go('bateas')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8h18l-2 11a2 2 0 01-2 2H7a2 2 0 01-2-2L3 8z"/><path d="M3 8l2-4h14l2 4M9 12v5M15 12v5"/></svg>Bateas</div>
       <div class="nav-item" data-v="insumos" onclick="go('insumos')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.5L12 12l8.7-4.5M12 12v9.5"/></svg>Insumos <span class="nav-count" id="c-ins">0</span></div>
       <div class="nav-item" data-v="combustible" onclick="go('combustible')">
@@ -556,7 +556,7 @@ async function iniciar(){
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
   try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
   // Entrar por el primer módulo permitido (no siempre es el dashboard)
-  const orden=['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','maestros'];
+  const orden=['dashboard','compras','insumos','combustible','bateas','reparaciones','stock','maestros'];
   go(orden.find(puedeVer)||'dashboard');
   refrescarContadores();
 }
@@ -575,7 +575,7 @@ async function refrescarContadores(){
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',facturas:'Facturas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
+const CRUMB={dashboard:'Dashboard',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
 let _autoRefreshTimer=null, _vistaActual=null;
 const AUTO_REFRESH_MS=10*60*1000; // 10 minutos
 const MODULOS_AUTOREFRESH=['reparaciones','compras','insumos'];
@@ -603,7 +603,7 @@ function go(v){
   const view=document.getElementById('view');
   view.innerHTML='<div class="cargando-v">Cargando…</div>';
   if(v==='dashboard')vDashboard(view);
-  if(v==='facturas')vFacturas(view);
+  if(v==='bateas')vBateas(view);
   if(v==='insumos')vInsumos(view);
   if(v==='combustible')vCombustible(view);
   if(v==='reparaciones')vReparaciones(view);
@@ -954,10 +954,8 @@ async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
     <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
     <button class="${combTab==='analisis'?'on':''}" onclick="combTab='analisis';go('combustible')">Análisis de consumo</button>
-    <button class="${combTab==='viajes'?'on':''}" onclick="combTab='viajes';go('combustible')">Viajes · bateas</button>
   </div>`;
   if(combTab==='analisis'){return vCombAnalisis(view,tabs);}
-  if(combTab==='viajes'){return vViajes(view,tabs);}
   try{
     const q=filtroComb?'?estado='+filtroComb:'';
     const cs=await api('/api/combustible'+q);
@@ -1032,10 +1030,10 @@ async function combRemGuardar(){
     go('combustible');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar y conciliar';}alert('No se pudo guardar: '+(e.message||''));}
 }
-/* ── Combustible · Viajes / bateas (roll off) ── */
+/* ── Módulo Bateas (roll off) ── */
 let viajesDesde='', viajesHasta='';
-async function vViajes(view,tabs){
-  view.innerHTML=tabs+'<div class="cargando-v">Cargando…</div>';
+async function vBateas(view){
+  view.innerHTML='<div class="cargando-v">Cargando…</div>';
   const hoy=new Date().toISOString().slice(0,10);
   const desde=viajesDesde||new Date(Date.now()-30*86400000).toISOString().slice(0,10);
   const hasta=viajesHasta||hoy;
@@ -1047,12 +1045,11 @@ async function vViajes(view,tabs){
     const k=ind.kpis||{};
     const kpi=(label,val,sub)=>`<div class="kpi plain"><div class="kpi-label">${label}</div><div class="kpi-val">${val}</div><div class="kpi-sub">${sub||''}</div></div>`;
     view.innerHTML=`
-    <div class="view-head"><div><div class="view-title">Combustible</div>
-      <div class="view-desc">Viajes de roll off · km, bateas y puntos de bajada por chofer</div></div></div>
-    ${tabs}
+    <div class="view-head"><div><div class="view-title">Bateas</div>
+      <div class="view-desc">Traslado de poda en roll off · km, bateas y puntos de bajada por chofer</div></div></div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
-      <span class="sub">Desde</span><input type="date" value="${desde}" onchange="viajesDesde=this.value;go('combustible')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
-      <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('combustible')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
+      <span class="sub">Desde</span><input type="date" value="${desde}" onchange="viajesDesde=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
+      <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
     </div>
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
       ${kpi('KM recorridos',(k.km_total||0).toLocaleString('es-AR')+' km',k.jornadas+' jornada(s)')}
@@ -1085,12 +1082,12 @@ async function vViajes(view,tabs){
         <td style="font-size:12px">${(v.paradas||[]).map(p=>p.objetivo_nombre+' ('+p.bateas+')').join(', ')||'—'}</td>
         <td class="num"><button class="btn ghost" style="padding:4px 9px;font-size:11px;color:var(--rojo)" onclick="anularViaje('${v.id}')">✕</button></td>
       </tr>`).join('')
-        :'<tr><td colspan="9"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot escribiendo "viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
-  }catch(e){view.innerHTML=tabs+`<div class="cargando-v">${e.message||'No pude cargar los viajes.'}<br><span class="sub">¿Creaste la tabla viajes_bateas en Supabase?</span></div>`;}
+        :'<tr><td colspan="9"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot con la opción "Cargar viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
+  }catch(e){view.innerHTML=`<div class="view-head"><div><div class="view-title">Bateas</div></div></div><div class="cargando-v">${e.message||'No pude cargar los viajes.'}<br><span class="sub">¿Creaste la tabla viajes_bateas en Supabase?</span></div>`;}
 }
 async function anularViaje(id){
   if(!await uiConfirm('¿Eliminar esta jornada de viaje?','Eliminar viaje',{ok:'Eliminar',danger:true}))return;
-  try{await api('/api/viajes/'+id+'/anular',{method:'POST',body:'{}'});go('combustible');}
+  try{await api('/api/viajes/'+id+'/anular',{method:'POST',body:'{}'});go('bateas');}
   catch(e){toast('No pude eliminar: '+e.message,'error');}
 }
 
