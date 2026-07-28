@@ -2214,6 +2214,9 @@ async function cargarMaestros(){
     if(maestroTab==='capataces'&&!unidadesData.length){
       try{unidadesData=await api('/api/maestros/unidades');}catch(e){unidadesData=[];}
     }
+    if((maestroTab==='capataces'||maestroTab==='mecanicos')&&!objetivos.length){
+      try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
+    }
     maestrosData=await api('/api/maestros/'+maestroTab);renderMaestros();}
   catch(e){document.getElementById('mm-lista').innerHTML='<div class="cargando-v">No pude cargar.</div>';}
 }
@@ -2279,14 +2282,20 @@ function abrirModalMaestro(m){
        <div class="sub">El <b>objetivo</b> es lo que usa Compras para repartir el gasto de combustible. La <b>patente</b> es lo que usa el bot para reconocer la unidad en el ticket.</div>`
     : `<div class="mm-field"><label>Nombre</label><input id="mm-nombre" value="${(m.nombre||'').replace(/"/g,'&quot;')}"></div>`;
   if(maestroTab==='mecanicos'){
-    campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
+    campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" class="hab-chk" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
     campos+=`<div class="divider"></div>
       <div class="field-l" style="margin-bottom:8px">Acceso a la app</div>
-      <div class="mm-field"><label>Rol en la app</label><select id="mm-rolapp">
+      <div class="mm-field"><label>Rol en la app</label><select id="mm-rolapp" onchange="toggleObjCargo()">
         <option value="mecanico" ${(m.rol_app||'mecanico')!=='panol'&&m.rol_app!=='supervisor'?'selected':''}>Taller — ve sus reparaciones</option>
         <option value="panol" ${m.rol_app==='panol'?'selected':''}>Pañol — ve los pedidos de insumos</option>
-        <option value="supervisor" ${m.rol_app==='supervisor'?'selected':''}>Supervisor — ve todos los pedidos de insumos (solo lectura)</option>
+        <option value="supervisor" ${m.rol_app==='supervisor'?'selected':''}>Supervisor — ve incidencias de sus objetivos</option>
       </select></div>
+      <div id="mm-objcargo-wrap" style="display:${m.rol_app==='supervisor'?'block':'none'}">
+        <div class="mm-field"><label>Objetivos a cargo</label>
+          <div class="mm-habs" style="max-height:180px;overflow:auto">${objetivos.map(o=>`<label class="mm-hab"><input type="checkbox" class="mm-objcargo" value="${o.id}" ${(m.objetivos_cargo||[]).map(String).includes(String(o.id))?'checked':''}> ${o.nombre}</label>`).join('')}</div>
+        </div>
+        <div class="sub">El supervisor solo verá las incidencias de estos objetivos.</div>
+      </div>
       <div class="mm-field"><label>Usuario</label><input id="mm-usuario" value="${(m.usuario||'').replace(/"/g,'&quot;')}" placeholder="ej: santiago" autocapitalize="none"></div>
       <div class="mm-field"><label>Clave</label><input id="mm-clave" type="text" placeholder="${m.usuario?'dejar vacío para no cambiarla':'clave para entrar a la app'}"></div>
       <div class="sub">La clave se guarda encriptada. Para cambiarla, escribí una nueva; si dejás el campo vacío, se mantiene la actual.</div>`;
@@ -2308,6 +2317,11 @@ function abrirModalMaestro(m){
   document.getElementById('mm-bg').classList.add('abierto');
 }
 function cerrarMaestro(){document.getElementById('mm-bg').classList.remove('abierto');maestroEdit=null;}
+function toggleObjCargo(){
+  const rol=document.getElementById('mm-rolapp').value;
+  const wrap=document.getElementById('mm-objcargo-wrap');
+  if(wrap)wrap.style.display=rol==='supervisor'?'block':'none';
+}
 async function guardarMaestro(){
   let body={};
   if(maestroTab==='unidades'){
@@ -2326,9 +2340,14 @@ async function guardarMaestro(){
     body={nombre};
   }
   if(maestroTab==='mecanicos'){
-    body.habilidades=[...document.querySelectorAll('#mm-campos .mm-habs input[type=checkbox]:checked')].map(c=>c.value);
+    body.habilidades=[...document.querySelectorAll('#mm-campos .hab-chk:checked')].map(c=>c.value);
     body.usuario=document.getElementById('mm-usuario').value.trim().toLowerCase()||null;
     body.rol_app=document.getElementById('mm-rolapp').value||'mecanico';
+    if(body.rol_app==='supervisor'){
+      body.objetivos_cargo=[...document.querySelectorAll('.mm-objcargo:checked')].map(c=>c.value);
+    }else{
+      body.objetivos_cargo=[];
+    }
     const cl=document.getElementById('mm-clave').value.trim();
     if(cl)body.clave=cl;   // vacío = no cambiar la clave actual
   }
