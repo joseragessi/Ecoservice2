@@ -149,7 +149,8 @@ async function procesarMensaje(telefono, mensaje) {
            `  1. ⛽ Cargar combustible\n` +
            `  2. 📦 Pedir insumos\n` +
            `  3. 🔧 Reportar una reparación\n` +
-           `  4. 📋 Informar stock de maquinaria`;
+           `  4. 📋 Informar stock de maquinaria\n` +
+           `  5. 🚛 Cargar viajes del día`;
   }
 
   const s = sesiones[tel];
@@ -173,7 +174,11 @@ async function procesarMensaje(telefono, mensaje) {
       limpiarSesion(tel);
       return { __derivar: 'stock' };    // index.js arranca el flujo de stock
     }
-    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación) o *4* (stock).';
+    if (op === '5') {
+      limpiarSesion(tel);
+      return { __derivar: 'viajes' };   // index.js arranca el flujo de viajes
+    }
+    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación), *4* (stock) o *5* (viajes).';
   }
 
   // P1: tipo de equipo
