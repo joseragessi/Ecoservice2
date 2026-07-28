@@ -198,7 +198,7 @@ function arrancar(){
 async function cargar(){
   $('lista').innerHTML='<div class="vacio">Cargando…</div>';
   try{
-    datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/insumos-pedidos':'/api/app/mis-incidencias');
+    datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias');
     render();
   }catch(e){$('lista').innerHTML=`<div class="vacio">${e.message}</div>`;}
 }
@@ -223,51 +223,74 @@ function render(){
     :'<div class="vacio">No tenés reparaciones acá.</div>';
 }
 
-/* ── Supervisor: pedidos de insumos (solo lectura) ── */
-let supBusca='', supEstado='', supAbierto=null;
-const SUP_ESTADOS={pendiente:['Pendiente','#B9770E','#FCF3DE'],en_compra:['En compra','#2471A3','#EAF2FA'],comprado:['Comprado','#1E8449','#E8F6EE'],entregado:['Entregado','#1E8449','#E8F6EE'],rechazado:['Rechazado','#C0392B','#FDEDEB']};
+/* ── Supervisor: incidencias por objetivo a cargo ── */
+let supObjAbierto=null, supIncAbierta=null;
+const SUP_PRIO={critico:['Crítico','#C0392B','#FDEDEB'],alta:['Alta','#B9770E','#FCF3DE'],media:['Media','#2471A3','#EAF2FA'],baja:['Baja','#1E8449','#E8F6EE']};
+const SUP_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esperando repuestos',en_reparacion:'En reparación',finalizado:'Finalizado'};
 function renderSupervisor(){
-  const pend=datos.filter(p=>p.estado==='pendiente').length;
-  const enc=datos.filter(p=>p.estado==='en_compra').length;
+  const objetivos=(datos&&datos.objetivos)||[];
+  if(datos&&datos.sin_asignar){
+    $('kpis').innerHTML='';$('tabs').innerHTML='';
+    $('lista').innerHTML='<div class="vacio">Todavía no tenés objetivos asignados.<br>Pedile a administración que te los asigne en el panel.</div>';
+    return;
+  }
+  const totAbiertas=objetivos.reduce((s,o)=>s+o.abiertas,0);
+  const totCriticas=objetivos.reduce((s,o)=>s+o.criticas,0);
+  const totReclam=objetivos.reduce((s,o)=>s+o.reclamadas,0);
   $('kpis').innerHTML=`
-    <div class="kpi amber"><div class="v">${pend}</div><div class="l">Pendientes</div></div>
-    <div class="kpi"><div class="v">${enc}</div><div class="l">En compra</div></div>
-    <div class="kpi green"><div class="v">${datos.length}</div><div class="l">Total</div></div>`;
-  const estados=['',...new Set(datos.map(p=>p.estado).filter(Boolean))];
-  $('tabs').innerHTML=estados.map(e=>`<div class="tab ${supEstado===e?'on':''}" onclick="supEstado='${e}';render()">${e?(SUP_ESTADOS[e]||[e])[0]:'Todos'}</div>`).join('');
-  // Shell con buscador fijo + lista aparte (para no perder el foco)
-  $('lista').innerHTML=`
-    <input type="text" id="sup-busca" placeholder="🔍 Buscar por objetivo, capataz o insumo…" value="${supBusca.replace(/"/g,'&quot;')}"
-      oninput="supBusca=this.value;renderSupLista()"
-      style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-bottom:8px">
-    <div id="sup-lista"></div>`;
-  renderSupLista();
+    <div class="kpi amber"><div class="v">${totAbiertas}</div><div class="l">Abiertas</div></div>
+    <div class="kpi ${totCriticas?'amber':''}"><div class="v">${totCriticas}</div><div class="l">Críticas</div></div>
+    <div class="kpi"><div class="v">${totReclam}</div><div class="l">Reclamadas</div></div>`;
+  $('tabs').innerHTML='';
+  if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
+  // Vista lista de objetivos (cantidad) → click abre incidencias
+  $('lista').innerHTML=objetivos.map(o=>{
+    const ab=supObjAbierto===o.objetivo_id;
+    return `<div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:12px;cursor:pointer" onclick="supObjAbierto=supObjAbierto==='${o.objetivo_id}'?null:'${o.objetivo_id}';supIncAbierta=null;render()">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <b>${o.objetivo}</b>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${o.criticas?`<span style="background:#FDEDEB;color:#C0392B;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">${o.criticas} críticas</span>`:''}
+            ${o.reclamadas?`<span style="background:#FCF3DE;color:#B9770E;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600">⏰ ${o.reclamadas}</span>`:''}
+            <span style="background:#eef1ee;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700">${o.abiertas}</span>
+          </div>
+        </div>
+        <div class="meta">${o.abiertas} incidencia${o.abiertas===1?'':'s'} abierta${o.abiertas===1?'':'s'} · tocá para ver ${ab?'▲':'▼'}</div>
+      </div>
+      ${ab?`<div style="border-top:1px solid #eef1ee;padding:8px 12px 12px">${o.incidencias.map(supCardInc).join('')}</div>`:''}
+    </div>`;}).join('');
 }
-function renderSupLista(){
-  const c=$('sup-lista');if(!c)return;
-  const b=supBusca.trim().toLowerCase();
-  const lista=datos.filter(p=>{
-    if(supEstado&&p.estado!==supEstado)return false;
-    if(!b)return true;
-    const items=(p.pedidos_insumos_items||[]).map(i=>i.descripcion||'').join(' ');
-    return [(p.objetivos||{}).nombre,(p.capataces||{}).nombre,items].some(v=>String(v||'').toLowerCase().includes(b));
-  });
-  c.innerHTML=lista.length?lista.map(p=>{
-    const [etq,col,bg]=SUP_ESTADOS[p.estado]||[p.estado||'—','#666','#eee'];
-    const ab=supAbierto===p.id;
-    const items=p.pedidos_insumos_items||[];
-    return `<div class="card" style="padding:12px" onclick="supAbierto=supAbierto==='${p.id}'?null:'${p.id}';renderSupLista()">
+function supCardInc(i){
+  const [petq,pcol,pbg]=SUP_PRIO[i.prioridad]||[i.prioridad,'#666','#eee'];
+  const ab=supIncAbierta===i.id;
+  return `<div class="card" style="padding:11px;margin-bottom:8px;${i.reclamada?'border:1px solid #E9C46A':''}">
+    <div style="cursor:pointer" onclick="supIncAbierta=supIncAbierta==='${i.id}'?null:'${i.id}';render()">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <b>${(p.objetivos||{}).nombre||'—'}</b>
-        <span style="background:${bg};color:${col};padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600">${etq}</span></div>
-      <div class="meta">${(p.capataces||{}).nombre||'—'} · ${new Date(p.created_at).toLocaleDateString('es-AR')} · ${items.length} ítem${items.length===1?'':'s'}</div>
-      ${ab?`<div class="dl" style="margin:10px 0 4px">Pedido</div>
-        ${items.map(i=>`<div class="desc" style="font-size:12px;padding:3px 0;border-bottom:1px solid #eef1ee">• ${i.descripcion||'—'}${i.cantidad?` x${i.cantidad}`:''}${i.unidad?' '+i.unidad:''}</div>`).join('')||'<div class="desc" style="font-size:12px">Sin ítems.</div>'}
-        ${p.comentario?`<div class="dl" style="margin:8px 0 3px">Comentario</div><div class="desc" style="font-size:12px">${p.comentario}</div>`:''}`
-      :`<div class="desc" style="margin-top:4px;font-size:12px">${items.slice(0,3).map(i=>i.descripcion).filter(Boolean).join(' · ')}${items.length>3?' · +'+(items.length-3)+' más':''}</div>`}
-    </div>`;}).join('')
-    :`<div class="vacio">${b||supEstado?'Ningún pedido coincide.':'No hay pedidos de insumos.'}</div>`;
+        <b style="font-size:14px">${i.parado?'🛑 ':''}${i.equipo}${i.unidad?' · N° '+i.unidad:''}</b>
+        <span style="background:${pbg};color:${pcol};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">${petq}</span>
+      </div>
+      <div class="meta">${i.falla||i.descripcion||'—'} · ${SUP_EST[i.estado]||i.estado} · hace ${i.dias}d${i.reclamada?' · <b style="color:#B9770E">⏰ reclamada</b>':''}</div>
+    </div>
+    ${ab?`<div style="margin-top:8px;border-top:1px solid #eef1ee;padding-top:8px">
+      <div class="dl">Estado</div><div class="desc" style="font-size:13px">${SUP_EST[i.estado]||i.estado}</div>
+      ${i.mecanico?`<div class="dl" style="margin-top:6px">Mecánico</div><div class="desc" style="font-size:13px">${i.mecanico}</div>`:''}
+      ${i.descripcion?`<div class="dl" style="margin-top:6px">Reporte</div><div class="desc" style="font-size:13px">${i.descripcion}</div>`:''}
+      ${i.ultima_nota?`<div class="dl" style="margin-top:6px">Última nota del mecánico</div><div class="desc" style="font-size:13px;font-style:italic">"${i.ultima_nota}"</div>`:''}
+      <button class="btn ${i.reclamada?'sec':''}" style="margin-top:10px" onclick="event.stopPropagation();reclamarPrisa('${i.id}')">${i.reclamada?'✓ Ya reclamaste — quitar':'⏰ Reclamar la prisa'}</button>
+    </div>`:''}
+  </div>`;
 }
+async function reclamarPrisa(id){
+  try{
+    const r=await api('/api/app/supervisor/incidencia/'+id+'/reclamar',{method:'POST',body:'{}'});
+    toast(r.reclamada?'Marcada como urgente ⏰':'Reclamo quitado');
+    cargar();
+  }catch(e){toast('Error: '+e.message);}
+}
+
+/* ── (viejo) Supervisor de insumos — sin uso ── */
+let supBusca='', supEstado='', supAbierto=null;
 
 /* ── Planilla de service: foto → IA → revisión → guardar ── */
 let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
