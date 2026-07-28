@@ -16,10 +16,17 @@ const FIN_PARADAS = ['listo', 'fin', 'terminar', 'terminado', 'no', 'nada', 'ya'
 function normalizarPatente(p) { return String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 
 async function resolverChofer(tel) {
-  const { data } = await supabase.from('capataces')
+  // Intento con unidad (si la tabla tiene esas columnas); si falla, sin ellas.
+  let { data } = await supabase.from('capataces')
     .select('id, nombre, objetivo_id, unidad_id, unidades(patente)')
-    .eq('telefono', tel).eq('activo', true).single();
-  return data || null;
+    .eq('telefono', tel).eq('activo', true).maybeSingle();
+  if (!data) {
+    const r = await supabase.from('capataces')
+      .select('id, nombre, objetivo_id')
+      .eq('telefono', tel).eq('activo', true).maybeSingle();
+    data = r.data || null;
+  }
+  return data;
 }
 
 async function resolverObjetivo(texto) {
