@@ -39,6 +39,7 @@ function moduloDeRuta(p) {
   if (p.startsWith('/api/facturas'))      return 'facturas';
   if (p.startsWith('/api/insumos'))       return 'insumos';
   if (p.startsWith('/api/combustible'))   return 'combustible';
+  if (p.startsWith('/api/viajes'))        return 'bateas';
   if (p.startsWith('/api/compras'))       return 'compras';
   if (p.startsWith('/api/reparaciones') || p.startsWith('/api/services')) return 'reparaciones';
   if (p.startsWith('/api/stock'))         return 'stock';
