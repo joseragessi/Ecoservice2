@@ -11,7 +11,6 @@ const sesiones = {};   // telefono -> { paso, datos }
 
 const CONFIRMA = ['si', 'sí', 'ok', 'dale', 'listo', 'confirmo', 'confirmar', 'va', 'de una', 'perfecto', 'correcto'];
 const CANCELA  = ['cancelar', 'cancela', 'no', 'nada', 'dejalo', 'olvidalo'];
-const FIN_PARADAS = ['listo', 'fin', 'terminar', 'terminado', 'no', 'nada', 'ya', 'eso es todo', 'ninguno', 'ninguna'];
 
 function normalizarPatente(p) { return String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 
@@ -29,15 +28,6 @@ async function resolverChofer(tel) {
   return data;
 }
 
-async function resolverObjetivo(texto) {
-  if (!texto) return { id: null, nombre: null };
-  const { data: objetivos } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
-  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const nt = norm(texto);
-  const match = (objetivos || []).find(o => { const no = norm(o.nombre); return no.includes(nt) || nt.includes(no); });
-  return match ? { id: match.id, nombre: match.nombre } : { id: null, nombre: texto.trim() };
-}
-
 const num = t => {
   const n = parseFloat(String(t).replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
   return isNaN(n) ? null : n;
@@ -46,6 +36,33 @@ const num = t => {
 function resumenParadas(paradas) {
   if (!paradas.length) return '  (sin paradas todavía)';
   return paradas.map(p => `  • ${p.objetivo_nombre} — ${p.bateas} batea${p.bateas === 1 ? '' : 's'}`).join('\n');
+}
+
+// Parsea una línea tipo "chacras 2, deposito 1, cañuelas 2" → paradas.
+// Separa por comas o saltos de línea; en cada tramo, el número final es la
+// cantidad y el resto es el objetivo. Devuelve { paradas, noReconocidos }.
+async function parsearBateas(texto) {
+  const { data: objetivos } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const tramos = String(texto).split(/[,\n;]+/).map(t => t.trim()).filter(Boolean);
+  const paradas = [], noReconocidos = [];
+  for (const tramo of tramos) {
+    // último número del tramo = cantidad; lo de antes = nombre del objetivo
+    const m = tramo.match(/^(.*?)[\s:=x-]*(\d+)\s*$/);
+    if (!m || !m[1].trim()) { noReconocidos.push(tramo); continue; }
+    const nombreTxt = m[1].trim();
+    const cant = parseInt(m[2], 10);
+    if (!cant || cant <= 0) { noReconocidos.push(tramo); continue; }
+    const nt = norm(nombreTxt);
+    const match = (objetivos || []).find(o => { const no = norm(o.nombre); return no.includes(nt) || nt.includes(no); });
+    paradas.push({
+      objetivo_id: match ? match.id : null,
+      objetivo_nombre: match ? match.nombre : nombreTxt,
+      bateas: cant,
+      reconocido: !!match,
+    });
+  }
+  return { paradas, noReconocidos };
 }
 
 // ── Inicio del flujo ─────────────────────────────────────────
@@ -102,35 +119,25 @@ async function continuarViajes(telefono, mensaje) {
     }
     s.datos.odometro_fin = v;
     s.datos.km = Math.round((v - s.datos.odometro_inicio) * 10) / 10;
-    s.paso = 'paradas_objetivo';
+    s.paso = 'bateas';
     return `📏 Recorriste *${s.datos.km.toLocaleString('es-AR')} km* hoy.\n\n` +
-      `Ahora las *bateas*. Decime el *primer objetivo* donde retiraste bateas.\n` +
-      `_(cuando termines con todos, escribí *listo*)_`;
+      `Ahora escribí las *bateas del día* en una sola línea, objetivo y cantidad separados por coma.\n\n` +
+      `_Por ejemplo:_\n*Chacras 2, Deposito 1, Cañuelas 2*`;
   }
 
-  // 3a) Nombre del objetivo de una parada
-  if (s.paso === 'paradas_objetivo') {
-    if (FIN_PARADAS.includes(bajo)) {
-      if (!s.datos.paradas.length) return `Todavía no cargaste ninguna parada. Decime un objetivo, o escribí *cancelar* si no hiciste viajes.`;
-      return cerrarResumen(s);
+  // 3) Bateas: una línea con todas las paradas
+  if (s.paso === 'bateas') {
+    const { paradas, noReconocidos } = await parsearBateas(texto);
+    if (!paradas.length) {
+      return `No pude leer ninguna parada. Escribilas así:\n*Chacras 2, Deposito 1, Cañuelas 2*\n(objetivo y número, separados por coma)`;
     }
-    const obj = await resolverObjetivo(texto);
-    s.tmpObjetivo = obj;
-    s.paso = 'paradas_cantidad';
-    return `¿Cuántas *bateas* retiraste en *${obj.nombre}*? (solo el número)`;
-  }
-
-  // 3b) Cantidad de bateas de esa parada
-  if (s.paso === 'paradas_cantidad') {
-    const v = num(texto);
-    if (v == null || v <= 0) return `¿Cuántas bateas? Mandame solo el número (ej. 2).`;
-    s.datos.paradas.push({
-      objetivo_id: s.tmpObjetivo.id, objetivo_nombre: s.tmpObjetivo.nombre, bateas: Math.round(v),
-    });
-    s.tmpObjetivo = null;
-    s.paso = 'paradas_objetivo';
-    return `👍 Anotado: ${Math.round(v)} en ${s.datos.paradas[s.datos.paradas.length - 1].objetivo_nombre}.\n\n` +
-      `¿*Otro objetivo*? Decime el nombre, o *listo* si terminaste.`;
+    s.datos.paradas = paradas;
+    s.paso = 'confirmar';
+    let aviso = '';
+    const dudosos = paradas.filter(p => !p.reconocido);
+    if (dudosos.length) aviso = `\n⚠️ No encontré en el sistema: ${dudosos.map(p => '*' + p.objetivo_nombre + '*').join(', ')}. Los cargo con ese nombre igual.\n`;
+    if (noReconocidos.length) aviso += `\n⚠️ No entendí: "${noReconocidos.join('", "')}". Si faltó alguno, reescribí la línea completa.\n`;
+    return cerrarResumen(s, aviso);
   }
 
   // 4) Confirmación final
@@ -143,8 +150,8 @@ async function continuarViajes(telefono, mensaje) {
         : `⚠️ No pude guardar. Avisá a administración.`;
     }
     if (CANCELA.includes(bajo)) { delete sesiones[tel]; return `👍 Cancelado, no se guardó.`; }
-    // Si escribe otro objetivo en la confirmación, lo agregamos
-    s.paso = 'paradas_objetivo';
+    // Cualquier otra cosa: la tomamos como corrección de la línea de bateas
+    s.paso = 'bateas';
     return continuarViajes(telefono, mensaje);
   }
 
@@ -153,15 +160,17 @@ async function continuarViajes(telefono, mensaje) {
 
 function totalBateas(d) { return d.paradas.reduce((s, p) => s + p.bateas, 0); }
 
-function cerrarResumen(s) {
+function cerrarResumen(s, aviso) {
   s.paso = 'confirmar';
   const d = s.datos;
   return `📋 *Resumen del día*\n\n` +
     `🚛 ${d.chofer.nombre}\n` +
     `📏 ${d.km.toLocaleString('es-AR')} km (${d.odometro_inicio.toLocaleString('es-AR')} → ${d.odometro_fin.toLocaleString('es-AR')})\n` +
     `📦 ${totalBateas(d)} bateas · ${d.paradas.length} punto(s) de bajada\n\n` +
-    `${resumenParadas(d.paradas)}\n\n` +
-    `¿Confirmás? (*sí* / *cancelar*)`;
+    `${resumenParadas(d.paradas)}\n` +
+    (aviso || '') +
+    `\n¿Confirmás? (*sí* para guardar / *cancelar*)\n` +
+    `_Si algo está mal, reescribí la línea de bateas y la corrijo._`;
 }
 
 async function guardarViaje(d) {
