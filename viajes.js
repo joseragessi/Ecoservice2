@@ -16,9 +16,9 @@ const FIN_PARADAS = ['listo', 'fin', 'terminar', 'terminado', 'no', 'nada', 'ya'
 function normalizarPatente(p) { return String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 
 async function resolverChofer(tel) {
-  // Intento con unidad (si la tabla tiene esas columnas); si falla, sin ellas.
+  // Intento con unidad + flag chofer (si la tabla tiene esas columnas)
   let { data } = await supabase.from('capataces')
-    .select('id, nombre, objetivo_id, unidad_id, unidades(patente)')
+    .select('id, nombre, objetivo_id, unidad_id, es_chofer, unidades(patente)')
     .eq('telefono', tel).eq('activo', true).maybeSingle();
   if (!data) {
     const r = await supabase.from('capataces')
@@ -52,7 +52,11 @@ function resumenParadas(paradas) {
 async function iniciarViajes(telefono, resto) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
   const chofer = await resolverChofer(tel);
-  if (!chofer) return '🚛 No te tengo registrado como chofer. Avisá a administración.';
+  if (!chofer) return '🚛 No te tengo registrado. Avisá a administración para que te den de alta.';
+  // Si la columna es_chofer existe y está en false explícito, no es chofer.
+  if (chofer.es_chofer === false) {
+    return '🚛 Esta opción es para los choferes de los camiones roll off. Si tenés que cargar viajes, pedí que te marquen como chofer en administración.';
+  }
   sesiones[tel] = {
     paso: 'odo_inicio',
     datos: { chofer, paradas: [] },
