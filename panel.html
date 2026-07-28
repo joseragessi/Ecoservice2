@@ -2194,7 +2194,7 @@ const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica'
 const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz',centros_costo:'centro de costo',unidades:'unidad'};
 // Las unidades no tienen columna `nombre`: su título es el código o la patente.
 const tituloMaestro=m=>maestroTab==='unidades'?(m.codigo||m.patente||'sin código'):(m.nombre||'—');
-let maestroTab='mecanicos', maestrosData=[], maestroEdit=null;
+let maestroTab='mecanicos', maestrosData=[], maestroEdit=null, unidadesData=[];
 
 async function vMaestros(view){
   const tabs=[['mecanicos','Mecánicos'],['objetivos','Objetivos'],['capataces','Capataces'],
@@ -2213,7 +2213,11 @@ async function vMaestros(view){
   cargarMaestros();
 }
 async function cargarMaestros(){
-  try{maestrosData=await api('/api/maestros/'+maestroTab);renderMaestros();}
+  try{
+    if(maestroTab==='capataces'&&!unidadesData.length){
+      try{unidadesData=await api('/api/maestros/unidades');}catch(e){unidadesData=[];}
+    }
+    maestrosData=await api('/api/maestros/'+maestroTab);renderMaestros();}
   catch(e){document.getElementById('mm-lista').innerHTML='<div class="cargando-v">No pude cargar.</div>';}
 }
 function renderMaestros(){
@@ -2294,6 +2298,9 @@ function abrirModalMaestro(m){
     campos+=`<div class="mm-field"><label>Teléfono</label><input id="mm-telefono" value="${m.telefono||''}" placeholder="549351..."></div>`;
     campos+=`<div class="mm-field"><label>Rol</label><input id="mm-rol" value="${(m.rol||'').replace(/"/g,'&quot;')}" placeholder="Logística, Supervisores..."></div>`;
     campos+=`<div class="mm-field"><label>Objetivo</label><select id="mm-objetivo"><option value="">— sin objetivo —</option>${objetivos.map(o=>`<option value="${o.id}" ${m.objetivo_id===o.id?'selected':''}>${o.nombre}</option>`).join('')}</select></div>`;
+    campos+=`<div class="divider"></div>
+      <label class="mm-hab" style="margin-bottom:8px"><input type="checkbox" id="mm-eschofer" ${m.es_chofer?'checked':''}> Es chofer de roll off (carga viajes/bateas por el bot)</label>
+      <div class="mm-field"><label>Camión asignado (opcional)</label><select id="mm-unidad"><option value="">— sin camión fijo —</option>${(unidadesData||[]).map(u=>`<option value="${u.id}" ${String(m.unidad_id)===String(u.id)?'selected':''}>${u.patente||u.codigo||'unidad'} ${u.marca_modelo?'· '+u.marca_modelo:''}</option>`).join('')}</select></div>`;
   }
   if(maestroTab==='objetivos'){
     campos+=`<div class="mm-field"><label>Ubicación</label><input id="mm-ubicacion" value="${(m.ubicacion||'').replace(/"/g,'&quot;')}" placeholder="Córdoba, Río Cuarto..."></div>`;
@@ -2332,6 +2339,8 @@ async function guardarMaestro(){
     body.telefono=document.getElementById('mm-telefono').value.trim()||null;
     body.rol=document.getElementById('mm-rol').value.trim().toLowerCase()||null;
     body.objetivo_id=document.getElementById('mm-objetivo').value||null;
+    const ch=document.getElementById('mm-eschofer');if(ch)body.es_chofer=ch.checked;
+    const un=document.getElementById('mm-unidad');if(un)body.unidad_id=un.value||null;
   }
   if(maestroTab==='objetivos'){
     body.ubicacion=document.getElementById('mm-ubicacion').value.trim()||null;
