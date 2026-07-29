@@ -131,7 +131,7 @@ router.get('/api/app/mis-incidencias', authApp('mecanico'), async (req, res) => 
   try {
     const { data, error } = await supabase
       .from('incidencias')
-      .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, numero_unidad, ' +
+      .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, numero_unidad, tipo_equipo, tipo_mant, ' +
               'equipos(nombre,tipo,codigo), objetivos(nombre), capataces(nombre,telefono), ' +
               'comentarios_incidencias(mecanico_nombre,texto,created_at), ' +
               'repuestos_taller(id,items,nota,estado,created_at)')
@@ -143,6 +143,52 @@ router.get('/api/app/mis-incidencias', authApp('mecanico'), async (req, res) => 
   } catch (err) {
     console.error('app incidencias:', err);
     res.status(500).json({ error: 'Error cargando tus reparaciones' });
+  }
+});
+
+// Objetivos activos, para el selector del alta manual
+router.get('/api/app/objetivos', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app objetivos:', err);
+    res.status(500).json({ error: 'Error cargando objetivos' });
+  }
+});
+
+// Alta manual de incidencia por el mecánico (lo que entra al taller sin pasar
+// por el bot del capataz). Puede ser correctivo o preventivo; queda asignada
+// al mecánico que la crea.
+router.post('/api/app/incidencias', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    const tipoMant = d.tipo_mant === 'preventivo' ? 'preventivo' : 'correctivo';
+    const tipoEquipo = String(d.tipo_equipo || '').trim();
+    const numeroUnidad = String(d.numero_unidad || '').trim();
+    if (!tipoEquipo) return res.status(400).json({ error: 'Falta el tipo de equipo' });
+    if (!numeroUnidad) return res.status(400).json({ error: 'Falta el número de unidad o la patente' });
+    const descripcion = String(d.descripcion || '').trim() ||
+      (tipoMant === 'preventivo' ? 'Service preventivo' : 'Ingreso a taller');
+    const PRIOS = ['critico', 'alta', 'media', 'baja'];
+    const prioridad = PRIOS.includes(d.prioridad) ? d.prioridad
+      : (tipoMant === 'preventivo' ? 'baja' : 'media');
+
+    const { data: inc, error } = await supabase.from('incidencias').insert({
+      capataz_id: null, objetivo_id: d.objetivo_id || null, equipo_id: null,
+      mecanico_id: req.app_user.mid,
+      prioridad, estado: 'pendiente', equipo_parado: false,
+      descripcion, numero_unidad: numeroUnidad, tipo_equipo: tipoEquipo,
+      tipo_falla: tipoMant === 'preventivo' ? 'Preventivo' : 'Ingreso taller',
+      tipo_mant: tipoMant, origen: 'app',
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: inc.id });
+  } catch (err) {
+    console.error('app alta incidencia:', err);
+    res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
   }
 });
 
