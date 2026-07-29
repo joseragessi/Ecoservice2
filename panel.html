@@ -148,6 +148,11 @@ tbody tr:last-child td{border-bottom:none}
 .b-blue{background:var(--azul-soft);color:var(--azul)}
 .b-violet{background:var(--violeta-soft);color:var(--violeta)}
 .b-gray{background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)}
+.est-0{background:var(--rojo-soft);color:var(--rojo)}
+.est-1{background:#FAECE7;color:#B0491F}
+.est-2{background:var(--diesel-soft);color:var(--diesel)}
+.est-3{background:var(--azul-soft);color:var(--azul)}
+.est-4{background:var(--brote-soft);color:var(--brote-2)}
 .tag-mini{font-size:10px;padding:2px 7px;border-radius:5px;background:var(--papel);color:var(--tinta-2);
   font-family:'JetBrains Mono',monospace;border:1px solid var(--linea)}
 .obj-chip{font-size:11px;padding:3px 8px;border-radius:6px;background:var(--brote-soft);color:var(--brote-2);font-family:'JetBrains Mono',monospace}
@@ -1964,7 +1969,7 @@ function renderReparaciones(view){
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
       <td>${r.capataces?r.capataces.nombre:'—'}</td>
       <td>${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
-      <td><span class="badge ${idx===4?'b-green':'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span></td>
+      <td><span class="badge ${idx>=0?'est-'+idx:'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span></td>
       <td class="mono sub">${hace(r.created_at)}</td></tr>`;}).join('');
 
   view.innerHTML=`
