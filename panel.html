@@ -153,6 +153,11 @@ tbody tr:last-child td{border-bottom:none}
 .est-2{background:var(--diesel-soft);color:var(--diesel)}
 .est-3{background:var(--azul-soft);color:var(--azul)}
 .est-4{background:var(--brote-soft);color:var(--brote-2)}
+.pv-bar{height:8px;background:var(--papel);border:1px solid var(--linea);border-radius:99px;overflow:hidden;min-width:120px;max-width:220px}
+.pv-bar i{display:block;height:100%;border-radius:99px}
+.pv-wk{border-left:1px dashed var(--linea-2);padding:0 8px;min-height:100px}
+.pv-wk:first-child{border-left:none}
+.pv-chip{font-size:10.5px;font-family:'JetBrains Mono',monospace;font-weight:500;padding:4px 7px;border-radius:6px;margin-bottom:5px;display:block;line-height:1.3}
 .tag-mini{font-size:10px;padding:2px 7px;border-radius:5px;background:var(--papel);color:var(--tinta-2);
   font-family:'JetBrains Mono',monospace;border:1px solid var(--linea)}
 .obj-chip{font-size:11px;padding:3px 8px;border-radius:6px;background:var(--brote-soft);color:var(--brote-2);font-family:'JetBrains Mono',monospace}
@@ -1755,6 +1760,7 @@ function diasEntre(a,b){if(!a||!b)return null;const d=(new Date(b)-new Date(a))/
 function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${repTab==='resumen'?'on':''}" onclick="repTab='resumen';go('reparaciones')">Resumen</button>
   <button class="${repTab==='services'?'on':''}" onclick="repTab='services';go('reparaciones')">Services</button>
+  <button class="${repTab==='preventivo'?'on':''}" onclick="repTab='preventivo';go('reparaciones')">Preventivo</button>
   <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
 </div>`;}
 
@@ -1863,26 +1869,106 @@ function pintarSvSide(){
     ${d.observaciones?`<div class="panel-title" style="margin:12px 0 6px">Observaciones</div><div class="sub">${d.observaciones}</div>`:''}`;
 }
 
-function vRepInd(view){
+// Indicadores del taller: miden el servicio sobre toda la maquinaria,
+// separando correctivo de preventivo y mostrando dónde se traba el flujo.
+async function vRepInd(view){
   const todas=repData||[];
   const meses=[...new Set(todas.map(r=>mesDe(r.created_at)))].filter(m=>m!=='sin fecha').sort().reverse();
   const fs=repIndPer?todas.filter(r=>mesDe(r.created_at)===repIndPer):todas;
+  const normU=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const esPrev=r=>r.tipo_mant==='preventivo';
   const activas=fs.filter(r=>r.estado!=='finalizado');
   const finalizadas=fs.filter(r=>r.estado==='finalizado');
-  // Tiempo de resolución: creada → finalizada
+  const finPrev=finalizadas.filter(esPrev), finCorr=finalizadas.filter(r=>!esPrev(r));
+  const criticasAltas=activas.filter(r=>r.prioridad==='critico'||r.prioridad==='alta').length;
+
+  // Resolución promedio (creada → finalizada)
   const tiempos=finalizadas.map(r=>diasEntre(r.created_at,r.fecha_finalizado)).filter(t=>t!=null);
   const tProm=tiempos.length?tiempos.reduce((s,t)=>s+t,0)/tiempos.length:null;
-  const criticasAltas=activas.filter(r=>r.prioridad==='critico'||r.prioridad==='alta').length;
-  const agr=(lista,clave)=>{
-    const m={};lista.forEach(r=>{const k=clave(r)||'Sin asignar';m[k]=(m[k]||0)+1;});
-    return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);
-  };
-  // Por mecánico: activas, finalizadas y tiempo promedio propio
+
+  // % preventivo del período (sobre finalizadas)
+  const pctPrev=finalizadas.length?Math.round(finPrev.length*100/finalizadas.length):null;
+
+  // Cumplimiento preventivo hoy (pestaña Preventivo); si el SQL no corrió, se omite
+  let cumpl=null,cumplSub='rodados al día';
+  try{
+    const pv=await api('/api/reparaciones/preventivo');
+    const conInt=(pv.rodados||[]).filter(r=>r.intervalo);
+    const alDia=conInt.filter(r=>r.estado==='al_dia'||r.estado==='por_vencer').length;
+    if(conInt.length){cumpl=Math.round(alDia*100/conInt.length);cumplSub=alDia+' de '+conInt.length+' rodados sin vencer';}
+  }catch(e){}
+
+  // Reincidencia: correctivo sobre la misma unidad dentro de los 30 días de una finalización
+  const finConUni=finalizadas.filter(r=>r.fecha_finalizado&&normU(r.numero_unidad));
+  let reinc=0;
+  finConUni.forEach(f=>{
+    const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
+    if(todas.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})()))reinc++;
+  });
+  const pctReinc=finConUni.length?Math.round(reinc*100/finConUni.length):null;
+
+  // Espera de repuestos: promedio histórico + cuántas esperan ahora
+  const esperas=fs.map(r=>diasEntre(r.fecha_espera_repuestos,r.fecha_en_reparacion||r.fecha_finalizado)).filter(t=>t!=null);
+  const espProm=esperas.length?esperas.reduce((s,t)=>s+t,0)/esperas.length:null;
+  const espAhora=activas.filter(r=>r.estado==='esperando_repuestos').length;
+
+  // Correctivo vs preventivo por mes (sobre todas, no solo el filtro)
+  const porMes={};
+  todas.forEach(r=>{
+    const mN=mesDe(r.created_at);porMes[mN]=porMes[mN]||{c:0,p:0,fin:0};
+    esPrev(r)?porMes[mN].p++:porMes[mN].c++;
+    if(r.estado==='finalizado'&&r.fecha_finalizado){const mF=mesDe(r.fecha_finalizado);
+      porMes[mF]=porMes[mF]||{c:0,p:0,fin:0};porMes[mF].fin++;}
+  });
+  const evol=Object.entries(porMes).filter(([m])=>m!=='sin fecha').sort((a,b)=>b[0].localeCompare(a[0])).slice(0,8);
+  const tablaEvol=evol.map(([m,v])=>{
+    const tot=v.c+v.p,pp=tot?Math.round(v.p*100/tot):0,bal=v.fin-tot;
+    return `<tr><td class="mono">${m}</td><td class="num">${v.c}</td><td class="num">${v.p}</td>
+      <td class="num" style="color:${pp>=25?'var(--brote-2)':'var(--tinta-2)'}">${pp}%</td>
+      <td class="num">${v.fin}</td>
+      <td class="num" style="${bal<0?'color:var(--rojo)':'color:var(--brote-2)'}">${bal>0?'+':''}${bal}</td></tr>`;}).join('');
+
+  // Unidades problemáticas: más correctivos en el período (con cuántas veces entró parada)
+  const porUni={};
+  fs.filter(r=>!esPrev(r)&&normU(r.numero_unidad)).forEach(r=>{
+    const k=normU(r.numero_unidad);
+    porUni[k]=porUni[k]||{eq:r.tipo_equipo||(r.equipos?r.equipos.nombre:'—'),uni:r.numero_unidad,n:0,paradas:0};
+    porUni[k].n++;if(r.equipo_parado)porUni[k].paradas++;
+  });
+  const topUni=Object.values(porUni).sort((a,b)=>b.n-a.n).slice(0,8);
+  const tablaUni=topUni.map((u,i)=>`<tr>
+      <td class="sub mono" style="width:24px">${i+1}</td>
+      <td><div style="font-weight:500">${u.eq}</div></td>
+      <td><span class="uni-num">${u.uni}</span></td>
+      <td class="num" style="font-weight:600;${u.n>=3?'color:#A32D2D':''}">${u.n}</td>
+      <td class="num sub">${u.paradas||'—'}</td></tr>`).join('');
+
+  // Embudo: promedio de días en cada etapa (entre timestamps consecutivos disponibles)
+  const etapa=(a,b)=>{const ts=fs.map(r=>diasEntre(r[a],r[b])).filter(t=>t!=null);
+    return ts.length?{v:ts.reduce((s,t)=>s+t,0)/ts.length,n:ts.length}:null;};
+  const emb=[
+    ['Pendiente → Diagnóstico',etapa('created_at','fecha_diagnostico')],
+    ['Diagnóstico → Esp. repuestos',etapa('fecha_diagnostico','fecha_espera_repuestos')],
+    ['Esp. repuestos → En reparación',etapa('fecha_espera_repuestos','fecha_en_reparacion')],
+    ['En reparación → Finalizado',etapa('fecha_en_reparacion','fecha_finalizado')],
+  ];
+  const maxEmb=Math.max(...emb.map(([,e])=>e?e.v:0),0.1);
+  const htmlEmb=emb.some(([,e])=>e)?emb.map(([l,e])=>{
+    if(!e)return `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><b style="font-weight:500">${l}</b><span class="sub">sin datos aún</span></div></div>`;
+    const w=Math.max(3,Math.round(e.v*100/maxEmb));
+    return `<div style="margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+        <b style="font-weight:500">${l}</b><span class="mono">${Math.round(e.v*10)/10} d <span class="sub">(${e.n})</span></span></div>
+      <div style="height:6px;background:var(--papel);border-radius:3px"><div style="height:6px;width:${w}%;background:var(--azul);border-radius:3px"></div></div>
+    </div>`;}).join('')
+    :'<div class="sub" style="padding:10px 0">Las fechas por etapa se estampan en cada cambio de estado: este bloque se va llenando solo con el uso.</div>';
+
+  // Por mecánico (con preventivas propias)
   const mecs={};
   fs.forEach(r=>{
     const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    mecs[k]=mecs[k]||{activas:0,finalizadas:0,tiempos:[]};
-    if(r.estado==='finalizado'){mecs[k].finalizadas++;
+    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[]};
+    if(r.estado==='finalizado'){mecs[k].finalizadas++;if(esPrev(r))mecs[k].prev++;
       const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);}
     else mecs[k].activas++;
   });
@@ -1890,44 +1976,45 @@ function vRepInd(view){
     .map(([n,v])=>{const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
     return `<tr><td style="font-weight:500">${n}</td><td class="num">${v.activas}</td>
       <td class="num">${v.finalizadas}</td>
+      <td class="num" style="${v.prev?'color:var(--brote-2);font-weight:600':''}">${v.prev||'—'}</td>
       <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
-  // Evolución: nuevas vs finalizadas por mes (sobre todas)
-  const porMes={};
-  todas.forEach(r=>{
-    const mN=mesDe(r.created_at);porMes[mN]=porMes[mN]||{nuevas:0,fin:0};porMes[mN].nuevas++;
-    if(r.estado==='finalizado'&&r.fecha_finalizado){const mF=mesDe(r.fecha_finalizado);
-      porMes[mF]=porMes[mF]||{nuevas:0,fin:0};porMes[mF].fin++;}
-  });
-  const evol=Object.entries(porMes).filter(([m])=>m!=='sin fecha').sort((a,b)=>a[0].localeCompare(b[0]));
+
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Reparaciones · Indicadores</div>
-    <div class="view-desc">Carga del taller, tiempos de resolución y distribución</div></div>
+    <div class="view-desc">Servicio sobre toda la maquinaria: correctivo, preventivo y flujo del taller</div></div>
     <select class="busca" style="width:auto" onchange="repIndPer=this.value;go('reparaciones')">
       <option value="">Todo el período</option>
       ${meses.map(m=>`<option value="${m}" ${m===repIndPer?'selected':''}>${mesStk(m)}</option>`).join('')}
     </select></div>
   ${tabsRep()}
-  <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
-    <div class="kpi ${activas.length?'amber':''}"><div class="kpi-label">Activas</div><div class="kpi-val ${activas.length?'amber':''}">${activas.length}</div><div class="kpi-sub">en el taller ahora</div></div>
-    <div class="kpi"><div class="kpi-label">Finalizadas</div><div class="kpi-val green">${finalizadas.length}</div><div class="kpi-sub">${repIndPer?'creadas en '+mesStk(repIndPer):'histórico'}</div></div>
-    <div class="kpi plain"><div class="kpi-label">Resolución promedio</div><div class="kpi-val">${tProm!=null?Math.round(tProm*10)/10:'—'}</div><div class="kpi-sub">días de creada a finalizada</div></div>
-    <div class="kpi ${criticasAltas?'':'plain'}"><div class="kpi-label">Crítico + alta</div><div class="kpi-val ${criticasAltas?'amber':''}">${criticasAltas}</div><div class="kpi-sub">activas con prioridad</div></div>
+  <div class="kpis" style="grid-template-columns:repeat(6,1fr)">
+    <div class="kpi ${activas.length?'amber':''}"><div class="kpi-label">Activas</div><div class="kpi-val ${activas.length?'amber':''}">${activas.length}</div><div class="kpi-sub">${criticasAltas} crítico + alta</div></div>
+    <div class="kpi plain"><div class="kpi-label">Resolución prom.</div><div class="kpi-val">${tProm!=null?Math.round(tProm*10)/10:'—'}</div><div class="kpi-sub">días creada → finalizada</div></div>
+    <div class="kpi plain"><div class="kpi-label">% Preventivo</div><div class="kpi-val" style="${pctPrev>=25?'color:var(--brote-2)':''}">${pctPrev!=null?pctPrev+'%':'—'}</div><div class="kpi-sub">${finPrev.length} de ${finalizadas.length} finalizadas</div></div>
+    <div class="kpi plain"><div class="kpi-label">Cumplimiento prev.</div><div class="kpi-val" style="${cumpl!=null&&cumpl<70?'color:#A32D2D':cumpl!=null?'color:var(--brote-2)':''}">${cumpl!=null?cumpl+'%':'—'}</div><div class="kpi-sub">${cumplSub}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Reincidencia 30d</div><div class="kpi-val" style="${pctReinc>=20?'color:#A32D2D':''}">${pctReinc!=null?pctReinc+'%':'—'}</div><div class="kpi-sub">vuelven al taller en 30 días</div></div>
+    <div class="kpi plain"><div class="kpi-label">Espera repuestos</div><div class="kpi-val">${espProm!=null?Math.round(espProm*10)/10:'—'}</div><div class="kpi-sub">días prom. · ${espAhora} esperando ahora</div></div>
   </div>
   <div class="grid g-2" style="margin-bottom:18px">
-    <div class="panel"><div class="panel-title">Por mecánico</div>
-      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Activas</th><th class="num">Finalizadas</th><th class="num">Resol. prom.</th></tr></thead>
-      <tbody>${tablaMec||'<tr><td colspan="4" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+    <div class="panel"><div class="panel-title">Correctivo vs preventivo por mes</div>
+      <table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Corr.</th><th class="num">Prev.</th><th class="num">% Prev</th><th class="num">Finalizadas</th><th class="num">Balance</th></tr></thead>
+      <tbody>${tablaEvol||'<tr><td colspan="6" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
     </div>
-    <div class="panel"><div class="panel-title">Evolución mensual</div>
-      <table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Nuevas</th><th class="num">Finalizadas</th><th class="num">Balance</th></tr></thead>
-      <tbody>${evol.map(([m,v])=>{const bal=v.fin-v.nuevas;
-        return `<tr><td class="mono">${m}</td><td class="num">${v.nuevas}</td><td class="num">${v.fin}</td>
-        <td class="num" style="${bal<0?'color:var(--rojo)':'color:var(--brote-2)'}">${bal>0?'+':''}${bal}</td></tr>`;}).join('')}</tbody></table>
+    <div class="panel"><div class="panel-title">Unidades problemáticas <span class="sub" style="font-weight:400;font-size:11px">· más correctivos en el período</span></div>
+      <table style="font-size:12px"><thead><tr><th></th><th>Equipo</th><th>Unidad</th><th class="num">Correctivos</th><th class="num">Paradas</th></tr></thead>
+      <tbody>${tablaUni||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+    </div>
+  </div>
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel"><div class="panel-title">Dónde se traba el taller <span class="sub" style="font-weight:400;font-size:11px">· días promedio por etapa</span></div>${htmlEmb}</div>
+    <div class="panel"><div class="panel-title">Por mecánico</div>
+      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Activas</th><th class="num">Finalizadas</th><th class="num">Prev.</th><th class="num">Resol. prom.</th></tr></thead>
+      <tbody>${tablaMec||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
     </div>
   </div>
   <div class="grid g-2">
-    <div class="panel"><div class="panel-title">Por tipo de equipo</div>${barsGen(agr(fs,r=>r.equipos?(r.equipos.tipo||r.equipos.nombre):null),'var(--brote)')}</div>
-    <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen(agr(fs,r=>r.objetivos?r.objetivos.nombre:null),'var(--diesel)')}</div>
+    <div class="panel"><div class="panel-title">Por tipo de equipo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.tipo_equipo||(r.equipos?(r.equipos.tipo||r.equipos.nombre):null)||'Sin asignar';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--brote)')}</div>
+    <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.objetivos?r.objetivos.nombre:'Taller / sin objetivo';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--diesel)')}</div>
   </div>`;
 }
 
@@ -1936,6 +2023,7 @@ async function vReparaciones(view){
   try{
     repData=await api('/api/reparaciones');
     if(repTab==='services'){vRepServices(view);return;}
+    if(repTab==='preventivo'){vRepPreventivo(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
@@ -1964,7 +2052,7 @@ function renderReparaciones(view){
     const idx=EST_REP.indexOf(r.estado);
     return `<tr onclick="selRep(${ix})" data-ix="${ix}">
       <td><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></td>
-      <td><div style="font-weight:500">${r.equipos?r.equipos.nombre:'—'}</div><div class="sub">${r.equipos&&r.equipos.codigo?r.equipos.codigo:''}</div></td>
+      <td><div style="font-weight:500">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}${r.tipo_mant==='preventivo'?' <span class="badge b-green" style="font-size:9.5px;padding:2px 7px;vertical-align:1px">PREV</span>':''}</div><div class="sub">${r.equipos&&r.equipos.codigo?r.equipos.codigo:''}</div></td>
       <td>${r.numero_unidad?'<span class="uni-num">'+r.numero_unidad+'</span>':'<span class="sub">—</span>'}</td>
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
       <td>${r.capataces?r.capataces.nombre:'—'}</td>
@@ -2193,6 +2281,141 @@ async function toggleUsuarioPanel(id,activo){
   }catch(e){alert('No pude actualizar: '+(e.message||''));}
 }
 
+/* ===== Reparaciones · Preventivo (rodados por tiempo) ===== */
+let pvData=null, pvCfgOpen=false;
+const PV_TIPOS=[['camioneta','Camioneta'],['tractor','Tractor'],['desmalezadora','Desmalezadora'],['mini_tractor','Mini tractor'],['giro_cero','Giro cero']];
+const PV_ORD={vencido:0,por_vencer:1,al_dia:2,sin_service:3,sin_config:4};
+const PV_BADGE={vencido:['Vencido','background:var(--rojo-soft);color:#A32D2D'],por_vencer:['Por vencer','background:var(--diesel-soft);color:#854F0B'],al_dia:['Al día','background:var(--brote-soft);color:var(--brote-2)'],sin_service:['Sin service','background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)'],sin_config:['Sin intervalo','background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)']};
+async function vRepPreventivo(view){
+  view.innerHTML=tabsRep()+'<div class="cargando-v">Cargando…</div>';
+  try{pvData=await api('/api/reparaciones/preventivo');renderPreventivo();}
+  catch(e){view.innerHTML=tabsRep()+'<div class="cargando-v">No pude cargar el preventivo. ¿Corriste el SQL?</div>';}
+}
+function renderPreventivo(){
+  const view=document.getElementById('view');
+  const rs=[...(pvData.rodados||[])].sort((a,b)=>(PV_ORD[a.estado]-PV_ORD[b.estado])||((b.dias||0)-(a.dias||0)));
+  const nv=rs.filter(r=>r.estado==='vencido').length,
+        np=rs.filter(r=>r.estado==='por_vencer').length,
+        na=rs.filter(r=>r.estado==='al_dia').length,
+        ns=rs.filter(r=>r.estado==='sin_service').length;
+  const cfg={};(pvData.config||[]).forEach(c=>cfg[c.tipo]=c.intervalo_dias);
+
+  const filas=rs.map(r=>{
+    const pct=(r.intervalo&&r.dias!=null)?Math.min(100,Math.round(r.dias*100/r.intervalo)):(r.reprogramado?60:0);
+    const col=r.estado==='vencido'?'var(--rojo)':r.estado==='por_vencer'?'var(--diesel)':'var(--brote)';
+    const pcol=r.estado==='vencido'?'#A32D2D':r.estado==='por_vencer'?'#854F0B':'var(--brote-2)';
+    const restanTxt=r.restan==null?'':(r.restan<=0?' · +'+(-r.restan)+' vencido':' · vence en '+r.restan);
+    const prog=r.intervalo?((r.dias!=null||r.reprogramado)
+      ?`<div class="pv-bar"><i style="width:${pct}%;background:${col}"></i></div>
+        <div class="mono" style="font-size:11px;font-weight:500;margin-top:4px;color:${pcol}">${r.dias!=null?r.dias+' / '+r.intervalo+' días':'reprogramado'}${restanTxt}</div>`
+      :'<span class="sub">sin service registrado</span>')
+      :'<span class="sub">configurá el intervalo</span>';
+    const [bl,bs]=PV_BADGE[r.estado]||PV_BADGE.sin_config;
+    const ident=r.codigo?`<span class="uni-num">${r.codigo}</span>`:`<span class="mono" style="font-weight:600;font-size:12px">${r.patente||'—'}</span>`;
+    const nom=(r.codigo||r.patente||'').replace(/'/g,'');
+    const acciones=r.intervalo?`<div style="display:flex;gap:5px;justify-content:flex-end">
+        ${r.estado==='vencido'||r.estado==='por_vencer'?`<button class="mini-btn" onclick="pvAlta('${r.id}','${nom}')">+ Preventivo</button>`:''}
+        <button class="mini-btn" title="Marcar service realizado hoy" onclick="pvRealizado('${r.id}','${nom}')">✓ Realizado</button>
+        <button class="mini-btn" title="Correr el vencimiento" onclick="pvReprogramar('${r.id}','${nom}')">↻</button>
+      </div>`:'';
+    return `<tr>
+      <td><div style="font-weight:500">${r.tipo_label}</div><div class="sub">${r.marca_modelo||''}</div></td>
+      <td>${ident}${r.codigo&&r.patente?`<div class="sub mono" style="margin-top:3px">${r.patente}</div>`:''}</td>
+      <td><span class="sub mono" style="font-size:11px">cada ${r.intervalo||'—'} días</span></td>
+      <td class="mono" style="font-size:12px">${r.ultimo?fechaAR(r.ultimo):'—'}</td>
+      <td>${prog}</td>
+      <td><span class="badge" style="${bs}">${bl}</span>${r.reprogramado?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">↻ al ${fechaAR(r.proximo)}</span></div>`:''}</td>
+      <td>${acciones}</td>
+    </tr>`;}).join('');
+
+  // Proyección: 1 columna "vencido" + 7 semanas
+  const hoy=new Date();hoy.setHours(0,0,0,0);
+  const wks=[[]];for(let i=0;i<7;i++)wks.push([]);
+  rs.forEach(r=>{
+    if(!r.proximo)return;
+    const p=new Date(r.proximo);
+    const dif=Math.floor((p-hoy)/86400000);
+    const nom=(r.tipo_label.split(' ')[0])+' '+(r.codigo||String(r.patente||'').slice(0,6));
+    if(dif<0){wks[0].push([nom,'c-rojo-pv']);return;}
+    const w=Math.min(7,Math.floor(dif/7)+1);
+    wks[w].push([nom,dif<=15?'c-ambar-pv':'c-gris-pv']);
+  });
+  const wkLabel=i=>{if(i===0)return 'Ya vencido';const d=new Date(hoy.getTime()+(i-1)*7*86400000);
+    return 'Sem '+String(d.getDate()).padStart(2,'0')+'-'+['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()];};
+  const CHIP={'c-rojo-pv':'background:var(--rojo-soft);color:#A32D2D','c-ambar-pv':'background:var(--diesel-soft);color:#854F0B','c-gris-pv':'background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)'};
+  const proj=wks.map((w,i)=>`<div class="pv-wk"><div class="sub mono" style="font-size:10.5px;margin-bottom:8px">${wkLabel(i)}</div>
+    ${w.map(([n,c])=>`<span class="pv-chip" style="${CHIP[c]}">${n}</span>`).join('')}</div>`).join('');
+
+  const cfgHtml=pvCfgOpen?`<div class="card" style="padding:14px 16px;margin-bottom:16px">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:10px">Intervalos por tipo de rodado (días)</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        ${PV_TIPOS.map(([t,l])=>`<label style="font-size:12px;color:var(--tinta-2)">${l}<br>
+          <input type="number" min="1" id="pvc-${t}" value="${cfg[t]||''}" style="width:80px;margin-top:4px;padding:7px;border:1px solid var(--linea-2);border-radius:7px;font-family:'JetBrains Mono',monospace"></label>`).join('')}
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn" onclick="pvGuardarCfg()">Guardar</button>
+        <button class="mini-btn" onclick="pvCfgOpen=false;renderPreventivo()">Cerrar</button>
+      </div>
+      <div class="sub" style="margin-top:8px">El tipo de cada rodado se asigna en Maestros → Unidades. El último service sale de las planillas de Services y de las incidencias preventivas finalizadas.</div>
+    </div>`:'';
+
+  view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Reparaciones · Preventivo</div>
+      <div class="view-desc">Mantenimiento programado por tiempo de los rodados</div></div>
+      <div class="spacer"></div>
+      <button class="btn" onclick="pvCfgOpen=!pvCfgOpen;renderPreventivo()">⚙ Intervalos</button></div>
+    ${tabsRep()}
+    ${cfgHtml}
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="kpi-label">Vencidos</div><div class="kpi-val" style="color:#A32D2D">${nv}</div><div class="kpi-sub">necesitan service ya</div></div>
+      <div class="kpi plain"><div class="kpi-label">Por vencer</div><div class="kpi-val" style="color:var(--diesel)">${np}</div><div class="kpi-sub">arriba del 75% del intervalo</div></div>
+      <div class="kpi plain"><div class="kpi-label">Al día</div><div class="kpi-val" style="color:var(--brote-2)">${na}</div><div class="kpi-sub">dentro del intervalo</div></div>
+      <div class="kpi plain"><div class="kpi-label">Sin service</div><div class="kpi-val">${ns}</div><div class="kpi-sub">sin historial cargado</div></div>
+    </div>
+    <div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
+      <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <b style="font-size:13.5px">Semáforo de flota</b>
+        <span class="sub" style="font-size:11.5px">Días desde el último service vs. intervalo del tipo</span></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Rodado</th><th>Unidad</th><th>Intervalo</th><th>Último service</th><th>Progreso</th><th>Estado</th><th></th></tr></thead>
+        <tbody>${filas||'<tr><td colspan="7" class="sub" style="padding:20px;text-align:center">No hay rodados con tipo asignado. Andá a Maestros → Unidades y asignales un tipo de rodado.</td></tr>'}</tbody>
+      </table></div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <b style="font-size:13.5px">Proyección · próximos 60 días</b>
+        <span class="sub" style="font-size:11.5px">Fecha estimada del próximo preventivo</span></div>
+      <div style="display:grid;grid-template-columns:repeat(8,1fr);padding:14px 16px 16px">${proj}</div>
+    </div>`;
+}
+async function pvAlta(id,nombre){
+  if(!await uiConfirm('Se crea una incidencia preventiva pendiente para '+nombre+' (sin asignar, prioridad baja).','Dar de alta preventivo',{ok:'Dar de alta'}))return;
+  try{await api('/api/reparaciones/preventivo/alta',{method:'POST',body:JSON.stringify({unidad_id:id})});
+    toast('Preventivo creado para '+nombre);pvData=await api('/api/reparaciones/preventivo');renderPreventivo();refrescarContadores();}
+  catch(e){toast(e.message,'error');}
+}
+async function pvRealizado(id,nombre){
+  if(!await uiConfirm('Se registra el service de HOY para '+nombre+' en el historial de Services (sin crear incidencia). El contador arranca de nuevo.','Marcar realizado',{ok:'Registrar'}))return;
+  try{await api('/api/reparaciones/preventivo/realizado',{method:'POST',body:JSON.stringify({unidad_id:id})});
+    toast('Service registrado para '+nombre);pvData=await api('/api/reparaciones/preventivo');renderPreventivo();}
+  catch(e){toast(e.message,'error');}
+}
+async function pvReprogramar(id,nombre){
+  const v=await uiPrompt('¿Cuántos días corrés el preventivo de '+nombre+'? (desde hoy)','7','Reprogramar');
+  if(v==null)return;
+  const dias=Math.round(Number(v));
+  if(!dias||dias<1||dias>365){toast('Ingresá un número de días entre 1 y 365','error');return;}
+  try{await api('/api/reparaciones/preventivo/reprogramar',{method:'POST',body:JSON.stringify({unidad_id:id,dias})});
+    toast(nombre+' reprogramado '+dias+' días');pvData=await api('/api/reparaciones/preventivo');renderPreventivo();}
+  catch(e){toast(e.message,'error');}
+}
+async function pvGuardarCfg(){
+  const tipos=PV_TIPOS.map(([t])=>({tipo:t,intervalo_dias:Number(document.getElementById('pvc-'+t).value)||0})).filter(x=>x.intervalo_dias>0);
+  try{await api('/api/reparaciones/preventivo/config',{method:'POST',body:JSON.stringify({tipos})});
+    toast('Intervalos guardados');pvCfgOpen=false;pvData=await api('/api/reparaciones/preventivo');renderPreventivo();}
+  catch(e){toast(e.message,'error');}
+}
+
 /* ===== Maestros (ABM) ===== */
 const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica','Hidráulica'],['electrico','Eléctrico'],['soldadura','Soldadura'],['neumatico','Neumático'],['giro_cero','Giro cero'],['unidades','Unidades'],['tractores','Tractores'],['cortadora','Cortadora de pasto'],['general','General']];
 const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz',centros_costo:'centro de costo',unidades:'unidad'};
@@ -2243,6 +2466,7 @@ function cardMaestro(m,ix){
     sub=m.marca_modelo||'sin modelo';
     extra=`<div class="mcard-row"><span>Patente</span><b class="mono">${m.patente||'—'}</b></div>
       <div class="mcard-row"><span>Responsable</span><b>${m.responsable||'—'}</b></div>
+      ${m.tipo_rodado?`<div class="mcard-row"><span>Preventivo</span><span class="badge b-green" style="font-size:10px">${({camioneta:'Camioneta',tractor:'Tractor',desmalezadora:'Desmalezadora',mini_tractor:'Mini tractor',giro_cero:'Giro cero'})[m.tipo_rodado]||m.tipo_rodado}</span></div>`:''}
       ${m.objetivos?`<div class="mcard-row"><span>Objetivo</span><b>${m.objetivos.nombre}</b></div>`:''}`;
   }
   if(maestroTab==='mecanicos'){
@@ -2282,6 +2506,10 @@ function abrirModalMaestro(m){
        <div class="mm-field"><label>Marca y modelo</label><input id="mm-modelo" value="${(m.marca_modelo||'').replace(/"/g,'&quot;')}" placeholder="ej: Fiat Strada Cab.Simple Mod.2018"></div>
        <div class="mm-field"><label>Patente</label><input id="mm-patente" value="${(m.patente||'').replace(/"/g,'&quot;')}" placeholder="ej: AC770AY"></div>
        <div class="mm-field"><label>Responsable</label><input id="mm-responsable" value="${(m.responsable||'').replace(/"/g,'&quot;')}" placeholder="ej: Agustín Nóbrega"></div>
+       <div class="mm-field"><label>Tipo de rodado <span style="font-weight:400;color:var(--tinta-3)">(para el preventivo)</span></label><select id="mm-rodado">
+         <option value="">— sin preventivo —</option>
+         ${[['camioneta','Camioneta'],['tractor','Tractor'],['desmalezadora','Desmalezadora'],['mini_tractor','Mini tractor'],['giro_cero','Giro cero']].map(([v,l])=>`<option value="${v}" ${m.tipo_rodado===v?'selected':''}>${l}</option>`).join('')}
+       </select></div>
        <div class="mm-field"><label>Objetivo</label><select id="mm-objetivo">
          <option value="">— sin asignar —</option>
          ${(objetivos||[]).map(o=>`<option value="${o.id}" ${String(m.objetivo_id)===String(o.id)?'selected':''}>${o.nombre}</option>`).join('')}
@@ -2340,6 +2568,7 @@ async function guardarMaestro(){
       patente,
       responsable:document.getElementById('mm-responsable').value.trim()||null,
       objetivo_id:document.getElementById('mm-objetivo').value||null,
+      tipo_rodado:document.getElementById('mm-rodado').value||null,
     };
   }else{
     const nombre=document.getElementById('mm-nombre').value.trim();
