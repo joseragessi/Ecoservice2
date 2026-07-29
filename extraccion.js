@@ -116,4 +116,69 @@ async function extraerComprobante(imagenBuffer, mediaType) {
   return parsed;
 }
 
-module.exports = { extraerComprobante };
+// ── Parseo del destino en texto libre ─────────────────────────
+// El capataz contesta como habla ("50 a la bobcat y 50 a la unidad, la super
+// a bidones para Ayres") y esto lo convierte en repartos estructurados.
+const PROMPT_DESTINO = `Sos un asistente de un sistema de control de combustible de una empresa
+de espacios verdes de Argentina. Un capataz cargó combustible (te paso los productos del ticket)
+y ahora te dice, en lenguaje coloquial, a dónde va cada cosa.
+
+Destinos posibles:
+- "unidad": el vehículo del ticket (la camioneta/camión con esa patente).
+- "bidon": bidones que se llevan a un objetivo (un predio/cliente donde se trabaja).
+- "equipo": una máquina o equipo nombrado (bobcat, tractor, minicargadora, hidro, generador, etc).
+  En ese caso poné el nombre en "detalle" tal como lo escribió.
+
+Reglas:
+- Si el mensaje da UN solo destino global sin nombrar productos ("todo a la unidad",
+  "todo a bidones para X"), asigná TODOS los litros de TODOS los productos a ese destino.
+- Si nombra un producto ("el gasoil", "la super"), matchealo con el producto del ticket que
+  mejor corresponda (gasoil/diesel ↔ productos DIESEL/GASOIL; super/nafta ↔ SUPER/NAFTA).
+- Podés repartir un mismo producto en varios destinos. "la mitad" = dividir en partes iguales.
+- NUNCA inventes litros: si asigna cantidades y no se entiende a dónde va el resto de un
+  producto, devolvé ok:false con el motivo. Si dice "el resto a X", usalo.
+- Si menciona un objetivo (para bidones o equipos), poné el texto tal cual en "objetivo"
+  (incluido "mío" / "mi objetivo" si lo dice así). Si no menciona objetivo, null.
+- Números argentinos: coma decimal ("61,5" = 61.5).
+
+Devolvé SOLO un JSON válido, sin markdown:
+{
+  "ok": true | false,
+  "motivo": string | null,          // solo si ok es false: qué no se entendió, en una frase
+  "repartos": [
+    { "item": number,               // índice del producto del ticket (te lo paso yo)
+      "litros": number,
+      "destino": "unidad" | "bidon" | "equipo",
+      "detalle": string | null,     // nombre del equipo si destino es "equipo"
+      "objetivo": string | null }   // texto del objetivo si lo mencionó
+  ]
+}`;
+
+async function parsearDestinoCombustible({ texto, items, patente, objetivo_capataz }) {
+  const contexto =
+    `Productos del ticket:\n` +
+    items.map(it => `  item ${it.i}: ${it.producto} — ${it.litros} litros`).join('\n') +
+    `\nPatente de la unidad: ${patente || 'sin patente'}\n` +
+    `Objetivo del capataz (por si dice "mío"): ${objetivo_capataz || 'sin objetivo'}\n\n` +
+    `El capataz escribió:\n"${texto}"`;
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key':         process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type':      'application/json',
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 800,
+      messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT_DESTINO + '\n\n' + contexto }] }],
+    }),
+  });
+  if (!resp.ok) throw new Error(`API Claude ${resp.status}: ${await resp.text()}`);
+  const data = await resp.json();
+  const salida = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  return JSON.parse(salida.replace(/```json/gi, '').replace(/```/g, '').trim());
+}
+
+module.exports = { extraerComprobante, parsearDestinoCombustible };
