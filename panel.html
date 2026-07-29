@@ -1959,6 +1959,7 @@ function renderReparaciones(view){
     return `<tr onclick="selRep(${ix})" data-ix="${ix}">
       <td><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></td>
       <td><div style="font-weight:500">${r.equipos?r.equipos.nombre:'—'}</div><div class="sub">${r.equipos&&r.equipos.codigo?r.equipos.codigo:''}</div></td>
+      <td>${r.numero_unidad?'<span class="uni-chip">N° '+r.numero_unidad+'</span>':'<span class="sub">—</span>'}</td>
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
       <td>${r.capataces?r.capataces.nombre:'—'}</td>
       <td>${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
@@ -1979,8 +1980,8 @@ function renderReparaciones(view){
         <div class="fgroup-t">Prioridad</div>${fPrio}
         <div class="fgroup-t">Mecánico</div>${fMec}
       </div>
-      <div class="tablewrap"><table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
-        <tbody id="rep-body">${filas||'<tr><td colspan="7"><div class="empty"><div>No hay incidencias con estos filtros.</div></div></td></tr>'}</tbody></table></div>
+      <div class="tablewrap"><table><thead><tr><th>Prioridad</th><th>Equipo</th><th>N° Unidad</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
+        <tbody id="rep-body">${filas||'<tr><td colspan="8"><div class="empty"><div>No hay incidencias con estos filtros.</div></div></td></tr>'}</tbody></table></div>
       <div class="side" id="rep-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg><div>Elegí una incidencia<br>para ver el detalle</div></div></div>
     </div>`;
   window._repFiltrada=filtrada;
