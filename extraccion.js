@@ -52,6 +52,22 @@ MUY IMPORTANTE — cómo leer los litros en los remitos de surtidor:
 - Los puntos suspensivos "....." son solo relleno de impresión, no son parte de ningún número.
 
 El chofer suele figurar como "Chofer: APELLIDO NOMBRE". La patente como "Patente: XXXXX".
+
+MUY IMPORTANTE — número de comprobante:
+- Si en el cuerpo hay una línea "Remito" seguida de un número con formato punto de venta-número
+  (ej: "Remito" / "0033-00000305"), ESE es el número del remito. Transcribilo completo con el guión.
+- El "N°" del encabezado (ej: "N° 00003443") es el número interno del tique de la impresora:
+  NO lo uses como número de remito ni de factura si existe el número con formato PV-NUMERO.
+
+Proveedor y CUIT:
+- "proveedor" es la RAZÓN SOCIAL impresa del emisor (ej: "SERVI SUD SA"), no el logo ni la marca
+  comercial grande del encabezado (GNG, Shell, Puma, YPF son marcas, no la razón social).
+- "cuit" es el CUIT del EMISOR (el que está junto a la razón social, arriba). El CUIT que aparece
+  junto a "Cliente" (ECOSERVICE S.R.L., CUIT 30-70793029-9) es del cliente: NUNCA lo uses.
+
+Patente: transcribila EXACTA, carácter por carácter. Formatos argentinos: AA999AA o AAA999.
+Cuidado con letras que se confunden en la impresión térmica: U/V, O/0, I/1, B/8. Si un carácter
+no se lee con seguridad, igual transcribí lo que mejor se vea (el sistema la valida contra la flota).
 Si un dato no está o no se lee con seguridad, poné null. No inventes valores, pero SÍ leé los litros
 del remito siguiendo la regla de arriba: casi siempre están presentes aunque el remito no tenga montos.`;
 
