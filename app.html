@@ -217,10 +217,67 @@ function render(){
     <div class="kpi green"><div class="v">${fin.length}</div><div class="l">Terminadas</div></div>`;
   $('tabs').innerHTML=[['activas','Activas',act.length],['finalizadas','Terminadas',fin.length]]
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
-    +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`;
+    +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`
+    +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`;
+  if(tab==='nueva')return renderNueva();
   const lista=tab==='finalizadas'?fin:act;
   $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
     :'<div class="vacio">No tenés reparaciones acá.</div>';
+}
+
+/* ── Alta manual de incidencia (correctivo / preventivo) ── */
+let altaTipo='correctivo', objsApp=null;
+const ALTA_EQUIPOS=['Motoguadaña','Sopladora','Extensible','Camioneta','Tractor','Mini tractor','Giro cero','Desmalezadora','Hidro grúa','Camión','Otro'];
+function renderNueva(){
+  $('kpis').innerHTML='';
+  const co=altaTipo==='correctivo', sel='background:#FDEDEB;border:1.5px solid #C0392B;color:#C0392B;font-weight:600',
+        selP='background:#E8F6EE;border:1.5px solid #1E8449;color:#1E8449;font-weight:600',
+        off='background:#fff;border:1px solid #d8dcd8;color:#666';
+  $('lista').innerHTML=`
+    <div class="card" style="padding:16px">
+      <h3 style="margin:0 0 4px">Nueva incidencia</h3>
+      <div class="desc" style="margin-bottom:12px">Lo que entra al taller sin pasar por el capataz. Queda asignada a vos.</div>
+      <div class="dl">Tipo</div>
+      <div style="display:flex;gap:8px;margin:6px 0 12px">
+        <button style="flex:1;padding:10px;border-radius:9px;font-size:14px;${co?sel:off}" onclick="altaTipo='correctivo';renderNueva()">🔧 Correctivo</button>
+        <button style="flex:1;padding:10px;border-radius:9px;font-size:14px;${co?off:selP}" onclick="altaTipo='preventivo';renderNueva()">🛡️ Preventivo</button>
+      </div>
+      ${co?'':'<div class="desc" style="background:#E8F6EE;border:1px dashed #1E8449;border-radius:8px;padding:8px 10px;color:#1E8449;margin-bottom:12px">Al finalizarla se actualiza el último service de esta unidad.</div>'}
+      <div class="dl">Equipo</div>
+      <div style="display:flex;gap:8px;margin:6px 0 12px">
+        <select id="al-equipo" style="flex:1.4;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;background:#fff">
+          ${ALTA_EQUIPOS.map(e=>`<option ${e===(window.alEq||'')?'selected':''}>${e}</option>`).join('')}
+        </select>
+        <input id="al-unidad" placeholder="N° o patente" value="${(window.alUni||'').replace(/"/g,'&quot;')}"
+          style="flex:1;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px">
+      </div>
+      <div class="dl">Objetivo <span style="font-weight:400;color:#9aa39a">(opcional)</span></div>
+      <select id="al-objetivo" style="width:100%;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;background:#fff;margin:6px 0 12px">
+        <option value="">Taller / sin objetivo</option>
+        ${(objsApp||[]).map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
+      </select>
+      <div class="dl">Descripción</div>
+      <textarea id="al-desc" placeholder="${co?'Qué le pasa o por qué entra…':'Cambio de aceite, filtros, engrase…'}"
+        style="width:100%;box-sizing:border-box;min-height:70px;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;font-family:inherit;margin:6px 0 14px"></textarea>
+      <button class="btn" style="width:100%" onclick="guardarAlta(this)">Dar de alta</button>
+      <div class="desc" id="al-msg" style="margin-top:10px"></div>
+    </div>`;
+  if(!objsApp)api('/api/app/objetivos').then(d=>{objsApp=d||[];if(tab==='nueva')renderNueva();}).catch(()=>{objsApp=[];});
+}
+async function guardarAlta(btn){
+  const eq=$('al-equipo').value, uni=$('al-unidad').value.trim(), desc=$('al-desc').value.trim();
+  window.alEq=eq;window.alUni=uni;
+  const msg=$('al-msg');
+  if(!uni){msg.textContent='⚠️ Cargá el número de unidad o la patente.';return;}
+  btn.disabled=true;btn.textContent='Guardando…';
+  try{
+    await api('/api/app/incidencias',{method:'POST',body:JSON.stringify({
+      tipo_mant:altaTipo,tipo_equipo:eq,numero_unidad:uni,
+      objetivo_id:$('al-objetivo').value||null,descripcion:desc})});
+    window.alUni='';altaTipo='correctivo';tab='activas';abierta=null;cargar();
+  }catch(e){
+    msg.textContent='⚠️ '+e.message;btn.disabled=false;btn.textContent='Dar de alta';
+  }
 }
 
 /* ── Supervisor: incidencias por objetivo a cargo ── */
@@ -302,7 +359,8 @@ function renderService(){
   $('kpis').innerHTML='';
   $('tabs').innerHTML=[['activas','Activas',''],['finalizadas','Terminadas','']]
     .map(([k,l])=>`<div class="tab" onclick="tab='${k}';svData=null;cargar()">${l}</div>`).join('')
-    +`<div class="tab on">🔧 Service</div>`;
+    +`<div class="tab on">🔧 Service</div>`
+    +`<div class="tab" onclick="tab='nueva';render()">➕ Nueva</div>`;
   if(svData)return renderSvRevision();
   // Shell fija: el buscador NO se re-renderiza (solo #sv-hist), así no pierde el foco
   $('lista').innerHTML=`
@@ -503,8 +561,9 @@ async function svGuardar(){
   }catch(e){toast('Error: '+e.message);}
 }
 function cardIncidencia(i){
-  const eq=i.equipos?(i.equipos.nombre||i.equipos.tipo||'Equipo'):'Equipo';
+  const eq=i.equipos?(i.equipos.nombre||i.equipos.tipo||'Equipo'):(i.tipo_equipo||'Equipo');
   const cod=i.equipos&&i.equipos.codigo?' · '+i.equipos.codigo:'';
+  const prev=i.tipo_mant==='preventivo'?' <span style="font-size:10px;font-weight:700;background:#E8F6EE;color:#1E8449;padding:2px 7px;border-radius:5px;vertical-align:2px">PREV</span>':'';
   const idx=ESTADOS.indexOf(i.estado);
   const fin=i.estado==='finalizado';
   const obs=(i.comentarios_incidencias||[]).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
@@ -512,7 +571,7 @@ function cardIncidencia(i){
   return `<div class="card">
     <div class="card-top" onclick="toggle('${i.id}')">
       <div class="txt">
-        <h3>${eq}${cod}</h3>
+        <h3>${eq}${cod}${prev}</h3>
         <div class="meta">${i.objetivos?i.objetivos.nombre:'—'} · ${hace(i.created_at)}</div>
       </div>
       <span class="pill p-${i.prioridad||'media'}">${i.prioridad||'media'}</span>
