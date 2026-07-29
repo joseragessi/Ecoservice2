@@ -2028,6 +2028,62 @@ async function vReparaciones(view){
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
 }
+/* ── Alta manual de incidencia desde el panel ── */
+let repAltaOpen=false,repAltaTipo='correctivo',repObjs=null;
+const REP_ALTA_EQUIPOS=['Motoguadaña','Sopladora','Extensible','Camioneta','Tractor','Mini tractor','Giro cero','Desmalezadora','Hidro grúa','Camión','Otro'];
+const repAltaTmp={eq:'',uni:'',obj:'',mec:'',prio:'',desc:''};
+function repAltaLeer(){['eq','uni','obj','mec','prio','desc'].forEach(k=>{const el=document.getElementById('ra-'+k);if(el)repAltaTmp[k]=el.value;});}
+function repAltaToggle(){repAltaOpen=!repAltaOpen;renderReparaciones(document.getElementById('view'));
+  if(repAltaOpen&&!repObjs)api('/api/maestros/objetivos').then(d=>{repObjs=(d||[]).filter(o=>o.activo!==false);renderReparaciones(document.getElementById('view'));}).catch(()=>{repObjs=[];});}
+function repAltaSetTipo(t){repAltaLeer();repAltaTipo=t;repAltaTmp.prio='';renderReparaciones(document.getElementById('view'));}
+function repAltaForm(){
+  const co=repAltaTipo==='correctivo';
+  const prioDef=repAltaTmp.prio||(co?'media':'baja');
+  const inp='padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px;font-size:13px;font-family:\'Sora\';background:#fff';
+  return `<div class="card" style="padding:14px 16px;margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b style="font-size:13.5px">Nueva incidencia ${co?'':' · preventiva'}</b>
+      <div style="display:flex;gap:6px">
+        <button class="mini-btn" style="${co?'background:var(--rojo-soft);color:#A32D2D;border-color:var(--rojo)':''}" onclick="repAltaSetTipo('correctivo')">🔧 Correctivo</button>
+        <button class="mini-btn" style="${co?'':'background:var(--brote-soft);color:var(--brote-2);border-color:var(--brote)'}" onclick="repAltaSetTipo('preventivo')">🛡️ Preventivo</button>
+      </div></div>
+    <div style="display:grid;grid-template-columns:1.2fr .8fr 1.2fr 1.2fr .8fr;gap:10px;margin-bottom:10px">
+      <label style="font-size:11px;color:var(--tinta-2)">Equipo<br><select id="ra-eq" style="${inp};width:100%;margin-top:4px">
+        ${REP_ALTA_EQUIPOS.map(e=>`<option ${e===repAltaTmp.eq?'selected':''}>${e}</option>`).join('')}</select></label>
+      <label style="font-size:11px;color:var(--tinta-2)">N° / patente<br><input id="ra-uni" value="${(repAltaTmp.uni||'').replace(/"/g,'&quot;')}" style="${inp};width:100%;margin-top:4px;font-family:'JetBrains Mono',monospace"></label>
+      <label style="font-size:11px;color:var(--tinta-2)">Objetivo<br><select id="ra-obj" style="${inp};width:100%;margin-top:4px">
+        <option value="">Taller / sin objetivo</option>
+        ${(repObjs||[]).map(o=>`<option value="${o.id}" ${o.id===repAltaTmp.obj?'selected':''}>${o.nombre}</option>`).join('')}</select></label>
+      <label style="font-size:11px;color:var(--tinta-2)">Mecánico<br><select id="ra-mec" style="${inp};width:100%;margin-top:4px">
+        <option value="">Sin asignar</option>
+        ${mecanicos.map(m=>`<option value="${m.id}" ${m.id===repAltaTmp.mec?'selected':''}>${m.nombre}</option>`).join('')}</select></label>
+      <label style="font-size:11px;color:var(--tinta-2)">Prioridad<br><select id="ra-prio" style="${inp};width:100%;margin-top:4px">
+        ${['critico','alta','media','baja'].map(p=>`<option value="${p}" ${p===prioDef?'selected':''}>${cap(p)}</option>`).join('')}</select></label>
+    </div>
+    <div style="display:flex;gap:10px;align-items:flex-end">
+      <label style="font-size:11px;color:var(--tinta-2);flex:1">Descripción<br>
+        <input id="ra-desc" value="${(repAltaTmp.desc||'').replace(/"/g,'&quot;')}" placeholder="${co?'Qué le pasa o por qué entra…':'Cambio de aceite, filtros, engrase…'}" style="${inp};width:100%;margin-top:4px"></label>
+      <button class="btn" onclick="repAltaCrear(this)">Dar de alta</button>
+      <button class="mini-btn" style="height:34px" onclick="repAltaOpen=false;renderReparaciones(document.getElementById('view'))">Cancelar</button>
+    </div>
+    ${co?'':'<div class="sub" style="margin-top:8px;color:var(--brote-2)">Al finalizarla se actualiza el último service de la unidad en la pestaña Preventivo.</div>'}
+  </div>`;
+}
+async function repAltaCrear(btn){
+  repAltaLeer();
+  if(!repAltaTmp.uni.trim()){toast('Cargá el número de unidad o la patente','error');return;}
+  btn.disabled=true;btn.textContent='Guardando…';
+  try{
+    await api('/api/reparaciones/nueva',{method:'POST',body:JSON.stringify({
+      tipo_mant:repAltaTipo,tipo_equipo:repAltaTmp.eq||REP_ALTA_EQUIPOS[0],numero_unidad:repAltaTmp.uni.trim(),
+      objetivo_id:repAltaTmp.obj||null,mecanico_id:repAltaTmp.mec||null,
+      prioridad:repAltaTmp.prio,descripcion:repAltaTmp.desc.trim()})});
+    toast('Incidencia creada');
+    repAltaOpen=false;repAltaTmp.uni='';repAltaTmp.desc='';repAltaTipo='correctivo';repAltaTmp.prio='';
+    refrescarContadores();go('reparaciones');
+  }catch(e){toast(e.message,'error');btn.disabled=false;btn.textContent='Dar de alta';}
+}
+
 function renderReparaciones(view){
   const cnt=(campo,val)=>repData.filter(r=>r[campo]===val).length;
   // Por defecto ocultamos las finalizadas (solo activas). El filtro "Finalizadas" las muestra.
@@ -2064,10 +2120,12 @@ function renderReparaciones(view){
     <div class="view-head"><div><div class="view-title">Reparaciones</div>
       <div class="view-desc">Incidencias reportadas por los capataces desde WhatsApp</div></div>
       <div class="spacer"></div>
-      <div style="display:flex;gap:14px;font-size:12px" class="mono">
+      <div style="display:flex;gap:14px;font-size:12px;align-items:center" class="mono">
         <span style="color:#DC4A5B">● ${resumen.critico} crítico</span><span style="color:#D98A1F">● ${resumen.alta} alta</span>
-        <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span></div></div>
+        <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span>
+        <button class="btn" style="font-family:'Sora'" onclick="repAltaToggle()">+ Nueva incidencia</button></div></div>
     ${tabsRep()}
+    ${repAltaOpen?repAltaForm():''}
     <div class="repwrap">
       <div class="rep-filters">
         <div class="fgroup-t">Estado</div>${fEstado}
