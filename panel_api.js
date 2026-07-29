@@ -833,6 +833,37 @@ router.post('/api/reparaciones/preventivo/reprogramar', auth, async (req, res) =
   }
 });
 
+// Alta manual de incidencia desde el panel (correctivo o preventivo),
+// espejo del alta de la app pero con mecánico y prioridad a elección.
+router.post('/api/reparaciones/nueva', auth, async (req, res) => {
+  try {
+    const d = req.body || {};
+    const tipoMant = d.tipo_mant === 'preventivo' ? 'preventivo' : 'correctivo';
+    const tipoEquipo = String(d.tipo_equipo || '').trim();
+    const numeroUnidad = String(d.numero_unidad || '').trim();
+    if (!tipoEquipo) return res.status(400).json({ error: 'Falta el tipo de equipo' });
+    if (!numeroUnidad) return res.status(400).json({ error: 'Falta el número de unidad o la patente' });
+    const descripcion = String(d.descripcion || '').trim() ||
+      (tipoMant === 'preventivo' ? 'Service preventivo' : 'Ingreso a taller');
+    const PRIOS = ['critico', 'alta', 'media', 'baja'];
+    const prioridad = PRIOS.includes(d.prioridad) ? d.prioridad
+      : (tipoMant === 'preventivo' ? 'baja' : 'media');
+    const { data: inc, error } = await supabase.from('incidencias').insert({
+      capataz_id: null, objetivo_id: d.objetivo_id || null, equipo_id: null,
+      mecanico_id: d.mecanico_id || null,
+      prioridad, estado: 'pendiente', equipo_parado: !!d.equipo_parado,
+      descripcion, numero_unidad: numeroUnidad, tipo_equipo: tipoEquipo,
+      tipo_falla: tipoMant === 'preventivo' ? 'Preventivo' : 'Ingreso taller',
+      tipo_mant: tipoMant, origen: 'panel',
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: inc.id });
+  } catch (err) {
+    console.error('reparaciones nueva:', err);
+    res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
+  }
+});
+
 // ── Repuestos de taller (lo que hay que comprar para reparar) ─
 // El pedido nace en la reparación (mecánico desde la app o vos desde el
 // panel) y se gestiona en Compras → Repuestos.
