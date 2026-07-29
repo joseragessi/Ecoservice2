@@ -980,7 +980,12 @@ async function vCombustible(view){
     <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th><th></th></tr></thead>
       <tbody>${cs.length?cs.map(c=>{
         const items=(c.cargas_combustible_items||[]).map(i=>{
-          const dest=i.destino==='bidon'?'<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones</span>':'<span class="uni-chip">unidad</span>';
+          const det=i.destino_detalle?' · '+i.destino_detalle:'';
+          const dest=i.destino==='bidon'?`<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones${det}</span>`
+            :i.destino==='equipo'?(i.equipo_id
+              ?`<span class="uni-chip" style="background:var(--azul-soft);color:var(--azul)">equipo${det}</span>`
+              :`<span class="uni-chip" style="background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)">sin machear${det}</span>`)
+            :'<span class="uni-chip">unidad</span>';
           return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;}).join('<br>');
         const anulada=c.estado==='anulada';
         return `<tr style="${anulada?'opacity:.55':''}"><td class="mono">${fechaAR(c.fecha)}</td>
