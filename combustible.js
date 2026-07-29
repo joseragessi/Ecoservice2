@@ -1,9 +1,9 @@
 const supabase = require('./supabase');
-const { extraerComprobante } = require('./extraccion');
+const { extraerComprobante, parsearDestinoCombustible } = require('./extraccion');
 
 // Sesiones de combustible EN MEMORIA.
-// telefono -> { paso, datos, mediaUrl, capataz, unidad, itemsComb, indice, imputaciones }
-//   paso: 'destino_item' | 'objetivo_item'
+// telefono -> { paso, datos, mediaUrl, capataz, unidad, itemsComb, indice, repartos, textoLibre }
+//   paso: 'confirmar_dup' | 'litros_item' | 'destino_libre' | 'objetivo_bidones' | 'confirmar_libre'
 const sesiones = {};
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -65,6 +65,22 @@ async function resolverObjetivo(texto, capataz) {
   return match ? { id: match.id, nombre: match.nombre } : null;
 }
 
+// Machea "bobcat", "tractor", etc. contra el maestro de equipos. Si no hay un
+// match claro, devuelve null y el reparto queda con el texto (sin machear).
+async function resolverEquipo(texto) {
+  if (!texto) return null;
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const nt = norm(texto);
+  if (!nt) return null;
+  const { data: equipos } = await supabase
+    .from('equipos').select('id, nombre').eq('activo', true);
+  const matches = (equipos || []).filter(e => {
+    const ne = norm(e.nombre);
+    return ne.includes(nt) || nt.includes(ne);
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // ── Detección de doble carga ─────────────────────────────────
 // Un remito puede llegar dos veces (el capataz reenvía la foto, o dos fotos
 // del mismo papel con lecturas de OCR apenas distintas). Antes de guardar se
@@ -107,40 +123,96 @@ function resumenProductos(datos) {
     .join('\n');
 }
 
-/** Pregunta el destino del producto actual de la sesión. */
-function preguntarItem(sesion) {
-  const it  = sesion.itemsComb[sesion.indice];
-  const total = sesion.itemsComb.length;
-  const pos = total > 1 ? ` (${sesion.indice + 1}/${total})` : '';
-  // Si la IA no leyó los litros, se los pedimos al capataz antes del destino.
-  if (it.litros == null || it.litros === 0) {
+/** Pide los litros que la IA no pudo leer; cuando están todos, pasa al destino. */
+function preguntarLitros(sesion) {
+  const idx = sesion.itemsComb.findIndex(i => i.litros == null || i.litros === 0);
+  if (idx >= 0) {
+    sesion.indice = idx;
     sesion.paso = 'litros_item';
-    return `⛽ *${it.producto}*${pos}\n\n` +
+    const it = sesion.itemsComb[idx];
+    return `⛽ *${it.producto}*\n\n` +
            `No pude leer los litros en el ticket. ¿Cuántos litros cargaste?\n` +
            `Respondé solo el número (por ejemplo: 61,65).`;
   }
-  sesion.paso = 'destino_item';
-  const pat = sesion.datos.patente;
-  const op1 = pat ? `A la unidad ${pat}` : 'A la unidad';
-  return `⛽ *${it.producto}* — ${it.litros} lt${pos}\n` +
-         `¿A dónde va?\n1️⃣ ${op1}\n2️⃣ A bidones\n\nRespondé 1 o 2.`;
+  return preguntarDestino(sesion);
+}
+
+/** Una sola pregunta abierta: a dónde va la carga. */
+function preguntarDestino(sesion) {
+  sesion.paso = 'destino_libre';
+  const pat = sesion.datos.patente ? ` ${sesion.datos.patente}` : '';
+  return `¿A dónde va la carga? Contame libre, podés repartir.\n` +
+         `Por ejemplo: _"50 del gasoil a la bobcat y 50 a la unidad, la super a bidones para Ayres"_\n\n` +
+         `Atajos: *1* todo a la unidad${pat} · *2* todo a bidones`;
+}
+
+/** Describe un reparto para los resúmenes. */
+function descReparto(r, sesion) {
+  if (r.destino === 'bidon')  return `bidones → ${r.objetivo_nombre || '¿objetivo?'}`;
+  if (r.destino === 'equipo') return `${r.equipo_nombre || r.detalle || 'equipo'}${r.equipo_id ? '' : ' (sin machear)'}` +
+                                     (r.objetivo_nombre ? ` → ${r.objetivo_nombre}` : '');
+  return `unidad ${sesion.datos.patente || ''}`.trim();
+}
+
+function resumenRepartos(sesion) {
+  return sesion.repartos
+    .map(r => `  • ${r.item.producto} ${r.litros} lt → ${descReparto(r, sesion)}`)
+    .join('\n');
+}
+
+/** Convierte lo que devolvió la IA en repartos validados y resueltos contra maestros. */
+async function construirRepartos(parseo, sesion) {
+  if (!parseo || parseo.ok === false || !Array.isArray(parseo.repartos) || !parseo.repartos.length) {
+    return { error: (parseo && parseo.motivo) || 'No entendí el reparto.' };
+  }
+  const repartos = [];
+  for (const p of parseo.repartos) {
+    const it = sesion.itemsComb[p.item];
+    const litros = Number(p.litros);
+    if (!it || !isFinite(litros) || litros <= 0) return { error: 'No entendí el reparto.' };
+    if (!['unidad', 'bidon', 'equipo'].includes(p.destino)) return { error: 'No entendí el reparto.' };
+    const r = { item: it, litros: Math.round(litros * 100) / 100, destino: p.destino,
+                detalle: p.detalle || null, objetivo_texto: p.objetivo || null,
+                unidad_id: null, equipo_id: null, objetivo_id: null };
+    if (p.destino === 'unidad') r.unidad_id = sesion.unidad ? sesion.unidad.id : null;
+    if (p.destino === 'equipo') {
+      const eq = await resolverEquipo(p.detalle);
+      if (eq) { r.equipo_id = eq.id; r.equipo_nombre = eq.nombre; }
+    }
+    if (p.objetivo) {
+      const obj = await resolverObjetivo(p.objetivo, sesion.capataz);
+      if (!obj || !obj.id) return { error: `No encontré el objetivo "${p.objetivo}". Escribí el reparto de nuevo con el nombre como figura.` };
+      r.objetivo_id = obj.id; r.objetivo_nombre = obj.nombre;
+    }
+    repartos.push(r);
+  }
+  // Los litros repartidos tienen que cerrar contra el ticket, producto por producto.
+  for (const it of sesion.itemsComb) {
+    const suma = repartos.filter(r => r.item === it).reduce((s, r) => s + r.litros, 0);
+    const dif = suma - (Number(it.litros) || 0);
+    if (dif > 0.6)  return { error: `Asignaste ${suma} lt de ${it.producto}, pero el ticket dice ${it.litros} lt. Contame de nuevo cómo se reparte.` };
+    if (dif < -0.6) return { error: `Te faltó asignar ${Math.round((-dif) * 100) / 100} lt de ${it.producto} (el ticket dice ${it.litros} lt). Contame de nuevo el reparto completo.` };
+  }
+  const faltanObjetivo = repartos.some(r => r.destino === 'bidon' && !r.objetivo_id);
+  return { repartos, faltanObjetivo };
 }
 
 /** Inserta la carga + items con la imputación por producto ya resuelta. */
 async function guardarCarga(sesion) {
-  const { datos, mediaUrl, capataz, itemsComb, imputaciones } = sesion;
+  const { datos, mediaUrl, capataz, itemsComb } = sesion;
+  const repartos = sesion.repartos || [];
   const esFactura = datos.tipo_doc === 'factura';
   const proveedorId = await resolverProveedor(datos.proveedor, datos.cuit);
   const litros = itemsComb.reduce((s, i) => s + (i.litros || 0), 0);
 
   // Resumen de destino de la carga
-  const dests = imputaciones.map(x => x.destino);
+  const dests = repartos.map(x => x.destino);
   const resumen = dests.length && dests.every(d => d === 'unidad') ? 'unidad'
                 : dests.length && dests.every(d => d === 'bidon')  ? 'bidon'
-                : 'mixto';
+                : dests.length ? 'mixto' : 'unidad';
 
   const unidadCargaId = resumen === 'unidad' && sesion.unidad ? sesion.unidad.id : null;
-  const impObj = imputaciones.find(x => x.objetivo_id);
+  const impObj = repartos.find(x => x.objetivo_id);
   const objCargaId = (impObj && impObj.objetivo_id)
                    || (sesion.unidad && sesion.unidad.objetivo_id)
                    || capataz.objetivo_id || null;
@@ -168,6 +240,7 @@ async function guardarCarga(sesion) {
       total:          datos.total,
       imagen_url:     mediaUrl,
       datos_ia:       datos,
+      respuesta_capataz: sesion.textoLibre || null,
     })
     .select('id').single();
 
@@ -176,20 +249,32 @@ async function guardarCarga(sesion) {
     return null;
   }
 
-  const items = (datos.items || []).map(it => {
-    const idx = itemsComb.indexOf(it);
-    const imp = idx >= 0 ? imputaciones[idx] : null;
-    return {
-      carga_id:       carga.id,
-      producto:       it.producto,
+  // Una fila por reparto. Los productos que no son combustible (o sin reparto)
+  // van en una fila única como siempre.
+  const items = [];
+  (datos.items || []).forEach(it => {
+    const reps = repartos.filter(r => r.item === it);
+    if (!reps.length) {
+      items.push({
+        carga_id: carga.id, producto: it.producto,
+        es_combustible: it.es_combustible !== false,
+        litros: it.litros ?? null, precio_unit: it.precio_unit ?? null,
+        subtotal: it.subtotal ?? null,
+        destino: 'unidad', unidad_id: sesion.unidad ? sesion.unidad.id : null,
+        objetivo_id: null,
+      });
+      return;
+    }
+    reps.forEach(r => items.push({
+      carga_id: carga.id, producto: it.producto,
       es_combustible: it.es_combustible !== false,
-      litros:         it.litros ?? null,
-      precio_unit:    it.precio_unit ?? null,
-      subtotal:       it.subtotal ?? null,
-      destino:        imp ? imp.destino : 'unidad',
-      unidad_id:      imp ? imp.unidad_id : (sesion.unidad ? sesion.unidad.id : null),
-      objetivo_id:    imp ? imp.objetivo_id : null,
-    };
+      litros: r.litros, precio_unit: it.precio_unit ?? null,
+      subtotal: reps.length === 1 ? (it.subtotal ?? null) : null,
+      destino: r.destino,
+      unidad_id: r.unidad_id, equipo_id: r.equipo_id, objetivo_id: r.objetivo_id,
+      destino_detalle: r.destino === 'bidon' ? (r.objetivo_nombre || null)
+                     : (r.equipo_nombre || r.detalle || null),
+    }));
   });
   await supabase.from('cargas_combustible_items').insert(items);
   return carga;
@@ -197,27 +282,10 @@ async function guardarCarga(sesion) {
 
 /** Arma el resumen final que se le manda al capataz. */
 function resumenFinal(sesion, nombre) {
-  const lineas = sesion.itemsComb.map((it, idx) => {
-    const imp = sesion.imputaciones[idx];
-    const dest = imp.destino === 'bidon'
-      ? `bidones → ${imp.objetivo_nombre || 'objetivo'}`
-      : `unidad ${sesion.datos.patente || ''}`.trim();
-    return `  • ${it.producto} (${it.litros ?? '—'} lt) → ${dest}`;
-  }).join('\n');
+  const lineas = sesion.repartos.length
+    ? resumenRepartos(sesion)
+    : '  • registrada sin reparto';
   return `✅ Carga registrada, *${nombre}*:\n${lineas}`;
-}
-
-/** Avanza al siguiente producto, o guarda si ya no quedan. */
-async function avanzar(tel, sesion, nombre) {
-  sesion.indice++;
-  if (sesion.indice < sesion.itemsComb.length) {
-    sesion.paso = 'destino_item';
-    return preguntarItem(sesion);
-  }
-  const carga = await guardarCarga(sesion);
-  delete sesiones[tel];
-  if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
-  return resumenFinal(sesion, nombre);
 }
 
 // ── Entrada 1: llega la FOTO ──────────────────────────────────
@@ -273,7 +341,7 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
   if (dup) {
     sesiones[tel] = {
       paso: 'confirmar_dup', datos, mediaUrl, capataz, unidad,
-      itemsComb, indice: 0, imputaciones: [],
+      itemsComb, indice: 0, repartos: [],
     };
     const c = dup.carga;
     const quien = c.capataces ? c.capataces.nombre.split(' ')[0] : 'alguien';
@@ -286,21 +354,17 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
 
   // Si no hay productos de combustible que discriminar, guardo directo.
   if (itemsComb.length === 0) {
-    const sesion = { datos, mediaUrl, capataz, unidad, itemsComb: [], imputaciones: [] };
+    const sesion = { datos, mediaUrl, capataz, unidad, itemsComb: [], repartos: [] };
     const carga = await guardarCarga(sesion);
     if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
     return `${encabezado}✅ Registrada.`;
   }
 
   sesiones[tel] = {
-    paso: 'destino_item', datos, mediaUrl, capataz, unidad,
-    itemsComb, indice: 0, imputaciones: [],
+    paso: 'destino_libre', datos, mediaUrl, capataz, unidad,
+    itemsComb, indice: 0, repartos: [],
   };
-
-  const intro = itemsComb.length > 1
-    ? `Tenés ${itemsComb.length} productos. Te pregunto uno por uno.\n\n`
-    : '';
-  return encabezado + intro + preguntarItem(sesiones[tel]);
+  return encabezado + preguntarLitros(sesiones[tel]);
 }
 
 // ── Entrada 2: llega TEXTO con sesión activa ──────────────────
@@ -317,22 +381,17 @@ async function continuarConversacion(telefono, mensaje) {
 
   const texto = (mensaje || '').trim();
   const nombre = sesion.capataz.nombre.split(' ')[0];
-  const it = sesion.itemsComb[sesion.indice];
 
   // Confirmación de posible doble carga
   if (sesion.paso === 'confirmar_dup') {
     if (texto === '1') {
-      // Es una carga distinta: sigue el flujo normal
       if (sesion.itemsComb.length === 0) {
         const carga = await guardarCarga(sesion);
         delete sesiones[tel];
         if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
         return `✅ Registrada, *${nombre}*.`;
       }
-      sesion.paso = 'destino_item';
-      const intro = sesion.itemsComb.length > 1
-        ? `Tenés ${sesion.itemsComb.length} productos. Te pregunto uno por uno.\n\n` : '';
-      return intro + preguntarItem(sesion);
+      return preguntarLitros(sesion);
     }
     if (texto === '2') {
       delete sesiones[tel];
@@ -343,8 +402,7 @@ async function continuarConversacion(telefono, mensaje) {
 
   // El capataz responde los litros que la IA no pudo leer
   if (sesion.paso === 'litros_item') {
-    // Acepta "61,65" y "61.65": si hay coma, el punto es separador de miles;
-    // si no hay coma, el punto es decimal (como lo escribiría cualquiera).
+    const it = sesion.itemsComb[sesion.indice];
     const limpio = texto.includes(',')
       ? texto.replace(/\./g, '').replace(',', '.')
       : texto.trim();
@@ -356,39 +414,101 @@ async function continuarConversacion(telefono, mensaje) {
       return `${n} litros parece demasiado para una carga. Revisá el ticket y respondé solo los litros (por ejemplo: 61,65).`;
     }
     it.litros = n;
-    // Ya tenemos los litros: seguimos con el destino de este mismo producto.
-    return preguntarItem(sesion);
+    return preguntarLitros(sesion);   // siguiente faltante, o el destino
   }
 
-  if (sesion.paso === 'destino_item') {
+  // Destino en texto libre (o atajos 1/2). También se usa para corregir
+  // desde la confirmación: escribir de nuevo pisa la interpretación anterior.
+  if (sesion.paso === 'destino_libre' || sesion.paso === 'confirmar_libre') {
+
+    // Confirmación
+    if (sesion.paso === 'confirmar_libre' && texto === '1') {
+      const carga = await guardarCarga(sesion);
+      const resumen = resumenFinal(sesion, nombre);
+      delete sesiones[tel];
+      if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+      return resumen;
+    }
+
+    // Atajo 1: todo a la unidad → guarda directo, sin vueltas
     if (texto === '1') {
-      sesion.imputaciones[sesion.indice] = {
-        destino: 'unidad',
+      sesion.textoLibre = 'todo a la unidad';
+      sesion.repartos = sesion.itemsComb.map(it => ({
+        item: it, litros: it.litros, destino: 'unidad',
         unidad_id: sesion.unidad ? sesion.unidad.id : null,
-        objetivo_id: null,
-      };
-      return avanzar(tel, sesion, nombre);
+        equipo_id: null, objetivo_id: null, detalle: null,
+      }));
+      const carga = await guardarCarga(sesion);
+      const resumen = resumenFinal(sesion, nombre);
+      delete sesiones[tel];
+      if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+      return resumen;
     }
+
+    // Atajo 2: todo a bidones → falta el objetivo
     if (texto === '2') {
-      sesion.paso = 'objetivo_item';
+      sesion.textoLibre = 'todo a bidones';
+      sesion.repartos = sesion.itemsComb.map(it => ({
+        item: it, litros: it.litros, destino: 'bidon',
+        unidad_id: null, equipo_id: null, objetivo_id: null, detalle: null,
+      }));
+      sesion.atajoBidones = true;
+      sesion.paso = 'objetivo_bidones';
       const miObj = sesion.capataz.objetivo_nombre || 'tu objetivo';
-      return `¿A qué objetivo van los bidones de *${it.producto}*?\n\n` +
-             `Respondé *mío* para ${miObj}, o escribí el nombre de otro objetivo.`;
+      return `¿A qué objetivo van los bidones?\n\nRespondé *mío* para ${miObj}, o escribí el nombre de otro objetivo.`;
     }
-    const pat = sesion.datos.patente ? ' ' + sesion.datos.patente : '';
-    return `Respondé *1* (unidad${pat}) o *2* (bidones).`;
+
+    // Texto libre → lo interpreta la IA
+    let parseo;
+    try {
+      parseo = await parsearDestinoCombustible({
+        texto,
+        items: sesion.itemsComb.map((it, i) => ({ i, producto: it.producto, litros: it.litros })),
+        patente: sesion.datos.patente,
+        objetivo_capataz: sesion.capataz.objetivo_nombre,
+      });
+    } catch (err) {
+      console.error('parsearDestinoCombustible:', err);
+      return `⚠️ No pude interpretar el mensaje recién. Probá de nuevo en un momento, o respondé *1* (todo a la unidad) o *2* (todo a bidones).`;
+    }
+    const res = await construirRepartos(parseo, sesion);
+    if (res.error) {
+      sesion.paso = 'destino_libre';
+      return `🤔 ${res.error}`;
+    }
+    sesion.textoLibre = texto;
+    sesion.repartos = res.repartos;
+    if (res.faltanObjetivo) {
+      sesion.atajoBidones = false;
+      sesion.paso = 'objetivo_bidones';
+      const miObj = sesion.capataz.objetivo_nombre || 'tu objetivo';
+      return `¿A qué objetivo van los bidones?\n\nRespondé *mío* para ${miObj}, o escribí el nombre de otro objetivo.`;
+    }
+    sesion.paso = 'confirmar_libre';
+    return `Entendí:\n${resumenRepartos(sesion)}\n\n¿Confirmás? *1* sí · o escribí de nuevo cómo se reparte`;
   }
 
-  if (sesion.paso === 'objetivo_item') {
+  // Objetivo para los bidones que quedaron sin objetivo
+  if (sesion.paso === 'objetivo_bidones') {
     const obj = await resolverObjetivo(texto, sesion.capataz);
     if (!obj || !obj.id) {
       return `No encontré ese objetivo. Escribí el nombre de nuevo, o *mío* para tu objetivo.`;
     }
-    sesion.imputaciones[sesion.indice] = {
-      destino: 'bidon', unidad_id: null,
-      objetivo_id: obj.id, objetivo_nombre: obj.nombre,
-    };
-    return avanzar(tel, sesion, nombre);
+    sesion.repartos.forEach(r => {
+      if (r.destino === 'bidon' && !r.objetivo_id) {
+        r.objetivo_id = obj.id; r.objetivo_nombre = obj.nombre;
+      }
+    });
+    if (sesion.atajoBidones) {
+      // Con el atajo no hay nada más que confirmar: se guarda directo.
+      const carga = await guardarCarga(sesion);
+      const resumen = resumenFinal(sesion, nombre);
+      delete sesiones[tel];
+      if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
+      return resumen;
+    }
+    sesion.paso = 'confirmar_libre';
+    return `Entendí:\n${resumenRepartos(sesion)}\n\n¿Confirmás? *1* sí · o escribí de nuevo cómo se reparte`;
   }
 
   return null;
