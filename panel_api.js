@@ -648,6 +648,191 @@ router.get('/api/reparaciones', auth, async (req, res) => {
   }
 });
 
+// ── Preventivo (rodados) ──────────────────────────────────────
+// Mantenimiento programado por tiempo. Solo rodados: la unidad del maestro
+// tiene `tipo_rodado` y cada tipo un intervalo en días (preventivo_config).
+// El "último service" sale de services_unidades (planillas) o de la última
+// incidencia preventiva finalizada, lo que sea más nuevo.
+const ROD_LABEL = { camioneta: 'Camioneta', tractor: 'Tractor', desmalezadora: 'Desmalezadora', mini_tractor: 'Mini tractor', giro_cero: 'Giro cero' };
+const normUni = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+// Las planillas guardan la fecha como texto (dd/mm/aaaa la mayoría). Si no se
+// puede leer, se usa la fecha de carga del registro.
+function fechaDeService(d, createdAt) {
+  const t = String((d && d.fecha_service) || '').trim();
+  const m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (m) {
+    let a = Number(m[3]); if (a < 100) a += 2000;
+    const f = new Date(a, Number(m[2]) - 1, Number(m[1]));
+    if (!isNaN(f)) return f;
+  }
+  if (t) { const f2 = new Date(t); if (!isNaN(f2)) return f2; }
+  return createdAt ? new Date(createdAt) : null;
+}
+
+router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
+  try {
+    const [cfgR, uniR, servR, prevR] = await Promise.all([
+      supabase.from('preventivo_config').select('*'),
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, responsable, tipo_rodado, prev_pospuesto_hasta, prev_pospuesto_at')
+        .eq('activo', true).not('tipo_rodado', 'is', null),
+      supabase.from('services_unidades').select('data, created_at'),
+      supabase.from('incidencias').select('numero_unidad, fecha_finalizado')
+        .eq('tipo_mant', 'preventivo').eq('estado', 'finalizado').not('fecha_finalizado', 'is', null),
+    ]);
+    const cfg = {};
+    (cfgR.data || []).forEach(c => { cfg[c.tipo] = c; });
+
+    // Última fecha conocida por clave (código de unidad o patente, normalizados)
+    const ult = {};
+    const marcar = (clave, f) => {
+      const k = normUni(clave);
+      if (!k || !f || isNaN(f)) return;
+      if (!ult[k] || f > ult[k]) ult[k] = f;
+    };
+    (servR.data || []).forEach(s => {
+      const f = fechaDeService(s.data, s.created_at);
+      marcar(s.data && s.data.unidad, f);
+      marcar(s.data && s.data.patente, f);
+    });
+    (prevR.data || []).forEach(i => marcar(i.numero_unidad, new Date(i.fecha_finalizado)));
+
+    const hoy = Date.now();
+    const rodados = (uniR.data || []).map(u => {
+      const c = cfg[u.tipo_rodado] || null;
+      const intervalo = c && c.activo !== false ? c.intervalo_dias : null;
+      const f = ult[normUni(u.codigo)] || ult[normUni(u.patente)] || null;
+      const dias = f ? Math.floor((hoy - f.getTime()) / 86400000) : null;
+
+      // Próximo vencimiento: último service + intervalo. Si se reprogramó
+      // (y no hubo un service posterior a la reprogramación), manda esa fecha.
+      let proximo = (f && intervalo) ? new Date(f.getTime() + intervalo * 86400000) : null;
+      let reprogramado = false;
+      if (u.prev_pospuesto_hasta) {
+        const pAt = u.prev_pospuesto_at ? new Date(u.prev_pospuesto_at) : null;
+        const vigente = !f || !pAt || f <= pAt;   // sin service después de posponer
+        const ph = new Date(u.prev_pospuesto_hasta);
+        if (vigente && !isNaN(ph) && (!proximo || ph > proximo)) { proximo = ph; reprogramado = true; }
+      }
+      const restan = proximo ? Math.ceil((proximo.getTime() - hoy) / 86400000) : null;
+
+      let estado = 'sin_config';
+      if (intervalo) {
+        if (restan == null) estado = 'sin_service';
+        else estado = restan <= 0 ? 'vencido' : restan <= intervalo * 0.25 ? 'por_vencer' : 'al_dia';
+      }
+      return {
+        id: u.id, tipo: u.tipo_rodado, tipo_label: ROD_LABEL[u.tipo_rodado] || u.tipo_rodado,
+        codigo: u.codigo, patente: u.patente, marca_modelo: u.marca_modelo,
+        intervalo, ultimo: f ? f.toISOString() : null, dias, restan, reprogramado, estado,
+        proximo: proximo ? proximo.toISOString() : null,
+      };
+    });
+    res.json({ config: cfgR.data || [], rodados });
+  } catch (err) {
+    console.error('preventivo:', err);
+    res.status(500).json({ error: 'Error cargando el preventivo' });
+  }
+});
+
+// Guardar los intervalos por tipo
+router.post('/api/reparaciones/preventivo/config', auth, async (req, res) => {
+  try {
+    const tipos = Array.isArray((req.body || {}).tipos) ? req.body.tipos : [];
+    const filas = tipos
+      .filter(t => ROD_LABEL[t.tipo] && Number(t.intervalo_dias) > 0)
+      .map(t => ({ tipo: t.tipo, intervalo_dias: Math.round(Number(t.intervalo_dias)), activo: true }));
+    if (!filas.length) return res.status(400).json({ error: 'Nada válido para guardar' });
+    const { error } = await supabase.from('preventivo_config').upsert(filas, { onConflict: 'tipo' });
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('preventivo config:', err);
+    res.status(500).json({ error: 'No pude guardar los intervalos' });
+  }
+});
+
+// Dar de alta la incidencia preventiva de un rodado desde el panel
+router.post('/api/reparaciones/preventivo/alta', auth, async (req, res) => {
+  try {
+    const unidadId = (req.body || {}).unidad_id;
+    if (!unidadId) return res.status(400).json({ error: 'Falta la unidad' });
+    const { data: u, error: e0 } = await supabase.from('unidades')
+      .select('id, codigo, patente, tipo_rodado').eq('id', unidadId).single();
+    if (e0 || !u) return res.status(404).json({ error: 'Unidad inexistente' });
+    const { data: inc, error } = await supabase.from('incidencias').insert({
+      capataz_id: null, objetivo_id: null, equipo_id: null, mecanico_id: null,
+      prioridad: 'baja', estado: 'pendiente', equipo_parado: false,
+      descripcion: 'Service preventivo programado',
+      numero_unidad: u.codigo || u.patente,
+      tipo_equipo: ROD_LABEL[u.tipo_rodado] || u.tipo_rodado || 'Rodado',
+      tipo_falla: 'Preventivo',
+      tipo_mant: 'preventivo', origen: 'panel',
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: inc.id });
+  } catch (err) {
+    console.error('preventivo alta:', err);
+    res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
+  }
+});
+
+// Marcar el preventivo como realizado hoy, sin pasar por una incidencia.
+// Se registra como una planilla mínima en services_unidades (aparece en el
+// historial de Services) y se limpia cualquier reprogramación pendiente.
+router.post('/api/reparaciones/preventivo/realizado', auth, async (req, res) => {
+  try {
+    const unidadId = (req.body || {}).unidad_id;
+    if (!unidadId) return res.status(400).json({ error: 'Falta la unidad' });
+    const { data: u, error: e0 } = await supabase.from('unidades')
+      .select('id, codigo, patente, tipo_rodado').eq('id', unidadId).single();
+    if (e0 || !u) return res.status(404).json({ error: 'Unidad inexistente' });
+    const hoy = new Date();
+    const fecha = String(hoy.getDate()).padStart(2, '0') + '/' +
+                  String(hoy.getMonth() + 1).padStart(2, '0') + '/' + hoy.getFullYear();
+    const { error: e1 } = await supabase.from('services_unidades').insert({
+      data: {
+        fecha_service: fecha,
+        unidad: u.codigo || null,
+        patente: u.patente || null,
+        tipo_unidad: ROD_LABEL[u.tipo_rodado] || u.tipo_rodado || null,
+        tareas: [],
+        observaciones: 'Preventivo marcado como realizado desde el panel',
+        mecanico: 'Panel · ' + (req.usuario || ''),
+      },
+      mecanico_id: null,
+      mecanico_nombre: 'Panel · ' + (req.usuario || ''),
+    });
+    if (e1) throw e1;
+    await supabase.from('unidades')
+      .update({ prev_pospuesto_hasta: null, prev_pospuesto_at: null }).eq('id', unidadId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('preventivo realizado:', err);
+    res.status(500).json({ error: 'No pude registrar el service: ' + (err.message || 'error') });
+  }
+});
+
+// Reprogramar: correr el vencimiento N días desde hoy. Queda anotado cuándo
+// se pospuso; un service posterior lo pisa automáticamente.
+router.post('/api/reparaciones/preventivo/reprogramar', auth, async (req, res) => {
+  try {
+    const unidadId = (req.body || {}).unidad_id;
+    const dias = Math.round(Number((req.body || {}).dias));
+    if (!unidadId) return res.status(400).json({ error: 'Falta la unidad' });
+    if (!dias || dias < 1 || dias > 365) return res.status(400).json({ error: 'Los días tienen que ser entre 1 y 365' });
+    const hasta = new Date(Date.now() + dias * 86400000).toISOString();
+    const { error } = await supabase.from('unidades')
+      .update({ prev_pospuesto_hasta: hasta, prev_pospuesto_at: new Date().toISOString() })
+      .eq('id', unidadId);
+    if (error) throw error;
+    res.json({ ok: true, hasta });
+  } catch (err) {
+    console.error('preventivo reprogramar:', err);
+    res.status(500).json({ error: 'No pude reprogramar: ' + (err.message || 'error') });
+  }
+});
+
 // ── Repuestos de taller (lo que hay que comprar para reparar) ─
 // El pedido nace en la reparación (mecánico desde la app o vos desde el
 // panel) y se gestiona en Compras → Repuestos.
@@ -1059,7 +1244,7 @@ const CAMPOS_MAESTRO = {
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id'],
   centros_costo: ['nombre', 'activo'],
-  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo'],
+  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado'],
 };
 
 function filtrarCampos(tipo, body) {
