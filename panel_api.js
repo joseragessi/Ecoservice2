@@ -672,13 +672,17 @@ function fechaDeService(d, createdAt) {
 
 router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
   try {
-    const [cfgR, uniR, servR, prevR] = await Promise.all([
+    const [cfgR, uniR, servR, prevR, abiertasR] = await Promise.all([
       supabase.from('preventivo_config').select('*'),
       supabase.from('unidades').select('id, codigo, patente, marca_modelo, responsable, tipo_rodado, prev_pospuesto_hasta, prev_pospuesto_at')
         .eq('activo', true).not('tipo_rodado', 'is', null),
       supabase.from('services_unidades').select('data, created_at'),
       supabase.from('incidencias').select('numero_unidad, fecha_finalizado')
         .eq('tipo_mant', 'preventivo').eq('estado', 'finalizado').not('fecha_finalizado', 'is', null),
+      supabase.from('incidencias')
+        .select('id, numero_unidad, tipo_equipo, estado, prioridad, created_at, mecanicos(nombre)')
+        .eq('tipo_mant', 'preventivo').neq('estado', 'finalizado')
+        .order('created_at', { ascending: false }),
     ]);
     const cfg = {};
     (cfgR.data || []).forEach(c => { cfg[c.tipo] = c; });
@@ -726,9 +730,14 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
         codigo: u.codigo, patente: u.patente, marca_modelo: u.marca_modelo,
         intervalo, ultimo: f ? f.toISOString() : null, dias, restan, reprogramado, estado,
         proximo: proximo ? proximo.toISOString() : null,
+        incidencia_abierta: (abiertasR.data || []).find(i =>
+          normUni(i.numero_unidad) && (normUni(i.numero_unidad) === normUni(u.codigo) || normUni(i.numero_unidad) === normUni(u.patente))
+        ) ? (abiertasR.data || []).find(i =>
+          normUni(i.numero_unidad) && (normUni(i.numero_unidad) === normUni(u.codigo) || normUni(i.numero_unidad) === normUni(u.patente))
+        ).estado : null,
       };
     });
-    res.json({ config: cfgR.data || [], rodados });
+    res.json({ config: cfgR.data || [], rodados, en_curso: abiertasR.data || [] });
   } catch (err) {
     console.error('preventivo:', err);
     res.status(500).json({ error: 'Error cargando el preventivo' });
