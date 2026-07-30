@@ -1,6 +1,7 @@
 const supabase           = require('./supabase');
 const { asignarMecanico } = require('./mecanico');
 const { calcularPrioridad } = require('./prioridad');
+const ses = require('./sesion');
 
 const sesiones = {};
 const TIMEOUT_MS = 10 * 60 * 1000;
@@ -89,7 +90,7 @@ function getFallasGrupo(tipoLabel, tipoDb) {
 // Equipos que van a Santiago (motor 2T)
 const EQUIPOS_SANTIAGO = ['motoguadana', 'motosierra'];
 
-function limpiarSesion(tel) { delete sesiones[tel]; }
+function limpiarSesion(tel) { delete sesiones[tel]; ses.eliminar('conversacion', tel); }
 
 function resetTimeout(tel) {
   const s = sesiones[tel];
@@ -123,6 +124,11 @@ async function procesarMensaje(telefono, mensaje) {
   const tel   = telefono.replace('whatsapp:', '').replace('+', '');
   const texto = mensaje.trim();
 
+  if (!sesiones[tel]) {
+    // ¿Quedó una sesión guardada de antes de un deploy? La retomamos.
+    const rec = await ses.restaurar('conversacion', tel);
+    if (rec) { sesiones[tel] = rec; resetTimeout(tel); }
+  }
   if (!sesiones[tel]) {
     const { data: capataz } = await supabase
       .from('capataces')
@@ -302,4 +308,4 @@ async function procesarMensaje(telefono, mensaje) {
   return 'No entendí tu respuesta. Enviá cualquier mensaje para empezar de nuevo.';
 }
 
-module.exports = { procesarMensaje };
+module.exports = { procesarMensaje: ses.conPersistencia('conversacion', sesiones, procesarMensaje) };
