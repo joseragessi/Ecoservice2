@@ -398,18 +398,34 @@ async function vInsumos(view){
     ${tabsIns()}
     <div class="filters">${chips}</div>
     <div class="split">
-      <div class="tablewrap"><table><thead><tr><th>Objetivo</th><th>Pedido</th><th style="width:170px">Estado</th></tr></thead>
+      <div class="tablewrap"><table><thead><tr><th>Objetivo</th><th>Pedido</th><th style="width:92px">Fecha</th><th style="width:170px">Estado</th></tr></thead>
         <tbody id="ins-body">${insumosData.length?insumosData.map((p,ix)=>{
           const idx=p.estado==='entregado'?1:0;
           const items=(p.pedidos_insumos_items||[]).map(i=>i.item).join(', ');
+          const pt=puntualidadInsumo(p);
           return `<tr onclick="selInsumo(${ix})" data-ix="${ix}">
             <td><div style="font-weight:600">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div><div class="sub">${p.capataces?p.capataces.nombre:''}</div></td>
             <td>${items||'—'}</td>
-            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?'Entregado':'Pendiente')+'</div>'}</td></tr>`;}).join('')
+            <td class="mono" style="font-size:12px">${fechaAR(p.created_at)}</td>
+            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?'Entregado':'Pendiente')+(pt?' · <span style="color:'+pt.color+';font-weight:600">'+pt.texto+'</span>':'')+'</div>'}</td></tr>`;}).join('')
           :'<tr><td colspan="3"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>No hay pedidos.</div></div></td></tr>'}</tbody></table></div>
       <div class="side" id="ins-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>Elegí un pedido<br>para ver el detalle</div></div></div>
     </div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar los pedidos.</div>`;}
+}
+// Puntualidad de un pedido: entregado = días pedido→entrega; pendiente =
+// días esperando. Regla: hasta 2 días puntual (verde), 3-5 ámbar, más rojo.
+function puntualidadInsumo(p){
+  const D=86400000;
+  if(p.estado==='entregado'){
+    if(!p.entregado_at)return null;   // históricos sin fecha de entrega
+    const d=Math.max(0,Math.round((new Date(p.entregado_at)-new Date(p.created_at))/D));
+    return {dias:d,texto:d<=2?'en '+d+'d ✓':'en '+d+'d',color:d<=2?'var(--brote-2)':d<=5?'var(--diesel)':'var(--rojo)'};
+  }
+  if(p.estado==='cancelado')return null;
+  const d=Math.floor((Date.now()-new Date(p.created_at))/D);
+  if(d<=1)return null;
+  return {dias:d,texto:'hace '+d+'d',color:d<=2?'var(--tinta-3)':d<=5?'var(--diesel)':'var(--rojo)'};
 }
 function selInsumo(ix){
   const p=insumosData[ix];
@@ -424,6 +440,10 @@ function selInsumo(ix){
     <div class="side-id">PEDIDO DE INSUMOS</div>
     <div class="side-title">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div>
     <div class="side-meta">Pedido por ${p.capataces?p.capataces.nombre:'—'} · ${fechaAR(p.created_at)}</div>
+    ${(()=>{const pt=puntualidadInsumo(p);
+      if(p.estado==='entregado'&&p.entregado_at)return `<div class="side-meta" style="margin-top:2px">Entregado el ${fechaAR(p.entregado_at)} · <b style="color:${pt?pt.color:'inherit'}">${pt?(pt.dias<=2?'puntual ('+pt.dias+'d)':'demorado ('+pt.dias+'d)'):''}</b></div>`;
+      if(pt&&p.estado!=='entregado')return `<div class="side-meta" style="margin-top:2px">Esperando <b style="color:${pt.color}">${pt.dias} día(s)</b></div>`;
+      return '';})()}
     ${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+railLabels(['Pendiente','Entregado'],idx)}
     <div class="divider"></div>
     <div class="field-l" style="margin-bottom:8px">Materiales</div>${items||'<div class="sub">—</div>'}
