@@ -1,5 +1,6 @@
 const supabase = require('./supabase');
 const { interpretarInsumos } = require('./insumos_ia');
+const ses = require('./sesion');
 
 // Sesiones de insumos EN MEMORIA.
 // telefono -> { paso, capataz, objetivo, items, textoOriginal }
@@ -88,9 +89,12 @@ async function guardarPedido(sesion) {
 
 // ── Entrada: el capataz arranca un pedido ─────────────────────
 
-function tieneSesionActiva(telefono) {
+async function tieneSesionActiva(telefono) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
-  return !!sesiones[tel];
+  if (sesiones[tel]) return true;
+  const rec = await ses.restaurar('insumos', tel);
+  if (rec) { sesiones[tel] = rec; return true; }
+  return false;
 }
 
 /**
@@ -200,4 +204,8 @@ async function continuarInsumos(telefono, mensaje) {
   return null;
 }
 
-module.exports = { iniciarInsumos, tieneSesionActiva, continuarInsumos };
+module.exports = {
+  iniciarInsumos: ses.conPersistencia('insumos', sesiones, iniciarInsumos),
+  continuarInsumos: ses.conPersistencia('insumos', sesiones, continuarInsumos),
+  tieneSesionActiva,
+};
