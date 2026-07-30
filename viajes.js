@@ -6,6 +6,7 @@
 // puntos de bajada (objetivos distintos), y a futuro costo por km.
 
 const supabase = require('./supabase');
+const ses = require('./sesion');
 
 const sesiones = {};   // telefono -> { paso, datos }
 
@@ -83,8 +84,12 @@ async function iniciarViajes(telefono, resto) {
     `¿Cuál es el *odómetro de INICIO* de la jornada? (los km que marcaba al arrancar)`;
 }
 
-function tieneSesionViajes(telefono) {
-  return !!sesiones[telefono.replace('whatsapp:', '').replace('+', '')];
+async function tieneSesionViajes(telefono) {
+  const tel = telefono.replace('whatsapp:', '').replace('+', '');
+  if (sesiones[tel]) return true;
+  const rec = await ses.restaurar('viajes', tel);
+  if (rec) { sesiones[tel] = rec; return true; }
+  return false;
 }
 
 // ── Continuación ─────────────────────────────────────────────
@@ -193,4 +198,8 @@ async function guardarViaje(d) {
   } catch (e) { console.error('guardarViaje:', e); return false; }
 }
 
-module.exports = { iniciarViajes, continuarViajes, tieneSesionViajes };
+module.exports = {
+  iniciarViajes: ses.conPersistencia('viajes', sesiones, iniciarViajes),
+  continuarViajes: ses.conPersistencia('viajes', sesiones, continuarViajes),
+  tieneSesionViajes,
+};
