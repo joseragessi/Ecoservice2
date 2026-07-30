@@ -36,6 +36,40 @@ async function resolverUnidad(patenteRaw) {
   return unidades.find(u => normalizarPatente(u.patente) === norm) || null;
 }
 
+// La impresión térmica confunde caracteres (U/V, I/1, A/4…) y el OCR a veces
+// lee mal la patente. Como la flota es un conjunto chico y cerrado, se corrige
+// matcheando contra las patentes reales: si hay UNA sola unidad a distancia de
+// edición ≤ 2, es esa. Si hay empate o nada cerca, no se adivina.
+function distanciaEdicion(a, b) {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 2) return 99;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1,
+                         d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[m][n];
+}
+async function resolverUnidadAprox(patenteRaw) {
+  const norm = normalizarPatente(patenteRaw);
+  if (!norm) return null;
+  const { data: unidades } = await supabase
+    .from('unidades').select('id, patente, objetivo_id').eq('activo', true);
+  if (!unidades) return null;
+  const exacta = unidades.find(u => normalizarPatente(u.patente) === norm);
+  if (exacta) return { unidad: exacta, corregida: false };
+  const cerca = unidades
+    .filter(u => u.patente)
+    .map(u => ({ u, d: distanciaEdicion(norm, normalizarPatente(u.patente)) }))
+    .filter(x => x.d <= 2)
+    .sort((a, b) => a.d - b.d);
+  if (cerca.length === 1 || (cerca.length > 1 && cerca[0].d < cerca[1].d)) {
+    return { unidad: cerca[0].u, corregida: true };
+  }
+  return null;
+}
+
 async function resolverProveedor(nombre, cuit) {
   if (cuit) {
     const { data: existente } = await supabase
@@ -178,7 +212,8 @@ async function construirRepartos(parseo, sesion) {
       if (p.patente) {
         // El capataz nombró la patente: manda la suya, no la lectura del ticket.
         const pn = normalizarPatente(p.patente);
-        const u = await resolverUnidad(pn);
+        const aprox = await resolverUnidadAprox(pn);
+        const u = aprox ? aprox.unidad : null;
         if (u) {
           r.unidad_id = u.id; r.patente_txt = u.patente;
           sesion.unidad = u; sesion.datos.patente = u.patente;
@@ -344,13 +379,21 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
   }
   console.log('[COMBUSTIBLE] extraído:', JSON.stringify(datos));
 
-  const unidad = await resolverUnidad(datos.patente);
+  const resUni = await resolverUnidadAprox(datos.patente);
+  const unidad = resUni ? resUni.unidad : null;
+  let notaPatente = '';
+  if (resUni && resUni.corregida) {
+    // La lectura del ticket no existe en la flota, pero hay una única patente
+    // real muy parecida: se usa esa y se avisa.
+    notaPatente = `🅿️ Patente: leí "${datos.patente}", la tomo como *${unidad.patente}* (es la de tu flota).\n`;
+    datos.patente = unidad.patente;
+  }
   const itemsComb = (datos.items || []).filter(i => i.es_combustible !== false);
 
   const lineaDoc = datos.tipo_doc === 'factura'
     ? `📄 Factura ${datos.numero} — ${pesos(datos.total)}`
     : `📄 Remito ${datos.numero} — sin facturar`;
-  const encabezado = `📸 Leí tu comprobante, *${nombre}*:\n\n⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n\n`;
+  const encabezado = `📸 Leí tu comprobante, *${nombre}*:\n\n⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n${notaPatente}\n`;
 
   // ¿Ya está cargado? (reenvío de la misma foto o dos fotos del mismo remito)
   const litrosTot = itemsComb.reduce((s, i) => s + (Number(i.litros) || 0), 0) || Number(datos.litros) || null;
