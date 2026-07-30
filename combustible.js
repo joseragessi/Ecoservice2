@@ -151,7 +151,7 @@ function descReparto(r, sesion) {
   if (r.destino === 'bidon')  return `bidones → ${r.objetivo_nombre || '¿objetivo?'}`;
   if (r.destino === 'equipo') return `${r.equipo_nombre || r.detalle || 'equipo'}${r.equipo_id ? '' : ' (sin machear)'}` +
                                      (r.objetivo_nombre ? ` → ${r.objetivo_nombre}` : '');
-  return `unidad ${sesion.datos.patente || ''}`.trim();
+  return `unidad ${r.patente_txt || sesion.datos.patente || ''}`.trim();
 }
 
 function resumenRepartos(sesion) {
@@ -174,7 +174,24 @@ async function construirRepartos(parseo, sesion) {
     const r = { item: it, litros: Math.round(litros * 100) / 100, destino: p.destino,
                 detalle: p.detalle || null, objetivo_texto: p.objetivo || null,
                 unidad_id: null, equipo_id: null, objetivo_id: null };
-    if (p.destino === 'unidad') r.unidad_id = sesion.unidad ? sesion.unidad.id : null;
+    if (p.destino === 'unidad') {
+      if (p.patente) {
+        // El capataz nombró la patente: manda la suya, no la lectura del ticket.
+        const pn = normalizarPatente(p.patente);
+        const u = await resolverUnidad(pn);
+        if (u) {
+          r.unidad_id = u.id; r.patente_txt = u.patente;
+          sesion.unidad = u; sesion.datos.patente = u.patente;
+        } else {
+          // No está en la flota: se acepta igual y queda visible como texto.
+          r.unidad_id = null; r.patente_txt = pn; r.detalle = pn;
+          sesion.unidad = null; sesion.datos.patente = pn;
+        }
+        sesion.patenteCorregida = true;
+      } else {
+        r.unidad_id = sesion.unidad ? sesion.unidad.id : null;
+      }
+    }
     if (p.destino === 'equipo') {
       const eq = await resolverEquipo(p.detalle);
       if (eq) { r.equipo_id = eq.id; r.equipo_nombre = eq.nombre; }
