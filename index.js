@@ -95,13 +95,13 @@ app.post('/webhook', async (req, res) => {
       if (numMedia > 0) {
         // Una imagen es un comprobante de combustible
         respuesta = await procesarComprobante(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
-      } else if (tieneSesionCombustible(telefono)) {
+      } else if (await tieneSesionCombustible(telefono)) {
         respuesta = await continuarConversacion(telefono, mensaje);
-      } else if (tieneSesionInsumos(telefono)) {
+      } else if (await tieneSesionInsumos(telefono)) {
         respuesta = await continuarInsumos(telefono, mensaje);
-      } else if (tieneSesionStock(telefono)) {
+      } else if (await tieneSesionStock(telefono)) {
         respuesta = await continuarStock(telefono, mensaje);
-      } else if (tieneSesionViajes(telefono)) {
+      } else if (await tieneSesionViajes(telefono)) {
         respuesta = await continuarViajes(telefono, mensaje);
       } else if (RE_VIAJES.test(mensaje.trim())) {
         const resto = mensaje.trim().replace(RE_VIAJES, '');
