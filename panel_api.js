@@ -1285,7 +1285,7 @@ const CAMPOS_MAESTRO = {
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id'],
   centros_costo: ['nombre', 'activo'],
-  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado'],
+  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo'],
 };
 
 function filtrarCampos(tipo, body) {
