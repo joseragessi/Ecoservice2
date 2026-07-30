@@ -2387,7 +2387,7 @@ function renderPreventivo(){
     const ident=r.codigo?`<span class="uni-num">${r.codigo}</span>`:`<span class="mono" style="font-weight:600;font-size:12px">${r.patente||'—'}</span>`;
     const nom=(r.codigo||r.patente||'').replace(/'/g,'');
     const acciones=r.intervalo?`<div style="display:flex;gap:5px;justify-content:flex-end">
-        ${r.estado==='vencido'||r.estado==='por_vencer'?`<button class="mini-btn" onclick="pvAlta('${r.id}','${nom}')">+ Preventivo</button>`:''}
+        ${(r.estado==='vencido'||r.estado==='por_vencer')&&!r.incidencia_abierta?`<button class="mini-btn" onclick="pvAlta('${r.id}','${nom}')">+ Preventivo</button>`:''}
         <button class="mini-btn" title="Marcar service realizado hoy" onclick="pvRealizado('${r.id}','${nom}')">✓ Realizado</button>
         <button class="mini-btn" title="Correr el vencimiento" onclick="pvReprogramar('${r.id}','${nom}')">↻</button>
       </div>`:'';
@@ -2397,7 +2397,7 @@ function renderPreventivo(){
       <td><span class="sub mono" style="font-size:11px">cada ${r.intervalo||'—'} días</span></td>
       <td class="mono" style="font-size:12px">${r.ultimo?fechaAR(r.ultimo):'—'}</td>
       <td>${prog}</td>
-      <td><span class="badge" style="${bs}">${bl}</span>${r.reprogramado?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">↻ al ${fechaAR(r.proximo)}</span></div>`:''}</td>
+      <td><span class="badge" style="${bs}">${bl}</span>${r.incidencia_abierta?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">🔧 en taller · ${(EST_REP_LABEL[EST_REP.indexOf(r.incidencia_abierta)]||r.incidencia_abierta)}</span></div>`:''}${r.reprogramado?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">↻ al ${fechaAR(r.proximo)}</span></div>`:''}</td>
       <td>${acciones}</td>
     </tr>`;}).join('');
 
@@ -2445,6 +2445,20 @@ function renderPreventivo(){
       <div class="kpi plain"><div class="kpi-label">Al día</div><div class="kpi-val" style="color:var(--brote-2)">${na}</div><div class="kpi-sub">dentro del intervalo</div></div>
       <div class="kpi plain"><div class="kpi-label">Sin service</div><div class="kpi-val">${ns}</div><div class="kpi-sub">sin historial cargado</div></div>
     </div>
+    ${(pvData.en_curso||[]).length?`<div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
+      <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <b style="font-size:13.5px">Preventivas en curso</b>
+        <span class="sub" style="font-size:11.5px">Incidencias preventivas abiertas · al finalizarlas arranca el contador de la unidad</span></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Equipo</th><th>Unidad</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
+        <tbody>${pvData.en_curso.map(i=>{const eidx=EST_REP.indexOf(i.estado);return `<tr style="cursor:pointer" onclick="repTab='resumen';go('reparaciones')">
+          <td style="font-weight:500">${i.tipo_equipo||'—'}</td>
+          <td>${i.numero_unidad?`<span class="uni-num">${i.numero_unidad}</span>`:'—'}</td>
+          <td>${i.mecanicos?i.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
+          <td><span class="badge ${eidx>=0?'est-'+eidx:'b-gray'}">${EST_REP_LABEL[eidx]||i.estado}</span></td>
+          <td class="sub mono">${hace(i.created_at)}</td></tr>`;}).join('')}</tbody>
+      </table></div>
+    </div>`:''}
     <div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
       <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
         <b style="font-size:13.5px">Semáforo de flota</b>
