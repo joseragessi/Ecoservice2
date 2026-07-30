@@ -120,14 +120,7 @@ async function resolverEquipo(texto) {
     return { unidad_id: matchA[0].id, nombre: matchA[0].tipo_activo || matchA[0].marca_modelo || matchA[0].codigo };
   }
 
-  // 2) Placeholder viejo (tabla equipos), mientras conviven
-  const { data: equipos } = await supabase
-    .from('equipos').select('id, nombre').eq('activo', true);
-  const matchE = (equipos || []).filter(e => {
-    const ne = norm(e.nombre);
-    return ne.includes(nt) || nt.includes(ne);
-  });
-  return matchE.length === 1 ? { id: matchE[0].id, nombre: matchE[0].nombre } : null;
+  return null;
 }
 
 // ── Detección de doble carga ─────────────────────────────────
