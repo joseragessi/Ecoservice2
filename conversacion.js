@@ -259,11 +259,10 @@ async function procesarMensaje(telefono, mensaje) {
         .limit(1);
       equipoId = fallback?.[0]?.id;
     }
-
-    if (!equipoId) {
-      limpiarSesion(tel);
-      return '⚠️ No hay equipos registrados para tu objetivo. Contactá a administración.';
-    }
+    // Sin placeholder de equipo NO se corta la conversación: la identidad real
+    // de la máquina es tipo_equipo + numero_unidad, y el panel ya muestra eso
+    // cuando equipo_id viene null (igual que las altas manuales).
+    if (!equipoId) equipoId = null;
 
     const { data: incidencia, error } = await supabase
       .from('incidencias')
