@@ -487,8 +487,18 @@ router.get('/api/combustible', auth, async (req, res) => {
     let q = supabase
       .from('cargas_combustible')
       .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente), objetivos(nombre), capataces(nombre)')
-      .order('fecha', { ascending: false })
-      .limit(200);
+      .order('fecha', { ascending: false });
+    // ?mes=YYYY-MM trae ese mes COMPLETO (sin tope práctico). Sin mes, las
+    // últimas 200 — el tope viejo recortaba silenciosamente los análisis.
+    const mes = String(req.query.mes || '');
+    if (/^\d{4}-\d{2}$/.test(mes)) {
+      const [a, m] = mes.split('-').map(Number);
+      const desde = `${mes}-01`;
+      const hasta = m === 12 ? `${a + 1}-01-01` : `${a}-${String(m + 1).padStart(2, '0')}-01`;
+      q = q.gte('fecha', desde).lt('fecha', hasta).limit(2000);
+    } else {
+      q = q.limit(200);
+    }
     // Por defecto las anuladas no se muestran (se ven con el filtro "Anulada")
     if (req.query.estado) q = q.eq('estado', req.query.estado);
     else q = q.neq('estado', 'anulada');
@@ -2520,9 +2530,12 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
   }
 });
 
-// ── Servir el panel (HTML estático) ───────────────────────────
+// ── Servir el panel (HTML + JS extraído en Fase 3) ────────────
 router.get('/panel', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel.html'));
+});
+router.get('/panel.js', (req, res) => {
+  res.sendFile(path.join(__dirname, 'panel.js'));
 });
 
 module.exports = router;
