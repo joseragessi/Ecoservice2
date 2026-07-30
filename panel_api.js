@@ -1312,7 +1312,12 @@ router.post('/api/maestros/:tipo', auth, async (req, res) => {
   if (!CAMPOS_MAESTRO[tipo]) return res.status(400).json({ error: 'Tipo inválido' });
   try {
     const fila = filtrarCampos(tipo, req.body);
-    if (!fila.nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
+    // Las unidades no tienen "nombre": se identifican por código o patente.
+    if (tipo === 'unidades') {
+      if (!fila.codigo && !fila.patente) return res.status(400).json({ error: 'Cargá el código o la patente' });
+    } else if (!fila.nombre) {
+      return res.status(400).json({ error: 'El nombre es obligatorio' });
+    }
     if (fila.activo === undefined) fila.activo = true;
     const { data, error } = await supabase.from(tipo).insert(fila).select().single();
     if (error) throw error;
