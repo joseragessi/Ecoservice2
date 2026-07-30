@@ -2144,6 +2144,14 @@ function renderReparaciones(view){
   window._repFiltrada=filtrada;
 }
 let repDetalleAbierto=false;
+async function cambiarTipoRep(id,tipo){
+  try{
+    await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({tipo_mant:tipo})});
+    toast('Marcada como '+tipo);
+    const r=(window._repFiltrada||[]).find(x=>x.id===id);if(r)r.tipo_mant=tipo;
+    go('reparaciones');
+  }catch(e){toast(e.message,'error');}
+}
 function selRep(ix){
   repDetalleAbierto=true;
   const r=window._repFiltrada[ix];
@@ -2156,9 +2164,11 @@ function selRep(ix){
   const btnAvanzar=idx<4?`<button class="btn" style="width:100%;justify-content:center;margin-top:14px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>`:'<div class="badge b-green" style="width:100%;justify-content:center;margin-top:14px;padding:9px">✓ Finalizado</div>';
   document.getElementById('rep-side').innerHTML=`
     <div class="side-id">INCIDENCIA${r.equipo_parado?' · EQUIPO PARADO':''}</div>
-    <div class="side-title">${r.equipos?r.equipos.nombre:'—'}</div>
-    <div class="side-meta">${r.objetivos?r.objetivos.nombre:'—'} · ${r.capataces?r.capataces.nombre:'—'}</div>
-    <div style="margin:10px 0"><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></div>
+    <div class="side-title">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}</div>
+    <div class="side-meta">${r.objetivos?r.objetivos.nombre:'Taller / sin objetivo'} · ${r.capataces?r.capataces.nombre:(r.origen==='app'?'Alta del mecánico':'Alta del panel')}</div>
+    <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span>
+      <span class="badge ${r.tipo_mant==='preventivo'?'b-green':'b-gray'}">${r.tipo_mant==='preventivo'?'PREVENTIVO':'CORRECTIVO'}</span>
+      <button class="mini-btn" style="font-size:10.5px" title="Cambiar tipo de mantenimiento" onclick="cambiarTipoRep('${r.id}','${r.tipo_mant==='preventivo'?'correctivo':'preventivo'}')">⇄ ${r.tipo_mant==='preventivo'?'pasar a correctivo':'pasar a preventivo'}</button></div>
     <div class="field-l" style="margin-bottom:6px">Descripción</div>
     <div class="obs" style="margin-bottom:14px">${r.descripcion||'—'}</div>
     ${railEstado(idx,5,false)}${railLabels(EST_REP_LABEL,idx)}
