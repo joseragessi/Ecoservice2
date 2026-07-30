@@ -1015,6 +1015,7 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
       if (campoFecha) patch[campoFecha] = new Date().toISOString();
     }
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
+    if (['correctivo', 'preventivo'].includes(req.body.tipo_mant)) patch.tipo_mant = req.body.tipo_mant;
     const { data, error } = await supabase
       .from('incidencias').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), equipos(nombre), mecanicos(nombre)').single();
