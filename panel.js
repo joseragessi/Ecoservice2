@@ -1679,7 +1679,7 @@ function renderReparaciones(view){
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
       <td>${r.capataces?r.capataces.nombre:'—'}</td>
       <td>${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
-      <td><span class="badge ${idx>=0?'est-'+idx:'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span></td>
+      <td><span class="badge ${idx>=0?'est-'+idx:'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span>${r.reclamada?'<div style="margin-top:4px"><span class="badge" style="background:var(--diesel-soft);color:#854F0B;font-size:10px">⏰ reclamada</span></div>':''}</td>
       <td class="mono sub">${hace(r.created_at)}</td></tr>`;}).join('');
 
   view.innerHTML=`
@@ -1726,6 +1726,7 @@ function selRep(ix){
   document.getElementById('rep-side').innerHTML=`
     <div class="side-id">INCIDENCIA${r.equipo_parado?' · EQUIPO PARADO':''}</div>
     <div class="side-title">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}</div>
+    ${r.reclamada?`<div style="background:var(--diesel-soft);border:1px solid var(--diesel);border-radius:8px;padding:8px 11px;margin:8px 0;font-size:12px;color:#854F0B"><b>⏰ Reclamada por ${r.reclamada_por||'supervisor'}</b>${r.reclamada_at?' · '+fechaAR(r.reclamada_at):''}<div class="sub" style="margin-top:2px">El supervisor del objetivo pide apurar esta reparación.</div></div>`:''}
     <div class="side-meta">${r.objetivos?r.objetivos.nombre:'Taller / sin objetivo'} · ${r.capataces?r.capataces.nombre:(r.origen==='app'?'Alta del mecánico':'Alta del panel')}</div>
     <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span>
       <span class="badge ${r.tipo_mant==='preventivo'?'b-green':'b-gray'}">${r.tipo_mant==='preventivo'?'PREVENTIVO':'CORRECTIVO'}</span>
