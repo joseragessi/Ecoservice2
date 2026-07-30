@@ -1,4 +1,5 @@
 const supabase = require('./supabase');
+const ses = require('./sesion');
 const { extraerComprobante, parsearDestinoCombustible } = require('./extraccion');
 
 // Sesiones de combustible EN MEMORIA.
@@ -190,7 +191,7 @@ function descReparto(r, sesion) {
 
 function resumenRepartos(sesion) {
   return sesion.repartos
-    .map(r => `  • ${r.item.producto} ${r.litros} lt → ${descReparto(r, sesion)}`)
+    .map(r => `  • ${(sesion.itemsComb[r.item_idx] || {}).producto || ''} ${r.litros} lt → ${descReparto(r, sesion)}`)
     .join('\n');
 }
 
@@ -205,7 +206,7 @@ async function construirRepartos(parseo, sesion) {
     const litros = Number(p.litros);
     if (!it || !isFinite(litros) || litros <= 0) return { error: 'No entendí el reparto.' };
     if (!['unidad', 'bidon', 'equipo'].includes(p.destino)) return { error: 'No entendí el reparto.' };
-    const r = { item: it, litros: Math.round(litros * 100) / 100, destino: p.destino,
+    const r = { item_idx: p.item, litros: Math.round(litros * 100) / 100, destino: p.destino,
                 detalle: p.detalle || null, objetivo_texto: p.objetivo || null,
                 unidad_id: null, equipo_id: null, objetivo_id: null };
     if (p.destino === 'unidad') {
@@ -239,8 +240,9 @@ async function construirRepartos(parseo, sesion) {
     repartos.push(r);
   }
   // Los litros repartidos tienen que cerrar contra el ticket, producto por producto.
-  for (const it of sesion.itemsComb) {
-    const suma = repartos.filter(r => r.item === it).reduce((s, r) => s + r.litros, 0);
+  for (let ix = 0; ix < sesion.itemsComb.length; ix++) {
+    const it = sesion.itemsComb[ix];
+    const suma = repartos.filter(r => r.item_idx === ix).reduce((s, r) => s + r.litros, 0);
     const dif = suma - (Number(it.litros) || 0);
     if (dif > 0.6)  return { error: `Asignaste ${suma} lt de ${it.producto}, pero el ticket dice ${it.litros} lt. Contame de nuevo cómo se reparte.` };
     if (dif < -0.6) return { error: `Te faltó asignar ${Math.round((-dif) * 100) / 100} lt de ${it.producto} (el ticket dice ${it.litros} lt). Contame de nuevo el reparto completo.` };
@@ -304,8 +306,11 @@ async function guardarCarga(sesion) {
   // Una fila por reparto. Los productos que no son combustible (o sin reparto)
   // van en una fila única como siempre.
   const items = [];
+  let ci = -1;
   (datos.items || []).forEach(it => {
-    const reps = repartos.filter(r => r.item === it);
+    const esFuel = it.es_combustible !== false;
+    if (esFuel) ci++;
+    const reps = esFuel ? repartos.filter(r => r.item_idx === ci) : [];
     if (!reps.length) {
       items.push({
         carga_id: carga.id, producto: it.producto,
@@ -429,9 +434,16 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
 
 // ── Entrada 2: llega TEXTO con sesión activa ──────────────────
 
-function tieneSesionActiva(telefono) {
+async function tieneSesionActiva(telefono) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
-  return !!sesiones[tel];
+  if (sesiones[tel]) return true;
+  const rec = await ses.restaurar('combustible', tel);
+  if (!rec) return false;
+  // Hidratar: itemsComb debe volver a apuntar a los objetos de datos.items
+  // (la serialización rompe la identidad de referencias).
+  rec.itemsComb = (rec.datos && rec.datos.items || []).filter(i => i.es_combustible !== false);
+  sesiones[tel] = rec;
+  return true;
 }
 
 async function continuarConversacion(telefono, mensaje) {
@@ -493,8 +505,8 @@ async function continuarConversacion(telefono, mensaje) {
     // Atajo 1: todo a la unidad → guarda directo, sin vueltas
     if (texto === '1') {
       sesion.textoLibre = 'todo a la unidad';
-      sesion.repartos = sesion.itemsComb.map(it => ({
-        item: it, litros: it.litros, destino: 'unidad',
+      sesion.repartos = sesion.itemsComb.map((it, ix) => ({
+        item_idx: ix, litros: it.litros, destino: 'unidad',
         unidad_id: sesion.unidad ? sesion.unidad.id : null,
         equipo_id: null, objetivo_id: null, detalle: null,
       }));
@@ -508,8 +520,8 @@ async function continuarConversacion(telefono, mensaje) {
     // Atajo 2: todo a bidones → falta el objetivo
     if (texto === '2') {
       sesion.textoLibre = 'todo a bidones';
-      sesion.repartos = sesion.itemsComb.map(it => ({
-        item: it, litros: it.litros, destino: 'bidon',
+      sesion.repartos = sesion.itemsComb.map((it, ix) => ({
+        item_idx: ix, litros: it.litros, destino: 'bidon',
         unidad_id: null, equipo_id: null, objetivo_id: null, detalle: null,
       }));
       sesion.atajoBidones = true;
@@ -574,4 +586,10 @@ async function continuarConversacion(telefono, mensaje) {
   return null;
 }
 
-module.exports = { procesarComprobante, tieneSesionActiva, continuarConversacion };
+module.exports = {
+  procesarComprobante: ses.conPersistencia('combustible', sesiones, procesarComprobante),
+  continuarConversacion: ses.conPersistencia('combustible', sesiones, continuarConversacion),
+  tieneSesionActiva,
+  // exportados para tests.js
+  distanciaEdicion, normalizarPatente, numNorm,
+};
