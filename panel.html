@@ -982,7 +982,7 @@ async function vCombustible(view){
         const items=(c.cargas_combustible_items||[]).map(i=>{
           const det=i.destino_detalle?' · '+i.destino_detalle:'';
           const dest=i.destino==='bidon'?`<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones${det}</span>`
-            :i.destino==='equipo'?(i.equipo_id
+            :i.destino==='equipo'?((i.equipo_id||i.unidad_id)
               ?`<span class="uni-chip" style="background:var(--azul-soft);color:var(--azul)">equipo${det}</span>`
               :`<span class="uni-chip" style="background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)">sin machear${det}</span>`)
             :'<span class="uni-chip">unidad</span>';
@@ -2551,7 +2551,8 @@ function cardMaestro(m,ix){
   }
   if(maestroTab==='unidades'){
     sub=m.marca_modelo||'sin modelo';
-    extra=`<div class="mcard-row"><span>Patente</span><b class="mono">${m.patente||'—'}</b></div>
+    extra=`${m.tipo_activo?`<div class="mcard-row"><span>Tipo</span><b>${m.tipo_activo}</b></div>`:''}
+      <div class="mcard-row"><span>Patente</span><b class="mono">${m.patente||'—'}</b></div>
       <div class="mcard-row"><span>Responsable</span><b>${m.responsable||'—'}</b></div>
       ${m.tipo_rodado?`<div class="mcard-row"><span>Preventivo</span><span class="badge b-green" style="font-size:10px">${({camioneta:'Camioneta',tractor:'Tractor',desmalezadora:'Desmalezadora',mini_tractor:'Mini tractor',giro_cero:'Giro cero'})[m.tipo_rodado]||m.tipo_rodado}</span></div>`:''}
       ${m.objetivos?`<div class="mcard-row"><span>Objetivo</span><b>${m.objetivos.nombre}</b></div>`:''}`;
@@ -2593,6 +2594,11 @@ function abrirModalMaestro(m){
        <div class="mm-field"><label>Marca y modelo</label><input id="mm-modelo" value="${(m.marca_modelo||'').replace(/"/g,'&quot;')}" placeholder="ej: Fiat Strada Cab.Simple Mod.2018"></div>
        <div class="mm-field"><label>Patente</label><input id="mm-patente" value="${(m.patente||'').replace(/"/g,'&quot;')}" placeholder="ej: AC770AY"></div>
        <div class="mm-field"><label>Responsable</label><input id="mm-responsable" value="${(m.responsable||'').replace(/"/g,'&quot;')}" placeholder="ej: Agustín Nóbrega"></div>
+       <div class="mm-field"><label>Tipo de activo <span style="font-weight:400;color:var(--tinta-3)">(qué es: motoguadaña, bobcat, camioneta…)</span></label>
+         <input id="mm-tipo-activo" list="tipos-activo" value="${m.tipo_activo||''}" placeholder="motoguadaña, sopladora, bobcat…">
+         <datalist id="tipos-activo">
+           ${['motoguadaña','sopladora','extensible','plana','motosierra','tractor','mini tractor','giro cero','desmalezadora','camioneta','camión','hidro grúa','bobcat','carro','otro'].map(t=>`<option value="${t}">`).join('')}
+         </datalist></div>
        <div class="mm-field"><label>Tipo de rodado <span style="font-weight:400;color:var(--tinta-3)">(para el preventivo)</span></label><select id="mm-rodado">
          <option value="">— sin preventivo —</option>
          ${[['camioneta','Camioneta'],['tractor','Tractor'],['desmalezadora','Desmalezadora'],['mini_tractor','Mini tractor'],['giro_cero','Giro cero']].map(([v,l])=>`<option value="${v}" ${m.tipo_rodado===v?'selected':''}>${l}</option>`).join('')}
@@ -2656,6 +2662,7 @@ async function guardarMaestro(){
       responsable:document.getElementById('mm-responsable').value.trim()||null,
       objetivo_id:document.getElementById('mm-objetivo').value||null,
       tipo_rodado:document.getElementById('mm-rodado').value||null,
+      tipo_activo:document.getElementById('mm-tipo-activo').value.trim().toLowerCase()||null,
     };
   }else{
     const nombre=document.getElementById('mm-nombre').value.trim();
