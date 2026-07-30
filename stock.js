@@ -1,5 +1,6 @@
 const supabase = require('./supabase');
 const { interpretarStock } = require('./stock_ia');
+const ses = require('./sesion');
 
 // Sesiones de stock EN MEMORIA.
 // telefono -> { paso, capataz, items, textoOriginal }
@@ -130,9 +131,12 @@ async function sembrarInventario(objetivoId, items) {
 
 // ── Entrada: el capataz arranca el envío de stock ─────────────
 
-function tieneSesionActiva(telefono) {
+async function tieneSesionActiva(telefono) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
-  return !!sesiones[tel];
+  if (sesiones[tel]) return true;
+  const rec = await ses.restaurar('stock', tel);
+  if (rec) { sesiones[tel] = rec; return true; }
+  return false;
 }
 
 /**
@@ -259,4 +263,8 @@ async function tienePedidoPendiente(telefono) {
   }
 }
 
-module.exports = { iniciarStock, tieneSesionActiva, continuarStock, periodoActual, tienePedidoPendiente };
+module.exports = {
+  iniciarStock: ses.conPersistencia('stock', sesiones, iniciarStock),
+  continuarStock: ses.conPersistencia('stock', sesiones, continuarStock),
+  tieneSesionActiva, periodoActual, tienePedidoPendiente,
+};
