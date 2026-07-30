@@ -242,27 +242,9 @@ async function procesarMensaje(telefono, mensaje) {
     // Asignar mecánico según equipo y falla
     const mecanicoId = await asignarMecanico(s.tipoFalla, s.tipoDb);
 
-    // Buscar equipo en la DB
-    const { data: equipos } = await supabase
-      .from('equipos')
-      .select('id')
-      .eq('objetivo_id', s.objetivoId)
-      .eq('nombre', s.tipoLabel)
-      .limit(1);
-
-    let equipoId = equipos?.[0]?.id;
-    if (!equipoId) {
-      const { data: fallback } = await supabase
-        .from('equipos')
-        .select('id')
-        .eq('objetivo_id', s.objetivoId)
-        .limit(1);
-      equipoId = fallback?.[0]?.id;
-    }
-    // Sin placeholder de equipo NO se corta la conversación: la identidad real
-    // de la máquina es tipo_equipo + numero_unidad, y el panel ya muestra eso
-    // cuando equipo_id viene null (igual que las altas manuales).
-    if (!equipoId) equipoId = null;
+    // La identidad de la máquina es tipo_equipo + numero_unidad (validable
+    // contra el maestro de activos). La tabla equipos quedó jubilada (Fase 2B).
+    const equipoId = null;
 
     const { data: incidencia, error } = await supabase
       .from('incidencias')
