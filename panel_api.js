@@ -455,6 +455,7 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
 
     const patch = {};
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
+    if (req.body.estado === 'entregado') patch.entregado_at = new Date().toISOString();
     const { data, error } = await supabase
       .from('pedidos_insumos').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), objetivos(nombre), pedidos_insumos_items(*)').single();
