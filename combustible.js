@@ -100,20 +100,34 @@ async function resolverObjetivo(texto, capataz) {
   return match ? { id: match.id, nombre: match.nombre } : null;
 }
 
-// Machea "bobcat", "tractor", etc. contra el maestro de equipos. Si no hay un
-// match claro, devuelve null y el reparto queda con el texto (sin machear).
+// Machea "bobcat", "tractor", etc. contra el maestro de activos. Busca primero
+// en unidades (tipo_activo, código o marca/modelo); si no, cae al viejo maestro
+// de equipos. Si no hay un match único, devuelve null y queda como texto.
 async function resolverEquipo(texto) {
   if (!texto) return null;
   const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const nt = norm(texto);
   if (!nt) return null;
+
+  // 1) Maestro de activos (unidades con tipo_activo)
+  const { data: activos } = await supabase
+    .from('unidades').select('id, codigo, marca_modelo, tipo_activo').eq('activo', true);
+  const matchA = (activos || []).filter(u => {
+    const campos = [u.tipo_activo, u.marca_modelo, u.codigo].map(norm).filter(Boolean);
+    return campos.some(c => c.includes(nt) || nt.includes(c));
+  });
+  if (matchA.length === 1) {
+    return { unidad_id: matchA[0].id, nombre: matchA[0].tipo_activo || matchA[0].marca_modelo || matchA[0].codigo };
+  }
+
+  // 2) Placeholder viejo (tabla equipos), mientras conviven
   const { data: equipos } = await supabase
     .from('equipos').select('id, nombre').eq('activo', true);
-  const matches = (equipos || []).filter(e => {
+  const matchE = (equipos || []).filter(e => {
     const ne = norm(e.nombre);
     return ne.includes(nt) || nt.includes(ne);
   });
-  return matches.length === 1 ? matches[0] : null;
+  return matchE.length === 1 ? { id: matchE[0].id, nombre: matchE[0].nombre } : null;
 }
 
 // ── Detección de doble carga ─────────────────────────────────
@@ -184,7 +198,7 @@ function preguntarDestino(sesion) {
 /** Describe un reparto para los resúmenes. */
 function descReparto(r, sesion) {
   if (r.destino === 'bidon')  return `bidones → ${r.objetivo_nombre || '¿objetivo?'}`;
-  if (r.destino === 'equipo') return `${r.equipo_nombre || r.detalle || 'equipo'}${r.equipo_id ? '' : ' (sin machear)'}` +
+  if (r.destino === 'equipo') return `${r.equipo_nombre || r.detalle || 'equipo'}${(r.equipo_id || r.unidad_id) ? '' : ' (sin machear)'}` +
                                      (r.objetivo_nombre ? ` → ${r.objetivo_nombre}` : '');
   return `unidad ${r.patente_txt || sesion.datos.patente || ''}`.trim();
 }
@@ -230,7 +244,11 @@ async function construirRepartos(parseo, sesion) {
     }
     if (p.destino === 'equipo') {
       const eq = await resolverEquipo(p.detalle);
-      if (eq) { r.equipo_id = eq.id; r.equipo_nombre = eq.nombre; }
+      if (eq) {
+        if (eq.unidad_id) r.unidad_id = eq.unidad_id;   // activo del maestro real
+        else r.equipo_id = eq.id;                        // placeholder viejo
+        r.equipo_nombre = eq.nombre;
+      }
     }
     if (p.objetivo) {
       const obj = await resolverObjetivo(p.objetivo, sesion.capataz);
