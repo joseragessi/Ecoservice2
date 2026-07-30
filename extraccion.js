@@ -66,7 +66,7 @@ Proveedor y CUIT:
   junto a "Cliente" (ECOSERVICE S.R.L., CUIT 30-70793029-9) es del cliente: NUNCA lo uses.
 
 Patente: transcribila EXACTA, carácter por carácter. Formatos argentinos: AA999AA o AAA999.
-Cuidado con letras que se confunden en la impresión térmica: U/V, O/0, I/1, B/8. Si un carácter
+Cuidado con letras que se confunden en la impresión térmica: U/V, O/0, I/1, B/8, H/W, A/M. Si un carácter
 no se lee con seguridad, igual transcribí lo que mejor se vea (el sistema la valida contra la flota).
 Si un dato no está o no se lee con seguridad, poné null. No inventes valores, pero SÍ leé los litros
 del remito siguiendo la regla de arriba: casi siempre están presentes aunque el remito no tenga montos.`;
@@ -153,6 +153,10 @@ Reglas:
 - Podés repartir un mismo producto en varios destinos. "la mitad" = dividir en partes iguales.
 - NUNCA inventes litros: si asigna cantidades y no se entiende a dónde va el resto de un
   producto, devolvé ok:false con el motivo. Si dice "el resto a X", usalo.
+- Si el capataz menciona una PATENTE (ej "la hilux HAI248", "unidad AB123CD"), ponela en el campo
+  "patente" del reparto, en mayúsculas y sin espacios, con destino "unidad".
+  Si esa patente NO coincide con la del ticket, NO es un error: los tickets térmicos se leen mal
+  seguido y el capataz la está corrigiendo. NUNCA devuelvas ok:false por una patente distinta.
 - Si menciona un objetivo (para bidones o equipos), poné el texto tal cual en "objetivo"
   (incluido "mío" / "mi objetivo" si lo dice así). Si no menciona objetivo, null.
 - Números argentinos: coma decimal ("61,5" = 61.5).
@@ -166,6 +170,7 @@ Devolvé SOLO un JSON válido, sin markdown:
       "litros": number,
       "destino": "unidad" | "bidon" | "equipo",
       "detalle": string | null,     // nombre del equipo si destino es "equipo"
+      "patente": string | null,     // patente si el capataz la nombró (destino "unidad")
       "objetivo": string | null }   // texto del objetivo si lo mencionó
   ]
 }`;
