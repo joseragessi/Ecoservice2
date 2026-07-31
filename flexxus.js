@@ -494,21 +494,36 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   const valor = reparto.map(r => ({ codigocentrocosto: r.codigocentrocosto, porcentaje: r.porcentaje }));
   let apropiacion;
   const lineas = asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle);
+  const buscaCod = o => o == null ? null :
+    (o.codigoasiento ?? o.codigoAsiento ?? o.tipoasiento ?? o.codigotipoasiento ?? o.tipoAsiento ?? null);
   if (Array.isArray(lineas) && lineas.length) {
     apropiacion = lineas.map(l => ({ linea: l.linea ?? l.numerolinea ?? l.nrolinea ?? 1, valor }));
-    if (codigoasiento == null) codigoasiento = asiento.codigoasiento ?? null;
+    if (codigoasiento == null) codigoasiento = buscaCod(asiento) ?? buscaCod(lineas[0]);
   } else {
     apropiacion = [{ linea: 1, valor }];
+    if (codigoasiento == null) codigoasiento = buscaCod(asiento);
   }
   if (codigoejercicio == null) codigoejercicio = anio;
-
+  // Flexxus exige codigoasiento (tipo de asiento contable). Si no vino en
+  // ninguna respuesta, se puede fijar con FLEXXUS_CODIGO_ASIENTO en Railway.
+  if (codigoasiento == null && process.env.FLEXXUS_CODIGO_ASIENTO) {
+    codigoasiento = Number(process.env.FLEXXUS_CODIGO_ASIENTO);
+  }
+  if (codigoasiento == null) {
+    return conAsiento({
+      ok: false,
+      motivo: 'Flexxus exige "codigoasiento" (tipo de asiento) y no vino en ninguna respuesta. ' +
+        'Miralo en Flexxus con "Ver Asiento" del comprobante (el código/tipo del asiento) y fijalo en Railway como FLEXXUS_CODIGO_ASIENTO. ' +
+        'Asiento leído del API: ' + (asiento ? JSON.stringify(asiento).slice(0, 400) : 'no disponible (el GET no devolvió el asiento)'),
+    });
+  }
   const put = {
     numeroasiento,
     codigoejercicio,
+    codigoasiento: Number(codigoasiento),
     codigousuario: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER,
     apropiacion,
   };
-  if (codigoasiento != null) put.codigoasiento = codigoasiento;
   await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
   console.log('[flexxus] centro de costo apropiado (asiento ' + numeroasiento + '/' + codigoejercicio + '): ' +
     reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
