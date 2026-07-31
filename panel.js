@@ -3382,6 +3382,8 @@ async function probarFlexxus(){
       <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Centro de costo — cómo imputa esta instalación</div>
       <div style="background:${d.centro_costo_via&&d.centro_costo_via.startsWith('no detectado')?'var(--diesel-soft)':'var(--brote-soft)'};border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:6px"><b>${d.centro_costo_via||'—'}</b></div>
       ${tabla('Centros de costo (GET /centrodecosto)',d.centros_costo)}
+      ${tabla('Tipos de asiento (FLEXXUS_CODIGO_ASIENTO — usá el de compras)',d.tipos_asiento)}
+      ${tabla('Ejercicios contables (FLEXXUS_CODIGO_EJERCICIO — usá el vigente)',d.ejercicios)}
       ${tabla('Proyectos (GET /compras/gastosporproyecto/proyectos)',d.proyectos)}
       <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Alta de proveedor nuevo usaría</div>${alta}
       <div class="modal-acciones"><button class="btn" id="fx-cerrar">Cerrar</button></div>
