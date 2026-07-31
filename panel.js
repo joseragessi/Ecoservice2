@@ -2289,7 +2289,7 @@ function asignacionInv(inv){
 }
 /* ===== Compras · Indicadores ===== */
 let comprasTab='resumen';   // 'resumen' | 'cuenta' | 'indicadores' | 'combustible'
-let comprasIndPer='';       // '' = todo el período
+let comprasIndPer=null;     // null = último mes con datos · '' = todo el período
 let comprasIndData=null;    // cache de facturas para indicadores/export
 
 /* ===== Compras · Estado de cuenta ===== */
@@ -2956,132 +2956,168 @@ async function vComprasInd(view){
     comprasIndData=await api('/api/compras/facturas');
     const todas=comprasIndData;
     const meses=[...new Set(todas.map(mesInv))].filter(m=>m!=='sin fecha').sort().reverse();
+    if(comprasIndPer===null)comprasIndPer=meses[0]||'';   // arranca en el último mes con datos
     const fs=comprasIndPer?todas.filter(f=>mesInv(f)===comprasIndPer):todas;
     const k=calcIndicadores(fs);
-    // Evolución mensual sobre TODAS las facturas (no la filtrada), con variación
-    const porMes={};todas.forEach(f=>{const m=mesInv(f);porMes[m]=porMes[m]||{docs:0,neto:0,total:0};
-      porMes[m].docs++;porMes[m].neto+=Number(f.total_sin_iva)||0;
-      porMes[m].total+=(Number(f.total_sin_iva)||0)+(Number(f.total_iva)||0);});
-    const evol=Object.entries(porMes).sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([m,v],i,arr)=>({mes:m,...v,
-        var:i>0&&arr[i-1][1].total?((v.total-arr[i-1][1].total)*100/arr[i-1][1].total):null}))
-      .reverse();
-    const bars=(lista,color)=>lista.slice(0,10).map(x=>{
-      const w=lista[0].total?Math.max(2,Math.round(x.total*100/lista[0].total)):0;
-      return `<div style="margin-bottom:9px">
-        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-          <b style="font-weight:600">${x.nombre.length>42?x.nombre.slice(0,42)+'…':x.nombre}</b>
-          <span class="money">${money(x.total)}</span></div>
-        <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
-      </div>`;}).join('')||'<div class="sub" style="padding:10px 0">Sin datos</div>';
-
-    // ── Indicadores del dueño ─────────────────────────────────
+    const M=n=>'$ '+(Number(n||0)/1e6).toLocaleString('es-AR',{minimumFractionDigits:1,maximumFractionDigits:1})+' M';
+    const D=86400000, hoyMs=Date.now();
+    const normCuit=c=>String(c||'').replace(/\D/g,'');
+    const CUIT_PROPIO='30707930299';
     const fechaFactMs=f=>{const s=String(f.fecha_factura||'').trim();
       let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]).getTime();
       m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(m)return new Date(+m[3],+m[2]-1,+m[1]).getTime();
       return null;};
     const esPagada=f=>f.pagada===true||f.pagada==='true';
-    const D=86400000, hoyMs=Date.now();
 
-    // Deuda viva: TODAS las no pagadas (foto de hoy, no depende del filtro de mes)
+    // Evolución (todas), para las barras y la variación
+    const porMes={};todas.forEach(f=>{const m=mesInv(f);if(m==='sin fecha')return;
+      porMes[m]=porMes[m]||{total:0,docs:0};porMes[m].docs++;porMes[m].total+=totalFactura(f);});
+    const serie=Object.entries(porMes).sort((a,b)=>a[0].localeCompare(b[0])).slice(-6)
+      .map(([m,v])=>({mes:m,...v}));
+    const idxRef=serie.findIndex(s=>s.mes===comprasIndPer);
+    const totRef=comprasIndPer?(porMes[comprasIndPer]?porMes[comprasIndPer].total:0):k.totTot;
+    const totPrev=idxRef>0?serie[idxRef-1].total:null;
+    const varGasto=(totPrev&&comprasIndPer)?((totRef-totPrev)*100/totPrev):null;
+    const mediana=[...serie.map(s=>s.total)].sort((a,b)=>a-b)[Math.floor(serie.length/2)]||0;
+    const maxSerie=Math.max(...serie.map(s=>s.total),1);
+    const hayAtipico=serie.some(s=>mediana&&s.total>mediana*2.5);
+    const barrasMes=serie.length?`<div style="display:flex;align-items:flex-end;gap:8px;height:96px;margin-top:20px;padding-bottom:18px">
+      ${serie.map(s=>{const atip=mediana&&s.total>mediana*2.5;
+        const act=s.mes===comprasIndPer;
+        return `<div style="flex:1;position:relative;height:${Math.max(8,Math.round(s.total*100/maxSerie))}%;background:${act?'var(--diesel-soft)':atip?'var(--azul-soft)':'var(--brote-soft)'};border-top:3px solid ${act?'var(--diesel)':atip?'var(--azul)':'var(--brote)'};border-radius:3px 3px 0 0">
+          <b style="position:absolute;top:-17px;left:0;right:0;text-align:center;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--tinta-2);font-weight:600">${(s.total/1e6).toLocaleString('es-AR',{maximumFractionDigits:1})}</b>
+          <span style="position:absolute;bottom:-16px;left:0;right:0;text-align:center;font-size:9.5px;color:var(--tinta-3)">${s.mes.slice(5)}/${s.mes.slice(2,4)}${atip?'*':''}</span>
+        </div>`;}).join('')}</div>
+      ${hayAtipico?'<div class="sub" style="font-size:10.5px;margin-top:4px">* pico atípico — puede incluir carga de comprobantes históricos, no solo gasto del mes</div>':''}`
+      :'<div class="sub" style="padding:10px 0">Sin datos</div>';
+
+    // Proveedores del período, agrupados por CUIT (mata duplicados de nombre)
+    const porProv={};
+    fs.forEach(f=>{
+      const key=normCuit(f.cuit)||('nom:'+String(f.proveedor||'Sin proveedor').toLowerCase().trim());
+      const o=porProv[key]||(porProv[key]={nombres:{},total:0,docs:0,cuit:normCuit(f.cuit)});
+      o.total+=totalFactura(f);o.docs++;
+      const n=String(f.proveedor||'Sin proveedor').trim();o.nombres[n]=(o.nombres[n]||0)+1;});
+    const provs=Object.values(porProv).map(o=>({
+      nombre:Object.entries(o.nombres).sort((a,b)=>b[1]-a[1])[0][0],
+      total:o.total,docs:o.docs,cuit:o.cuit})).sort((a,b)=>b.total-a.total);
+    const totProv=provs.reduce((s,p)=>s+p.total,0)||1;
+    let acum=0;
+    const topProv=provs.slice(0,4).map(p=>{acum+=p.total;return {...p,pctAcum:acum*100/totProv};});
+    const otros=provs.slice(4);
+    const maxProv=topProv.length?topProv[0].total:1;
+
+    // Deuda viva (foto de hoy, sobre TODAS) + aging + CUIT propio
     const impagas=todas.filter(f=>!esPagada(f));
-    const aging={a:{n:0,m:0},b:{n:0,m:0},c:{n:0,m:0}}, provMas60={};
+    const aging={a:0,b:0,c:0}; let mas60Propio=0, mas60PropioN=0, mas60Resto=0;
+    const cuitPropioTotal=todas.filter(f=>normCuit(f.cuit)===CUIT_PROPIO).length;
     impagas.forEach(f=>{
       const t=totalFactura(f), fm=fechaFactMs(f);
       const d=fm==null?999:Math.floor((hoyMs-fm)/D);
       const k2=d<=30?'a':d<=60?'b':'c';
-      aging[k2].n++;aging[k2].m+=t;
-      if(k2==='c'){const p=f.proveedor||'Sin proveedor';provMas60[p]=(provMas60[p]||0)+t;}
+      aging[k2]+=t;
+      if(k2==='c'){if(normCuit(f.cuit)===CUIT_PROPIO){mas60Propio+=t;mas60PropioN++;}else mas60Resto+=t;}
     });
-    const deudaViva=aging.a.m+aging.b.m+aging.c.m;
-    const topMas60=Object.entries(provMas60).sort((x,y)=>y[1]-x[1]).slice(0,3);
+    const deudaViva=aging.a+aging.b+aging.c;
+    const maxAg=Math.max(aging.a,aging.b,aging.c,1);
+    const agFila=(lbl,v,color)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+      <span style="width:86px;font-size:12px;font-weight:500">${lbl}</span>
+      <div class="pv-bar" style="max-width:none"><i style="width:${Math.max(3,Math.round(v*100/maxAg))}%;background:${color}"></i></div>
+      <span class="mono" style="width:110px;text-align:right;font-size:12px;font-weight:600">${M(v)}</span></div>`;
 
-    // Variación del gasto: el mes elegido (o el último) contra el anterior
-    const mesRef=comprasIndPer||(evol.length?evol[0].mes:null);
-    const eRef=evol.find(e=>e.mes===mesRef);
-    const varGasto=eRef&&eRef.var!=null?eRef.var:null;
+    // Gasto por objetivo: contratos vs "EMPRESA / sin abrir"
+    const esGeneral=n=>/^(empresa|sin asignar|sin imputar|general)$/i.test(String(n||'').trim());
+    const objs=(k.porObjetivo||[]);
+    const objContratos=objs.filter(o=>!esGeneral(o.nombre)).slice(0,4);
+    const objGeneral=objs.filter(o=>esGeneral(o.nombre)).reduce((s,o)=>s+o.total,0);
+    const totObj=objs.reduce((s,o)=>s+o.total,0)||1;
+    const pctImputado=Math.round((totObj-objGeneral)*100/totObj);
+    const maxObj=Math.max(...objContratos.map(o=>o.total),objGeneral,1);
+    const objFila=(nom,v,color,sub)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span style="width:165px;font-size:12px;font-weight:500;flex-shrink:0">${nom}${sub?'<span style="display:block;font-size:10px;color:var(--tinta-3);font-weight:400">'+sub+'</span>':''}</span>
+      <div class="pv-bar" style="max-width:none"><i style="width:${Math.max(3,Math.round(v*100/maxObj))}%;background:${color}"></i></div>
+      <span class="mono" style="width:96px;text-align:right;font-size:12px;font-weight:600">${M(v)}</span></div>`;
 
-    // Gasoil $/lt por mes: precio real de los ítems de las facturas
-    const RX_GASOIL=/gas\s*oil|gasoil|diesel|di[eé]sel/i;
-    const gasoilMes={};
-    todas.forEach(f=>{const m=mesInv(f);if(m==='sin fecha')return;
-      (f.items||[]).forEach(it=>{
-        if(!RX_GASOIL.test(String(it.descripcion||'')))return;
-        const lt=Number(it.cantidad)||0, imp=Number(it.importe)||0;
-        if(lt<=0||imp<=0)return;
-        const g=gasoilMes[m]||(gasoilMes[m]={lt:0,imp:0});
-        g.lt+=lt;g.imp+=imp;});});
-    const gasoilSerie=Object.entries(gasoilMes).sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([m,v])=>({mes:m,plt:v.imp/v.lt,lt:v.lt})).slice(-6);
-    const gRef=gasoilSerie.find(g=>g.mes===mesRef)||gasoilSerie[gasoilSerie.length-1]||null;
-    const gPrev=gRef?gasoilSerie[gasoilSerie.indexOf(gRef)-1]:null;
-    const varGasoil=gRef&&gPrev?((gRef.plt-gPrev.plt)*100/gPrev.plt):null;
-    const maxPlt=Math.max(...gasoilSerie.map(g=>g.plt),1);
-    const curvaGasoil=gasoilSerie.length?`<div style="display:flex;align-items:flex-end;gap:6px;height:74px;margin-top:18px;padding-bottom:16px">
-      ${gasoilSerie.map((g,i)=>`<div style="flex:1;position:relative;height:${Math.max(12,Math.round(g.plt*100/maxPlt))}%;background:${i===gasoilSerie.length-1?'var(--rojo-soft)':'var(--azul-soft)'};border-top:2.5px solid ${i===gasoilSerie.length-1?'var(--rojo)':'var(--azul)'};border-radius:2px 2px 0 0">
-        <b style="position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:9.5px;font-family:'JetBrains Mono',monospace;color:var(--tinta-2)">${Math.round(g.plt).toLocaleString('es-AR')}</b>
-        <span style="position:absolute;bottom:-15px;left:0;right:0;text-align:center;font-size:9px;color:var(--tinta-3)">${g.mes.slice(5)}/${g.mes.slice(2,4)}</span>
-      </div>`).join('')}</div>`:'<div class="sub" style="padding:10px 0">Sin ítems de gasoil facturados aún.</div>';
-
-    // Fugas: cargas del bot sin factura del proveedor hace más de 30 días
+    // Controles: remitos +30d, CUIT propio, duplicados de número, NC, gasoil
     let fugas=null;
     try{
       const cargas=await api('/api/combustible');
-      const viejas=(cargas||[]).filter(c=>c.estado==='sin_facturar'&&c.fecha&&((hoyMs-new Date(c.fecha).getTime())/D)>30);
-      const recientes=(cargas||[]).filter(c=>c.estado==='sin_facturar').length-viejas.length;
-      fugas={viejas:viejas.length,litros:viejas.reduce((s,c)=>s+(Number(c.litros_total)||0),0),recientes};
+      const sf=(cargas||[]).filter(c=>c.estado==='sin_facturar');
+      const viejas=sf.filter(c=>c.fecha&&((hoyMs-new Date(c.fecha).getTime())/D)>30);
+      fugas={viejas:viejas.length,litros:viejas.reduce((s,c)=>s+(Number(c.litros_total)||0),0),recientes:sf.length-viejas.length};
     }catch(e){}
-    const agBar=(v,color)=>`<div class="pv-bar" style="max-width:none"><i style="width:${deudaViva?Math.max(3,Math.round(v*100/Math.max(aging.a.m,aging.b.m,aging.c.m,1))):0}%;background:${color}"></i></div>`;
+    const vistos={},dups=[];
+    todas.forEach(f=>{const n=String(f.numero_factura||'').trim();if(!n)return;
+      const kk=normCuit(f.cuit)+'|'+n;if(vistos[kk])dups.push(n);else vistos[kk]=1;});
+    const RX_GASOIL=/gas\s*oil|gasoil|diesel|di[eé]sel/i;
+    let gasLt=0,gasImp=0;
+    fs.forEach(f=>(f.items||[]).forEach(it=>{
+      if(!RX_GASOIL.test(String(it.descripcion||'')))return;
+      const lt=Number(it.cantidad)||0,imp=Number(it.importe)||0;
+      if(lt>0&&imp>0){gasLt+=lt;gasImp+=imp;}}));
+    const senales=[];
+    if(fugas&&fugas.viejas)senales.push(['var(--diesel)',`<b>${fugas.viejas} remito(s) de combustible sin factura hace +30 días</b> (${Math.round(fugas.litros).toLocaleString('es-AR')} lt)${fugas.recientes?' · los '+fugas.recientes+' recientes son flujo normal de facturación':''}.`]);
+    else if(fugas)senales.push(['var(--brote)',`<b>Remitos de combustible al día</b>${fugas.recientes?' · '+fugas.recientes+' en ciclo normal de facturación':''}.`]);
+    if(cuitPropioTotal)senales.push(['var(--diesel)',`<b>${cuitPropioTotal} factura(s) con el CUIT de EcoService como proveedor</b> — lectura errónea del comprobante: corregirlas desde el Resumen antes de reclamar nada.`]);
+    if(dups.length)senales.push(['var(--rojo)',`<b>Posibles duplicadas:</b> ${[...new Set(dups)].slice(0,3).join(', ')} — mismo número y CUIT cargados dos veces.`]);
+    senales.push([gasLt?'var(--brote)':'var(--tinta-3)',gasLt
+      ?`<b>Gasoil facturado: $ ${Math.round(gasImp/gasLt).toLocaleString('es-AR')}/lt</b> · ${Math.round(gasLt).toLocaleString('es-AR')} lt en el período.`
+      :`<b>Sin gasoil facturado por el proveedor en el período</b> — el $/litro aparece acá cuando entren esas facturas.`]);
+    senales.push([k.totNC?'var(--brote)':'var(--tinta-3)',k.totNC
+      ?`<b>Notas de crédito recuperadas: ${M(k.totNC)}</b> en el período.`
+      :`<b>Notas de crédito:</b> $ 0 reclamado en el período.`]);
+    const nAlertas=senales.filter(s=>s[0]==='var(--diesel)'||s[0]==='var(--rojo)').length;
 
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Compras · Indicadores</div>
-      <div class="view-desc">Gasto por proveedor, objetivo y unidad</div></div>
+      <div class="view-desc">La plata que sale, en una pantalla</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <select class="busca" style="width:auto" onchange="comprasIndPer=this.value;go('compras')">
-          <option value="">Todo el período</option>
           ${meses.map(m=>`<option value="${m}" ${m===comprasIndPer?'selected':''}>${mesStk(m)}</option>`).join('')}
+          <option value="" ${comprasIndPer===''?'selected':''}>Todo el período</option>
         </select>
-        <button class="btn" onclick="exportarComprasPDF()">⬇ Exportar PDF</button>
+        <button class="btn" onclick="exportarComprasPDF()">⬇ PDF</button>
       </div></div>
     ${tabsCompras()}
-    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${varGasto!=null?' · <b style="color:'+(varGasto>=0?'#A32D2D':'var(--brote-2)')+'">'+(varGasto>0?'▲ +':'▼ ')+Math.round(varGasto*10)/10+'% vs mes anterior</b>':''}${k.totNC?' · NC −'+money(k.totNC):''}</div></div>
-      <div class="kpi plain"><div class="kpi-label">Neto</div><div class="kpi-val" style="font-size:21px">${money(k.totNeto)}</div><div class="kpi-sub">sin IVA</div></div>
-      <div class="kpi plain"><div class="kpi-label">IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totIva)}</div><div class="kpi-sub">crédito fiscal</div></div>
-      <div class="kpi plain"><div class="kpi-label">Ticket promedio</div><div class="kpi-val" style="font-size:21px">${money(k.ticket)}</div><div class="kpi-sub">por factura</div></div>
-      <div class="kpi plain"><div class="kpi-label">Conc. top 3</div><div class="kpi-val" style="font-size:21px">${Math.round(k.conc3*10)/10}%</div><div class="kpi-sub">3 proveedores</div></div>
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="kpi-label">¿Cuánto gasté?</div><div class="kpi-val" style="font-size:23px">${M(k.totTot)}</div>
+        <div class="kpi-sub">${varGasto!=null?'<b style="color:'+(varGasto>=0?'#A32D2D':'var(--brote-2)')+'">'+(varGasto>0?'▲ +':'▼ ')+Math.round(varGasto*10)/10+'% vs mes anterior</b> · ':''}${k.docs} facturas<br>neto ${M(k.totNeto)} · IVA ${M(k.totIva)}</div></div>
+      <div class="kpi ${aging.c?'amber':'plain'}"><div class="kpi-label">¿Cuánto debo?</div><div class="kpi-val" style="font-size:23px;color:#A32D2D">${M(deudaViva)}</div>
+        <div class="kpi-sub">${impagas.length} facturas sin pagar${aging.c?'<br><b style="color:#A32D2D">'+M(aging.c)+' con más de 60 días</b>':''}</div></div>
+      <div class="kpi plain"><div class="kpi-label">¿A quién?</div><div class="kpi-val" style="font-size:23px">${Math.round(k.conc3*10)/10}%</div>
+        <div class="kpi-sub">del gasto en 3 proveedores<br>${k.conc3>=50?'<b style="color:#854F0B">alta concentración — dependencia a vigilar</b>':'compra repartida — sin dependencia crítica'}</div></div>
+      <div class="kpi ${nAlertas?'amber':'plain'}"><div class="kpi-label">¿Está todo en orden?</div><div class="kpi-val" style="font-size:23px;${nAlertas?'color:#854F0B':'color:var(--brote-2)'}">${nAlertas?nAlertas+' ⚠':'✓'}</div>
+        <div class="kpi-sub">${nAlertas?'punto(s) que merecen una mirada — detalle abajo':'controles automáticos sin observaciones'}</div></div>
     </div>
-    <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-top:-6px">
-      <div class="kpi ${aging.c.m?'amber':''}"><div class="kpi-label">Deuda viva (sin pagar)</div><div class="kpi-val" style="font-size:21px;color:#A32D2D">${money(deudaViva)}</div><div class="kpi-sub">${impagas.length} facturas${aging.c.m?' · <b style="color:#A32D2D">'+money(aging.c.m)+' con +60 días</b>':''}</div></div>
-      <div class="kpi plain"><div class="kpi-label">Gasoil pagado</div><div class="kpi-val" style="font-size:21px">${gRef?'$ '+Math.round(gRef.plt).toLocaleString('es-AR')+' /lt':'—'}</div><div class="kpi-sub">${gRef?(varGasoil!=null?'<b style="color:'+(varGasoil>=0?'#A32D2D':'var(--brote-2)')+'">'+(varGasoil>0?'▲ +':'▼ ')+Math.round(varGasoil*10)/10+'%</b> vs mes anterior · ':'')+Math.round(gRef.lt).toLocaleString('es-AR')+' lt facturados':'sin ítems de gasoil'}</div></div>
-      <div class="kpi ${fugas&&fugas.viejas?'amber':'plain'}"><div class="kpi-label">Remitos sin facturar</div><div class="kpi-val" style="font-size:21px;${fugas&&fugas.viejas?'color:#854F0B':''}">${fugas?fugas.viejas:'—'}</div><div class="kpi-sub">${fugas?'con +30 días · '+Math.round(fugas.litros).toLocaleString('es-AR')+' lt · '+fugas.recientes+' recientes (flujo normal)':'no pude consultar las cargas'}</div></div>
-    </div>
-    <div class="grid g-2" style="margin-bottom:18px">
-      <div class="panel"><div class="panel-title">¿Cuánto debo y hace cuánto? <span class="sub" style="font-weight:400;font-size:11px">· por antigüedad de factura</span></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px"><span style="width:90px;font-size:12px;font-weight:500">0–30 días</span>${agBar(aging.a.m,'var(--brote)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.a.m)}</span></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px"><span style="width:90px;font-size:12px;font-weight:500">31–60 días</span>${agBar(aging.b.m,'var(--diesel)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.b.m)}</span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;font-size:12px;font-weight:500">+60 días</span>${agBar(aging.c.m,'var(--rojo)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.c.m)}</span></div>
-        ${topMas60.length?`<div class="sub" style="margin-top:10px;font-size:11.5px">Con +60 días: ${topMas60.map(([p,m])=>'<b>'+p+'</b> ('+money(m)+')').join(' · ')}</div>`:''}
-      </div>
-      <div class="panel"><div class="panel-title">¿A qué precio compro el gasoil? <span class="sub" style="font-weight:400;font-size:11px">· $/litro de los ítems facturados</span></div>${curvaGasoil}</div>
-    </div>
-    <div class="grid g-2" style="margin-bottom:18px">
-      <div class="panel"><div class="panel-title">Ranking de proveedores</div>
-        <div style="max-height:340px;overflow:auto"><table style="font-size:12px"><thead><tr><th>#</th><th>Proveedor</th><th class="num">Docs</th><th class="num">Total</th><th class="num">%</th></tr></thead>
-        <tbody>${k.ranking.map((r,i)=>`<tr><td class="sub">${i+1}</td><td style="font-weight:500">${r.nombre}</td>
-          <td class="num">${r.docs}</td><td class="money num">${money(r.total)}</td>
-          <td class="num sub">${Math.round(r.pct*10)/10}%</td></tr>`).join('')}</tbody></table></div>
-      </div>
-      <div class="panel"><div class="panel-title">Evolución mensual</div>
-        <div style="max-height:340px;overflow:auto"><table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Docs</th><th class="num">Neto</th><th class="num">Total</th><th class="num">Var.</th></tr></thead>
-        <tbody>${evol.map(e=>`<tr><td class="mono">${e.mes}</td><td class="num">${e.docs}</td>
-          <td class="money num">${money(e.neto)}</td><td class="money num">${money(e.total)}</td>
-          <td class="num" style="${e.var==null?'':e.var>=0?'color:var(--brote-2)':'color:var(--rojo)'}">${e.var==null?'—':(e.var>0?'+':'')+Math.round(e.var*10)/10+'%'}</td></tr>`).join('')}</tbody></table></div>
+    <div class="grid g-2" style="margin-bottom:14px">
+      <div class="panel"><div class="panel-title">El gasto, mes a mes <span class="sub" style="font-weight:400;font-size:11px">· últimos 6 meses, en millones</span></div>${barrasMes}</div>
+      <div class="panel"><div class="panel-title">¿A quién se le va la plata? <span class="sub" style="font-weight:400;font-size:11px">· % acumulado · agrupado por CUIT</span></div>
+        ${topProv.map(p=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <span style="width:165px;font-size:12px;font-weight:500;flex-shrink:0">${p.nombre.length>26?p.nombre.slice(0,26)+'…':p.nombre}</span>
+          <div class="pv-bar" style="max-width:none"><i style="width:${Math.max(3,Math.round(p.total*100/maxProv))}%;background:var(--azul)"></i></div>
+          <span class="mono" style="width:88px;text-align:right;font-size:12px;font-weight:600">${M(p.total)}</span>
+          <span class="mono sub" style="width:44px;text-align:right;font-size:10.5px">${Math.round(p.pctAcum)}%</span></div>`).join('')}
+        ${otros.length?`<div style="display:flex;align-items:center;gap:10px">
+          <span style="width:165px;font-size:12px;font-weight:500;flex-shrink:0">Otros ${otros.length} proveedores</span>
+          <div class="pv-bar" style="max-width:none"><i style="width:${Math.max(3,Math.round(otros.reduce((s,p)=>s+p.total,0)*100/maxProv))}%;background:var(--linea-2)"></i></div>
+          <span class="mono" style="width:88px;text-align:right;font-size:12px;font-weight:600">${M(otros.reduce((s,p)=>s+p.total,0))}</span>
+          <span class="mono sub" style="width:44px;text-align:right;font-size:10.5px">100%</span></div>`:''}
       </div>
     </div>
-    <div class="grid g-2">
-      <div class="panel"><div class="panel-title">Gasto por objetivo</div>${bars(k.porObjetivo,'var(--brote)')}</div>
-      <div class="panel"><div class="panel-title">Gasto por unidad</div>${bars(k.porUnidad,'var(--diesel)')}</div>
+    <div class="grid g-2" style="margin-bottom:14px">
+      <div class="panel"><div class="panel-title">¿Cuánto debo y hace cuánto? <span class="sub" style="font-weight:400;font-size:11px">· por antigüedad de factura · foto de hoy</span></div>
+        ${agFila('0–30 días',aging.a,'var(--brote)')}${agFila('31–60 días',aging.b,'var(--diesel)')}${agFila('+60 días',aging.c,'var(--rojo)')}
+        ${mas60PropioN?`<div class="sub" style="margin-top:9px;font-size:11.5px"><b>${mas60PropioN} factura(s) con CUIT de EcoService</b> en +60 (${M(mas60Propio)}) — probable lectura errónea, <u>revisar antes que reclamar</u>${mas60Resto?' · resto: '+M(mas60Resto):''}</div>`:''}
+      </div>
+      <div class="panel"><div class="panel-title">¿Dónde se gasta? <span class="sub" style="font-weight:400;font-size:11px">· imputación por objetivo</span></div>
+        ${objContratos.map(o=>objFila(o.nombre.length>24?o.nombre.slice(0,24)+'…':o.nombre,o.total,'var(--brote)')).join('')}
+        ${objGeneral?objFila('EMPRESA / sin abrir',objGeneral,'var(--linea-2)','gasto general, no imputado a un contrato'):''}
+        <div class="sub" style="margin-top:8px;font-size:11px">El ${pctImputado}% del gasto está imputado a contratos — cuanto más se impute al facturar, mejor lee esta vista.</div>
+      </div>
+    </div>
+    <div class="panel"><div class="panel-title">¿Está todo en orden? <span class="sub" style="font-weight:400;font-size:11px">· controles automáticos</span></div>
+      ${senales.map(([c,t])=>`<div style="display:flex;gap:9px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--linea);font-size:12.5px">
+        <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:4px;background:${c}"></span><div>${t}</div></div>`).join('').replace(/border-bottom:1px solid var\(--linea\);font-size:12\.5px">\s*$/,'')}
     </div>`;
   }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude armar los indicadores. ${e.message||''}</div>`;}
 }
@@ -3252,24 +3288,46 @@ function ncTotal(inv){
 async function imputarFlexxus(id){
   const letra=await uiPrompt('¿Qué letra es la factura? (A, B o C)','A','Imputar a Flexxus');
   if(letra===null)return;
-  const L=String(letra).trim().toUpperCase();
-  if(!['A','B','C'].includes(L)){toast('Letra inválida. Tiene que ser A, B o C.','error');return;}
-  if(!await uiConfirm('Se va a crear el comprobante F'+L+' en Flexxus con los datos de esta factura (ítems, IVA, percepciones).','¿Continuar?',{ok:'Imputar'}))return;
-  try{
-    const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L})});
-    const orig=comprasData.find(i=>String(i.id)===String(id));
-    if(orig)orig.flexxus=r.flexxus;
-    if(comprasVer&&String(comprasVer.id)===String(id))comprasVer.flexxus=r.flexxus;
-    if(r.ya_existia){
-      toast('Esta factura ya estaba imputada en Flexxus. La marqué como imputada.','info');
-    }else{
-      toast('✓ Imputada en Flexxus: '+r.flexxus.tipocomprobante+' '+r.flexxus.numerocomprobante+(r.flexxus.proveedor_creado?'\n(Proveedor creado en Flexxus)':'\n(Proveedor: '+(r.flexxus.proveedor_nombre||r.flexxus.proveedor_codigo||'')+')'));
+  const L=String(letra).trim().toUpperCase()||'A';
+  if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
+  // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus
+  let prev=null;
+  try{prev=await api('/api/compras/'+id+'/flexxus-preview?letra='+L);}catch(e){}
+  if(prev){
+    if(prev.numero==null){toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
+    if(prev.proveedor){
+      if(!await uiConfirm(
+        'Proveedor en Flexxus: '+prev.proveedor.razonsocial+' (cód. '+prev.proveedor.codigo+')'+
+        (prev.proveedor.cuit?' · CUIT '+prev.proveedor.cuit:'')+
+        '\nComprobante: F'+L+' '+prev.numero_formateado+
+        '\n\nSi el proveedor no es el correcto, cancelá y corregí el CUIT o la razón social en el editor.',
+        '¿Imputar a este proveedor?',{ok:'Imputar'}))return;
+      await ejecutarImputacion(id,L,false);return;
     }
+    // No existe: alta solo con confirmación explícita
+    if(!await uiConfirm(
+      'No existe en Flexxus un proveedor con ese CUIT ni una razón social parecida.'+
+      '\nSe crearía un proveedor NUEVO con los datos de la factura.'+
+      '\n\nSi el proveedor YA existe en Flexxus con otro nombre, cancelá y corregí el CUIT en el editor (es lo que usa el sistema para encontrarlo).',
+      '¿Crear proveedor nuevo e imputar?',{ok:'Crear e imputar',danger:true}))return;
+    await ejecutarImputacion(id,L,true);return;
+  }
+  // Sin preview (Flexxus caído u otro error): flujo clásico con aviso genérico
+  if(!await uiConfirm('No pude verificar contra Flexxus. Se va a intentar crear el comprobante F'+L+' con los datos de esta factura.','¿Continuar igual?',{ok:'Imputar'}))return;
+  await ejecutarImputacion(id,L,false);
+}
+async function ejecutarImputacion(id,L,permitirAlta){
+  try{
+    const r=await api('/api/compras/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
+    toast(r.ya_existia?'Ya estaba imputada en Flexxus: la marqué como tal':'Imputada en Flexxus ✓');
     go('compras');
   }catch(e){
-    const msg=e.message||'error desconocido';
-    if(msg.length>180)await uiAlert(msg.replace(/</g,'&lt;'),'Flexxus rechazó la imputación');
-    else toast('Flexxus: '+msg,'error');
+    if(/PROV_NO_EXISTE/.test(e.message)||/No existe en Flexxus/.test(e.message)){
+      if(await uiConfirm(e.message+'\n\n¿Crear proveedor nuevo e imputar?','Proveedor inexistente',{ok:'Crear e imputar',danger:true}))
+        return ejecutarImputacion(id,L,true);
+      return;
+    }
+    toast(e.message,'error');
   }
 }
 async function probarFlexxus(){
