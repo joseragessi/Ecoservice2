@@ -490,11 +490,12 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     : codigoejercicio != null ? [codigoejercicio]
     : [anio, anio - 1, anio + 1];
   let asiento = null;
+  const getErrores = [];
   for (const ej of candidatos) {
     try {
       const g = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + ej);
       asiento = g.data || g; codigoejercicio = ej; break;
-    } catch (e) { /* probamos el siguiente ejercicio */ }
+    } catch (e) { getErrores.push('ejercicio ' + ej + ': ' + String(e.message || e).slice(0, 160)); }
   }
   const valor = reparto.map(r => ({ codigocentrocosto: r.codigocentrocosto, porcentaje: r.porcentaje }));
   let apropiacion;
@@ -519,7 +520,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
       ok: false,
       motivo: 'Flexxus exige "codigoasiento" (tipo de asiento) y no vino en ninguna respuesta. ' +
         'Miralo en Flexxus con "Ver Asiento" del comprobante (el código/tipo del asiento) y fijalo en Railway como FLEXXUS_CODIGO_ASIENTO. ' +
-        'Asiento leído del API: ' + (asiento ? JSON.stringify(asiento).slice(0, 400) : 'no disponible (el GET no devolvió el asiento)'),
+        'Asiento leído del API: ' + (asiento ? JSON.stringify(asiento).slice(0, 400) : 'no disponible. Errores del GET: ' + (getErrores.join(' · ') || 'sin detalle')),
     });
   }
   const put = {
@@ -530,9 +531,23 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     apropiacion,
   };
   await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
-  console.log('[flexxus] centro de costo apropiado (asiento ' + numeroasiento + '/' + codigoejercicio + '): ' +
-    reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
-  return { ok: true, numeroasiento, codigoejercicio, reparto };
+  // Verificación: releer el asiento y confirmar que los % quedaron de verdad
+  // (Flexxus puede responder 200 sin aplicar si algún identificador no matchea).
+  let verificado = null;
+  try {
+    const g2 = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
+    const a2 = JSON.stringify(g2.data || g2);
+    verificado = reparto.every(r => a2.includes(String(r.codigocentrocosto)));
+  } catch (e) { verificado = null; }
+  console.log('[flexxus] centro de costo apropiado (asiento ' + numeroasiento + '/' + codigoejercicio +
+    ', verificado=' + verificado + '): ' + reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
+  if (verificado === false) {
+    return conAsiento({ ok: false, motivo: 'Flexxus aceptó la apropiación pero al releer el asiento los porcentajes NO quedaron aplicados. ' +
+      'Identificadores enviados: asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + ', codigoasiento ' + Number(codigoasiento) + ' — alguno no coincide con el asiento real. ' +
+      (getErrores.length ? 'Lecturas fallidas previas: ' + getErrores.join(' · ') : '') });
+  }
+  return { ok: true, numeroasiento, codigoejercicio, reparto,
+           verificado, get_diagnostico: getErrores.length ? getErrores : undefined };
 }
 
 // ── Diagnóstico: probar conexión y listar códigos configurables ──
