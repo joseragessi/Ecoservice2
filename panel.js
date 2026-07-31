@@ -3856,6 +3856,16 @@ function comprasSetMode(m){comprasCaptura();comprasAssignMode=m;go('compras');}
 async function comprasGuardar(){
   comprasCaptura();
   const d=comprasExtracted||{};
+  // Objetivo y observaciones son obligatorios
+  if(comprasAssignMode==='total'){
+    if(!comprasAssign.objetivo){toast('Elegí un objetivo (centro de costo) antes de guardar.','error');return;}
+    if(!String(comprasAssign.comentario||'').trim()){toast('Las observaciones son obligatorias. Escribí qué es este gasto.','error');return;}
+  }else{
+    const asigs=Object.values(comprasAssignments||{});
+    const conObj=asigs.filter(a=>a&&a.objetivo);
+    if(!conObj.length){toast('Asigná al menos un ítem a un objetivo.','error');return;}
+    if(conObj.some(a=>!String(a.comentario||'').trim())){toast('Cada ítem asignado necesita observaciones. Completalas antes de guardar.','error');return;}
+  }
   const inv={
     fecha_factura:d.fecha_factura||null,
     numero_factura:d.numero_factura||null,
@@ -3942,18 +3952,20 @@ function vComprasCarga(view){
   let imput;
   if(comprasAssignMode==='total'){
     imput=`
-      <div class="mm-field"><label>Objetivo</label><select id="cf-obj"><option value="">— Seleccioná —</option>${ooSel(comprasAssign.objetivo)}</select></div>
+      <div class="mm-field"><label>Objetivo</label>
+        <input id="cf-obj" list="cf-obj-list" class="busca" style="width:100%" placeholder="Escribí para buscar…" value="${(comprasAssign.objetivo||'').replace(/"/g,'&quot;')}" autocomplete="off">
+        <datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist></div>
       <div class="mm-field"><label>Unidad</label><select id="cf-uni"><option value="">— Seleccioná —</option>${uoSel(comprasAssign.unidad)}</select></div>
-      <div class="mm-field"><label>Comentarios</label><textarea id="cf-com" rows="2" class="ta-panel" placeholder="Obs...">${comprasAssign.comentario||''}</textarea></div>`;
+      <div class="mm-field"><label>Comentarios / observaciones <span style="color:var(--rojo)">*</span></label><textarea id="cf-com" rows="2" class="ta-panel" placeholder="Obligatorio: qué es, para qué, N° de orden, etc.">${comprasAssign.comentario||''}</textarea></div>`;
   }else{
-    imput=items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
+    imput=`<datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist>`+items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
       <div class="item-imp">
         <div class="item-imp-head"><span>${it.descripcion||'Ítem '+(i+1)}</span><span class="money">${money((Number(it.monto_sin_iva)||0)+(Number(it.iva)||0))}</span></div>
         <div class="grid g-2">
-          <div class="mm-field"><label>Objetivo</label><select data-io="${i}"><option value="">—</option>${ooSel(a.objetivo)}</select></div>
+          <div class="mm-field"><label>Objetivo</label><input list="cf-obj-list" data-io="${i}" class="busca" style="width:100%" placeholder="Buscar…" value="${(a.objetivo||'').replace(/"/g,'&quot;')}" autocomplete="off"></div>
           <div class="mm-field"><label>Unidad</label><select data-iu="${i}"><option value="">—</option>${uoSel(a.unidad)}</select></div>
         </div>
-        <div class="mm-field"><label>Comentarios</label><textarea data-ic="${i}" rows="1" class="ta-panel" placeholder="Obs...">${a.comentario||''}</textarea></div>
+        <div class="mm-field"><label>Comentarios / observaciones <span style="color:var(--rojo)">*</span></label><textarea data-ic="${i}" rows="1" class="ta-panel" placeholder="Obligatorio">${a.comentario||''}</textarea></div>
       </div>`;}).join('') || '<div class="sub" style="padding:12px 0">La factura no tiene ítems detallados. Usá "Total de factura".</div>';
   }
   view.innerHTML=`
