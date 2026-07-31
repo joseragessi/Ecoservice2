@@ -3301,10 +3301,15 @@ function ncTotal(inv){
 }
 /* ── Flexxus ── */
 async function imputarFlexxus(id){
-  const letra=await uiPrompt('¿Qué letra es la factura? (A, B o C)','A','Imputar a Flexxus');
-  if(letra===null)return;
-  const L=String(letra).trim().toUpperCase()||'A';
-  if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
+  // La letra sale del OCR (inv.letra); solo se pregunta si no vino.
+  const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer:null;
+  let L=String((inv&&inv.letra)||'').trim().toUpperCase();
+  if(!['A','B','C'].includes(L)){
+    const letra=await uiPrompt('No pude leer la letra de la factura. ¿Cuál es? (A, B o C)','A','Imputar a Flexxus');
+    if(letra===null)return;
+    L=String(letra).trim().toUpperCase()||'A';
+    if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
+  }
   // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus
   let prev=null;
   try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
@@ -3341,17 +3346,54 @@ async function reintentarCentroCosto(id){
     go('compras');
   }catch(e){toast(e.message,'error');}
 }
+function flxProgreso(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=200;
+  bg.innerHTML=`<div class="modal" style="max-width:440px;text-align:center;padding:30px 26px">
+    <div class="flx-spin" style="width:44px;height:44px;border:4px solid var(--linea);border-top-color:var(--brote);border-radius:50%;margin:0 auto 16px;animation:flxgira .8s linear infinite"></div>
+    <div style="font-weight:600;font-size:15px" id="flx-paso">Imputando en Flexxus…</div>
+    <div class="sub" style="margin-top:6px;font-size:12.5px" id="flx-detalle">Creando el comprobante y apropiando el centro de costo. No cierres esta ventana.</div>
+  </div>`;
+  if(!document.getElementById('flx-spin-style')){const st=document.createElement('style');st.id='flx-spin-style';st.textContent='@keyframes flxgira{to{transform:rotate(360deg)}}';document.head.appendChild(st);}
+  document.body.appendChild(bg);
+  return {cerrar:()=>bg.remove(), paso:(t)=>{const e=bg.querySelector('#flx-paso');if(e)e.textContent=t;}};
+}
+function flxResultadoModal(r){
+  const cc=r.flexxus&&r.flexxus.centro_costo;
+  const num=r.flexxus&&r.flexxus.numerocomprobante_fmt||(r.flexxus&&('F'+(r.flexxus.tipocomprobante||'').slice(-1)+' '+(r.flexxus.numerocomprobante||'')));
+  let filas='';
+  if(cc&&cc.ok&&(cc.reparto||[]).length){
+    filas=cc.reparto.map(x=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 12px;border-bottom:1px solid var(--linea);font-size:13px">
+      <span><b>${x.objetivo}</b></span>
+      <span class="mono" style="color:var(--brote-2);font-weight:600">${x.porcentaje}% ✓</span></div>`).join('');
+  }
+  const okCC=cc&&cc.ok;
+  const verif=cc&&cc.verificado===true;
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=200;
+  bg.innerHTML=`<div class="modal" style="max-width:480px">
+    <div style="text-align:center;margin-bottom:14px">
+      <div style="font-size:34px;line-height:1">${okCC?'✅':(cc?'⚠️':'✅')}</div>
+      <h3 style="margin:8px 0 2px">${r.ya_existia?'Ya estaba imputada':'Imputación realizada'}</h3>
+      <div class="sub" style="font-size:12.5px">${num?'Comprobante '+num+' · ':''}asiento ${cc&&cc.numeroasiento||'—'}</div>
+    </div>
+    <div style="border:1px solid var(--linea);border-radius:10px;overflow:hidden;margin-bottom:6px">
+      <div style="background:var(--papel);padding:8px 12px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600">Centro de costo apropiado</div>
+      ${okCC?filas:`<div style="padding:11px 12px;font-size:12.5px;color:#854F0B">${cc?cc.motivo:'No se registró apropiación de centro de costo.'}</div>`}
+      ${okCC?`<div style="padding:8px 12px;font-size:11.5px;color:${verif?'var(--brote-2)':'var(--tinta-3)'}">${verif?'✓✓ Verificado contra Flexxus (asiento releído del API)':'✓ Enviado — no pude releer el asiento para confirmarlo'}</div>`:''}
+    </div>
+    <div class="modal-acciones"><button class="btn primary" id="flx-ok">Listo</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#flx-ok').onclick=()=>{bg.remove();go('compras');};
+  bg.addEventListener('click',e=>{if(e.target===bg){bg.remove();go('compras');}});
+}
 async function ejecutarImputacion(id,L,permitirAlta){
+  const prog=flxProgreso();
   try{
     const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
-    const cc=r.flexxus&&r.flexxus.centro_costo;
-    if(r.ya_existia)toast('Ya estaba imputada en Flexxus: la marqué como tal');
-    else if(cc&&cc.ok&&cc.verificado===true)toast('Imputada ✓ · Centro de costo VERIFICADO contra Flexxus: '+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+' (asiento '+cc.numeroasiento+' releído del API)');
-    else if(cc&&cc.ok)toast('Imputada ✓ · centro de costo enviado ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+') — no pude releer el asiento para confirmarlo');
-    else toast('Imputada en Flexxus ✓');
-    if(cc&&!cc.ok)toast('Centro de costo pendiente: '+(cc.motivo||''),'error');
-    go('compras');
+    prog.cerrar();
+    flxResultadoModal(r);
   }catch(e){
+    prog.cerrar();
     if(/PROV_NO_EXISTE/.test(e.message)||/No existe en Flexxus/.test(e.message)){
       if(await uiConfirm(e.message+'\n\n¿Crear proveedor nuevo e imputar?','Proveedor inexistente',{ok:'Crear e imputar',danger:true}))
         return ejecutarImputacion(id,L,true);
@@ -3793,6 +3835,7 @@ function comprasCaptura(){
   if(g('cf-fecha')){
     comprasExtracted.fecha_factura=g('cf-fecha').value||null;
     comprasExtracted.numero_factura=g('cf-num').value||null;
+    if(g('cf-letra'))comprasExtracted.letra=g('cf-letra').value||null;
     comprasExtracted.proveedor=g('cf-prov').value||null;
     comprasExtracted.cuit=g('cf-cuit').value||null;
     comprasExtracted.total_sin_iva=parseFloat(g('cf-neto').value)||0;
@@ -3816,6 +3859,7 @@ async function comprasGuardar(){
   const inv={
     fecha_factura:d.fecha_factura||null,
     numero_factura:d.numero_factura||null,
+    letra:(d.letra||'').toString().trim().toUpperCase()||null,
     proveedor:d.proveedor||null,
     cuit:d.cuit||null,
     total_sin_iva:Number(d.total_sin_iva)||0,
@@ -3923,6 +3967,8 @@ function vComprasCarga(view){
           <div class="grid g-2">
             <div class="mm-field"><label>Fecha</label><input id="cf-fecha" type="date" value="${d.fecha_factura||''}"></div>
             <div class="mm-field"><label>N° Factura</label><input id="cf-num" value="${(d.numero_factura||'').replace(/"/g,'&quot;')}"></div>
+            <div class="mm-field"><label>Letra ${d.letra?'<span style="color:var(--brote-2);font-weight:400">· leída ✓</span>':'<span style="color:var(--diesel);font-weight:400">· revisá</span>'}</label>
+              <select id="cf-letra"><option value="">—</option>${['A','B','C'].map(x=>`<option value="${x}" ${(d.letra||'')===x?'selected':''}>${x}</option>`).join('')}</select></div>
           </div>
           <div class="mm-field"><label>Proveedor</label><input id="cf-prov" value="${(d.proveedor||'').replace(/"/g,'&quot;')}"></div>
           <div class="grid g-2">
