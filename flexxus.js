@@ -483,7 +483,12 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
 
   // 5) Leer el asiento para conocer sus líneas (probando ejercicios si no vino)
   const anio = Number(String(f.fecha_factura || '').slice(0, 4)) || new Date().getFullYear();
-  const candidatos = codigoejercicio != null ? [codigoejercicio] : [anio, anio - 1, anio + 1];
+  // El código de ejercicio de Flexxus puede no ser el año calendario: si está
+  // fijado en Railway (FLEXXUS_CODIGO_EJERCICIO) ese manda.
+  const ejEnv = process.env.FLEXXUS_CODIGO_EJERCICIO ? Number(process.env.FLEXXUS_CODIGO_EJERCICIO) : null;
+  const candidatos = ejEnv != null ? [ejEnv]
+    : codigoejercicio != null ? [codigoejercicio]
+    : [anio, anio - 1, anio + 1];
   let asiento = null;
   for (const ej of candidatos) {
     try {
@@ -503,7 +508,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     apropiacion = [{ linea: 1, valor }];
     if (codigoasiento == null) codigoasiento = buscaCod(asiento);
   }
-  if (codigoejercicio == null) codigoejercicio = anio;
+  if (codigoejercicio == null) codigoejercicio = ejEnv != null ? ejEnv : anio;
   // Flexxus exige codigoasiento (tipo de asiento contable). Si no vino en
   // ninguna respuesta, se puede fijar con FLEXXUS_CODIGO_ASIENTO en Railway.
   if (codigoasiento == null && process.env.FLEXXUS_CODIGO_ASIENTO) {
