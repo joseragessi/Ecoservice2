@@ -2351,7 +2351,7 @@ async function vComprasCombustible(view){
         <td class="mono sub">${r.periodo_desde||'?'} → ${r.periodo_hasta||'?'}</td>
         <td class="num">${((r.data&&r.data.filas)||[]).length}</td>
         <td class="num mono">${Math.round(((r.data&&r.data.filas)||[]).reduce((s,f)=>s+(Number(f.litros)||0),0)).toLocaleString('es-AR')}</td>
-        <td class="num money">${money0(r.total_general)}</td>
+        <td class="num money">${money(r.total_general)}</td>
         <td style="text-align:right"><button class="btn-salir" style="padding:4px 8px;font-size:11.5px;color:var(--rojo)" onclick="borrarRemitoCb('${r.id}','${(r.proveedor||'').replace(/'/g,"\\'")}')" title="Eliminar este listado">✕</button></td>
       </tr>`).join('')}</tbody></table>`
       :'<div class="sub" style="padding:10px 0">No hay listados cargados.</div>'}
@@ -2360,14 +2360,14 @@ async function vComprasCombustible(view){
     ${!d.remitos.length?'<div class="empty" style="height:200px"><div>Elegí un listado para ver el reparto por objetivo.</div></div>':`
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
       <div class="kpi"><div class="kpi-label">Total del remito</div>
-        <div class="kpi-val" style="font-size:22px">${money0(t.monto)}</div>
+        <div class="kpi-val" style="font-size:22px">${money(t.monto)}</div>
         <div class="kpi-sub">${Math.round(t.litros).toLocaleString('es-AR')} litros · ${t.filas} cargas</div></div>
       <div class="kpi"><div class="kpi-label">Asignado</div>
         <div class="kpi-val green" style="font-size:22px">${Math.round(t.pct_asignado)}%</div>
-        <div class="kpi-sub">${money0(t.asignado)} en ${t.objetivos} objetivos</div></div>
+        <div class="kpi-sub">${money(t.asignado)} en ${t.objetivos} objetivos</div></div>
       <div class="kpi ${t.sin_asignar?'amber':'plain'}"><div class="kpi-label">Sin objetivo</div>
         <div class="kpi-val ${t.sin_asignar?'amber':''}" style="font-size:22px">${Math.round(t.pct_sin_asignar)}%</div>
-        <div class="kpi-sub">${money0(t.sin_asignar)} sin identificar</div></div>
+        <div class="kpi-sub">${money(t.sin_asignar)} sin identificar</div></div>
       <div class="kpi plain"><div class="kpi-label">Objetivos</div>
         <div class="kpi-val" style="font-size:22px">${t.objetivos}</div>
         <div class="kpi-sub">con consumo en el período</div></div>
@@ -2380,7 +2380,7 @@ async function vComprasCombustible(view){
       <tbody>${d.objetivos.map(o=>`<tr>
         <td style="font-weight:600">${o.nombre}<div class="sub" style="font-size:11px">${o.cargas} carga${o.cargas===1?'':'s'}</div></td>
         <td class="num mono">${Math.round(o.litros).toLocaleString('es-AR')}</td>
-        <td class="num money">${money0(o.monto)}</td>
+        <td class="num money">${money(o.monto)}</td>
         <td><div style="display:flex;align-items:center;gap:8px">
           <b class="mono" style="min-width:44px">${(Math.round(o.pct*10)/10).toFixed(1)}%</b>
           <div style="flex:1">${barra(o,'var(--brote)')}</div></div></td>
@@ -2389,7 +2389,7 @@ async function vComprasCombustible(view){
       <tr style="border-top:2px solid var(--linea)">
         <td><b>Total asignado</b></td>
         <td class="num mono"><b>${Math.round(d.objetivos.reduce((s,o)=>s+o.litros,0)).toLocaleString('es-AR')}</b></td>
-        <td class="num money"><b>${money0(t.asignado)}</b></td>
+        <td class="num money"><b>${money(t.asignado)}</b></td>
         <td><b class="mono">${Math.round(t.pct_asignado)}%</b></td><td></td></tr>
       </tbody></table>`
       :'<div class="sub" style="padding:14px 0">Ninguna carga pudo asignarse todavía. Asignalas abajo.</div>'}
@@ -2411,13 +2411,13 @@ async function vComprasCombustible(view){
         <td>${(s.choferes||[]).slice(0,2).join(' / ')||'<span class="sub">sin chofer</span>'}
           <div class="sub" style="font-size:11px">${s.cargas} carga${s.cargas===1?'':'s'}</div></td>
         <td class="num mono">${Math.round(s.litros).toLocaleString('es-AR')}</td>
-        <td class="num money">${money0(s.monto)}</td>
+        <td class="num money">${money(s.monto)}</td>
         <td class="num"><b style="color:var(--ambar)">${(Math.round(s.pct*10)/10).toFixed(1)}%</b></td>
         <td>${s.patente?selObj(s,ix):'<span class="sub" style="font-size:11px">necesita patente</span>'}</td>
       </tr>`).join('')}
       <tr style="border-top:2px solid var(--linea)">
         <td colspan="3"><b>Total sin asignar</b></td>
-        <td class="num money"><b style="color:var(--ambar)">${money0(t.sin_asignar)}</b></td>
+        <td class="num money"><b style="color:var(--ambar)">${money(t.sin_asignar)}</b></td>
         <td class="num"><b style="color:var(--ambar)">${Math.round(t.pct_sin_asignar)}%</b></td><td></td></tr>
       </tbody></table>
     </div>`:`
@@ -2546,18 +2546,18 @@ function renderCtaBody(){
   if(cnt)cnt.textContent=provs.length+' proveedor'+(provs.length===1?'':'es');
   cont.innerHTML=`
   <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-    <div class="kpi"><div class="kpi-label">Total facturado</div><div class="kpi-val" style="font-size:21px">${money0(totGeneral)}</div><div class="kpi-sub">${provs.reduce((s,p)=>s+p.docs,0)} facturas · ${provs.length} proveedores</div></div>
-    <div class="kpi plain"><div class="kpi-label">Pagado</div><div class="kpi-val green" style="font-size:21px">${money0(totPag)}</div><div class="kpi-sub">${totGeneral?Math.round(totPag*100/totGeneral)+'%':'—'}</div></div>
-    <div class="kpi ${totPend?'amber':'plain'}"><div class="kpi-label">Pendiente</div><div class="kpi-val ${totPend?'amber':''}" style="font-size:21px">${money0(totPend)}</div><div class="kpi-sub">por pagar</div></div>
+    <div class="kpi"><div class="kpi-label">Total facturado</div><div class="kpi-val" style="font-size:21px">${money(totGeneral)}</div><div class="kpi-sub">${provs.reduce((s,p)=>s+p.docs,0)} facturas · ${provs.length} proveedores</div></div>
+    <div class="kpi plain"><div class="kpi-label">Pagado</div><div class="kpi-val green" style="font-size:21px">${money(totPag)}</div><div class="kpi-sub">${totGeneral?Math.round(totPag*100/totGeneral)+'%':'—'}</div></div>
+    <div class="kpi ${totPend?'amber':'plain'}"><div class="kpi-label">Pendiente</div><div class="kpi-val ${totPend?'amber':''}" style="font-size:21px">${money(totPend)}</div><div class="kpi-sub">por pagar</div></div>
   </div>
   <div class="split">
     <div class="tablewrap"><table><thead><tr><th>Proveedor</th><th class="num">Facturas</th><th class="num">Total</th><th class="num">Pagado</th><th class="num">Pendiente</th></tr></thead>
     <tbody id="cta-list">${provs.length?provs.map(p=>`<tr onclick="selProvCta('${p.nombre.replace(/'/g,"\\'")}')" style="cursor:pointer;${p.nombre===ctaProvSel?'outline:2px solid var(--brote)':''}">
       <td style="font-weight:600">${p.nombre}</td>
       <td class="num">${p.docs}</td>
-      <td class="num money">${money0(p.total)}</td>
-      <td class="num money" style="color:var(--brote-2)">${p.pagado?money0(p.pagado):'—'}</td>
-      <td class="num money" style="${p.pendiente>0.5?'color:var(--rojo);font-weight:600':''}">${p.pendiente>0.5?money0(p.pendiente):'✓'}</td>
+      <td class="num money">${money(p.total)}</td>
+      <td class="num money" style="color:var(--brote-2)">${p.pagado?money(p.pagado):'—'}</td>
+      <td class="num money" style="${p.pendiente>0.5?'color:var(--rojo);font-weight:600':''}">${p.pendiente>0.5?money(p.pendiente):'✓'}</td>
     </tr>`).join(''):'<tr><td colspan="5"><div class="sub" style="padding:14px">Ningún proveedor coincide.</div></td></tr>'}</tbody></table></div>
     <div class="side" id="cta-side">${ctaProvSel?'':'<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5z"/><path d="M14 2v6h6"/></svg><div>Elegí un proveedor<br>para ver sus facturas</div></div>'}</div>
   </div>`;
@@ -2574,8 +2574,8 @@ function pintarCtaSide(){
     <div class="side-title">${ctaProvSel}</div>
     <div class="side-meta">${s.docs} factura${s.docs===1?'':'s'} · ${s.pendDocs} pendiente${s.pendDocs===1?'':'s'}</div>
     <div style="display:flex;gap:10px;margin:12px 0">
-      <div class="extract-field" style="flex:1"><label>Total</label><div class="val filled">${money0(s.total)}</div></div>
-      <div class="extract-field" style="flex:1"><label>Pendiente</label><div class="val ${s.pendiente>0.5?'filled':''}" style="${s.pendiente>0.5?'color:var(--rojo)':''}">${money0(s.pendiente)}</div></div>
+      <div class="extract-field" style="flex:1"><label>Total</label><div class="val filled">${money(s.total)}</div></div>
+      <div class="extract-field" style="flex:1"><label>Pendiente</label><div class="val ${s.pendiente>0.5?'filled':''}" style="${s.pendiente>0.5?'color:var(--rojo)':''}">${money(s.pendiente)}</div></div>
     </div>
     <button class="btn ghost" style="width:100%;justify-content:center;margin-bottom:14px" onclick="exportarCtaProveedorPDF('${ctaProvSel.replace(/'/g,"\\'")}')">⬇ Exportar estado de cuenta</button>
     <div class="divider"></div>
@@ -2586,7 +2586,7 @@ function pintarCtaSide(){
       const neto=bruto-nc;
       return `<div class="queue-item" style="margin-bottom:8px">
         <div style="flex:1;cursor:pointer" onclick="verCompra('${f.id}')"><div style="font-weight:600;font-size:12.5px">${f.numero_factura||'s/n'} · ${fechaAR(f.fecha_factura)}</div>
-        <div class="sub mono" style="font-size:11px">${money0(neto)}${nc?' (con NC)':''}</div></div>
+        <div class="sub mono" style="font-size:11px">${money(neto)}${nc?' (con NC)':''}</div></div>
         <button class="mini-btn" style="flex:0 0 auto;padding:6px 10px;${f.pagada?'color:var(--brote-2);border-color:var(--brote)':''}" onclick="togglePagada('${f.id}',${!f.pagada})">
           ${f.pagada?'✓ Pagada':'Marcar pagada'}
         </button>
@@ -2808,7 +2808,7 @@ function renderConsBody(){
   if(consArtSel&&!grupos[consArtSel])consArtSel=null;
   cont.innerHTML=`
   <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-    <div class="kpi"><div class="kpi-label">Consumido en ${consObjSel}</div><div class="kpi-val" style="font-size:21px">${money0(totMonto)}</div><div class="kpi-sub">${consMes||'todo el período'}${b?' · "'+b+'"':''}</div></div>
+    <div class="kpi"><div class="kpi-label">Consumido en ${consObjSel}</div><div class="kpi-val" style="font-size:21px">${money(totMonto)}</div><div class="kpi-sub">${consMes||'todo el período'}${b?' · "'+b+'"':''}</div></div>
     <div class="kpi plain"><div class="kpi-label">Artículos distintos</div><div class="kpi-val" style="font-size:21px">${arts.length}</div><div class="kpi-sub">agrupados por descripción</div></div>
     <div class="kpi plain"><div class="kpi-label">Facturas</div><div class="kpi-val" style="font-size:21px">${totFacturas}</div><div class="kpi-sub">involucradas</div></div>
   </div>
@@ -2817,7 +2817,7 @@ function renderConsBody(){
     <tbody>${arts.length?arts.map(a=>`<tr onclick="consArtSel=consArtSel==='${a.k.replace(/'/g,"\\'")}'?null:'${a.k.replace(/'/g,"\\'")}';renderConsBody()" style="cursor:pointer;${consArtSel===a.k?'outline:2px solid var(--brote)':''}">
       <td style="font-weight:600">${a.desc.slice(0,70)}${a.desc.length>70?'…':''}</td>
       <td class="num">${a.cant%1?a.cant.toFixed(2):a.cant}</td>
-      <td class="num money">${money0(a.monto)}</td>
+      <td class="num money">${money(a.monto)}</td>
       <td class="num">${a.facturas}</td>
     </tr>`).join(''):'<tr><td colspan="4"><div class="sub" style="padding:14px">'+(b?'Ningún artículo coincide con "'+consBusca+'" en este objetivo.':'Este objetivo no tiene compras imputadas'+(consMes?' en '+consMes:'')+'.')+'</div></td></tr>'}</tbody></table></div>
     <div class="side" id="cons-side">${consArtSel?'':'<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg><div>Elegí un artículo<br>para ver sus facturas</div></div>'}</div>
@@ -2830,13 +2830,13 @@ function pintarConsSide(g){
   cont.innerHTML=`
     <div class="side-id">ARTÍCULO</div>
     <div class="side-title" style="font-size:14px">${g.desc}</div>
-    <div class="side-meta">${consObjSel} · ${g.cant%1?g.cant.toFixed(2):g.cant} unidades · ${money0(g.monto)}</div>
+    <div class="side-meta">${consObjSel} · ${g.cant%1?g.cant.toFixed(2):g.cant} unidades · ${money(g.monto)}</div>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:8px">Compras</div>
     ${ls.map(l=>`<div class="queue-item" style="cursor:pointer" onclick="verCompra('${l.invId}')">
       <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${l.prov}</div>
       <div class="sub mono" style="font-size:11px">${l.nro} · ${fechaAR(l.fecha)}${l.uni?' · '+l.uni:''}</div></div>
-      <div style="text-align:right"><div class="money" style="font-size:12.5px">${money0(l.monto)}</div>
+      <div style="text-align:right"><div class="money" style="font-size:12.5px">${money(l.monto)}</div>
       <div class="sub" style="font-size:11px">x${l.cant%1?l.cant.toFixed(2):l.cant}</div></div>
     </div>`).join('')}`;
 }
@@ -2971,7 +2971,7 @@ async function vComprasInd(view){
       return `<div style="margin-bottom:9px">
         <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
           <b style="font-weight:600">${x.nombre.length>42?x.nombre.slice(0,42)+'…':x.nombre}</b>
-          <span class="money">${money0(x.total)}</span></div>
+          <span class="money">${money(x.total)}</span></div>
         <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
       </div>`;}).join('')||'<div class="sub" style="padding:10px 0">Sin datos</div>';
     view.innerHTML=`
@@ -2986,23 +2986,23 @@ async function vComprasInd(view){
       </div></div>
     ${tabsCompras()}
     <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money0(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${k.totNC?' · NC −'+money0(k.totNC):''}</div></div>
-      <div class="kpi plain"><div class="kpi-label">Neto</div><div class="kpi-val" style="font-size:21px">${money0(k.totNeto)}</div><div class="kpi-sub">sin IVA</div></div>
-      <div class="kpi plain"><div class="kpi-label">IVA</div><div class="kpi-val" style="font-size:21px">${money0(k.totIva)}</div><div class="kpi-sub">crédito fiscal</div></div>
-      <div class="kpi plain"><div class="kpi-label">Ticket promedio</div><div class="kpi-val" style="font-size:21px">${money0(k.ticket)}</div><div class="kpi-sub">por factura</div></div>
+      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${k.totNC?' · NC −'+money(k.totNC):''}</div></div>
+      <div class="kpi plain"><div class="kpi-label">Neto</div><div class="kpi-val" style="font-size:21px">${money(k.totNeto)}</div><div class="kpi-sub">sin IVA</div></div>
+      <div class="kpi plain"><div class="kpi-label">IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totIva)}</div><div class="kpi-sub">crédito fiscal</div></div>
+      <div class="kpi plain"><div class="kpi-label">Ticket promedio</div><div class="kpi-val" style="font-size:21px">${money(k.ticket)}</div><div class="kpi-sub">por factura</div></div>
       <div class="kpi plain"><div class="kpi-label">Conc. top 3</div><div class="kpi-val" style="font-size:21px">${Math.round(k.conc3*10)/10}%</div><div class="kpi-sub">3 proveedores</div></div>
     </div>
     <div class="grid g-2" style="margin-bottom:18px">
       <div class="panel"><div class="panel-title">Ranking de proveedores</div>
         <div style="max-height:340px;overflow:auto"><table style="font-size:12px"><thead><tr><th>#</th><th>Proveedor</th><th class="num">Docs</th><th class="num">Total</th><th class="num">%</th></tr></thead>
         <tbody>${k.ranking.map((r,i)=>`<tr><td class="sub">${i+1}</td><td style="font-weight:500">${r.nombre}</td>
-          <td class="num">${r.docs}</td><td class="money num">${money0(r.total)}</td>
+          <td class="num">${r.docs}</td><td class="money num">${money(r.total)}</td>
           <td class="num sub">${Math.round(r.pct*10)/10}%</td></tr>`).join('')}</tbody></table></div>
       </div>
       <div class="panel"><div class="panel-title">Evolución mensual</div>
         <div style="max-height:340px;overflow:auto"><table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Docs</th><th class="num">Neto</th><th class="num">Total</th><th class="num">Var.</th></tr></thead>
         <tbody>${evol.map(e=>`<tr><td class="mono">${e.mes}</td><td class="num">${e.docs}</td>
-          <td class="money num">${money0(e.neto)}</td><td class="money num">${money0(e.total)}</td>
+          <td class="money num">${money(e.neto)}</td><td class="money num">${money(e.total)}</td>
           <td class="num" style="${e.var==null?'':e.var>=0?'color:var(--brote-2)':'color:var(--rojo)'}">${e.var==null?'—':(e.var>0?'+':'')+Math.round(e.var*10)/10+'%'}</td></tr>`).join('')}</tbody></table></div>
       </div>
     </div>
@@ -3131,10 +3131,10 @@ function renderComprasBody(){
       <td class="mono">${inv.fecha_factura||'—'}</td>
       <td class="mono sub">${inv.numero_factura||'—'}</td>
       <td><b>${inv.proveedor||'—'}</b>${inv.cuit?`<div class="sub mono">${inv.cuit}</div>`:''}</td>
-      <td class="money">${money0(inv.total_sin_iva)}</td>
-      <td class="money sub">${money0(inv.total_iva)}</td>
-      <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money0(bruto)}</div><b>${money0(neto)}</b>`:money0(bruto)}
-        ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money0(nc)}</div>`:''}</td>
+      <td class="money">${money(inv.total_sin_iva)}</td>
+      <td class="money sub">${money(inv.total_iva)}</td>
+      <td class="money">${nc?`<div style="text-decoration:line-through;opacity:.45;font-size:11px">${money(bruto)}</div><b>${money(neto)}</b>`:money(bruto)}
+        ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money(nc)}</div>`:''}</td>
       <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
       <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}
         ${inv.flexxus&&inv.flexxus.ok?'<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div>':''}</td>
@@ -3147,16 +3147,16 @@ function renderComprasBody(){
   cont.innerHTML=`
   <div class="kpis">
     <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-val">${invs.length}</div><div class="kpi-sub">cargadas</div></div>
-    <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money0(totMes)}</div><div class="kpi-sub">${cm}</div></div>
-    <div class="kpi"><div class="kpi-label">Neto acumulado</div><div class="kpi-val">${money0(totNeto)}</div><div class="kpi-sub">IVA ${money0(totIva)}</div></div>
-    <div class="kpi plain"><div class="kpi-label">Top proveedor</div><div class="kpi-val" style="font-size:16px;font-weight:700">${top?top.name.slice(0,18):'—'}</div><div class="kpi-sub">${top?money0(top.total):''}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Total del mes</div><div class="kpi-val">${money(totMes)}</div><div class="kpi-sub">${cm}</div></div>
+    <div class="kpi"><div class="kpi-label">Neto acumulado</div><div class="kpi-val">${money(totNeto)}</div><div class="kpi-sub">IVA ${money(totIva)}</div></div>
+    <div class="kpi plain"><div class="kpi-label">Top proveedor</div><div class="kpi-val" style="font-size:16px;font-weight:700">${top?top.name.slice(0,18):'—'}</div><div class="kpi-sub">${top?money(top.total):''}</div></div>
   </div>
   <div class="grid g-2" style="margin-bottom:18px">
     <div class="panel"><div class="panel-title">Ranking de proveedores</div>
-      ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money0(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
+      ${ranking.length?ranking.slice(0,6).map(p=>`<div class="queue-item"><div style="flex:1;font-weight:600;font-size:13px">${p.name}</div><div class="money">${money(p.total)}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin datos</div>'}
     </div>
     <div class="panel"><div class="panel-title">Últimas facturas</div>
-      ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money0(totalFactura(i))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
+      ${invs.length?invs.slice(0,6).map(i=>`<div class="queue-item"><div style="flex:1"><div style="font-weight:600;font-size:13px">${i.proveedor||'—'}</div><div class="sub mono">${i.numero_factura||''} · ${i.fecha_factura||''}</div></div><div class="money">${money(totalFactura(i))}</div></div>`).join(''):'<div class="sub" style="padding:12px 0">Sin facturas</div>'}
     </div>
   </div>
   <div class="tabla-wrap">
@@ -3322,14 +3322,14 @@ function vComprasDetalle(view){
             return `<div class="queue-item" style="margin-bottom:6px">
               <div style="flex:1"><div style="font-size:12px;font-weight:500">${it.descripcion||'—'}</div>
               <div class="sub" style="font-size:11px">${asg.objetivo||'sin asignar'}${asg.unidad?' · '+asg.unidad:''}</div></div>
-              <div class="money sub">${money0(it.monto_sin_iva||0)}</div></div>`;}).join('')}`:''}`}
+              <div class="money sub">${money(it.monto_sin_iva||0)}</div></div>`;}).join('')}`:''}`}
       ${nc?`<div class="divider"></div>
         <div class="panel-title" style="margin-bottom:8px">Notas de crédito</div>
         ${(inv.notas_credito||[]).map(n=>`
           <div class="queue-item" style="margin-bottom:7px">
             <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${n.numero||'NC sin número'}</div>
             <div class="sub" style="font-size:11px">${fechaAR(n.fecha)}${n.motivo?' · '+n.motivo:''}</div></div>
-            <div class="money" style="color:var(--ambar);font-weight:600">− ${money0((Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0))}</div>
+            <div class="money" style="color:var(--ambar);font-weight:600">− ${money((Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0))}</div>
             <button class="btn-salir" style="padding:3px 7px;font-size:11px;color:var(--rojo);margin-left:8px" onclick="borrarNC('${inv.id}','${n.id}')">✕</button>
           </div>`).join('')}`:''}
     </div>
@@ -3678,7 +3678,7 @@ async function comprasGuardar(){
         `⚠️ Esta factura YA está cargada:\n\n`+
         `${f.proveedor||'—'}\n`+
         `N° ${f.numero_factura||'—'} · ${f.fecha_factura||'sin fecha'}\n`+
-        `Total: ${money0(f.total)}\n\n`+
+        `Total: ${money(f.total)}\n\n`+
         `¿Querés cargarla igual? (Aceptar = duplicar, Cancelar = no guardar)`);
       if(!seguir){
         if(btn){btn.disabled=false;btn.textContent='Guardar factura';}
@@ -3721,7 +3721,7 @@ function vComprasCarga(view){
   const ooSel=val=>COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}"${optSel(o,val)}>${o}</option>`).join('');
   const uoSel=val=>COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}"${optSel(u,val)}>${u}</option>`).join('');
   // Tabla de ítems
-  const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="money tr">${money0(it.monto_sin_iva)}</td><td class="money tr">${money0(it.iva)}</td></tr>`).join('');
+  const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="money tr">${money(it.monto_sin_iva)}</td><td class="money tr">${money(it.iva)}</td></tr>`).join('');
   // Imputación
   let imput;
   if(comprasAssignMode==='total'){
@@ -3732,7 +3732,7 @@ function vComprasCarga(view){
   }else{
     imput=items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
       <div class="item-imp">
-        <div class="item-imp-head"><span>${it.descripcion||'Ítem '+(i+1)}</span><span class="money">${money0((Number(it.monto_sin_iva)||0)+(Number(it.iva)||0))}</span></div>
+        <div class="item-imp-head"><span>${it.descripcion||'Ítem '+(i+1)}</span><span class="money">${money((Number(it.monto_sin_iva)||0)+(Number(it.iva)||0))}</span></div>
         <div class="grid g-2">
           <div class="mm-field"><label>Objetivo</label><select data-io="${i}"><option value="">—</option>${ooSel(a.objetivo)}</select></div>
           <div class="mm-field"><label>Unidad</label><select data-iu="${i}"><option value="">—</option>${uoSel(a.unidad)}</select></div>
@@ -3762,13 +3762,13 @@ function vComprasCarga(view){
         <div class="mm-label">Ítems</div>
         <div class="tabla-wrap">
           <table><thead><tr><th>Descripción</th><th class="tr">Neto</th><th class="tr">IVA</th></tr></thead>
-          <tbody>${filasItems}<tr class="tot-row"><td><b>Total</b></td><td class="money tr"><b>${money0(d.total_sin_iva)}</b></td><td class="money tr"><b>${money0(d.total_iva)}</b></td></tr></tbody></table>
+          <tbody>${filasItems}<tr class="tot-row"><td><b>Total</b></td><td class="money tr"><b>${money(d.total_sin_iva)}</b></td><td class="money tr"><b>${money(d.total_iva)}</b></td></tr></tbody></table>
         </div>
         ${(d.otros_conceptos||[]).length?`<div class="mm-label" style="margin-top:14px">Percepciones e impuestos</div>
         <div class="tabla-wrap"><table><thead><tr><th>Concepto</th><th>Tipo</th><th class="tr">Monto</th></tr></thead>
           <tbody>${(d.otros_conceptos).map(o=>`<tr><td>${o.concepto||'—'}</td>
             <td><span class="badge ${o.tipo==='percepcion'?'b-blue':o.tipo==='impuesto'?'b-amber':'b-gray'}">${cap(o.tipo||'otro')}</span></td>
-            <td class="money tr">${money0(o.monto)}</td></tr>`).join('')}</tbody></table></div>
+            <td class="money tr">${money(o.monto)}</td></tr>`).join('')}</tbody></table></div>
         <div class="sub" style="margin-top:6px">Las <b>percepciones</b> se suman al total; los <b>impuestos/tasas</b> arrancan exentos. Podés cambiar cuáles se pagan con el check en el detalle de la factura, después de guardar.</div>`:''}
       </div>
       <div>
