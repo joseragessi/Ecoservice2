@@ -1490,17 +1490,33 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       '"otros_conceptos":[{"concepto":"string","monto":0.00,"tipo":"percepcion|impuesto|otro"}]}\n' +
       'Reglas:\n' +
       '- Montos como números, sin separador de miles. Campos ilegibles: null.\n' +
+      '- "proveedor" es la razón social del EMISOR, transcripta EXACTA carácter por carácter ' +
+      '(no corrijas ni interpretes apellidos: si dice COCCONI es COCCONI). Nunca uses el nombre ' +
+      'de fantasía/logo si figura la razón social. ECOSERVICE (CUIT 30-70793029-9) es siempre el ' +
+      'CLIENTE: jamás lo pongas como proveedor ni uses su CUIT.\n' +
+      '- "cuit" es el CUIT del emisor. Transcribí números EXACTOS, dígito por dígito.\n' +
+      '- PROHIBIDO tomar como ítem o como concepto las líneas de TOTALES del pie: ' +
+      '"Subtotal", "Total", "Importe Total", "Total a pagar", "Neto Gravado", "IVA 21%", ' +
+      '"Importe Otros Tributos" y similares son SUMAS de lo anterior, no conceptos nuevos. ' +
+      'Meterlas duplica la factura.\n' +
+      '- Los datos fiscales del encabezado (CUIT, Ingresos Brutos, Inicio de Actividades, ' +
+      'condición IVA, CAE) son identificación, NUNCA montos ni impuestos.\n' +
+      '- Factura C (monotributista): no discrimina IVA → total_iva=0, y el importe de cada ' +
+      'ítem va completo en monto_sin_iva.\n' +
       '- El IVA de cada ítem va en "monto_iva" (NO en "iva").\n' +
       '- Si la factura NO desglosa el IVA por ítem y solo lo trae en el total, ' +
       'prorrateá el IVA total entre los ítems proporcional a su monto_sin_iva, ' +
       'de modo que la suma de los monto_iva dé exactamente total_iva.\n' +
       '- La suma de monto_sin_iva de los ítems tiene que dar total_sin_iva.\n' +
-      '- "otros_conceptos": TODO monto extra que NO sea neto ni IVA. Incluí: percepciones ' +
+      '- "otros_conceptos": SOLO cargos extra reales que no son neto ni IVA: percepciones ' +
       '(IIBB/Ingresos Brutos de cualquier provincia, percepción IVA, ganancias), impuestos ' +
-      '(sellados, tasa SSN, servicios sociales, gastos notariales, impuestos internos, tasa municipal). ' +
-      'Poné el nombre tal como figura en "concepto". ' +
+      '(sellados, tasa SSN, servicios sociales, gastos notariales, impuestos internos, tasa municipal), ' +
+      'bonificaciones/descuentos (monto negativo). Nombre tal como figura, en "concepto". ' +
       'tipo="percepcion" para percepciones, tipo="impuesto" para sellados/tasas/servicios, tipo="otro" para el resto. ' +
-      'Si no hay ninguno, devolvé otros_conceptos como lista vacía [].';
+      'Si no hay ninguno, otros_conceptos = [].\n' +
+      '- VERIFICACIÓN FINAL obligatoria: total_sin_iva + total_iva + suma de otros_conceptos ' +
+      'tiene que dar EXACTAMENTE el "Importe Total"/"Total" impreso en la factura. ' +
+      'Si no cierra, revisá: casi siempre metiste un subtotal o total como concepto. Corregilo antes de responder.';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
