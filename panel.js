@@ -2068,6 +2068,8 @@ async function pvGuardarCfg(){
 /* ===== Maestros (ABM) ===== */
 const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica','Hidráulica'],['electrico','Eléctrico'],['soldadura','Soldadura'],['neumatico','Neumático'],['giro_cero','Giro cero'],['unidades','Unidades'],['tractores','Tractores'],['cortadora','Cortadora de pasto'],['general','General']];
 const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz',centros_costo:'centro de costo',unidades:'unidad'};
+let ccFiltro='todos';  // filtro activos/inactivos en Centros de costo
+let ccBusca='';
 // Las unidades no tienen columna `nombre`: su título es el código o la patente.
 const tituloMaestro=m=>maestroTab==='unidades'?(m.codigo||m.patente||'sin código'):(m.nombre||'—');
 let maestroTab='mecanicos', maestrosData=[], maestroEdit=null, unidadesData=[];
@@ -2083,7 +2085,13 @@ async function vMaestros(view){
       <div class="spacer"></div>
       <button class="btn" onclick="nuevoMaestro()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Nuevo ${SINGULAR[maestroTab]}</button></div>
     <div class="subtabs">${tabs.map(([v,l])=>`<div class="subtab ${maestroTab===v?'on':''}" onclick="maestroTab='${v}';vMaestros(document.getElementById('view'))">${l}</div>`).join('')}</div>
-    ${maestroTab==='centros_costo'?'<div class="sub" style="margin-bottom:12px">Son las entidades a las que se imputa el gasto en Compras: clientes, consorcios, organismos.</div>':''}
+    ${maestroTab==='centros_costo'?`<div class="sub" style="margin-bottom:10px">Son las entidades a las que se imputa el gasto en Compras: clientes, consorcios, organismos.</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <div class="subtabs" style="margin:0">
+          ${[['todos','Todos'],['activos','Activos'],['inactivos','Inactivos'],['sin_codigo','Sin código Flexxus']].map(([v,l])=>`<div class="subtab ${ccFiltro===v?'on':''}" onclick="ccFiltro='${v}';renderMaestros()">${l}</div>`).join('')}
+        </div>
+        <input class="busca" style="width:200px" placeholder="Buscar…" value="${(ccBusca||'').replace(/"/g,'&quot;')}" oninput="ccBusca=this.value;renderMaestros()">
+      </div>`:''}
     ${maestroTab==='unidades'?'<div class="sub" style="margin-bottom:12px">La flota. Se usan en Compras (imputación) y en Combustible (el bot las resuelve por patente).</div>':''}
     <div id="mm-lista"><div class="cargando-v">Cargando…</div></div>`;
   cargarMaestros();
@@ -2101,8 +2109,17 @@ async function cargarMaestros(){
 }
 function renderMaestros(){
   const cont=document.getElementById('mm-lista');
-  if(!maestrosData.length){cont.innerHTML='<div class="empty" style="height:200px"><div>No hay registros. Tocá "Nuevo".</div></div>';return;}
-  cont.innerHTML='<div class="cardgrid">'+maestrosData.map((m,ix)=>cardMaestro(m,ix)).join('')+'</div>';
+  if(!cont)return;
+  let datos=maestrosData.map((m,ix)=>({m,ix}));
+  if(maestroTab==='centros_costo'){
+    if(ccFiltro==='activos')datos=datos.filter(d=>d.m.activo);
+    else if(ccFiltro==='inactivos')datos=datos.filter(d=>!d.m.activo);
+    else if(ccFiltro==='sin_codigo')datos=datos.filter(d=>!d.m.codigo_flexxus);
+    const q=(ccBusca||'').trim().toLowerCase();
+    if(q)datos=datos.filter(d=>String(d.m.nombre||'').toLowerCase().includes(q));
+  }
+  if(!datos.length){cont.innerHTML='<div class="empty" style="height:160px"><div>Sin resultados para este filtro.</div></div>';return;}
+  cont.innerHTML='<div class="cardgrid">'+datos.map(d=>cardMaestro(d.m,d.ix)).join('')+'</div>';
 }
 function cardMaestro(m,ix){
   const titulo=tituloMaestro(m);
@@ -2129,6 +2146,7 @@ function cardMaestro(m,ix){
       :'<span class="badge b-gray">sin acceso</span>'}</div>`;
   }
   if(maestroTab==='centros_costo'){
+    sub=`<span class="badge ${m.activo?'b-green':'b-gray'}" style="font-size:10px">${m.activo?'Activo':'Inactivo'}</span>`;
     extra=m.codigo_flexxus?`<div class="mcard-row"><span>Cód. Flexxus</span><b class="mono">${m.codigo_flexxus}</b></div>`:'<div class="mcard-row"><span>Cód. Flexxus</span><b style="color:var(--diesel)">sin cargar</b></div>';
   }
   if(maestroTab==='objetivos'){
