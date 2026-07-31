@@ -1399,8 +1399,10 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
     const { imputarFactura } = require('./flexxus');
     let r;
     try {
-      r = await imputarFactura(f, letra);
+      r = await imputarFactura(f, letra, { permitirAlta: !!(req.body || {}).permitir_alta });
     } catch (e) {
+      if (e.code === 'PROV_NO_EXISTE') return res.status(422).json({ error: e.message, code: 'PROV_NO_EXISTE' });
+      if (e.code === 'NUMERO_INVALIDO') return res.status(422).json({ error: e.message, code: 'NUMERO_INVALIDO' });
       // Si Flexxus dice que el comprobante YA existe, es que ya está imputado:
       // lo marcamos como tal en vez de mostrar el error técnico.
       if (/ya existe/i.test(e.message || '')) {
@@ -1756,6 +1758,22 @@ router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, r
 
 // ── COMBUSTIBLE · Conciliación con listados del proveedor ──────
 // El proveedor (Ferreyra, SERVISUD...) emite un listado consolidado del período.
+// Verificación previa: a qué proveedor de Flexxus iría la factura y con qué
+// número, SIN imputar nada. El panel la muestra antes de confirmar.
+router.get('/api/compras/:id/flexxus-preview', auth, async (req, res) => {
+  try {
+    const { data: fila, error: e0 } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (e0 || !fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const { verificarImputacion } = require('./flexxus');
+    const v = await verificarImputacion(fila.data || {}, String(req.query.letra || 'A').toUpperCase());
+    res.json(v);
+  } catch (err) {
+    console.error('flexxus preview:', err.message);
+    res.status(500).json({ error: err.message || 'No pude verificar contra Flexxus' });
+  }
+});
+
 // Se extrae con IA, se guarda en remitos_combustible (base compras) y el
 // análisis lo cruza contra cargas_combustible (base bot): match por
 // numero_remito, fallback patente+fecha — como prevé el ciclo de vida del módulo.
