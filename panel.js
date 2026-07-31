@@ -2128,6 +2128,9 @@ function cardMaestro(m,ix){
       ?`<span class="badge ${esPanol?'b-blue':'b-green'} mono" style="font-size:10px">${esPanol?'📦 ':''}${m.usuario}</span>`
       :'<span class="badge b-gray">sin acceso</span>'}</div>`;
   }
+  if(maestroTab==='centros_costo'){
+    extra=m.codigo_flexxus?`<div class="mcard-row"><span>Cód. Flexxus</span><b class="mono">${m.codigo_flexxus}</b></div>`:'<div class="mcard-row"><span>Cód. Flexxus</span><b style="color:var(--diesel)">sin cargar</b></div>';
+  }
   if(maestroTab==='objetivos'){
     sub=m.activo?'Activo':'Inactivo';
     const t=m.tipo||'operativo';
@@ -2198,6 +2201,9 @@ function abrirModalMaestro(m){
       <label class="mm-hab" style="margin-bottom:8px"><input type="checkbox" id="mm-eschofer" ${m.es_chofer?'checked':''}> Es chofer de roll off (carga viajes/bateas por el bot)</label>
       <div class="mm-field"><label>Camión asignado (opcional)</label><select id="mm-unidad"><option value="">— sin camión fijo —</option>${(unidadesData||[]).map(u=>`<option value="${u.id}" ${String(m.unidad_id)===String(u.id)?'selected':''}>${u.patente||u.codigo||'unidad'} ${u.marca_modelo?'· '+u.marca_modelo:''}</option>`).join('')}</select></div>`;
   }
+  if(maestroTab==='centros_costo'){
+    campos+=`<div class="mm-field"><label>Código de centro de costo en Flexxus <span style="font-weight:400;color:var(--tinta-3)">(columna centros de costo del diagnóstico ⚙, ej: EPEC = 12)</span></label><input id="mm-cflexxus" value="${(m.codigo_flexxus||'').replace(/"/g,'&quot;')}" placeholder="ej: 12"></div>`;
+  }
   if(maestroTab==='objetivos'){
     campos+=`<div class="mm-field"><label>Ubicación</label><input id="mm-ubicacion" value="${(m.ubicacion||'').replace(/"/g,'&quot;')}" placeholder="Córdoba, Río Cuarto..."></div>`;
     campos+=`<div class="mm-field"><label>Tipo</label><select id="mm-tipo"><option value="operativo" ${(m.tipo||'operativo')==='operativo'?'selected':''}>Operativo</option><option value="imputacion" ${m.tipo==='imputacion'?'selected':''}>Imputación</option></select></div>`;
@@ -2250,6 +2256,9 @@ async function guardarMaestro(){
     body.objetivo_id=document.getElementById('mm-objetivo').value||null;
     const ch=document.getElementById('mm-eschofer');if(ch)body.es_chofer=ch.checked;
     const un=document.getElementById('mm-unidad');if(un)body.unidad_id=un.value||null;
+  }
+  if(maestroTab==='centros_costo'){
+    body.codigo_flexxus=document.getElementById('mm-cflexxus').value.trim()||null;
   }
   if(maestroTab==='objetivos'){
     body.ubicacion=document.getElementById('mm-ubicacion').value.trim()||null;
