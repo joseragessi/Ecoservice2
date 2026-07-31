@@ -3335,7 +3335,8 @@ async function reintentarCentroCosto(id){
   try{
     const r=await api('/api/compras/facturas/'+id+'/flexxus-centrocosto',{method:'POST'});
     const cc=r.centro_costo||{};
-    if(cc.ok)toast('Centro de costo apropiado ✓ ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+')');
+    if(cc.ok&&cc.verificado===true)toast('Centro de costo VERIFICADO contra Flexxus ✓ '+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+' (asiento '+cc.numeroasiento+' releído del API)');
+    else if(cc.ok)toast('Centro de costo enviado ✓ ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+') — no pude releer el asiento para confirmarlo');
     else toast('Sigue pendiente: '+(cc.motivo||''),'error');
     go('compras');
   }catch(e){toast(e.message,'error');}
@@ -3345,7 +3346,8 @@ async function ejecutarImputacion(id,L,permitirAlta){
     const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
     const cc=r.flexxus&&r.flexxus.centro_costo;
     if(r.ya_existia)toast('Ya estaba imputada en Flexxus: la marqué como tal');
-    else if(cc&&cc.ok)toast('Imputada ✓ + centro de costo apropiado ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+')');
+    else if(cc&&cc.ok&&cc.verificado===true)toast('Imputada ✓ · Centro de costo VERIFICADO contra Flexxus: '+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+' (asiento '+cc.numeroasiento+' releído del API)');
+    else if(cc&&cc.ok)toast('Imputada ✓ · centro de costo enviado ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+') — no pude releer el asiento para confirmarlo');
     else toast('Imputada en Flexxus ✓');
     if(cc&&!cc.ok)toast('Centro de costo pendiente: '+(cc.motivo||''),'error');
     go('compras');
@@ -3484,7 +3486,7 @@ function vComprasDetalle(view){
         <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
         <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
         ${inv.flexxus&&inv.flexxus.centro_costo?(inv.flexxus.centro_costo.ok
-          ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ✓ ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}</div>`
+          ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ${inv.flexxus.centro_costo.verificado===true?'✓✓ VERIFICADO contra Flexxus':'✓ enviado'}: ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}${inv.flexxus.centro_costo.verificado===true?' (releído del API)':' — sin relectura de confirmación'}</div>`
           :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''} <button class="mini-btn" style="margin-left:6px" onclick="reintentarCentroCosto('${inv.id}')">↻ Reintentar</button></div>`):''}
         ${inv.assignmentMode==='per-item'?`<div class="divider"></div>
           ${(inv.items||[]).map((it,ix)=>{const asg=(inv.assignments||{})[ix]||{};
