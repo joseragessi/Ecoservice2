@@ -76,6 +76,30 @@ async function flx(path, opts = {}, reint = true) {
 // ── Proveedores ──────────────────────────────────────────────
 function cuitLimpio(c) { return String(c || '').replace(/\D/g, ''); }
 
+// Número de comprobante para Flexxus: PV-NUMERO → pv*1e8 + numero (así lo
+// muestra Flexxus como 00002-00006696). Si no hay número parseable devuelve
+// null: NUNCA se inventa un número.
+function numeroFlexxus(nf) {
+  const s = String(nf || '').trim();
+  const m = s.match(/(\d{1,5})\s*-\s*(\d{1,8})\s*$/);
+  if (m) return Number(m[1]) * 1e8 + Number(m[2]);
+  const d = s.replace(/\D/g, '');
+  if (d.length >= 3 && d.length <= 13) return Number(d);
+  return null;
+}
+function formatearNumeroFlexxus(n) {
+  if (n == null) return null;
+  const pv = Math.floor(n / 1e8), num = n % 1e8;
+  return String(pv).padStart(5, '0') + '-' + String(num).padStart(8, '0');
+}
+
+// Normaliza razón social para comparar: sin tipo societario ni puntuación.
+function razonNorm(s) {
+  return String(s || '').toLowerCase()
+    .replace(/\b(s\.?\s*a\.?\s*s?|s\.?\s*r\.?\s*l|s\.?\s*a|sociedad an[oó]nima|srl|sas|sa)\b\.?/g, '')
+    .replace(/[^a-z0-9ñ]/g, '');
+}
+
 async function buscarProveedorPorCuit(cuit, razonSocial) {
   const c = cuitLimpio(cuit);
   // 1) Por CUIT: probamos sin guiones y con el formato AR con guiones, porque
@@ -95,17 +119,42 @@ async function buscarProveedorPorCuit(cuit, razonSocial) {
       }
     } catch (e) { /* probamos la siguiente variante */ }
   }
-  // 2) Respaldo por razón social EXACTA (útil si el CUIT vino mal en la factura)
+  // 2) Respaldo por razón social NORMALIZADA (sin S.A./S.A.S./SRL ni puntuación),
+  // útil si el CUIT vino mal leído del comprobante y el nombre se corrigió a mano.
   if (razonSocial) {
     try {
       const d = await flx('/proveedores?razonsocial=' + encodeURIComponent(razonSocial.trim()));
-      const lista = d.data || d || [];
-      const rs = razonSocial.trim().toLowerCase();
-      const match = (Array.isArray(lista) ? lista : []).find(p => String(p.razonsocial || '').trim().toLowerCase() === rs);
+      const lista = Array.isArray(d.data || d) ? (d.data || d) : [];
+      const rn = razonNorm(razonSocial);
+      const match = lista.find(p => razonNorm(p.razonsocial) === rn)
+        || (lista.length === 1 && rn && (razonNorm(lista[0].razonsocial).includes(rn) || rn.includes(razonNorm(lista[0].razonsocial))) ? lista[0] : null);
       if (match) return match;
     } catch (e) { /* sin match por nombre */ }
   }
   return null;
+}
+
+// Verificación previa a imputar: a qué proveedor de Flexxus iría esta factura
+// y con qué número de comprobante — sin crear ni imputar nada.
+async function verificarImputacion(f, letra) {
+  const provExistente = await buscarProveedorPorCuit(f.cuit, f.proveedor);
+  if (!provExistente && !opts.permitirAlta) {
+    const e = new Error('No existe en Flexxus un proveedor con CUIT ' + (f.cuit || 's/d') +
+      " ni razón social parecida a '" + (f.proveedor || 's/d') + "'.");
+    e.code = 'PROV_NO_EXISTE';
+    throw e;
+  }
+  const num = numeroFlexxus(f.numero_factura);
+  return {
+    tipocomprobante: 'F' + (letra || 'A'),
+    numero: num,
+    numero_formateado: formatearNumeroFlexxus(num),
+    proveedor: provExistente ? {
+      codigo: provExistente.codigoproveedor,
+      razonsocial: provExistente.razonsocial,
+      cuit: provExistente.cuit || null,
+    } : null,
+  };
 }
 
 // Un proveedor cualquiera existente, como plantilla de códigos válidos
@@ -169,7 +218,14 @@ async function datosAltaProveedor() {
 
 // ── Imputar factura de Compras como comprobante de compra ────
 // f = el jsonb `data` de la factura del panel. letra = 'A'|'B'|'C'.
-async function imputarFactura(f, letra) {
+async function imputarFactura(f, letra, opts = {}) {
+  // El número tiene que ser real: sin número parseable no se imputa nada.
+  const numComp = numeroFlexxus(f.numero_factura);
+  if (numComp == null) {
+    const e = new Error('La factura no tiene un número válido (formato PV-NUMERO, ej 0002-00006696). Corregilo en el editor antes de imputar.');
+    e.code = 'NUMERO_INVALIDO';
+    throw e;
+  }
   for (const env of ['FLEXXUS_CODIGO_USUARIO', 'FLEXXUS_MULTIPLAZO', 'FLEXXUS_DEPOSITO']) {
     if (!process.env[env] && !(env === 'FLEXXUS_CODIGO_USUARIO' && process.env.FLEXXUS_USER)) {
       throw new Error('Falta configurar ' + env + ' en Railway (usá "Probar conexión" para ver los códigos disponibles)');
@@ -319,7 +375,7 @@ async function imputarFactura(f, letra) {
 
   const body = {
     tipocomprobante: 'F' + (letra || 'A'),
-    numerocomprobante: Number(String(f.numero_factura || '').replace(/\D/g, '')) || Date.now() % 1e9,
+    numerocomprobante: numComp,
     fechacomprobante: fecha,
     fechaimputable: fecha,
     fechavencimiento: venc,
@@ -393,4 +449,4 @@ async function probarConexion() {
   return out;
 }
 
-module.exports = { imputarFactura, probarConexion, buscarProveedorPorCuit };
+module.exports = { imputarFactura, verificarImputacion, probarConexion, buscarProveedorPorCuit };
