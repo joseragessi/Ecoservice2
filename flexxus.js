@@ -567,6 +567,22 @@ async function probarConexion() {
   // si "centros de costo" tiene datos → apropiación contable (mecanismo B);
   // si "proyectos" tiene datos → gastos por proyecto por renglón (mecanismo A).
   out.centros_costo = await trae('/centrodecosto', x => ({ codigo: x.codigocentrocosto, descripcion: x.descripcion }));
+  // Tipos de asiento y ejercicios: necesarios para la apropiación de centros
+  // de costo (FLEXXUS_CODIGO_ASIENTO / FLEXXUS_CODIGO_EJERCICIO). El nombre de
+  // la ruta varía entre instalaciones: se prueban candidatos hasta que alguna responda.
+  const traePrimera = async (rutas, map) => {
+    for (const ruta of rutas) {
+      const r = await trae(ruta, map);
+      if (Array.isArray(r) && r.length && !r[0].error) return r;
+    }
+    return [{ error: 'ninguna ruta respondió: ' + rutas.join(', ') }];
+  };
+  out.tipos_asiento = await traePrimera(
+    ['/tiposasiento', '/tiposasientos', '/tipoasiento', '/contabilidad/tiposasiento', '/asientos/tipos'],
+    x => ({ codigo: x.codigoasiento ?? x.codigotipoasiento ?? x.codigo, descripcion: x.descripcion ?? x.nombre }));
+  out.ejercicios = await traePrimera(
+    ['/ejercicios', '/ejercicio', '/contabilidad/ejercicios', '/codigoejercicio'],
+    x => ({ codigo: x.codigoejercicio ?? x.codigo, descripcion: (x.descripcion ?? x.nombre ?? '') + (x.fechadesde ? ' (' + x.fechadesde + ' → ' + (x.fechahasta || '') + ')' : '') }));
   out.proyectos     = await trae('/compras/gastosporproyecto/proyectos', x => ({ codigo: x.codigoproyecto, descripcion: x.descripcion }));
   out.centro_costo_via = (Array.isArray(out.centros_costo) && out.centros_costo.length && !out.centros_costo[0].error)
     ? 'centros de costo (apropiación contable sobre el asiento)'
