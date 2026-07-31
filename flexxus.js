@@ -458,7 +458,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   });
   const sinCodigo = nombres.filter(n => !mapa[norm(n)]);
   if (sinCodigo.length) {
-    return conAsiento({ ok: false, motivo: 'Objetivos sin código de centro de costo en Maestros → Objetivos: ' + sinCodigo.join(', ') });
+    return conAsiento({ ok: false, motivo: 'Sin código de Flexxus en Maestros → Centros de costo: ' + sinCodigo.join(', ') });
   }
 
   // 3) Porcentajes proporcionales al neto de cada ítem, cerrando en 100.00
