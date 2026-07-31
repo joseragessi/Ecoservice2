@@ -435,6 +435,16 @@ async function probarConexion() {
   out.percepciones = await trae('/percepciones', x => ({ codigo: x.codigopercepcion, descripcion: x.descripcion }));
   out.clases_proveedor = await trae('/clasesproveedores', x => ({ codigo: x.codigoclaseproveedor, descripcion: x.descripcion }));
   out.condiciones_iva = await trae('/tiposivacompras', x => ({ codigo: x.codigotipo, descripcion: x.descripcion }));
+  // ¿Cómo imputa esta instalación el centro de costo? Sondeamos las dos tablas:
+  // si "centros de costo" tiene datos → apropiación contable (mecanismo B);
+  // si "proyectos" tiene datos → gastos por proyecto por renglón (mecanismo A).
+  out.centros_costo = await trae('/centrodecosto', x => ({ codigo: x.codigocentrocosto, descripcion: x.descripcion }));
+  out.proyectos     = await trae('/compras/gastosporproyecto/proyectos', x => ({ codigo: x.codigoproyecto, descripcion: x.descripcion }));
+  out.centro_costo_via = (Array.isArray(out.centros_costo) && out.centros_costo.length && !out.centros_costo[0].error)
+    ? 'centros de costo (apropiación contable sobre el asiento)'
+    : (Array.isArray(out.proyectos) && out.proyectos.length && !out.proyectos[0].error)
+      ? 'gastos por proyecto (por renglón, en el mismo comprobante)'
+      : 'no detectado — revisar con administración';
   // Códigos que usaría el alta de un proveedor nuevo (misma lógica que imputar)
   try {
     _plantillaProv = null;
