@@ -2974,6 +2974,65 @@ async function vComprasInd(view){
           <span class="money">${money(x.total)}</span></div>
         <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
       </div>`;}).join('')||'<div class="sub" style="padding:10px 0">Sin datos</div>';
+
+    // ── Indicadores del dueño ─────────────────────────────────
+    const fechaFactMs=f=>{const s=String(f.fecha_factura||'').trim();
+      let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]).getTime();
+      m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(m)return new Date(+m[3],+m[2]-1,+m[1]).getTime();
+      return null;};
+    const esPagada=f=>f.pagada===true||f.pagada==='true';
+    const D=86400000, hoyMs=Date.now();
+
+    // Deuda viva: TODAS las no pagadas (foto de hoy, no depende del filtro de mes)
+    const impagas=todas.filter(f=>!esPagada(f));
+    const aging={a:{n:0,m:0},b:{n:0,m:0},c:{n:0,m:0}}, provMas60={};
+    impagas.forEach(f=>{
+      const t=totalFactura(f), fm=fechaFactMs(f);
+      const d=fm==null?999:Math.floor((hoyMs-fm)/D);
+      const k2=d<=30?'a':d<=60?'b':'c';
+      aging[k2].n++;aging[k2].m+=t;
+      if(k2==='c'){const p=f.proveedor||'Sin proveedor';provMas60[p]=(provMas60[p]||0)+t;}
+    });
+    const deudaViva=aging.a.m+aging.b.m+aging.c.m;
+    const topMas60=Object.entries(provMas60).sort((x,y)=>y[1]-x[1]).slice(0,3);
+
+    // Variación del gasto: el mes elegido (o el último) contra el anterior
+    const mesRef=comprasIndPer||(evol.length?evol[0].mes:null);
+    const eRef=evol.find(e=>e.mes===mesRef);
+    const varGasto=eRef&&eRef.var!=null?eRef.var:null;
+
+    // Gasoil $/lt por mes: precio real de los ítems de las facturas
+    const RX_GASOIL=/gas\s*oil|gasoil|diesel|di[eé]sel/i;
+    const gasoilMes={};
+    todas.forEach(f=>{const m=mesInv(f);if(m==='sin fecha')return;
+      (f.items||[]).forEach(it=>{
+        if(!RX_GASOIL.test(String(it.descripcion||'')))return;
+        const lt=Number(it.cantidad)||0, imp=Number(it.importe)||0;
+        if(lt<=0||imp<=0)return;
+        const g=gasoilMes[m]||(gasoilMes[m]={lt:0,imp:0});
+        g.lt+=lt;g.imp+=imp;});});
+    const gasoilSerie=Object.entries(gasoilMes).sort((a,b)=>a[0].localeCompare(b[0]))
+      .map(([m,v])=>({mes:m,plt:v.imp/v.lt,lt:v.lt})).slice(-6);
+    const gRef=gasoilSerie.find(g=>g.mes===mesRef)||gasoilSerie[gasoilSerie.length-1]||null;
+    const gPrev=gRef?gasoilSerie[gasoilSerie.indexOf(gRef)-1]:null;
+    const varGasoil=gRef&&gPrev?((gRef.plt-gPrev.plt)*100/gPrev.plt):null;
+    const maxPlt=Math.max(...gasoilSerie.map(g=>g.plt),1);
+    const curvaGasoil=gasoilSerie.length?`<div style="display:flex;align-items:flex-end;gap:6px;height:74px;margin-top:18px;padding-bottom:16px">
+      ${gasoilSerie.map((g,i)=>`<div style="flex:1;position:relative;height:${Math.max(12,Math.round(g.plt*100/maxPlt))}%;background:${i===gasoilSerie.length-1?'var(--rojo-soft)':'var(--azul-soft)'};border-top:2.5px solid ${i===gasoilSerie.length-1?'var(--rojo)':'var(--azul)'};border-radius:2px 2px 0 0">
+        <b style="position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:9.5px;font-family:'JetBrains Mono',monospace;color:var(--tinta-2)">${Math.round(g.plt).toLocaleString('es-AR')}</b>
+        <span style="position:absolute;bottom:-15px;left:0;right:0;text-align:center;font-size:9px;color:var(--tinta-3)">${g.mes.slice(5)}/${g.mes.slice(2,4)}</span>
+      </div>`).join('')}</div>`:'<div class="sub" style="padding:10px 0">Sin ítems de gasoil facturados aún.</div>';
+
+    // Fugas: cargas del bot sin factura del proveedor hace más de 30 días
+    let fugas=null;
+    try{
+      const cargas=await api('/api/combustible');
+      const viejas=(cargas||[]).filter(c=>c.estado==='sin_facturar'&&c.fecha&&((hoyMs-new Date(c.fecha).getTime())/D)>30);
+      const recientes=(cargas||[]).filter(c=>c.estado==='sin_facturar').length-viejas.length;
+      fugas={viejas:viejas.length,litros:viejas.reduce((s,c)=>s+(Number(c.litros_total)||0),0),recientes};
+    }catch(e){}
+    const agBar=(v,color)=>`<div class="pv-bar" style="max-width:none"><i style="width:${deudaViva?Math.max(3,Math.round(v*100/Math.max(aging.a.m,aging.b.m,aging.c.m,1))):0}%;background:${color}"></i></div>`;
+
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Compras · Indicadores</div>
       <div class="view-desc">Gasto por proveedor, objetivo y unidad</div></div>
@@ -2986,11 +3045,25 @@ async function vComprasInd(view){
       </div></div>
     ${tabsCompras()}
     <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${k.totNC?' · NC −'+money(k.totNC):''}</div></div>
+      <div class="kpi"><div class="kpi-label">Total c/IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totTot)}</div><div class="kpi-sub">${k.docs} facturas${varGasto!=null?' · <b style="color:'+(varGasto>=0?'#A32D2D':'var(--brote-2)')+'">'+(varGasto>0?'▲ +':'▼ ')+Math.round(varGasto*10)/10+'% vs mes anterior</b>':''}${k.totNC?' · NC −'+money(k.totNC):''}</div></div>
       <div class="kpi plain"><div class="kpi-label">Neto</div><div class="kpi-val" style="font-size:21px">${money(k.totNeto)}</div><div class="kpi-sub">sin IVA</div></div>
       <div class="kpi plain"><div class="kpi-label">IVA</div><div class="kpi-val" style="font-size:21px">${money(k.totIva)}</div><div class="kpi-sub">crédito fiscal</div></div>
       <div class="kpi plain"><div class="kpi-label">Ticket promedio</div><div class="kpi-val" style="font-size:21px">${money(k.ticket)}</div><div class="kpi-sub">por factura</div></div>
       <div class="kpi plain"><div class="kpi-label">Conc. top 3</div><div class="kpi-val" style="font-size:21px">${Math.round(k.conc3*10)/10}%</div><div class="kpi-sub">3 proveedores</div></div>
+    </div>
+    <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-top:-6px">
+      <div class="kpi ${aging.c.m?'amber':''}"><div class="kpi-label">Deuda viva (sin pagar)</div><div class="kpi-val" style="font-size:21px;color:#A32D2D">${money(deudaViva)}</div><div class="kpi-sub">${impagas.length} facturas${aging.c.m?' · <b style="color:#A32D2D">'+money(aging.c.m)+' con +60 días</b>':''}</div></div>
+      <div class="kpi plain"><div class="kpi-label">Gasoil pagado</div><div class="kpi-val" style="font-size:21px">${gRef?'$ '+Math.round(gRef.plt).toLocaleString('es-AR')+' /lt':'—'}</div><div class="kpi-sub">${gRef?(varGasoil!=null?'<b style="color:'+(varGasoil>=0?'#A32D2D':'var(--brote-2)')+'">'+(varGasoil>0?'▲ +':'▼ ')+Math.round(varGasoil*10)/10+'%</b> vs mes anterior · ':'')+Math.round(gRef.lt).toLocaleString('es-AR')+' lt facturados':'sin ítems de gasoil'}</div></div>
+      <div class="kpi ${fugas&&fugas.viejas?'amber':'plain'}"><div class="kpi-label">Remitos sin facturar</div><div class="kpi-val" style="font-size:21px;${fugas&&fugas.viejas?'color:#854F0B':''}">${fugas?fugas.viejas:'—'}</div><div class="kpi-sub">${fugas?'con +30 días · '+Math.round(fugas.litros).toLocaleString('es-AR')+' lt · '+fugas.recientes+' recientes (flujo normal)':'no pude consultar las cargas'}</div></div>
+    </div>
+    <div class="grid g-2" style="margin-bottom:18px">
+      <div class="panel"><div class="panel-title">¿Cuánto debo y hace cuánto? <span class="sub" style="font-weight:400;font-size:11px">· por antigüedad de factura</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px"><span style="width:90px;font-size:12px;font-weight:500">0–30 días</span>${agBar(aging.a.m,'var(--brote)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.a.m)}</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px"><span style="width:90px;font-size:12px;font-weight:500">31–60 días</span>${agBar(aging.b.m,'var(--diesel)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.b.m)}</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;font-size:12px;font-weight:500">+60 días</span>${agBar(aging.c.m,'var(--rojo)')}<span class="mono" style="width:130px;text-align:right;font-size:12px;font-weight:600">${money(aging.c.m)}</span></div>
+        ${topMas60.length?`<div class="sub" style="margin-top:10px;font-size:11.5px">Con +60 días: ${topMas60.map(([p,m])=>'<b>'+p+'</b> ('+money(m)+')').join(' · ')}</div>`:''}
+      </div>
+      <div class="panel"><div class="panel-title">¿A qué precio compro el gasoil? <span class="sub" style="font-weight:400;font-size:11px">· $/litro de los ítems facturados</span></div>${curvaGasoil}</div>
     </div>
     <div class="grid g-2" style="margin-bottom:18px">
       <div class="panel"><div class="panel-title">Ranking de proveedores</div>
