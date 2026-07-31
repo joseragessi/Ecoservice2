@@ -1418,11 +1418,22 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       }
       throw e;
     }
+    // Centro de costo: apropiación sobre el asiento, con el reparto que la
+    // factura ya tiene cargado por ítem/total. Best-effort: nunca frena.
+    let centroCosto = null;
+    try {
+      const { apropiarCentroCosto } = require('./flexxus');
+      const { data: objs } = await supabase.from('objetivos').select('nombre, codigo_flexxus');
+      centroCosto = await apropiarCentroCosto(f, r, objs || []);
+    } catch (e) {
+      centroCosto = { ok: false, motivo: e.message };
+    }
     const flexxus = {
       ok: true, fecha: new Date().toISOString(),
       tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
       proveedor_creado: r.proveedor_creado, proveedor_codigo: r.proveedor_codigo,
       proveedor_nombre: r.proveedor_nombre, por: req.usuario || 'panel',
+      centro_costo: centroCosto,
     };
     await supabaseCompras.from('facturas')
       .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
