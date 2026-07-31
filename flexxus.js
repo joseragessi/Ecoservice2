@@ -440,8 +440,15 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   } else if (f.totalAssign && f.totalAssign.objetivo) {
     pesos[f.totalAssign.objetivo] = 1;
   }
+  // El asiento se extrae primero: aunque el mapeo falle, queda guardado
+  // para poder reintentar la apropiación sin reimputar.
+  const raw0 = (resPost && (resPost.respuesta || resPost)) || {};
+  const d0 = raw0.data || raw0;
+  const asientoDetectado = d0.numeroasiento ?? d0.numeroAsiento ?? d0.asiento ?? null;
+  const conAsiento = o => Object.assign(o, asientoDetectado != null ? { numeroasiento: asientoDetectado } : {});
+
   const nombres = Object.keys(pesos);
-  if (!nombres.length) return { ok: false, motivo: 'La factura no tiene imputación por objetivo en el panel.' };
+  if (!nombres.length) return conAsiento({ ok: false, motivo: 'La factura no tiene imputación por objetivo en el panel.' });
 
   // 2) nombre del objetivo → código de centro de costo (Maestros → Objetivos)
   const norm = s => String(s || '').trim().toLowerCase();
@@ -451,7 +458,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   });
   const sinCodigo = nombres.filter(n => !mapa[norm(n)]);
   if (sinCodigo.length) {
-    return { ok: false, motivo: 'Objetivos sin código de centro de costo en Maestros → Objetivos: ' + sinCodigo.join(', ') };
+    return conAsiento({ ok: false, motivo: 'Objetivos sin código de centro de costo en Maestros → Objetivos: ' + sinCodigo.join(', ') });
   }
 
   // 3) Porcentajes proporcionales al neto de cada ítem, cerrando en 100.00
