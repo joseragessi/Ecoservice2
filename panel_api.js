@@ -1295,7 +1295,7 @@ const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app', 'objetivos_cargo'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id'],
-  centros_costo: ['nombre', 'activo'],
+  centros_costo: ['nombre', 'activo', 'codigo_flexxus'],
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo'],
 };
 
@@ -1423,7 +1423,7 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
     let centroCosto = null;
     try {
       const { apropiarCentroCosto } = require('./flexxus');
-      const { data: objs } = await supabase.from('objetivos').select('nombre, codigo_flexxus');
+      const { data: objs } = await supabase.from('centros_costo').select('nombre, codigo_flexxus');
       centroCosto = await apropiarCentroCosto(f, r, objs || []);
     } catch (e) {
       centroCosto = { ok: false, motivo: e.message };
@@ -1828,7 +1828,7 @@ router.post('/api/compras/facturas/:id/flexxus-centrocosto', auth, async (req, r
       return res.status(422).json({ error: 'No tengo guardado el número de asiento de esta imputación (es anterior a esta función). Anulá el comprobante en Flexxus y reimputá.' });
     }
     const { apropiarCentroCosto } = require('./flexxus');
-    const { data: objs } = await supabase.from('objetivos').select('nombre, codigo_flexxus');
+    const { data: objs } = await supabase.from('centros_costo').select('nombre, codigo_flexxus');
     const cc = await apropiarCentroCosto(f, { respuesta: { numeroasiento } }, objs || []);
     const flexxus = { ...f.flexxus, centro_costo: cc };
     await supabaseCompras.from('facturas')
