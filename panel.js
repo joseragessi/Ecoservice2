@@ -2131,7 +2131,7 @@ function cardMaestro(m,ix){
   if(maestroTab==='objetivos'){
     sub=m.activo?'Activo':'Inactivo';
     const t=m.tipo||'operativo';
-    extra=`<div class="mcard-row"><span>Tipo</span><span class="badge ${t==='operativo'?'b-green':'b-gray'}">${t==='operativo'?'operativo':'imputación'}</span></div>`;
+    extra=`<div class="mcard-row"><span>Tipo</span><span class="badge ${t==='operativo'?'b-green':'b-gray'}">${t==='operativo'?'operativo':'imputación'}</span></div>${m.codigo_flexxus?`<div class="mcard-row"><span>Cód. Flexxus</span><b class="mono">${m.codigo_flexxus}</b></div>`:'<div class="mcard-row"><span>Cód. Flexxus</span><b style="color:var(--diesel)">sin cargar</b></div>'}`;
   }
   if(maestroTab==='capataces'){
     sub=m.objetivos?m.objetivos.nombre:'sin objetivo';
@@ -2201,6 +2201,7 @@ function abrirModalMaestro(m){
   if(maestroTab==='objetivos'){
     campos+=`<div class="mm-field"><label>Ubicación</label><input id="mm-ubicacion" value="${(m.ubicacion||'').replace(/"/g,'&quot;')}" placeholder="Córdoba, Río Cuarto..."></div>`;
     campos+=`<div class="mm-field"><label>Tipo</label><select id="mm-tipo"><option value="operativo" ${(m.tipo||'operativo')==='operativo'?'selected':''}>Operativo</option><option value="imputacion" ${m.tipo==='imputacion'?'selected':''}>Imputación</option></select></div>`;
+    campos+=`<div class="mm-field"><label>Código de centro de costo en Flexxus <span style="font-weight:400;color:var(--tinta-3)">(el que figura en Flexxus, ej: 012 para EPEC)</span></label><input id="mm-cflexxus" value="${(m.codigo_flexxus||'').replace(/"/g,'&quot;')}" placeholder="ej: 012"></div>`;
   }
   document.getElementById('mm-campos').innerHTML=campos;
   document.getElementById('mm-acciones').style.display='';  // el modal de stock las oculta
@@ -2253,6 +2254,7 @@ async function guardarMaestro(){
   if(maestroTab==='objetivos'){
     body.ubicacion=document.getElementById('mm-ubicacion').value.trim()||null;
     body.tipo=document.getElementById('mm-tipo').value||'operativo';
+    body.codigo_flexxus=document.getElementById('mm-cflexxus').value.trim()||null;
   }
   try{
     const ruta='/api/maestros/'+maestroTab+(maestroEdit?'/'+maestroEdit.id:'');
@@ -3350,6 +3352,11 @@ async function probarFlexxus(){
       ${tabla('Percepciones (FLEXXUS_CODIGO_PERCEPCION)',d.percepciones)}
       ${tabla('Clases de proveedor (FLEXXUS_CLASE_PROVEEDOR)',d.clases_proveedor)}
       ${tabla('Condiciones de IVA (FLEXXUS_CONDICION_IVA)',d.condiciones_iva)}
+      <div class="divider"></div>
+      <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Centro de costo — cómo imputa esta instalación</div>
+      <div style="background:${d.centro_costo_via&&d.centro_costo_via.startsWith('no detectado')?'var(--diesel-soft)':'var(--brote-soft)'};border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:6px"><b>${d.centro_costo_via||'—'}</b></div>
+      ${tabla('Centros de costo (GET /centrodecosto)',d.centros_costo)}
+      ${tabla('Proyectos (GET /compras/gastosporproyecto/proyectos)',d.proyectos)}
       <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Alta de proveedor nuevo usaría</div>${alta}
       <div class="modal-acciones"><button class="btn" id="fx-cerrar">Cerrar</button></div>
     </div>`;
