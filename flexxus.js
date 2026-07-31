@@ -461,15 +461,23 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     return conAsiento({ ok: false, motivo: 'Sin código de Flexxus en Maestros → Centros de costo: ' + sinCodigo.join(', ') });
   }
 
-  // 3) Porcentajes proporcionales al neto de cada ítem, cerrando en 100.00
+  // 3) Porcentajes proporcionales al neto, cerrando EXACTO en 100.00.
+  // Método de mayor resto sobre centésimas (enteros) para no arrastrar
+  // errores de redondeo con 3+ objetivos: Flexxus exige suma === 100.
   const total = nombres.reduce((s, n) => s + pesos[n], 0) || 1;
-  const reparto = nombres.map(n => ({
-    objetivo: n,
-    codigocentrocosto: Number(mapa[norm(n)]),
-    porcentaje: Math.round(pesos[n] * 10000 / total) / 100,
+  const centesimas = nombres.map(n => {
+    const exacto = pesos[n] * 10000 / total;   // porcentaje ×100 (centésimas)
+    const base = Math.floor(exacto);
+    return { objetivo: n, codigocentrocosto: Number(mapa[norm(n)]), base, resto: exacto - base };
+  });
+  let sobran = 10000 - centesimas.reduce((s, c) => s + c.base, 0);   // centésimas a repartir
+  centesimas.sort((a, b) => b.resto - a.resto);
+  for (let i = 0; i < centesimas.length && sobran > 0; i++, sobran--) centesimas[i].base++;
+  const reparto = centesimas.map(c => ({
+    objetivo: c.objetivo,
+    codigocentrocosto: c.codigocentrocosto,
+    porcentaje: c.base / 100,
   }));
-  const dif = Math.round((100 - reparto.reduce((s, r) => s + r.porcentaje, 0)) * 100) / 100;
-  if (Math.abs(dif) >= 0.01) reparto[0].porcentaje = Math.round((reparto[0].porcentaje + dif) * 100) / 100;
 
   // 4) Asiento generado por el comprobante (viene en el response del POST)
   const raw = (resPost && (resPost.respuesta || resPost)) || {};
