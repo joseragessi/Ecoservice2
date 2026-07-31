@@ -1472,6 +1472,9 @@ router.get('/api/compras/remitos', auth, async (req, res) => {
 // Haiku es notablemente más rápido que Sonnet y con la misma precisión en esta
 // tarea. Se puede forzar otro con ANTHROPIC_MODEL_EXTRACT.
 const MODEL_EXTRACT = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+// Las facturas de compras son pocas por día y valen plata: usan un modelo más
+// capaz salvo que se fuerce otro con ANTHROPIC_MODEL_FACTURAS.
+const MODEL_FACTURAS = process.env.ANTHROPIC_MODEL_FACTURAS || 'claude-sonnet-4-6';
 
 // Extraer datos de una factura con IA (proxy a Claude, key server-side)
 router.post('/api/compras/extract', auth, async (req, res) => {
@@ -1525,7 +1528,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         'content-type':      'application/json',
       },
       body: JSON.stringify({
-        model:      MODEL_EXTRACT,
+        model:      MODEL_FACTURAS,
         max_tokens: 4000,   // una factura rara vez pasa de 30 ítems
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
@@ -1533,9 +1536,34 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     const data = await resp.json();
     const txt = (data.content || []).map(c => c.text || '').join('');
     console.log(`[factura] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
-      `(${MODEL_EXTRACT}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
+      `(${MODEL_FACTURAS}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
     try {
       const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      // ── Defensas duras post-extracción (independientes del prompt) ──
+      const avisos = [];
+      const RX_TOTAL = /^(sub\s*-?\s*totales?|totales?\b|importe\s+total|total\s+a\s+pagar|neto(\s+gravado)?$|iva(\s*21.*)?$|importe\s+otros\s+tributos|saldo|son\s+pesos)/i;
+      if (Array.isArray(parsed.otros_conceptos)) {
+        const antes = parsed.otros_conceptos.length;
+        parsed.otros_conceptos = parsed.otros_conceptos.filter(c => !RX_TOTAL.test(String(c.concepto || '').trim()));
+        if (parsed.otros_conceptos.length !== antes) avisos.push('Descarté líneas de totales que la lectura tomó como conceptos.');
+      }
+      if (Array.isArray(parsed.items)) {
+        const antes = parsed.items.length;
+        parsed.items = parsed.items.filter(i => !RX_TOTAL.test(String(i.descripcion || '').trim()));
+        if (parsed.items.length !== antes) avisos.push('Descarté líneas de totales que la lectura tomó como ítems.');
+      }
+      // El CUIT de EcoService jamás es el del proveedor
+      if (String(parsed.cuit || '').replace(/\D/g, '') === '30707930299') {
+        parsed.cuit = null;
+        avisos.push('La lectura trajo el CUIT de EcoService (cliente) como proveedor: revisá el CUIT del emisor.');
+      }
+      // Coherencia aritmética entre ítems y totales
+      const sumaItems = (parsed.items || []).reduce((s, i) => s + (Number(i.monto_sin_iva) || 0), 0);
+      if (parsed.total_sin_iva != null && sumaItems > 0 &&
+          Math.abs(sumaItems - Number(parsed.total_sin_iva)) > Math.max(1, Number(parsed.total_sin_iva) * 0.005)) {
+        avisos.push('Los ítems suman ' + sumaItems.toFixed(2) + ' y el neto leído es ' + Number(parsed.total_sin_iva).toFixed(2) + ': verificá los montos contra el papel.');
+      }
+      if (avisos.length) parsed.__avisos = avisos;
       res.json(parsed);
     } catch (e) {
       res.json({ __error: 'No se pudo extraer automáticamente. Completá los campos a mano.' });
@@ -1785,6 +1813,33 @@ router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, r
 
 // ── COMBUSTIBLE · Conciliación con listados del proveedor ──────
 // El proveedor (Ferreyra, SERVISUD...) emite un listado consolidado del período.
+// Reintentar SOLO la apropiación de centro de costo de una factura ya
+// imputada (sin reimputar el comprobante). Usa el asiento guardado.
+router.post('/api/compras/facturas/:id/flexxus-centrocosto', auth, async (req, res) => {
+  try {
+    const { data: fila, error: e0 } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (e0 || !fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    if (!f.flexxus || !f.flexxus.ok) return res.status(422).json({ error: 'La factura no está imputada en Flexxus todavía.' });
+    const cc0 = f.flexxus.centro_costo || {};
+    const numeroasiento = cc0.numeroasiento ?? f.flexxus.numeroasiento ?? null;
+    if (numeroasiento == null) {
+      return res.status(422).json({ error: 'No tengo guardado el número de asiento de esta imputación (es anterior a esta función). Anulá el comprobante en Flexxus y reimputá.' });
+    }
+    const { apropiarCentroCosto } = require('./flexxus');
+    const { data: objs } = await supabase.from('objetivos').select('nombre, codigo_flexxus');
+    const cc = await apropiarCentroCosto(f, { respuesta: { numeroasiento } }, objs || []);
+    const flexxus = { ...f.flexxus, centro_costo: cc };
+    await supabaseCompras.from('facturas')
+      .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
+    res.json({ ok: true, centro_costo: cc });
+  } catch (err) {
+    console.error('flexxus centrocosto retry:', err.message);
+    res.status(500).json({ error: err.message || 'No pude apropiar el centro de costo' });
+  }
+});
+
 // Verificación previa: a qué proveedor de Flexxus iría la factura y con qué
 // número, SIN imputar nada. El panel la muestra antes de confirmar.
 router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) => {
