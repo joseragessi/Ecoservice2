@@ -1431,6 +1431,7 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
     const flexxus = {
       ok: true, fecha: new Date().toISOString(),
       tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
+      numerocomprobante_fmt: 'F' + String(r.tipocomprobante||'').slice(-1) + ' ' + require('./flexxus').formatearNumeroFlexxus(r.numerocomprobante),
       proveedor_creado: r.proveedor_creado, proveedor_codigo: r.proveedor_codigo,
       proveedor_nombre: r.proveedor_nombre, por: req.usuario || 'panel',
       centro_costo: centroCosto,
@@ -1487,7 +1488,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
       : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
     const prompt = 'Analizá esta factura argentina y devolvé ÚNICAMENTE JSON sin backticks:\n' +
-      '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","proveedor":"string","cuit":"string",' +
+      '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","letra":"A|B|C","proveedor":"string","cuit":"string",' +
       '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"monto_iva":0.00}],' +
       '"total_sin_iva":0.00,"total_iva":0.00,' +
       '"otros_conceptos":[{"concepto":"string","monto":0.00,"tipo":"percepcion|impuesto|otro"}]}\n' +
@@ -1498,6 +1499,8 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       'de fantasía/logo si figura la razón social. ECOSERVICE (CUIT 30-70793029-9) es siempre el ' +
       'CLIENTE: jamás lo pongas como proveedor ni uses su CUIT.\n' +
       '- "cuit" es el CUIT del emisor. Transcribí números EXACTOS, dígito por dígito.\n' +
+      '- "letra": el tipo de comprobante impreso en el recuadro grande del centro/derecha ' +
+      '(la letra sola A, B o C — factura C es la de monotributistas). Si no se ve, null.\n' +
       '- PROHIBIDO tomar como ítem o como concepto las líneas de TOTALES del pie: ' +
       '"Subtotal", "Total", "Importe Total", "Total a pagar", "Neto Gravado", "IVA 21%", ' +
       '"Importe Otros Tributos" y similares son SUMAS de lo anterior, no conceptos nuevos. ' +
