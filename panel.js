@@ -629,7 +629,7 @@ async function vBateas(view){
       <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
     </div>
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
-      ${kpi('KM recorridos',(k.km_total||0).toLocaleString('es-AR')+' km',k.dias_activos+' día(s) con viajes')}
+      ${kpi('KM recorridos',k.km_total>0?(k.km_total).toLocaleString('es-AR')+' km':'—',k.km_total>0?k.dias_activos+' día(s) con viajes':'odómetro fuera del flujo · '+k.dias_activos+' día(s) con viajes')}
       ${kpi('Puntos totales',k.puntos_total||0,'descargas en objetivos')}
       ${kpi('M³ transportados',(k.m3_total||0).toLocaleString('es-AR')+' m³',(k.bateas_total||0)+' bateas × 14 m³')}
       ${kpi('Bateas promedio/día',(k.bateas_promedio_dia!=null?k.bateas_promedio_dia:'—'),'por día con actividad')}
@@ -637,7 +637,7 @@ async function vBateas(view){
     <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Por chofer</div>
         ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">KM</th><th class="num">Bateas</th><th class="num">M³</th><th class="num">Puntos</th><th class="num">Días</th></tr></thead><tbody>
-          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km.toLocaleString('es-AR')}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.m3.toLocaleString('es-AR')}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td></tr>`).join('')}
+          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km>0?c.km.toLocaleString('es-AR'):'—'}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.m3.toLocaleString('es-AR')}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td></tr>`).join('')}
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
