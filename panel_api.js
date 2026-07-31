@@ -1760,7 +1760,7 @@ router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, r
 // El proveedor (Ferreyra, SERVISUD...) emite un listado consolidado del período.
 // Verificación previa: a qué proveedor de Flexxus iría la factura y con qué
 // número, SIN imputar nada. El panel la muestra antes de confirmar.
-router.get('/api/compras/:id/flexxus-preview', auth, async (req, res) => {
+router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) => {
   try {
     const { data: fila, error: e0 } = await supabaseCompras.from('facturas')
       .select('*').eq('id', req.params.id).single();
