@@ -3248,7 +3248,11 @@ function renderComprasBody(){
         ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money(nc)}</div>`:''}</td>
       <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
       <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}
-        ${inv.flexxus&&inv.flexxus.ok?'<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div>':''}</td>
+        ${(()=>{const fx=inv.flexxus;if(!fx||!fx.ok)return '<div class="badge b-gray" style="font-size:9.5px;margin-top:3px">sin imputar a Flexxus</div>';
+          const cc=fx.centro_costo;
+          if(cc&&cc.ok)return '<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ Flexxus + centro de costo</div>';
+          if(cc&&!cc.ok)return '<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div><div class="badge b-amber" style="font-size:9.5px;margin-top:2px" title="'+String(cc.motivo||'').replace(/"/g,'&quot;')+'">⚠ centro de costo pendiente</div>';
+          return '<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div>';})()}</td>
       <td style="text-align:right;white-space:nowrap">
         ${inv.comprobante&&inv.comprobante.ruta?'<span title="Tiene el comprobante adjunto" style="margin-right:5px;opacity:.6">📎</span>':''}
         <button class="btn-salir" style="padding:4px 9px;font-size:11.5px" onclick="verCompra('${inv.id}')">Ver</button>
@@ -3317,6 +3321,15 @@ async function imputarFlexxus(id){
   // Sin preview (Flexxus caído u otro error): flujo clásico con aviso genérico
   if(!await uiConfirm('No pude verificar contra Flexxus. Se va a intentar crear el comprobante F'+L+' con los datos de esta factura.','¿Continuar igual?',{ok:'Imputar'}))return;
   await ejecutarImputacion(id,L,false);
+}
+async function reintentarCentroCosto(id){
+  try{
+    const r=await api('/api/compras/facturas/'+id+'/flexxus-centrocosto',{method:'POST'});
+    const cc=r.centro_costo||{};
+    if(cc.ok)toast('Centro de costo apropiado ✓ ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+')');
+    else toast('Sigue pendiente: '+(cc.motivo||''),'error');
+    go('compras');
+  }catch(e){toast(e.message,'error');}
 }
 async function ejecutarImputacion(id,L,permitirAlta){
   try{
@@ -3461,7 +3474,7 @@ function vComprasDetalle(view){
         <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
         ${inv.flexxus&&inv.flexxus.centro_costo?(inv.flexxus.centro_costo.ok
           ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ✓ ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}</div>`
-          :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''}</div>`):''}
+          :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''} <button class="mini-btn" style="margin-left:6px" onclick="reintentarCentroCosto('${inv.id}')">↻ Reintentar</button></div>`):''}
         ${inv.assignmentMode==='per-item'?`<div class="divider"></div>
           ${(inv.items||[]).map((it,ix)=>{const asg=(inv.assignments||{})[ix]||{};
             return `<div class="queue-item" style="margin-bottom:6px">
@@ -3753,7 +3766,8 @@ async function comprasExtraer(){
   try{
     const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:comprasFile.data,fileType:comprasFile.type})});
     if(d.__error){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg=d.__error;}
-    else{comprasExtracted=d;comprasMsg='';}
+    else{comprasExtracted=d;comprasMsg='';
+      (d.__avisos||[]).forEach(a=>toast('⚠ '+a,'error'));}
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
   comprasStep='assign';go('compras');
