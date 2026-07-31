@@ -498,59 +498,72 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     } catch (e) { getErrores.push('ejercicio ' + ej + ': ' + String(e.message || e).slice(0, 160)); }
   }
   const valor = reparto.map(r => ({ codigocentrocosto: r.codigocentrocosto, porcentaje: r.porcentaje }));
-  let apropiacion;
-  const lineas = asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle);
-  const buscaCod = o => o == null ? null :
-    (o.codigoasiento ?? o.codigoAsiento ?? o.tipoasiento ?? o.codigotipoasiento ?? o.tipoAsiento ?? null);
-  if (Array.isArray(lineas) && lineas.length) {
-    apropiacion = lineas.map(l => ({ linea: l.linea ?? l.numerolinea ?? l.nrolinea ?? 1, valor }));
-    if (codigoasiento == null) codigoasiento = buscaCod(asiento) ?? buscaCod(lineas[0]);
-  } else {
-    apropiacion = [{ linea: 1, valor }];
-    if (codigoasiento == null) codigoasiento = buscaCod(asiento);
-  }
   if (codigoejercicio == null) codigoejercicio = ejEnv != null ? ejEnv : anio;
-  // Flexxus exige codigoasiento (tipo de asiento contable). Si no vino en
-  // ninguna respuesta, se puede fijar con FLEXXUS_CODIGO_ASIENTO en Railway.
-  if (codigoasiento == null && process.env.FLEXXUS_CODIGO_ASIENTO) {
-    codigoasiento = Number(process.env.FLEXXUS_CODIGO_ASIENTO);
+  const codUsuario = process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER;
+  const envAsiento = process.env.FLEXXUS_CODIGO_ASIENTO ? Number(process.env.FLEXXUS_CODIGO_ASIENTO) : null;
+
+  // El GET del asiento devuelve directamente la LISTA de líneas:
+  // [{linea, descripcion, codigoasiento, monto, utilizacentrocosto, esdebe,
+  //   centrocosto: [{codigocentrocosto, centro, porcentaje, monto}, ...]}]
+  const lineasAsiento = Array.isArray(asiento) ? asiento
+    : (asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle)) || null;
+
+  if (Array.isArray(lineasAsiento) && lineasAsiento.length) {
+    // Solo se apropian las líneas que usan centro de costo (la del gasto;
+    // proveedores/IVA vienen con utilizacentrocosto=false).
+    const apropiables = lineasAsiento.filter(l => l && l.utilizacentrocosto === true);
+    if (!apropiables.length) {
+      return conAsiento({ ok: false, motivo: 'Ninguna línea del asiento admite centro de costo. Líneas: ' +
+        JSON.stringify(lineasAsiento.map(l => ({ linea: l.linea, desc: l.descripcion, usa_cc: l.utilizacentrocosto }))).slice(0, 300) });
+    }
+    // Un PUT por línea apropiable, cada una con SU codigoasiento (viene por línea).
+    for (const l of apropiables) {
+      const ca = l.codigoasiento ?? envAsiento;
+      if (ca == null) {
+        return conAsiento({ ok: false, motivo: 'La línea ' + (l.linea ?? '?') + ' (' + (l.descripcion || '') +
+          ') no trae codigoasiento y no hay FLEXXUS_CODIGO_ASIENTO de respaldo.' });
+      }
+      const put = {
+        numeroasiento, codigoejercicio, codigoasiento: Number(ca),
+        codigousuario: codUsuario,
+        apropiacion: [{ linea: l.linea ?? 1, valor }],
+      };
+      await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
+    }
+  } else {
+    // No se pudo leer el asiento: camino a ciegas, solo con la variable fijada.
+    const ca = codigoasiento ?? envAsiento;
+    if (ca == null) {
+      return conAsiento({ ok: false, motivo: 'No pude leer el asiento para conocer sus líneas. ' +
+        (getErrores.length ? 'Errores de lectura: ' + getErrores.join(' · ') : '') });
+    }
+    const put = { numeroasiento, codigoejercicio, codigoasiento: Number(ca),
+      codigousuario: codUsuario, apropiacion: [{ linea: 1, valor }] };
+    await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
   }
-  if (codigoasiento == null) {
-    return conAsiento({
-      ok: false,
-      motivo: 'Flexxus exige "codigoasiento" (tipo de asiento) y no vino en ninguna respuesta. ' +
-        'Miralo en Flexxus con "Ver Asiento" del comprobante (el código/tipo del asiento) y fijalo en Railway como FLEXXUS_CODIGO_ASIENTO. ' +
-        'Asiento leído del API: ' + (asiento ? JSON.stringify(asiento).slice(0, 400) : 'no disponible. Errores del GET: ' + (getErrores.join(' · ') || 'sin detalle')),
-    });
-  }
-  const put = {
-    numeroasiento,
-    codigoejercicio,
-    codigoasiento: Number(codigoasiento),
-    codigousuario: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER,
-    apropiacion,
-  };
-  await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
-  // Verificación: releer el asiento y confirmar que los % quedaron de verdad
-  // (Flexxus puede responder 200 sin aplicar si algún identificador no matchea).
+
+  // Verificación REAL: releer el asiento y confirmar que cada centro del
+  // reparto quedó con porcentaje > 0 en las líneas apropiables.
   let verificado = null;
   try {
     const g2 = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
-    const a2 = JSON.stringify(g2.data || g2);
-    verificado = reparto.every(r => a2.includes(String(r.codigocentrocosto)));
+    const arr2 = Array.isArray(g2.data || g2) ? (g2.data || g2) : [];
+    const apro2 = arr2.filter(l => l && l.utilizacentrocosto === true);
+    if (apro2.length) {
+      verificado = reparto.every(r => apro2.every(l =>
+        (l.centrocosto || []).some(c => Number(c.codigocentrocosto) === r.codigocentrocosto && Number(c.porcentaje) > 0)));
+    }
   } catch (e) { verificado = null; }
-  console.log('[flexxus] centro de costo apropiado (asiento ' + numeroasiento + '/' + codigoejercicio +
+  console.log('[flexxus] centro de costo (asiento ' + numeroasiento + '/' + codigoejercicio +
     ', verificado=' + verificado + '): ' + reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
   if (verificado === false) {
     return conAsiento({ ok: false, motivo: 'Flexxus aceptó la apropiación pero al releer el asiento los porcentajes NO quedaron aplicados. ' +
-      'Identificadores enviados: asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + ', codigoasiento ' + Number(codigoasiento) + ' — alguno no coincide con el asiento real. ' +
-      (getErrores.length ? 'Lecturas fallidas previas: ' + getErrores.join(' · ') : '') });
+      'Asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + '. Avisame con este texto y lo miro.' });
   }
   return { ok: true, numeroasiento, codigoejercicio, reparto,
            verificado, get_diagnostico: getErrores.length ? getErrores : undefined };
 }
 
-// ── Diagnóstico: probar conexión y listar códigos configurables ──
 async function probarConexion() {
   await login();
   const out = { ok: true, url: process.env.FLEXXUS_URL, usuario: process.env.FLEXXUS_USER };
