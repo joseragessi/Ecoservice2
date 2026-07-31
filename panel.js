@@ -3321,7 +3321,11 @@ async function imputarFlexxus(id){
 async function ejecutarImputacion(id,L,permitirAlta){
   try{
     const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
-    toast(r.ya_existia?'Ya estaba imputada en Flexxus: la marqué como tal':'Imputada en Flexxus ✓');
+    const cc=r.flexxus&&r.flexxus.centro_costo;
+    if(r.ya_existia)toast('Ya estaba imputada en Flexxus: la marqué como tal');
+    else if(cc&&cc.ok)toast('Imputada ✓ + centro de costo apropiado ('+(cc.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')+')');
+    else toast('Imputada en Flexxus ✓');
+    if(cc&&!cc.ok)toast('Centro de costo pendiente: '+(cc.motivo||''),'error');
     go('compras');
   }catch(e){
     if(/PROV_NO_EXISTE/.test(e.message)||/No existe en Flexxus/.test(e.message)){
@@ -3455,6 +3459,9 @@ function vComprasDetalle(view){
       :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
         <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
         <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
+        ${inv.flexxus&&inv.flexxus.centro_costo?(inv.flexxus.centro_costo.ok
+          ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ✓ ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}</div>`
+          :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''}</div>`):''}
         ${inv.assignmentMode==='per-item'?`<div class="divider"></div>
           ${(inv.items||[]).map((it,ix)=>{const asg=(inv.assignments||{})[ix]||{};
             return `<div class="queue-item" style="margin-bottom:6px">
