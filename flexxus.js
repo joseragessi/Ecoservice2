@@ -422,6 +422,92 @@ async function imputarFactura(f, letra, opts = {}) {
   };
 }
 
+// ── Apropiación de centro de costo sobre el asiento del comprobante ──
+// Usa la imputación que la factura YA tiene cargada en el panel (por ítem o
+// total): nadie carga porcentajes — salen solos del peso de cada ítem.
+// Best-effort: si algo falla, la factura queda imputada igual y el motivo
+// se guarda para reintentarlo o resolverlo a mano.
+async function apropiarCentroCosto(f, resPost, objetivos) {
+  // 1) Reparto por objetivo desde lo ya imputado
+  const pesos = {};
+  if (f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length) {
+    const items = f.items || [];
+    for (const [ix, a] of Object.entries(f.assignments)) {
+      const obj = a && a.objetivo; if (!obj) continue;
+      const peso = Math.abs(Number((items[+ix] || {}).monto_sin_iva)) || 1;
+      pesos[obj] = (pesos[obj] || 0) + peso;
+    }
+  } else if (f.totalAssign && f.totalAssign.objetivo) {
+    pesos[f.totalAssign.objetivo] = 1;
+  }
+  const nombres = Object.keys(pesos);
+  if (!nombres.length) return { ok: false, motivo: 'La factura no tiene imputación por objetivo en el panel.' };
+
+  // 2) nombre del objetivo → código de centro de costo (Maestros → Objetivos)
+  const norm = s => String(s || '').trim().toLowerCase();
+  const mapa = {};
+  (objetivos || []).forEach(o => {
+    if (o.codigo_flexxus) mapa[norm(o.nombre)] = String(o.codigo_flexxus).trim().replace(/^0+(?=\d)/, '');
+  });
+  const sinCodigo = nombres.filter(n => !mapa[norm(n)]);
+  if (sinCodigo.length) {
+    return { ok: false, motivo: 'Objetivos sin código de centro de costo en Maestros → Objetivos: ' + sinCodigo.join(', ') };
+  }
+
+  // 3) Porcentajes proporcionales al neto de cada ítem, cerrando en 100.00
+  const total = nombres.reduce((s, n) => s + pesos[n], 0) || 1;
+  const reparto = nombres.map(n => ({
+    objetivo: n,
+    codigocentrocosto: Number(mapa[norm(n)]),
+    porcentaje: Math.round(pesos[n] * 10000 / total) / 100,
+  }));
+  const dif = Math.round((100 - reparto.reduce((s, r) => s + r.porcentaje, 0)) * 100) / 100;
+  if (Math.abs(dif) >= 0.01) reparto[0].porcentaje = Math.round((reparto[0].porcentaje + dif) * 100) / 100;
+
+  // 4) Asiento generado por el comprobante (viene en el response del POST)
+  const raw = (resPost && (resPost.respuesta || resPost)) || {};
+  const d = raw.data || raw;
+  const numeroasiento = d.numeroasiento ?? d.numeroAsiento ?? d.asiento ?? null;
+  if (numeroasiento == null) {
+    return { ok: false, motivo: 'Flexxus no devolvió número de asiento. Respuesta: ' + JSON.stringify(d).slice(0, 300) };
+  }
+  let codigoejercicio = d.codigoejercicio ?? d.ejercicio ?? null;
+  let codigoasiento = d.codigoasiento ?? null;
+
+  // 5) Leer el asiento para conocer sus líneas (probando ejercicios si no vino)
+  const anio = Number(String(f.fecha_factura || '').slice(0, 4)) || new Date().getFullYear();
+  const candidatos = codigoejercicio != null ? [codigoejercicio] : [anio, anio - 1, anio + 1];
+  let asiento = null;
+  for (const ej of candidatos) {
+    try {
+      const g = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + ej);
+      asiento = g.data || g; codigoejercicio = ej; break;
+    } catch (e) { /* probamos el siguiente ejercicio */ }
+  }
+  const valor = reparto.map(r => ({ codigocentrocosto: r.codigocentrocosto, porcentaje: r.porcentaje }));
+  let apropiacion;
+  const lineas = asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle);
+  if (Array.isArray(lineas) && lineas.length) {
+    apropiacion = lineas.map(l => ({ linea: l.linea ?? l.numerolinea ?? l.nrolinea ?? 1, valor }));
+    if (codigoasiento == null) codigoasiento = asiento.codigoasiento ?? null;
+  } else {
+    apropiacion = [{ linea: 1, valor }];
+  }
+  if (codigoejercicio == null) codigoejercicio = anio;
+
+  const put = {
+    numeroasiento,
+    codigoejercicio,
+    codigousuario: process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER,
+    apropiacion,
+  };
+  if (codigoasiento != null) put.codigoasiento = codigoasiento;
+  await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
+  console.log('[flexxus] centro de costo apropiado (asiento ' + numeroasiento + '/' + codigoejercicio + '): ' +
+    reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
+  return { ok: true, numeroasiento, codigoejercicio, reparto };
+}
+
 // ── Diagnóstico: probar conexión y listar códigos configurables ──
 async function probarConexion() {
   await login();
@@ -459,4 +545,4 @@ async function probarConexion() {
   return out;
 }
 
-module.exports = { imputarFactura, verificarImputacion, probarConexion, buscarProveedorPorCuit };
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit };
