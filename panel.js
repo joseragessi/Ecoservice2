@@ -3292,7 +3292,7 @@ async function imputarFlexxus(id){
   if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
   // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus
   let prev=null;
-  try{prev=await api('/api/compras/'+id+'/flexxus-preview?letra='+L);}catch(e){}
+  try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
   if(prev){
     if(prev.numero==null){toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
     if(prev.proveedor){
@@ -3318,7 +3318,7 @@ async function imputarFlexxus(id){
 }
 async function ejecutarImputacion(id,L,permitirAlta){
   try{
-    const r=await api('/api/compras/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
+    const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
     toast(r.ya_existia?'Ya estaba imputada en Flexxus: la marqué como tal':'Imputada en Flexxus ✓');
     go('compras');
   }catch(e){
