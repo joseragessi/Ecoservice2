@@ -616,4 +616,4 @@ async function probarConexion() {
   return out;
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit };
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus };
