@@ -282,9 +282,15 @@ async function guardarAlta(btn){
 
 /* ── Supervisor: incidencias por objetivo a cargo ── */
 let supObjAbierto=null, supIncAbierta=null;
+let supVista='incidencias';   // 'incidencias' | 'combustible'
+let cbPaso='foto';            // 'foto' | 'tipos' | 'repartir'
+let cbData=null;              // datos leídos del remito
+let cbObjetivos=[];           // objetivos para el buscador
+let cbReparto={gasoil:[],super:[]};  // renglones de reparto por tipo
 const SUP_PRIO={critico:['Crítico','#C0392B','#FDEDEB'],alta:['Alta','#B9770E','#FCF3DE'],media:['Media','#2471A3','#EAF2FA'],baja:['Baja','#1E8449','#E8F6EE']};
 const SUP_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esperando repuestos',en_reparacion:'En reparación',finalizado:'Finalizado'};
 function renderSupervisor(){
+  if(supVista==='combustible')return renderCombustibleSup();
   const objetivos=(datos&&datos.objetivos)||[];
   if(datos&&datos.sin_asignar){
     $('kpis').innerHTML='';$('tabs').innerHTML='';
@@ -298,7 +304,7 @@ function renderSupervisor(){
     <div class="kpi amber"><div class="v">${totAbiertas}</div><div class="l">Abiertas</div></div>
     <div class="kpi ${totCriticas?'amber':''}"><div class="v">${totCriticas}</div><div class="l">Críticas</div></div>
     <div class="kpi"><div class="v">${totReclam}</div><div class="l">Reclamadas</div></div>`;
-  $('tabs').innerHTML='';
+  $('tabs').innerHTML=`<button class="tab-cta" onclick="abrirCombustible()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">⛽ Cargar combustible</button>`;
   if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
   // Vista lista de objetivos (cantidad) → click abre incidencias
   $('lista').innerHTML=objetivos.map(o=>{
@@ -348,6 +354,150 @@ async function reclamarPrisa(id){
 
 /* ── (viejo) Supervisor de insumos — sin uso ── */
 let supBusca='', supEstado='', supAbierto=null;
+
+/* ── Combustible supervisor: foto → IA lee tipos → repartir → guardar ── */
+async function abrirCombustible(){
+  supVista='combustible';cbPaso='foto';cbData=null;cbReparto={gasoil:[],super:[]};
+  if(!cbObjetivos.length){try{cbObjetivos=await api('/api/app/supervisor/objetivos');}catch(e){cbObjetivos=[];}}
+  render();
+}
+function cerrarCombustible(){supVista='incidencias';cbPaso='foto';cbData=null;render();}
+
+function renderCombustibleSup(){
+  $('kpis').innerHTML='';$('tabs').innerHTML='';
+  if(cbPaso==='foto')return renderCbFoto();
+  if(cbPaso==='tipos')return renderCbTipos();
+  if(cbPaso==='repartir')return renderCbRepartir();
+}
+
+function renderCbFoto(){
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="cerrarCombustible()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
+    <div class="card" style="padding:16px">
+      <h3 style="margin:0 0 4px">Cargar combustible</h3>
+      <div class="desc" style="margin-bottom:14px">Sacale una foto al remito con la carga completa. La leo yo y después repartís cada tipo a los objetivos.</div>
+      <div id="cb-msg" style="font-size:13px;color:var(--tinta-2,#586B60);margin-bottom:12px"></div>
+      <input type="file" id="cb-file" accept="image/*" capture="environment" style="display:none" onchange="cbFoto(this)">
+      <button onclick="document.getElementById('cb-file').click()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">📷 Sacar foto del remito</button>
+      <button onclick="cbManual()" style="width:100%;padding:11px;border:none;background:none;color:var(--brote-2);font-size:13px;font-family:inherit;cursor:pointer;margin-top:6px">o cargar los litros a mano</button>
+    </div>`;
+}
+
+function cbFoto(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  $('cb-msg').textContent='Leyendo el remito… puede tardar unos segundos ⏳';
+  const img=new Image();
+  img.onload=async()=>{
+    const esc=Math.min(1,1600/Math.max(img.width,img.height));
+    const cv=document.createElement('canvas');
+    cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    const b64=cv.toDataURL('image/jpeg',0.85).split(',')[1];
+    try{
+      const d=await api('/api/app/supervisor/combustible/leer',{method:'POST',
+        body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
+      if(d.__error){$('cb-msg').textContent=d.__error;return;}
+      cbData=d;cbPaso='tipos';render();
+    }catch(e){$('cb-msg').textContent='Error: '+e.message;}
+  };
+  img.src=URL.createObjectURL(f);
+  input.value='';
+}
+function cbManual(){
+  cbData={proveedor:'',numero:'',fecha:new Date().toISOString().slice(0,10),litros:{gasoil:0,super:0}};
+  cbPaso='tipos';render();
+}
+
+function renderCbTipos(){
+  const d=cbData;
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="cbPaso='foto';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
+    <div class="card" style="padding:16px">
+      ${d.proveedor?`<div style="display:inline-flex;align-items:center;gap:5px;background:var(--brote-soft);color:var(--brote-2);font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;margin-bottom:12px">✓ ${d.proveedor}${d.numero?' · '+d.numero:''}</div>`:''}
+      <h3 style="margin:0 0 4px">¿Cuántos litros de cada tipo?</h3>
+      <div class="desc" style="margin-bottom:14px">Confirmá lo que trajo el remito. Después repartís cada uno a dónde fue.</div>
+      <div style="margin-bottom:12px"><div class="dl" style="font-size:12px;color:#586B60;margin-bottom:4px">🛢 Gasoil / Diesel (litros)</div>
+        <input type="number" id="cb-gasoil" value="${d.litros.gasoil||''}" placeholder="0" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:9px;font-size:16px;font-family:monospace"></div>
+      <div style="margin-bottom:8px"><div class="dl" style="font-size:12px;color:#586B60;margin-bottom:4px">⛽ Super (litros)</div>
+        <input type="number" id="cb-super" value="${d.litros.super||''}" placeholder="0" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:9px;font-size:16px;font-family:monospace"></div>
+      <button onclick="cbIrRepartir()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px">Repartir a los destinos →</button>
+    </div>`;
+}
+
+function cbIrRepartir(){
+  const g=Number($('cb-gasoil').value)||0, s=Number($('cb-super').value)||0;
+  if(g<=0&&s<=0){toast('Cargá al menos un tipo de combustible');return;}
+  cbData.litros={gasoil:g,super:s};
+  // Prefill: un renglón vacío por cada tipo que tenga litros
+  cbReparto={gasoil:g>0?[{litros:'',destino:'bidon',objetivo:''}]:[],super:s>0?[{litros:'',destino:'bidon',objetivo:''}]:[]};
+  cbPaso='repartir';render();
+}
+
+function cbSumado(tipo){return cbReparto[tipo].reduce((a,r)=>a+(Number(r.litros)||0),0);}
+function cbCuadra(tipo){return Math.abs(cbSumado(tipo)-(cbData.litros[tipo]||0))<0.01;}
+
+function renderCbRepartir(){
+  const objOpts=cbObjetivos.map(o=>`<option value="${o.nombre.replace(/"/g,'&quot;')}">`).join('');
+  const bloque=(tipo,label,emoji,color)=>{
+    if(!(cbData.litros[tipo]>0))return '';
+    const tot=cbData.litros[tipo], sum=cbSumado(tipo), rest=Math.round((tot-sum)*100)/100;
+    const estado=cbCuadra(tipo)?`<div style="font-size:12px;font-weight:600;color:var(--brote-2);margin-bottom:10px">✓ Repartido ${sum} de ${tot}</div>`
+      :rest>0?`<div style="font-size:12px;font-weight:600;color:#B9770E;margin-bottom:10px">⚠ Te faltan repartir ${rest} lt (${sum} de ${tot})</div>`
+      :`<div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:10px">✕ Te pasaste ${Math.abs(rest)} lt (${sum} de ${tot})</div>`;
+    const pct=Math.min(100,Math.round(sum*100/tot));
+    const barColor=cbCuadra(tipo)?color:rest>0?'#D98A1F':'#C0392B';
+    const renglones=cbReparto[tipo].map((r,i)=>`
+      <div style="display:flex;align-items:center;gap:7px;padding:8px;background:#F4F6F3;border-radius:10px;margin-bottom:7px">
+        <input type="number" value="${r.litros}" placeholder="0" onchange="cbSet('${tipo}',${i},'litros',this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
+        <span style="color:#8C9B92">→</span>
+        ${r.destino==='unidad'
+          ? `<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600;display:flex;align-items:center;gap:4px">🚛 A la unidad<span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tanque</span></div>`
+          : `<input type="text" list="cb-objs" value="${(r.objetivo||'').replace(/"/g,'&quot;')}" placeholder="Objetivo…" onchange="cbSet('${tipo}',${i},'objetivo',this.value)" style="flex:1;min-width:0;padding:7px 9px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box">`}
+        <button onclick="cbDestino('${tipo}',${i})" title="Cambiar destino" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
+        <button onclick="cbQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
+      </div>`).join('');
+    return `<div style="border:1px solid #E6EBE4;border-top:3px solid ${color};border-radius:14px;padding:14px;margin-bottom:13px;background:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;font-size:15px">${emoji} ${label}</span><span style="font-family:monospace;font-weight:700;font-size:14px">${tot} lt</span></div>
+      <div style="height:8px;background:#F4F6F3;border-radius:5px;overflow:hidden;margin-bottom:5px"><div style="width:${pct}%;height:100%;background:${barColor}"></div></div>
+      ${estado}
+      ${renglones}
+      <button onclick="cbAgregar('${tipo}')" style="width:100%;padding:9px;border:1px dashed #d8dcd8;border-radius:9px;background:none;color:#586B60;font-size:12.5px;font-family:inherit;cursor:pointer;font-weight:500">＋ Agregar destino</button>
+    </div>`;
+  };
+  const todoCuadra=(cbData.litros.gasoil>0?cbCuadra('gasoil'):true)&&(cbData.litros.super>0?cbCuadra('super'):true);
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="cbPaso='tipos';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
+    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#8C9B92;font-weight:600;margin-bottom:10px">¿A dónde fue cada uno?</div>
+    ${bloque('gasoil','Gasoil','🛢','#D98A1F')}
+    ${bloque('super','Super','⛽','#3B7DC4')}
+    <datalist id="cb-objs">${objOpts}</datalist>
+    <button onclick="cbGuardar()" ${todoCuadra?'':'disabled'} style="width:100%;padding:15px;border:none;border-radius:12px;background:${todoCuadra?'var(--brote)':'#d8dcd8'};color:${todoCuadra?'#fff':'#8C9B92'};font-size:15px;font-weight:700;font-family:inherit;cursor:${todoCuadra?'pointer':'default'}">Confirmar carga</button>
+    ${todoCuadra?'':'<div style="text-align:center;font-size:12px;color:#C0392B;margin-top:6px">Ajustá los litros hasta que cada tipo cuadre.</div>'}`;
+}
+
+function cbSet(tipo,i,campo,val){cbReparto[tipo][i][campo]=val;render();}
+function cbAgregar(tipo){cbReparto[tipo].push({litros:'',destino:'bidon',objetivo:''});render();}
+function cbQuitar(tipo,i){cbReparto[tipo].splice(i,1);render();}
+function cbDestino(tipo,i){const r=cbReparto[tipo][i];r.destino=r.destino==='unidad'?'bidon':'unidad';if(r.destino==='unidad')r.objetivo='';render();}
+
+async function cbGuardar(){
+  const repartos=[];
+  ['gasoil','super'].forEach(tipo=>{
+    cbReparto[tipo].forEach(r=>{
+      const l=Number(r.litros)||0;if(l<=0)return;
+      repartos.push({tipo,litros:l,destino:r.destino,objetivo_nombre:r.destino==='bidon'?(r.objetivo||null):null});
+    });
+  });
+  if(!repartos.length){toast('No hay litros para cargar');return;}
+  // Validar que los bidones tengan objetivo
+  if(repartos.some(r=>r.destino==='bidon'&&!r.objetivo_nombre)){toast('Cada bidón necesita un objetivo');return;}
+  try{
+    const d=await api('/api/app/supervisor/combustible',{method:'POST',
+      body:JSON.stringify({proveedor:cbData.proveedor,numero:cbData.numero,fecha:cbData.fecha,tipo_doc:cbData.tipo_doc||'remito',repartos,datos_ia:cbData.items_raw?{items:cbData.items_raw}:null})});
+    if(d&&d.ok){toast('Carga guardada ✓');cerrarCombustible();}
+    else toast('No se pudo guardar');
+  }catch(e){toast('Error: '+e.message);}
+}
 
 /* ── Planilla de service: foto → IA → revisión → guardar ── */
 let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
