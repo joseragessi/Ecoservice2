@@ -1538,8 +1538,9 @@ async function vRepInd(view){
   const finPrev=finalizadas.filter(esPrev), finCorr=finalizadas.filter(r=>!esPrev(r));
   const criticasAltas=activas.filter(r=>r.prioridad==='critico'||r.prioridad==='alta').length;
 
-  // Resolución promedio (creada → finalizada)
-  const tiempos=finalizadas.map(r=>diasEntre(r.created_at,r.fecha_finalizado)).filter(t=>t!=null);
+  // Resolución promedio (creada → finalizada), SOLO correctivas: las preventivas
+  // se programan con anticipación y distorsionarían el tiempo real de taller.
+  const tiempos=finCorr.map(r=>diasEntre(r.created_at,r.fecha_finalizado)).filter(t=>t!=null);
   const tProm=tiempos.length?tiempos.reduce((s,t)=>s+t,0)/tiempos.length:null;
 
   // % preventivo del período (sobre finalizadas)
@@ -1554,12 +1555,15 @@ async function vRepInd(view){
     if(conInt.length){cumpl=Math.round(alDia*100/conInt.length);cumplSub=alDia+' de '+conInt.length+' rodados sin vencer';}
   }catch(e){}
 
-  // Reincidencia: correctivo sobre la misma unidad dentro de los 30 días de una finalización
+  // Reincidencia: la misma unidad vuelve como correctivo dentro de 30 días de
+  // una finalización. Se busca la vuelta DENTRO DEL MISMO PERÍODO filtrado (fs),
+  // no contra toda la base, para que el % sea coherente con lo que se mira.
+  // OJO: cuenta cualquier regreso de la unidad, sea o no la misma falla.
   const finConUni=finalizadas.filter(r=>r.fecha_finalizado&&normU(r.numero_unidad));
   let reinc=0;
   finConUni.forEach(f=>{
     const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
-    if(todas.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})()))reinc++;
+    if(fs.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})()))reinc++;
   });
   const pctReinc=finConUni.length?Math.round(reinc*100/finConUni.length):null;
 
@@ -1623,16 +1627,23 @@ async function vRepInd(view){
   const mecs={};
   fs.forEach(r=>{
     const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[],dias:new Set(),reinc:0};
+    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[],dias:new Set(),reinc:0,enTallerHoy:0};
     if(r.estado==='finalizado'){mecs[k].finalizadas++;if(esPrev(r))mecs[k].prev++;
       const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);
       if(r.fecha_finalizado)mecs[k].dias.add(String(r.fecha_finalizado).slice(0,10));}
     else mecs[k].activas++;
   });
-  // Reincidencia atribuida al mecánico que reparó la 1ª vez (misma unidad vuelve en 30d)
+  // "En taller ahora" es un dato del PRESENTE (no del período): se cuenta sobre
+  // toda la base, no sobre el filtro de mes.
+  todas.filter(r=>r.estado!=='finalizado').forEach(r=>{
+    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
+    if(mecs[k])mecs[k].enTallerHoy++;
+  });
+  // Reincidencia atribuida al mecánico que reparó la 1ª vez (misma unidad vuelve
+  // en 30d, dentro del período filtrado). No distingue si es la misma falla.
   finConUni.forEach(f=>{
     const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
-    const volvio=todas.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})());
+    const volvio=fs.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})());
     if(volvio){const m=f.mecanicos?f.mecanicos.nombre:'Sin asignar';if(mecs[m])mecs[m].reinc++;}
   });
   const tablaMec=Object.entries(mecs).sort((a,b)=>{
@@ -1681,14 +1692,14 @@ async function vRepInd(view){
             <span class="mono" style="font-weight:700;font-size:16px">${tp!=null?Math.round(tp*10)/10+' d':'—'}</span></div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0 0">
             <span style="font-size:12px;color:var(--tinta-2)">En taller ahora</span>
-            <span class="mono" style="font-weight:700;font-size:16px">${v.activas}</span></div>
+            <span class="mono" style="font-weight:700;font-size:16px">${v.enTallerHoy}</span></div>
         </div></div>`;}).join('');
 
-  // Detalle de máquinas que volvieron al taller (misma unidad en 30 días)
+  // Detalle de máquinas que volvieron al taller (misma unidad en 30 días, en el período)
   const reincidencias=[];
   finConUni.forEach(f=>{
     const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
-    const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
+    const vuelta=fs.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
       .map(o=>({o,c:new Date(o.created_at).getTime()}))
       .filter(x=>x.c>ff&&x.c-ff<=30*86400000)
       .sort((a,b)=>a.c-b.c)[0];
@@ -1719,7 +1730,7 @@ async function vRepInd(view){
     <div class="kpi plain"><div class="kpi-label">Resolución prom.</div><div class="kpi-val">${tProm!=null?Math.round(tProm*10)/10:'—'}</div><div class="kpi-sub">días creada → finalizada</div></div>
     <div class="kpi plain"><div class="kpi-label">% Preventivo</div><div class="kpi-val" style="${pctPrev>=25?'color:var(--brote-2)':''}">${pctPrev!=null?pctPrev+'%':'—'}</div><div class="kpi-sub">${finPrev.length} de ${finalizadas.length} finalizadas</div></div>
     <div class="kpi plain"><div class="kpi-label">Cumplimiento prev.</div><div class="kpi-val" style="${cumpl!=null&&cumpl<70?'color:#A32D2D':cumpl!=null?'color:var(--brote-2)':''}">${cumpl!=null?cumpl+'%':'—'}</div><div class="kpi-sub">${cumplSub}</div></div>
-    <div class="kpi plain"><div class="kpi-label">Reincidencia 30d</div><div class="kpi-val" style="${pctReinc>=20?'color:#A32D2D':''}">${pctReinc!=null?pctReinc+'%':'—'}</div><div class="kpi-sub">vuelven al taller en 30 días</div></div>
+    <div class="kpi plain"><div class="kpi-label">Reincidencia 30d</div><div class="kpi-val" style="${pctReinc>=20?'color:#A32D2D':''}">${pctReinc!=null?pctReinc+'%':'—'}</div><div class="kpi-sub" title="La misma unidad volvió al taller dentro de los 30 días. No verifica que sea la misma falla.">misma unidad vuelve en 30 días</div></div>
     <div class="kpi plain"><div class="kpi-label">Espera repuestos</div><div class="kpi-val">${espProm!=null?Math.round(espProm*10)/10:'—'}</div><div class="kpi-sub">días prom. · ${espAhora} esperando ahora</div></div>
   </div>
   ${cardsMec?`<div style="font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:6px 0 10px">Productividad por mecánico <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--tinta-3)">· máquinas por día y rebotes</span></div>
@@ -1727,7 +1738,7 @@ async function vRepInd(view){
   ${Object.keys(mecs).length>6?`<div class="panel" style="margin-bottom:18px"><div class="panel-title">Todos los mecánicos <span class="sub" style="font-weight:400;font-size:11px">· comparativo completo</span></div>
     <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
     <tbody>${tablaMec}</tbody></table></div>`:''}
-  <div class="panel" style="margin-bottom:18px"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · atribuido al que la reparó</span></div>
+  <div class="panel" style="margin-bottom:18px"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · verificá que sea la misma falla</span></div>
     <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días entre visitas</th><th>Reparó (1ª vez)</th></tr></thead>
     <tbody>${tablaReinc||'<tr><td colspan="5" class="sub" style="padding:10px">Sin reincidencias en el período 🎉</td></tr>'}</tbody></table>
   </div>
