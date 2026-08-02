@@ -1650,8 +1650,39 @@ async function vRepInd(view){
         <td class="num" style="${rCol}">${pctR!=null?pctR+'%':'—'}</td>
         <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
 
-  // Detalle de máquinas que volvieron al taller (misma unidad en 30 días)
-  const reincidencias=[];
+  // Cards visuales de productividad (top mecánicos por máq/día)
+  const cardsMec=Object.entries(mecs).sort((a,b)=>{
+      const pa=a[1].dias.size?a[1].finalizadas/a[1].dias.size:0, pb=b[1].dias.size?b[1].finalizadas/b[1].dias.size:0;
+      return pb-pa;})
+    .filter(([n])=>n!=='Sin asignar').slice(0,6)
+    .map(([n,v])=>{
+      const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
+      const maqDia=v.dias.size?Math.round(v.finalizadas/v.dias.size*10)/10:null;
+      const pctR=v.finalizadas?Math.round(v.reinc*100/v.finalizadas):null;
+      const iniciales=n.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+      const rTag=pctR==null?'':pctR===0?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--brote-soft);color:var(--brote-2)">sin rebotes</span>'
+        :pctR>=15?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:#FCEBED;color:#A32D2D">alta</span>'
+        :'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--diesel-soft);color:#854F0B">seguir</span>';
+      const rCol=pctR==null?'':pctR===0?'var(--brote-2)':pctR>=15?'#A32D2D':'var(--diesel)';
+      return `<div style="background:#fff;border:1px solid var(--linea);border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(22,40,30,.05)">
+        <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;align-items:center;gap:10px">
+          <div style="width:34px;height:34px;border-radius:50%;background:var(--brote-soft);color:var(--brote-2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0">${iniciales}</div>
+          <div><div style="font-weight:600;font-size:13.5px">${n}</div><div class="sub">${v.finalizadas} finalizadas · ${v.dias.size} día${v.dias.size===1?'':'s'}</div></div>
+        </div>
+        <div style="padding:6px 16px 14px">
+          <div style="background:var(--brote-soft);margin:0 -16px 0;padding:10px 16px;display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:12px;color:var(--tinta-2)">Máquinas por día</span>
+            <span class="mono" style="font-weight:700;font-size:22px;color:var(--brote-2)">${maqDia!=null?maqDia:'—'}</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--linea)">
+            <span style="font-size:12px;color:var(--tinta-2)">Reincidencia</span>
+            <span class="mono" style="font-weight:700;font-size:16px;color:${rCol}">${pctR!=null?pctR+'% ':'— '}${rTag}</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--linea)">
+            <span style="font-size:12px;color:var(--tinta-2)">Resolución prom.</span>
+            <span class="mono" style="font-weight:700;font-size:16px">${tp!=null?Math.round(tp*10)/10+' d':'—'}</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0 0">
+            <span style="font-size:12px;color:var(--tinta-2)">En taller ahora</span>
+            <span class="mono" style="font-weight:700;font-size:16px">${v.activas}</span></div>
+        </div></div>`;}).join('');
   finConUni.forEach(f=>{
     const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
     const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
@@ -1698,6 +1729,8 @@ async function vRepInd(view){
       <tbody>${tablaUni||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
     </div>
   </div>
+  ${cardsMec?`<div style="font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:6px 0 10px">Productividad por mecánico</div>
+  <div class="grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:18px">${cardsMec}</div>`:''}
   <div class="grid g-2" style="margin-bottom:18px">
     <div class="panel"><div class="panel-title">Productividad por mecánico <span class="sub" style="font-weight:400;font-size:11px">· máquinas por día y rebotes</span></div>
       <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
