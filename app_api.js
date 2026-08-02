@@ -520,6 +520,123 @@ router.put('/api/app/service/:id', authApp('mecanico'), async (req, res) => {
   }
 });
 
+// ══ CARGA DE COMBUSTIBLE · SUPERVISORES ══════════════════════
+// El supervisor fotografía el remito, la IA lo lee (reusa extraerComprobante),
+// él confirma litros por tipo y reparte cada tipo a destinos (unidad/bidones a
+// objetivos). Entra a cargas_combustible como cualquier carga → aparece en el
+// panel de Combustible con su modal de detalle. Solo super y gasoil.
+const MODEL_REMITO_SUP = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+
+// 1) Leer el remito: foto → IA precarga proveedor, número, fecha y litros por tipo
+router.post('/api/app/supervisor/combustible/leer', authApp('supervisor'), async (req, res) => {
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta la foto del remito' });
+    const { extraerComprobante } = require('./extraccion');
+    const buffer = Buffer.from(fileData, 'base64');
+    const datos = await extraerComprobante(buffer, fileType || 'image/jpeg');
+    // Agrupar litros por tipo (super / gasoil), que es como reparte el supervisor
+    const norm = s => String(s || '').toUpperCase();
+    const tipos = { gasoil: 0, super: 0 };
+    (datos.items || []).forEach(it => {
+      const p = norm(it.producto), l = Number(it.litros) || 0;
+      if (/SUPER|NAFTA/.test(p) && !/DIESEL|GASOIL/.test(p)) tipos.super += l;
+      else tipos.gasoil += l;  // diesel/gasoil y cualquier otro combustible líquido
+    });
+    res.json({
+      ok: true,
+      proveedor: datos.proveedor || null,
+      cuit: datos.cuit || null,
+      numero: datos.numero || null,
+      fecha: datos.fecha || null,
+      tipo_doc: datos.tipo_doc || 'remito',
+      litros: {
+        gasoil: Math.round(tipos.gasoil * 100) / 100,
+        super:  Math.round(tipos.super  * 100) / 100,
+      },
+      items_raw: datos.items || [],
+    });
+  } catch (err) {
+    console.error('sup combustible leer:', err);
+    res.json({ __error: 'No pude leer el remito. Sacá la foto más derecha y con buena luz, o cargá los litros a mano.' });
+  }
+});
+
+// 2) Guardar la carga con su reparto multi-destino.
+// body: { proveedor, numero, fecha, tipo_doc, imagen(base64 opcional),
+//   repartos:[{ tipo:'gasoil'|'super', litros, destino:'unidad'|'bidon',
+//               objetivo_nombre, objetivo_id, patente }] }
+router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    const repartos = Array.isArray(d.repartos) ? d.repartos.filter(r => Number(r.litros) > 0) : [];
+    if (!repartos.length) return res.status(400).json({ error: 'No hay litros para cargar' });
+
+    // Resolver proveedor por nombre (o dejar en raw). Best-effort, nunca frena.
+    let proveedorId = null;
+    if (d.proveedor) {
+      const { data: prov } = await supabase.from('proveedores')
+        .select('id').ilike('nombre', d.proveedor.trim()).limit(1).maybeSingle();
+      if (prov) proveedorId = prov.id;
+    }
+    // Resolver objetivos por nombre para los que no vengan con id
+    const nombresObj = [...new Set(repartos.filter(r => r.destino === 'bidon' && !r.objetivo_id && r.objetivo_nombre).map(r => r.objetivo_nombre.trim()))];
+    const mapaObj = {};
+    if (nombresObj.length) {
+      const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
+      (objs || []).forEach(o => { mapaObj[o.nombre.trim().toUpperCase()] = o.id; });
+    }
+
+    const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
+    const resumen = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ ' + (r.objetivo_nombre || '?') : '→ unidad'}`).join(' · ');
+
+    const { data: carga, error } = await supabase.from('cargas_combustible').insert({
+      origen: 'app_supervisor',
+      tipo_doc: d.tipo_doc || 'remito',
+      estado: 'sin_facturar',
+      destino: resumen,
+      objetivo_id: repartos.find(r => r.objetivo_id)?.objetivo_id
+        || (repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre) ? mapaObj[repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre).objetivo_nombre.trim().toUpperCase()] : null) || null,
+      capataz_id: req.app_user.mid || null,
+      proveedor_id: proveedorId,
+      fecha: d.fecha || new Date().toISOString().slice(0, 10),
+      numero_remito: d.numero || null,
+      patente_raw: repartos.find(r => r.patente)?.patente || null,
+      litros_total: litrosTotal,
+      datos_ia: d.datos_ia || null,
+    }).select('id').single();
+    if (error || !carga) throw (error || new Error('no se creó la carga'));
+
+    const items = repartos.map(r => {
+      const oid = r.objetivo_id || (r.destino === 'bidon' && r.objetivo_nombre ? mapaObj[r.objetivo_nombre.trim().toUpperCase()] : null) || null;
+      return {
+        carga_id: carga.id,
+        producto: r.tipo === 'super' ? 'SUPER' : 'GASOIL',
+        es_combustible: true,
+        litros: Number(r.litros),
+        destino: r.destino === 'bidon' ? 'bidon' : 'unidad',
+        objetivo_id: r.destino === 'bidon' ? oid : null,
+        destino_detalle: r.destino === 'bidon' ? (r.objetivo_nombre || null) : null,
+      };
+    });
+    await supabase.from('cargas_combustible_items').insert(items);
+    res.json({ ok: true, id: carga.id });
+  } catch (err) {
+    console.error('sup combustible guardar:', err);
+    res.status(500).json({ error: 'Error guardando la carga' });
+  }
+});
+
+// Objetivos para el buscador del reparto
+router.get('/api/app/supervisor/objetivos', authApp('supervisor'), async (req, res) => {
+  try {
+    const { data } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+    res.json(data || []);
+  } catch (err) {
+    res.json([]);
+  }
+});
+
 // Últimos services cargados (de TODOS los mecánicos: en el taller todos
 // necesitan ver qué service se le hizo a cada unidad)
 router.get('/api/app/services', authApp('mecanico'), async (req, res) => {
