@@ -597,13 +597,14 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
       destino: resumen,
       objetivo_id: repartos.find(r => r.objetivo_id)?.objetivo_id
         || (repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre) ? mapaObj[repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre).objetivo_nombre.trim().toUpperCase()] : null) || null,
-      capataz_id: req.app_user.mid || null,
+      capataz_id: null,  // el supervisor vive en `mecanicos`, no en `capataces` (capataz_id es FK a capataces)
       proveedor_id: proveedorId,
       fecha: d.fecha || new Date().toISOString().slice(0, 10),
       numero_remito: d.numero || null,
       patente_raw: repartos.find(r => r.patente)?.patente || null,
       litros_total: litrosTotal,
       datos_ia: d.datos_ia || null,
+      respuesta_capataz: `Cargado por supervisor: ${req.app_user.nombre || '—'}`,
     }).select('id').single();
     if (error || !carga) throw (error || new Error('no se creó la carga'));
 
@@ -623,7 +624,7 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
     res.json({ ok: true, id: carga.id });
   } catch (err) {
     console.error('sup combustible guardar:', err);
-    res.status(500).json({ error: 'Error guardando la carga' });
+    res.status(500).json({ error: 'Error guardando la carga: ' + (err.message || err.details || err.hint || 'desconocido') });
   }
 });
 
