@@ -378,8 +378,10 @@ function renderCbFoto(){
       <div class="desc" style="margin-bottom:14px">Sacale una foto al remito con la carga completa. La leo yo y después repartís cada tipo a los objetivos.</div>
       <div id="cb-msg" style="font-size:13px;color:var(--tinta-2,#586B60);margin-bottom:12px"></div>
       <input type="file" id="cb-file" accept="image/*" capture="environment" style="display:none" onchange="cbFoto(this)">
+      <input type="file" id="cb-file-gal" accept="image/*" style="display:none" onchange="cbFoto(this)">
       <button onclick="document.getElementById('cb-file').click()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">📷 Sacar foto del remito</button>
-      <button onclick="cbManual()" style="width:100%;padding:11px;border:none;background:none;color:var(--brote-2);font-size:13px;font-family:inherit;cursor:pointer;margin-top:6px">o cargar los litros a mano</button>
+      <button onclick="document.getElementById('cb-file-gal').click()" style="width:100%;padding:12px;border:1px solid var(--brote);border-radius:12px;background:#fff;color:var(--brote-2);font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px">🖼 Buscar en la galería</button>
+      <button onclick="cbManual()" style="width:100%;padding:10px;border:none;background:none;color:var(--tinta-3,#7C8A84);font-size:12.5px;font-family:inherit;cursor:pointer;margin-top:4px">o cargar los litros a mano</button>
     </div>`;
 }
 
