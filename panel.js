@@ -1683,6 +1683,9 @@ async function vRepInd(view){
             <span style="font-size:12px;color:var(--tinta-2)">En taller ahora</span>
             <span class="mono" style="font-weight:700;font-size:16px">${v.activas}</span></div>
         </div></div>`;}).join('');
+
+  // Detalle de máquinas que volvieron al taller (misma unidad en 30 días)
+  const reincidencias=[];
   finConUni.forEach(f=>{
     const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
     const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
