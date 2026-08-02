@@ -580,13 +580,21 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
     // Días con actividad (fechas distintas) para el promedio de bateas por día
     const diasConViajes = new Set(viajes.map(v => v.fecha)).size;
 
-    // Por chofer
+    // Por chofer (jornadas = filas de ese chofer; prom = bateas ÷ jornadas)
     const porChofer = {};
     viajes.forEach(v => {
       const k = v.capataces ? v.capataces.nombre : 'Sin chofer';
-      const o = porChofer[k] || (porChofer[k] = { chofer: k, km: 0, bateas: 0, puntos: 0, jornadas: 0 });
-      o.km += Number(v.km) || 0; o.bateas += Number(v.total_bateas) || 0;
+      const o = porChofer[k] || (porChofer[k] = { chofer: k, bateas: 0, puntos: 0, jornadas: 0 });
+      o.bateas += Number(v.total_bateas) || 0;
       o.puntos += Number(v.puntos_bajada) || 0; o.jornadas++;
+    });
+
+    // Por camión / unidad (mismo cálculo, agrupado por patente)
+    const porUnidad = {};
+    viajes.forEach(v => {
+      const k = v.unidades ? v.unidades.patente : (v.patente_raw || 'Sin unidad');
+      const o = porUnidad[k] || (porUnidad[k] = { unidad: k, bateas: 0, jornadas: 0 });
+      o.bateas += Number(v.total_bateas) || 0; o.jornadas++;
     });
 
     // Bateas por objetivo (suma de todas las paradas)
@@ -596,19 +604,25 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       porObjetivo[k] = (porObjetivo[k] || 0) + (Number(p.bateas) || 0);
     }));
 
+    const prom = (bat, jor) => jor ? Math.round((bat / jor) * 10) / 10 : 0;
+
     res.json({
       periodo: { desde, hasta },
       kpis: {
-        km_total: Math.round(kmTotal * 10) / 10,
         puntos_total: puntosTotal,
         m3_total: bateasTotal * M3_POR_BATEA,
-        bateas_promedio_dia: diasConViajes ? Math.round((bateasTotal / diasConViajes) * 10) / 10 : 0,
         bateas_total: bateasTotal,
+        jornadas_total: jornadas,
+        // Promedio real: total de bateas ÷ total de jornadas trabajadas
+        bateas_promedio_jornada: prom(bateasTotal, jornadas),
         dias_activos: diasConViajes,
       },
       por_chofer: Object.values(porChofer).map(o => ({
-        ...o, km: Math.round(o.km * 10) / 10, m3: o.bateas * M3_POR_BATEA,
-      })).sort((a, b) => b.km - a.km),
+        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
+      })).sort((a, b) => b.prom_jornada - a.prom_jornada),
+      por_unidad: Object.values(porUnidad).map(o => ({
+        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
+      })).sort((a, b) => b.prom_jornada - a.prom_jornada),
       por_objetivo: Object.entries(porObjetivo).map(([nombre, bateas]) => ({ nombre, bateas, m3: bateas * M3_POR_BATEA }))
         .sort((a, b) => b.bateas - a.bateas),
     });
