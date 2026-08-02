@@ -525,6 +525,32 @@ async function vCombustible(view){
     if(combMes)params.push('mes='+combMes);
     const cs=await api('/api/combustible'+(params.length?'?'+params.join('&'):''));
     combCargas=cs;
+    // ---- Indicadores del período (sobre cargas no anuladas) ----
+    const vivas=cs.filter(c=>c.estado!=='anulada');
+    let litTot=0,litUni=0,litBid=0,nFact=0,nSf=0;
+    const porObj={},porTipo={},bidObj={};
+    vivas.forEach(c=>{
+      const its=c.cargas_combustible_items||[];
+      const objC=c.objetivos?c.objetivos.nombre:'Sin objetivo';
+      if(c.estado==='facturada')nFact++;else nSf++;
+      if(its.length){
+        its.forEach(i=>{
+          const l=Number(i.litros)||0;litTot+=l;
+          if(i.destino==='bidon'){litBid+=l;const o=i.destino_detalle||objC;bidObj[o]=(bidObj[o]||0)+l;porObj[o]=(porObj[o]||0)+l;}
+          else{litUni+=l;porObj[objC]=(porObj[objC]||0)+l;}
+          const t=(i.producto||'—').trim().toUpperCase();porTipo[t]=(porTipo[t]||0)+l;
+        });
+      }else{const l=Number(c.litros_total)||0;litTot+=l;litUni+=l;porObj[objC]=(porObj[objC]||0)+l;}
+    });
+    const fmtL=n=>Math.round(n).toLocaleString('es-AR')+' lt';
+    const pct=(n,t)=>t?Math.round(n*100/t):0;
+    const barras=(obj,color,max)=>{const ents=Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,7);
+      const mx=max||Math.max(...ents.map(([,v])=>v),1);
+      return ents.length?ents.map(([n,v])=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+        <span style="width:180px;font-size:12px;font-weight:500;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n}</span>
+        <div style="flex:1;height:15px;background:var(--papel);border-radius:5px;overflow:hidden"><div style="width:${Math.round(v*100/mx)}%;height:100%;background:${color}"></div></div>
+        <span class="mono" style="width:80px;text-align:right;font-size:12px;font-weight:600;flex-shrink:0">${fmtL(v)}</span></div>`).join('')
+        :'<div class="sub" style="padding:8px 0">Sin datos en el período.</div>';};
     const chips=['','sin_facturar','facturada','anulada'].map(e=>
       `<div class="chip-f ${filtroComb===e?'on':''}" onclick="filtroComb='${e}';go('combustible')">${e?cap(e):'Todas'}</div>`).join('');
     const hoyM=new Date();
@@ -539,6 +565,20 @@ async function vCombustible(view){
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div>
       <div class="spacer"></div>${selMes}</div>
     ${tabs}
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Litros totales</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(litTot)}</div><div class="kpi-sub">${vivas.length} cargas</div></div>
+      <div class="kpi plain"><div class="kpi-label">A unidades</div><div class="kpi-val">${fmtL(litUni)}</div><div class="kpi-sub">${pct(litUni,litTot)}% · al tanque</div></div>
+      <div class="kpi plain"><div class="kpi-label">A bidones</div><div class="kpi-val">${fmtL(litBid)}</div><div class="kpi-sub">${pct(litBid,litTot)}% · a objetivos</div></div>
+      <div class="kpi plain"><div class="kpi-label">Estado</div><div class="kpi-val">${nFact}/${nSf}</div><div class="kpi-sub">facturadas / sin facturar</div></div>
+    </div>
+    <div class="grid g-2" style="margin-bottom:14px">
+      <div class="panel"><div class="panel-title">Litros por objetivo <span class="sub" style="font-weight:400;font-size:11px">· dónde se consumió</span></div>
+        <div style="margin-top:10px">${barras(porObj,'var(--diesel)')}</div></div>
+      <div class="panel"><div class="panel-title">Litros por tipo de combustible <span class="sub" style="font-weight:400;font-size:11px">· qué se cargó</span></div>
+        <div style="margin-top:10px">${barras(porTipo,'var(--brote)')}</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:14px"><div class="panel-title">Bidones por objetivo <span class="sub" style="font-weight:400;font-size:11px">· litros en bidones y a dónde fueron</span></div>
+      <div style="margin-top:10px">${barras(bidObj,'#7C5CBF')}</div></div>
     <div class="filters">${chips}</div>
     <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th><th></th></tr></thead>
       <tbody>${cs.length?cs.map(c=>{
