@@ -527,6 +527,21 @@ router.put('/api/app/service/:id', authApp('mecanico'), async (req, res) => {
 // panel de Combustible con su modal de detalle. Solo super y gasoil.
 const MODEL_REMITO_SUP = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
 
+// Un remito que el supervisor carga hoy no puede ser de hace años ni del futuro.
+// Si el OCR leyó una fecha fuera de una ventana razonable (últimos 90 días,
+// nunca futura), la descartamos y usamos hoy. Evita que la carga quede
+// enterrada en 2007/2019 por una mala lectura y no aparezca en el panel.
+function fechaValida(f) {
+  const hoy = new Date();
+  const hoyISO = hoy.toISOString().slice(0, 10);
+  if (!f || !/^\d{4}-\d{2}-\d{2}$/.test(String(f))) return hoyISO;
+  const d = new Date(f + 'T12:00:00');
+  if (isNaN(d)) return hoyISO;
+  const dias = (hoy - d) / 86400000;
+  if (dias < -1 || dias > 90) return hoyISO;  // futura o más vieja que 90 días → hoy
+  return String(f);
+}
+
 // 1) Leer el remito: foto → IA precarga proveedor, número, fecha y litros por tipo
 router.post('/api/app/supervisor/combustible/leer', authApp('supervisor'), async (req, res) => {
   try {
@@ -587,6 +602,17 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
       (objs || []).forEach(o => { mapaObj[o.nombre.trim().toUpperCase()] = o.id; });
     }
 
+    // El supervisor suele existir TAMBIÉN como capataz (mismo nombre). Lo
+    // buscamos para poner capataz_id y, sobre todo, para usar SU objetivo
+    // (ej. "Supervisores") como objetivo de la carga — igual que el bot.
+    let capatazId = null, objetivoCapataz = null;
+    const nombreSup = (req.app_user.nombre || '').trim();
+    if (nombreSup) {
+      const { data: cap } = await supabase.from('capataces')
+        .select('id, objetivo_id').ilike('nombre', nombreSup).eq('activo', true).limit(1).maybeSingle();
+      if (cap) { capatazId = cap.id; objetivoCapataz = cap.objetivo_id || null; }
+    }
+
     const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
     // El campo 'destino' de la carga solo acepta 'unidad' | 'bidon' | 'mixto'
     // (check constraint). Se calcula igual que en el bot.
@@ -601,11 +627,14 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
       tipo_doc: d.tipo_doc || 'remito',
       estado: 'sin_facturar',
       destino: destinoCarga,
-      objetivo_id: repartos.find(r => r.objetivo_id)?.objetivo_id
+      // El objetivo de la CARGA es el del supervisor (ej. "Supervisores"), como
+      // en el bot; los objetivos de cada bidón viven en los items.
+      objetivo_id: objetivoCapataz
+        || repartos.find(r => r.objetivo_id)?.objetivo_id
         || (repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre) ? mapaObj[repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre).objetivo_nombre.trim().toUpperCase()] : null) || null,
-      capataz_id: null,  // el supervisor vive en `mecanicos`, no en `capataces` (capataz_id es FK a capataces)
+      capataz_id: capatazId,
       proveedor_id: proveedorId,
-      fecha: d.fecha || new Date().toISOString().slice(0, 10),
+      fecha: fechaValida(d.fecha),
       numero_remito: d.numero || null,
       patente_raw: repartos.find(r => r.patente)?.patente || null,
       litros_total: litrosTotal,
