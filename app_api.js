@@ -588,13 +588,19 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
     }
 
     const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
-    const resumen = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ ' + (r.objetivo_nombre || '?') : '→ unidad'}`).join(' · ');
+    // El campo 'destino' de la carga solo acepta 'unidad' | 'bidon' | 'mixto'
+    // (check constraint). Se calcula igual que en el bot.
+    const dests = repartos.map(r => r.destino === 'bidon' ? 'bidon' : 'unidad');
+    const destinoCarga = dests.length && dests.every(d => d === 'unidad') ? 'unidad'
+                       : dests.length && dests.every(d => d === 'bidon')  ? 'bidon'
+                       : 'mixto';
+    const resumenTxt = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ ' + (r.objetivo_nombre || '?') : '→ unidad'}`).join(' · ');
 
     const { data: carga, error } = await supabase.from('cargas_combustible').insert({
       origen: 'app_supervisor',
       tipo_doc: d.tipo_doc || 'remito',
       estado: 'sin_facturar',
-      destino: resumen,
+      destino: destinoCarga,
       objetivo_id: repartos.find(r => r.objetivo_id)?.objetivo_id
         || (repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre) ? mapaObj[repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre).objetivo_nombre.trim().toUpperCase()] : null) || null,
       capataz_id: null,  // el supervisor vive en `mecanicos`, no en `capataces` (capataz_id es FK a capataces)
@@ -604,7 +610,7 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
       patente_raw: repartos.find(r => r.patente)?.patente || null,
       litros_total: litrosTotal,
       datos_ia: d.datos_ia || null,
-      respuesta_capataz: `Cargado por supervisor: ${req.app_user.nombre || '—'}`,
+      respuesta_capataz: `Cargado por supervisor: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
     }).select('id').single();
     if (error || !carga) throw (error || new Error('no se creó la carga'));
 
