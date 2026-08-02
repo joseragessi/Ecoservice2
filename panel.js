@@ -1722,6 +1722,15 @@ async function vRepInd(view){
     <div class="kpi plain"><div class="kpi-label">Reincidencia 30d</div><div class="kpi-val" style="${pctReinc>=20?'color:#A32D2D':''}">${pctReinc!=null?pctReinc+'%':'—'}</div><div class="kpi-sub">vuelven al taller en 30 días</div></div>
     <div class="kpi plain"><div class="kpi-label">Espera repuestos</div><div class="kpi-val">${espProm!=null?Math.round(espProm*10)/10:'—'}</div><div class="kpi-sub">días prom. · ${espAhora} esperando ahora</div></div>
   </div>
+  ${cardsMec?`<div style="font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:6px 0 10px">Productividad por mecánico <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--tinta-3)">· máquinas por día y rebotes</span></div>
+  <div class="grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:18px">${cardsMec}</div>`:''}
+  ${Object.keys(mecs).length>6?`<div class="panel" style="margin-bottom:18px"><div class="panel-title">Todos los mecánicos <span class="sub" style="font-weight:400;font-size:11px">· comparativo completo</span></div>
+    <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
+    <tbody>${tablaMec}</tbody></table></div>`:''}
+  <div class="panel" style="margin-bottom:18px"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · atribuido al que la reparó</span></div>
+    <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días entre visitas</th><th>Reparó (1ª vez)</th></tr></thead>
+    <tbody>${tablaReinc||'<tr><td colspan="5" class="sub" style="padding:10px">Sin reincidencias en el período 🎉</td></tr>'}</tbody></table>
+  </div>
   <div class="grid g-2" style="margin-bottom:18px">
     <div class="panel"><div class="panel-title">Correctivo vs preventivo por mes</div>
       <table style="font-size:12px"><thead><tr><th>Período</th><th class="num">Corr.</th><th class="num">Prev.</th><th class="num">% Prev</th><th class="num">Finalizadas</th><th class="num">Balance</th></tr></thead>
@@ -1730,18 +1739,6 @@ async function vRepInd(view){
     <div class="panel"><div class="panel-title">Unidades problemáticas <span class="sub" style="font-weight:400;font-size:11px">· más correctivos en el período</span></div>
       <table style="font-size:12px"><thead><tr><th></th><th>Equipo</th><th>Unidad</th><th class="num">Correctivos</th><th class="num">Paradas</th></tr></thead>
       <tbody>${tablaUni||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
-    </div>
-  </div>
-  ${cardsMec?`<div style="font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:6px 0 10px">Productividad por mecánico</div>
-  <div class="grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:18px">${cardsMec}</div>`:''}
-  <div class="grid g-2" style="margin-bottom:18px">
-    <div class="panel"><div class="panel-title">Productividad por mecánico <span class="sub" style="font-weight:400;font-size:11px">· máquinas por día y rebotes</span></div>
-      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
-      <tbody>${tablaMec||'<tr><td colspan="6" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
-    </div>
-    <div class="panel"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · atribuido al que la reparó</span></div>
-      <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días</th><th>Reparó</th></tr></thead>
-      <tbody>${tablaReinc||'<tr><td colspan="5" class="sub" style="padding:10px">Sin reincidencias en el período 🎉</td></tr>'}</tbody></table>
     </div>
   </div>
   <div class="grid g-2" style="margin-bottom:18px">
