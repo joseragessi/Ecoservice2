@@ -500,6 +500,7 @@ async function cambiarInsumo(id,estado){
 /* ===== Combustible ===== */
 let filtroComb='';
 let combTab='cargas';           // 'cargas' | 'analisis'
+let combCargas=[];              // cache de cargas para el modal de detalle
 let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
 let combRemFile=null;
 let combRemExtracted=null;
@@ -523,6 +524,7 @@ async function vCombustible(view){
     if(filtroComb)params.push('estado='+filtroComb);
     if(combMes)params.push('mes='+combMes);
     const cs=await api('/api/combustible'+(params.length?'?'+params.join('&'):''));
+    combCargas=cs;
     const chips=['','sin_facturar','facturada','anulada'].map(e=>
       `<div class="chip-f ${filtroComb===e?'on':''}" onclick="filtroComb='${e}';go('combustible')">${e?cap(e):'Todas'}</div>`).join('');
     const hoyM=new Date();
@@ -549,7 +551,7 @@ async function vCombustible(view){
             :'<span class="uni-chip">unidad</span>';
           return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;}).join('<br>');
         const anulada=c.estado==='anulada';
-        return `<tr style="${anulada?'opacity:.55':''}"><td class="mono">${fechaAR(c.fecha)}</td>
+        return `<tr class="click-row" style="cursor:pointer;${anulada?'opacity:.55':''}" onclick="verCarga('${c.id}')"><td class="mono">${fechaAR(c.fecha)}</td>
           <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}</div></td>
           <td>${c.capataces?c.capataces.nombre:'—'}</td>
           <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
@@ -558,10 +560,57 @@ async function vCombustible(view){
           <td class="num">${c.litros_total?c.litros_total+' lt':'—'}</td>
           <td><span class="badge ${anulada?'b-red':c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td>
           <td class="num">${anulada
-            ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="restaurarCarga('${c.id}')">Restaurar</button>`
-            :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo)" onclick="anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
+            ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();restaurarCarga('${c.id}')">Restaurar</button>`
+            :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo)" onclick="event.stopPropagation();anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
         :'<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
+}
+function verCarga(id){
+  const c=(combCargas||[]).find(x=>String(x.id)===String(id));
+  if(!c)return;
+  const items=c.cargas_combustible_items||[];
+  const litrosTot=items.reduce((s,i)=>s+(Number(i.litros)||0),0)||c.litros_total||0;
+  const esFactura=c.estado==='facturada';
+  const prodCards=items.map(i=>{
+    const destTag=i.destino==='bidon'
+      ?`<span class="badge" style="background:var(--diesel-soft);color:#854F0B">bidones</span> <span style="font-size:11.5px;color:var(--diesel)">→ ${i.destino_detalle||c.objetivos&&c.objetivos.nombre||'objetivo sin especificar'}</span>`
+      :i.destino==='equipo'
+      ?`<span class="badge" style="background:var(--azul-soft);color:var(--azul)">equipo</span> <span style="font-size:11.5px;color:var(--azul)">→ ${i.destino_detalle||'—'}</span>`
+      :`<span class="badge" style="background:var(--azul-soft);color:var(--azul)">unidad</span> <span style="font-size:11.5px;color:var(--azul)">→ ${c.unidades?c.unidades.patente:(c.patente_raw||'tanque')} (al tanque)</span>`;
+    return `<div style="border:1px solid var(--linea);border-radius:10px;padding:11px 13px;margin-top:9px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <span style="font-weight:600;font-size:13px">${i.producto||'—'}</span>
+        <span class="mono" style="font-weight:700">${i.litros?Number(i.litros).toLocaleString('es-AR')+' lt':'—'}</span></div>
+      <div>${destTag}</div></div>`;}).join('');
+  const totBox=esFactura
+    ? `<div style="background:var(--papel);border-radius:10px;padding:12px 14px;margin-top:14px">
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Litros totales</span><span class="mono">${Number(litrosTot).toLocaleString('es-AR')} lt</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Neto gravado</span><span class="mono">${c.neto!=null?money(c.neto):'—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>IVA 21%</span><span class="mono">${c.iva!=null?money(c.iva):'—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0 0;margin-top:5px;border-top:1px solid var(--linea-2);font-size:15px;font-weight:700"><span>Total</span><span class="mono">${c.total!=null?money(c.total):'—'}</span></div>
+       </div>
+       ${c.iva==null?'<div style="font-size:11px;color:var(--tinta-3);margin-top:8px;text-align:center">Esta carga está facturada pero el IVA no está cargado en el sistema todavía. El dato fiscal para ARCA vive en el módulo Compras.</div>':''}`
+    : `<div style="background:var(--papel);border-radius:10px;padding:12px 14px;margin-top:14px">
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Litros totales</span><span class="mono">${Number(litrosTot).toLocaleString('es-AR')} lt</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--tinta-3)"><span>IVA</span><span class="mono">— al facturar</span></div>
+       </div>
+       <div style="font-size:11px;color:var(--tinta-3);margin-top:8px;text-align:center">Remito sin facturar — el IVA (crédito fiscal para ARCA) se discrimina cuando llega la factura A del proveedor.</div>`;
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=200;
+  bg.innerHTML=`<div class="modal" style="max-width:560px">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:flex-start">
+      <div><div style="font-size:16px;font-weight:700">${c.proveedores?c.proveedores.nombre:'—'}</div>
+        <div class="sub">${esFactura?'Factura':'Remito'} ${c.numero_factura||c.numero_remito||'s/n'} · ${fechaAR(c.fecha)} · ${c.capataces?c.capataces.nombre:'—'}</div></div>
+      <button class="m-close" style="cursor:pointer;font-size:20px;color:var(--tinta-3);background:none;border:none" onclick="this.closest('.modal-bg').remove()">✕</button></div>
+    <div style="padding:18px 22px">
+      <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Patente</span><span style="font-weight:600" class="mono">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Comprobante</span><span style="font-weight:600">${esFactura?'Factura · Facturada':'Remito · Sin facturar'}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Objetivo</span><span style="font-weight:600">${c.objetivos?c.objetivos.nombre:'—'}</span></div>
+      <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:16px 0 4px">Productos cargados</div>
+      ${prodCards||'<div class="sub">Sin productos detallados.</div>'}
+      ${totBox}
+    </div></div>`;
+  document.body.appendChild(bg);
+  bg.addEventListener('click',e=>{if(e.target===bg)bg.remove();});
 }
 async function anularCarga(id,num,litros){
   if(!confirm(`¿Anular la carga ${num}${litros?' ('+litros+' lt)':''}?\n\nNo se borra: queda como "anulada" y deja de contar en los análisis. La podés restaurar desde el filtro Anulada.`))return;
@@ -628,33 +677,34 @@ async function vBateas(view){
       <span class="sub">Desde</span><input type="date" value="${desde}" onchange="viajesDesde=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
       <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
     </div>
-    <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
-      ${kpi('KM recorridos',k.km_total>0?(k.km_total).toLocaleString('es-AR')+' km':'—',k.km_total>0?k.dias_activos+' día(s) con viajes':'odómetro fuera del flujo · '+k.dias_activos+' día(s) con viajes')}
-      ${kpi('Puntos totales',k.puntos_total||0,'descargas en objetivos')}
-      ${kpi('M³ transportados',(k.m3_total||0).toLocaleString('es-AR')+' m³',(k.bateas_total||0)+' bateas × 14 m³')}
-      ${kpi('Bateas promedio/día',(k.bateas_promedio_dia!=null?k.bateas_promedio_dia:'—'),'por día con actividad')}
+    <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
+      ${kpi('Promedio de bateas / jornada',(k.bateas_promedio_jornada!=null?k.bateas_promedio_jornada:'—'),(k.bateas_total||0)+' bateas ÷ '+(k.jornadas_total||0)+' jornadas trabajadas')}
+      ${kpi('Bateas totales',(k.bateas_total||0),(k.m3_total||0).toLocaleString('es-AR')+' m³ · '+(k.bateas_total||0)+' × 14 m³')}
+      ${kpi('Puntos de bajada',(k.puntos_total||0),'descargas en objetivos')}
     </div>
-    <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
-      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Por chofer</div>
-        ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">KM</th><th class="num">Bateas</th><th class="num">M³</th><th class="num">Puntos</th><th class="num">Días</th></tr></thead><tbody>
-          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.km>0?c.km.toLocaleString('es-AR'):'—'}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.m3.toLocaleString('es-AR')}</td><td class="num mono">${c.puntos}</td><td class="num mono">${c.jornadas}</td></tr>`).join('')}
+    <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Rendimiento por chofer <span class="sub" style="font-weight:400;font-size:11px">· bateas por jornada</span></div>
+        ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">Bateas</th><th class="num">Jornadas</th><th class="num">Prom/jornada</th></tr></thead><tbody>
+          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.jornadas}</td><td class="num mono" style="color:var(--brote-2);font-weight:700;font-size:14px">${c.prom_jornada}</td></tr>`).join('')}
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
-      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
-        ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
-          return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
-          :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
+      <div class="panel"><div class="panel-title" style="margin-bottom:10px">Rendimiento por camión <span class="sub" style="font-weight:400;font-size:11px">· bateas por jornada</span></div>
+        ${(ind.por_unidad||[]).length?`<div class="tablewrap"><table><thead><tr><th>Unidad</th><th class="num">Bateas</th><th class="num">Jornadas</th><th class="num">Prom/jornada</th></tr></thead><tbody>
+          ${ind.por_unidad.map(u=>`<tr><td><span class="uni-chip">${u.unidad}</span></td><td class="num mono">${u.bateas}</td><td class="num mono">${u.jornadas}</td><td class="num mono" style="color:var(--brote-2);font-weight:700;font-size:14px">${u.prom_jornada}</td></tr>`).join('')}
+        </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
     </div>
+    <div class="panel" style="margin-bottom:16px"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
+      ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
+        return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
+        :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
+    </div>
     <div class="panel-title" style="margin-bottom:8px">Detalle de jornadas</div>
-    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Unidad</th><th class="num">Odóm. ini</th><th class="num">Odóm. fin</th><th class="num">KM</th><th class="num">Bateas</th><th>Paradas</th><th></th></tr></thead>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Unidad</th><th class="num">Bateas</th><th>Paradas</th><th></th></tr></thead>
       <tbody>${lista.length?lista.map(v=>`<tr>
         <td class="mono">${fechaAR(v.fecha)}</td>
         <td>${v.capataces?v.capataces.nombre:'—'}</td>
         <td><span class="uni-chip">${v.unidades?v.unidades.patente:(v.patente_raw||'—')}</span></td>
-        <td class="num mono">${v.odometro_inicio!=null?Number(v.odometro_inicio).toLocaleString('es-AR'):'—'}</td>
-        <td class="num mono">${v.odometro_fin!=null?Number(v.odometro_fin).toLocaleString('es-AR'):'—'}</td>
-        <td class="num mono"><b>${v.km!=null?Number(v.km).toLocaleString('es-AR'):'—'}</b></td>
         <td class="num mono">${v.total_bateas||0}</td>
         <td style="font-size:12px">${(v.paradas||[]).map(p=>p.objetivo_nombre+' ('+p.bateas+')').join(', ')||'—'}</td>
         <td class="num"><button class="btn ghost" style="padding:4px 9px;font-size:11px;color:var(--rojo)" onclick="anularViaje('${v.id}')">✕</button></td>
@@ -1529,21 +1579,58 @@ async function vRepInd(view){
     </div>`;}).join('')
     :'<div class="sub" style="padding:10px 0">Las fechas por etapa se estampan en cada cambio de estado: este bloque se va llenando solo con el uso.</div>';
 
-  // Por mecánico (con preventivas propias)
+  // Productividad por mecánico: máquinas/día, reincidencia atribuida, resolución
   const mecs={};
   fs.forEach(r=>{
     const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[]};
+    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[],dias:new Set(),reinc:0};
     if(r.estado==='finalizado'){mecs[k].finalizadas++;if(esPrev(r))mecs[k].prev++;
-      const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);}
+      const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);
+      if(r.fecha_finalizado)mecs[k].dias.add(String(r.fecha_finalizado).slice(0,10));}
     else mecs[k].activas++;
   });
-  const tablaMec=Object.entries(mecs).sort((a,b)=>(b[1].activas+b[1].finalizadas)-(a[1].activas+a[1].finalizadas))
-    .map(([n,v])=>{const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
-    return `<tr><td style="font-weight:500">${n}</td><td class="num">${v.activas}</td>
-      <td class="num">${v.finalizadas}</td>
-      <td class="num" style="${v.prev?'color:var(--brote-2);font-weight:600':''}">${v.prev||'—'}</td>
-      <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
+  // Reincidencia atribuida al mecánico que reparó la 1ª vez (misma unidad vuelve en 30d)
+  finConUni.forEach(f=>{
+    const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
+    const volvio=todas.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})());
+    if(volvio){const m=f.mecanicos?f.mecanicos.nombre:'Sin asignar';if(mecs[m])mecs[m].reinc++;}
+  });
+  const tablaMec=Object.entries(mecs).sort((a,b)=>{
+      const pa=a[1].dias.size?a[1].finalizadas/a[1].dias.size:0, pb=b[1].dias.size?b[1].finalizadas/b[1].dias.size:0;
+      return pb-pa;})
+    .map(([n,v])=>{
+      const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
+      const maqDia=v.dias.size?Math.round(v.finalizadas/v.dias.size*10)/10:null;
+      const pctR=v.finalizadas?Math.round(v.reinc*100/v.finalizadas):null;
+      const rCol=pctR==null?'':pctR===0?'color:var(--brote-2)':pctR>=15?'color:#A32D2D':'color:var(--diesel)';
+      return `<tr><td style="font-weight:500">${n}</td>
+        <td class="num">${v.finalizadas}</td>
+        <td class="num sub">${v.dias.size||'—'}</td>
+        <td class="num" style="font-weight:700;color:var(--brote-2);font-size:14px">${maqDia!=null?maqDia:'—'}</td>
+        <td class="num" style="${rCol}">${pctR!=null?pctR+'%':'—'}</td>
+        <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
+
+  // Detalle de máquinas que volvieron al taller (misma unidad en 30 días)
+  const reincidencias=[];
+  finConUni.forEach(f=>{
+    const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
+    const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
+      .map(o=>({o,c:new Date(o.created_at).getTime()}))
+      .filter(x=>x.c>ff&&x.c-ff<=30*86400000)
+      .sort((a,b)=>a.c-b.c)[0];
+    if(vuelta)reincidencias.push({
+      eq:f.tipo_equipo||(f.equipos?f.equipos.nombre:'—'), uni:f.numero_unidad,
+      falla:vuelta.o.descripcion||vuelta.o.falla||'—',
+      dias:Math.round((vuelta.c-ff)/86400000),
+      mec:f.mecanicos?f.mecanicos.nombre:'Sin asignar'});
+  });
+  reincidencias.sort((a,b)=>a.dias-b.dias);
+  const tablaReinc=reincidencias.slice(0,10).map(x=>`<tr>
+    <td><div style="font-weight:500">${x.eq}</div></td>
+    <td><span class="uni-num">${x.uni}</span></td>
+    <td style="font-size:11.5px;max-width:200px">${x.falla.length>50?x.falla.slice(0,50)+'…':x.falla}</td>
+    <td class="num">${x.dias} d</td>
+    <td style="font-size:12px">${x.mec}</td></tr>`).join('');
 
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Reparaciones · Indicadores</div>
@@ -1572,16 +1659,20 @@ async function vRepInd(view){
     </div>
   </div>
   <div class="grid g-2" style="margin-bottom:18px">
-    <div class="panel"><div class="panel-title">Dónde se traba el taller <span class="sub" style="font-weight:400;font-size:11px">· días promedio por etapa</span></div>${htmlEmb}</div>
-    <div class="panel"><div class="panel-title">Por mecánico</div>
-      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Activas</th><th class="num">Finalizadas</th><th class="num">Prev.</th><th class="num">Resol. prom.</th></tr></thead>
-      <tbody>${tablaMec||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+    <div class="panel"><div class="panel-title">Productividad por mecánico <span class="sub" style="font-weight:400;font-size:11px">· máquinas por día y rebotes</span></div>
+      <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
+      <tbody>${tablaMec||'<tr><td colspan="6" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
+    </div>
+    <div class="panel"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · atribuido al que la reparó</span></div>
+      <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días</th><th>Reparó</th></tr></thead>
+      <tbody>${tablaReinc||'<tr><td colspan="5" class="sub" style="padding:10px">Sin reincidencias en el período 🎉</td></tr>'}</tbody></table>
     </div>
   </div>
-  <div class="grid g-2">
+  <div class="grid g-2" style="margin-bottom:18px">
+    <div class="panel"><div class="panel-title">Dónde se traba el taller <span class="sub" style="font-weight:400;font-size:11px">· días promedio por etapa</span></div>${htmlEmb}</div>
     <div class="panel"><div class="panel-title">Por tipo de equipo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.tipo_equipo||(r.equipos?(r.equipos.tipo||r.equipos.nombre):null)||'Sin asignar';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--brote)')}</div>
-    <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.objetivos?r.objetivos.nombre:'Taller / sin objetivo';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--diesel)')}</div>
-  </div>`;
+  </div>
+  <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.objetivos?r.objetivos.nombre:'Taller / sin objetivo';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--diesel)')}</div>`;
 }
 
 async function vReparaciones(view){
@@ -2333,7 +2424,6 @@ function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px
   <button class="${comprasTab==='consumos'?'on':''}" onclick="comprasTab='consumos';go('compras')">Consumos</button>
   <button class="${comprasTab==='repuestos'?'on':''}" onclick="comprasTab='repuestos';go('compras')">Repuestos</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
-  <button class="${comprasTab==='combustible'?'on':''}" onclick="comprasTab='combustible';go('compras')">Combustible</button>
 </div>`;}
 
 /* ===== Compras · Combustible por objetivo ===== */
@@ -3221,7 +3311,7 @@ async function vCompras(view){
   if(comprasTab==='consumos'){vComprasConsumos(view);return;}
   if(comprasTab==='repuestos'){vComprasRepuestos(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
-  if(comprasTab==='combustible'){vComprasCombustible(view);return;}
+  if(comprasTab==='combustible'){comprasTab='resumen';}  // pestaña retirada — cae al resumen
   try{
     comprasData=await api('/api/compras/facturas');
     // Shell fijo: el buscador queda ACÁ afuera y nunca se vuelve a pintar
