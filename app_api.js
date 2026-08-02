@@ -597,7 +597,7 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
     const resumenTxt = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ ' + (r.objetivo_nombre || '?') : '→ unidad'}`).join(' · ');
 
     const { data: carga, error } = await supabase.from('cargas_combustible').insert({
-      origen: 'app_supervisor',
+      origen: 'remito_capataz',  // valor permitido por el check (como el bot); el detalle de que fue el supervisor queda en respuesta_capataz
       tipo_doc: d.tipo_doc || 'remito',
       estado: 'sin_facturar',
       destino: destinoCarga,
