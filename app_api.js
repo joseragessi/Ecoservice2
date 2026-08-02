@@ -1,937 +1,770 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#02712F">
-<link rel="manifest" href="/app/manifest.json">
-<title>EcoService · Taller</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<style>
-:root{
-  --brote:#02712F; --brote-2:#048A3B; --brote-soft:#E2F1E7;
-  --tinta:#14201C; --tinta-2:#46564F; --tinta-3:#7C8A84;
-  --papel:#F3F6F4; --blanco:#fff; --linea:#E4E9E6;
-  --rojo:#A32D2D; --rojo-soft:#FCEBEB;
-  --ambar:#BA7517; --ambar-soft:#FDF3E3;
-  --azul:#2C5F8A; --azul-soft:#E8F0F7;
-  --sombra:0 1px 2px rgba(20,32,28,.05);
+// API de la PWA (mecánicos + pañol).
+// Se sirve desde el mismo origen que el panel, así que NO expone la key de
+// Supabase al cliente (la app vieja de GitHub Pages sí lo hacía).
+// Token firmado con el mismo HMAC del panel, pero con rol adentro:
+//   { rol: 'mecanico', mid, nombre }  |  { rol: 'panol', usuario }
+
+const express = require('express');
+const crypto  = require('crypto');
+const path    = require('path');
+const supabase = require('./supabase');
+const { notificarCapataz, mensajeEstadoIncidencia } = require('./notificar');
+const seg = require('./seguridad');
+
+const router = express.Router();
+// SECRET de los tokens: SIEMPRE desde la env var. Si falta, se genera uno
+// aleatorio por arranque (los tokens caducan en cada redeploy, molesto pero
+// seguro) — jamás un default fijo que cualquiera pueda leer en el repo.
+const SECRET = process.env.PANEL_SECRET ||
+  (console.warn('[seguridad] PANEL_SECRET no seteada: usando secret aleatorio (las sesiones caen en cada redeploy)'),
+   crypto.randomBytes(32).toString('hex'));
+
+// ── Claves ────────────────────────────────────────────────────
+// Hash con salt por usuario. Formato guardado: "salt:hash".
+function hashClave(clave, salt) {
+  salt = salt || crypto.randomBytes(12).toString('hex');
+  const h = crypto.createHmac('sha256', SECRET).update(salt + ':' + clave).digest('hex');
+  return `${salt}:${h}`;
 }
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{font-family:Inter,system-ui,sans-serif;background:var(--papel);color:var(--tinta);
-  font-size:15px;line-height:1.5;overscroll-behavior-y:contain}
-.mono{font-family:'JetBrains Mono',monospace}
-button{font-family:inherit;cursor:pointer;border:none}
-
-/* Login */
-#login{min-height:100dvh;display:flex;flex-direction:column;justify-content:center;padding:28px 22px;
-  background:var(--brote);color:#fff}
-.logo{width:88px;height:auto;display:block;margin-bottom:18px}
-#login h1{font-size:25px;font-weight:600;letter-spacing:-.02em}
-#login p{opacity:.8;font-size:14px;margin-bottom:28px}
-.campo{margin-bottom:13px}
-.campo label{display:block;font-size:11px;letter-spacing:1px;text-transform:uppercase;
-  opacity:.75;margin-bottom:6px;font-weight:600}
-.campo input{width:100%;padding:14px 16px;border-radius:12px;border:none;font-size:16px;
-  font-family:inherit;background:rgba(255,255,255,.16);color:#fff;outline:none}
-.campo input::placeholder{color:rgba(255,255,255,.5)}
-.campo input:focus{background:rgba(255,255,255,.24)}
-#btn-login{width:100%;padding:15px;border-radius:12px;background:#fff;color:var(--brote);
-  font-weight:600;font-size:15px;margin-top:10px}
-#btn-login:disabled{opacity:.6}
-#login-err{background:rgba(0,0,0,.22);padding:11px 14px;border-radius:10px;font-size:13px;
-  margin-top:14px;display:none}
-
-/* App */
-#app{display:none;min-height:100dvh;flex-direction:column;padding-bottom:20px}
-header{background:var(--blanco);border-bottom:1px solid var(--linea);padding:14px 16px;
-  display:flex;align-items:center;gap:11px;position:sticky;top:0;z-index:10;
-  padding-top:max(14px,env(safe-area-inset-top))}
-.avatar{width:38px;height:38px;border-radius:11px;background:var(--brote-soft);color:var(--brote);
-  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
-.hname{font-weight:600;font-size:15px;line-height:1.2}
-.hrol{font-size:11.5px;color:var(--tinta-3)}
-#btn-salir{margin-left:auto;background:none;color:var(--tinta-3);font-size:12.5px;padding:8px}
-
-.kpis{display:flex;gap:8px;padding:14px 16px 4px}
-.kpi{flex:1;background:var(--blanco);border:1px solid var(--linea);border-radius:12px;
-  padding:11px 12px;box-shadow:var(--sombra)}
-.kpi .v{font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600}
-.kpi .l{font-size:10px;letter-spacing:.8px;text-transform:uppercase;color:var(--tinta-3);
-  font-weight:600;margin-top:2px}
-.kpi.amber .v{color:var(--ambar)} .kpi.green .v{color:var(--brote)}
-
-.tabs{display:flex;gap:7px;padding:14px 16px;overflow-x:auto}
-.tab{padding:8px 15px;border-radius:20px;background:var(--blanco);border:1px solid var(--linea);
-  font-size:13px;font-weight:500;color:var(--tinta-2);white-space:nowrap}
-.tab.on{background:var(--brote);border-color:var(--brote);color:#fff;font-weight:600}
-
-.lista{padding:0 16px}
-.card{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;
-  margin-bottom:11px;overflow:hidden;box-shadow:var(--sombra)}
-.card-top{padding:14px 15px;display:flex;gap:11px;align-items:flex-start}
-.card-top .txt{flex:1;min-width:0}
-.card h3{font-size:15px;font-weight:600;line-height:1.3}
-.card .meta{font-size:12.5px;color:var(--tinta-3);margin-top:2px}
-.pill{font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:10px;white-space:nowrap;
-  font-family:'JetBrains Mono',monospace}
-.p-critico{background:var(--rojo-soft);color:var(--rojo)}
-.p-alta{background:var(--ambar-soft);color:var(--ambar)}
-.p-media{background:var(--azul-soft);color:var(--azul)}
-.p-baja{background:var(--brote-soft);color:var(--brote)}
-.p-pendiente{background:var(--papel);color:var(--tinta-2)}
-.p-entregado,.p-finalizado{background:var(--brote-soft);color:var(--brote)}
-.rail{display:flex;gap:3px;padding:0 15px 12px}
-.rail .s{flex:1;height:4px;border-radius:2px;background:var(--linea)}
-.rail .s.done{background:var(--brote)} .rail .s.cur{background:var(--brote);opacity:.45}
-.detalle{border-top:1px solid var(--linea);padding:14px 15px;display:none;background:var(--papel)}
-.detalle.open{display:block}
-.dl{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);
-  font-weight:600;margin-bottom:6px}
-.desc{font-size:14px;color:var(--tinta-2);margin-bottom:14px}
-.obs{background:var(--blanco);border:1px solid var(--linea);border-radius:10px;
-  padding:9px 11px;margin-bottom:7px;font-size:13.5px}
-.obs .m{font-size:11px;color:var(--tinta-3);margin-top:3px}
-textarea{width:100%;border:1px solid var(--linea);border-radius:10px;padding:11px;
-  font-family:inherit;font-size:15px;resize:vertical;min-height:64px;outline:none;background:var(--blanco)}
-textarea:focus{border-color:var(--brote)}
-.btn{width:100%;padding:13px;border-radius:11px;background:var(--brote);color:#fff;
-  font-weight:600;font-size:14.5px;margin-top:9px}
-.btn:disabled{opacity:.55}
-.btn.sec{background:var(--blanco);color:var(--tinta);border:1px solid var(--linea)}
-.item-ent{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--linea)}
-.item-ent input[type=checkbox]{width:21px;height:21px;accent-color:var(--brote);flex-shrink:0}
-.item-ent .n{flex:1;font-size:14.5px;font-weight:500}
-.item-ent input[type=text]{width:88px;padding:8px 10px;border:1px solid var(--linea);
-  border-radius:8px;font-family:inherit;font-size:14px;outline:none}
-.vacio{text-align:center;color:var(--tinta-3);font-size:14px;padding:48px 20px}
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);
-  background:var(--tinta);color:#fff;padding:12px 20px;border-radius:24px;font-size:13.5px;
-  font-weight:500;transition:transform .25s;z-index:50;box-shadow:0 6px 20px rgba(0,0,0,.2)}
-#toast.show{transform:translateX(-50%) translateY(0)}
-</style>
-</head>
-<body>
-
-<div id="login">
-  <img class="logo" src="data:image/png;base64,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" alt="EcoService">
-  <h1>EcoService</h1>
-  <p>Taller y pañol</p>
-  <div class="campo"><label>Usuario</label>
-    <input id="in-user" autocapitalize="none" autocomplete="username" placeholder="tu usuario"></div>
-  <div class="campo"><label>Clave</label>
-    <input id="in-pass" type="password" autocomplete="current-password" placeholder="tu clave"></div>
-  <button id="btn-login" onclick="login()">Entrar</button>
-  <div id="login-err"></div>
-</div>
-
-<div id="app">
-  <header>
-    <div class="avatar" id="h-ini">–</div>
-    <div><div class="hname" id="h-nombre">—</div><div class="hrol" id="h-rol">—</div></div>
-    <button id="btn-salir" onclick="salir()">Salir</button>
-  </header>
-  <div class="kpis" id="kpis"></div>
-  <div class="tabs" id="tabs"></div>
-  <div class="lista" id="lista"></div>
-</div>
-
-<div id="toast"></div>
-
-<script>
-const ESTADOS=['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
-const LABEL={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esp. repuestos',
-  en_reparacion:'En reparación',finalizado:'Finalizado'};
-let token=localStorage.getItem('eco_app_token')||'';
-let rol=localStorage.getItem('eco_app_rol')||'';
-let nombre=localStorage.getItem('eco_app_nombre')||'';
-let datos=[],tab='activas',abierta=null;
-
-const $=id=>document.getElementById(id);
-const ini=n=>String(n||'').split(' ').filter(Boolean).slice(0,2).map(p=>p[0]).join('').toUpperCase();
-function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');
-  setTimeout(()=>e.classList.remove('show'),2200);}
-function hace(iso){if(!iso)return'';const d=Math.floor((Date.now()-new Date(iso))/86400000);
-  return d<=0?'hoy':d===1?'ayer':d+'d';}
-
-async function api(ruta,opts={}){
-  const r=await fetch(ruta,{...opts,headers:{'Content-Type':'application/json',
-    ...(token?{Authorization:'Bearer '+token}:{}),...(opts.headers||{})}});
-  if(r.status===401||r.status===403){salir();throw new Error('Sesión vencida');}
-  if(!r.ok){let m='Error';try{m=(await r.json()).error||m;}catch(e){}throw new Error(m);}
-  return r.status===204?null:r.json();
+function verificarClave(clave, guardado) {
+  if (!guardado || !clave) return false;
+  const [salt] = String(guardado).split(':');
+  if (!salt) return false;
+  const calc = hashClave(clave, salt);
+  // Comparación de tiempo constante
+  const a = Buffer.from(calc), b = Buffer.from(String(guardado));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// ── Login ───────────────────────────────────────────────
-async function login(){
-  const u=$('in-user').value.trim(),c=$('in-pass').value;
-  if(!u||!c){mostrarErr('Completá usuario y clave.');return;}
-  const b=$('btn-login');b.disabled=true;b.textContent='Entrando…';
-  try{
-    const r=await fetch('/api/app/login',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario:u,clave:c})});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'No pude entrar');
-    token=d.token;rol=d.rol;nombre=d.nombre;
-    localStorage.setItem('eco_app_token',token);
-    localStorage.setItem('eco_app_rol',rol);
-    localStorage.setItem('eco_app_nombre',nombre);
-    $('in-pass').value='';
-    arrancar();
-  }catch(e){mostrarErr(e.message);}
-  finally{b.disabled=false;b.textContent='Entrar';}
+// ── Token ─────────────────────────────────────────────────────
+function firmar(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig  = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
+  return `${body}.${sig}`;
 }
-function mostrarErr(m){const e=$('login-err');e.textContent=m;e.style.display='block';}
-function salir(){
-  token=rol=nombre='';
-  ['eco_app_token','eco_app_rol','eco_app_nombre'].forEach(k=>localStorage.removeItem(k));
-  $('app').style.display='none';$('login').style.display='flex';$('login-err').style.display='none';
+function verificar(token) {
+  if (!token) return null;
+  const [body, sig] = String(token).split('.');
+  if (!body || !sig) return null;
+  const esperado = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
+  if (sig !== esperado) return null;
+  try {
+    const p = JSON.parse(Buffer.from(body, 'base64url').toString());
+    if (p.exp && Date.now() > p.exp) return null;
+    return p;
+  } catch { return null; }
 }
-function arrancar(){
-  $('login').style.display='none';$('app').style.display='flex';
-  $('h-ini').textContent=ini(nombre);
-  $('h-nombre').textContent=nombre;
-  $('h-rol').textContent=rol==='panol'?'Pañol · depósito':rol==='supervisor'?'Supervisor':'Mecánico';
-  tab=rol==='panol'?'pendientes':rol==='supervisor'?'todos':'activas';abierta=null;
-  cargar();
-}
-async function cargar(){
-  $('lista').innerHTML='<div class="vacio">Cargando…</div>';
-  try{
-    datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias');
-    render();
-  }catch(e){$('lista').innerHTML=`<div class="vacio">${e.message}</div>`;}
-}
-
-// ── Render ──────────────────────────────────────────────
-function render(){
-  if(rol==='panol')return renderPanol();
-  if(rol==='supervisor')return renderSupervisor();
-  if(tab==='service')return renderService();
-  const act=datos.filter(i=>i.estado!=='finalizado');
-  const fin=datos.filter(i=>i.estado==='finalizado');
-  const urg=act.filter(i=>i.prioridad==='critico'||i.prioridad==='alta').length;
-  $('kpis').innerHTML=`
-    <div class="kpi amber"><div class="v">${act.length}</div><div class="l">Activas</div></div>
-    <div class="kpi ${urg?'amber':''}"><div class="v">${urg}</div><div class="l">Urgentes</div></div>
-    <div class="kpi green"><div class="v">${fin.length}</div><div class="l">Terminadas</div></div>`;
-  $('tabs').innerHTML=[['activas','Activas',act.length],['finalizadas','Terminadas',fin.length]]
-    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
-    +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`
-    +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`;
-  if(tab==='nueva')return renderNueva();
-  const lista=tab==='finalizadas'?fin:act;
-  $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
-    :'<div class="vacio">No tenés reparaciones acá.</div>';
-}
-
-/* ── Alta manual de incidencia (correctivo / preventivo) ── */
-let altaTipo='correctivo', objsApp=null;
-const ALTA_EQUIPOS=['Motoguadaña','Sopladora','Extensible','Camioneta','Tractor','Mini tractor','Giro cero','Desmalezadora','Hidro grúa','Camión','Otro'];
-function renderNueva(){
-  $('kpis').innerHTML='';
-  const co=altaTipo==='correctivo', sel='background:#FDEDEB;border:1.5px solid #C0392B;color:#C0392B;font-weight:600',
-        selP='background:#E8F6EE;border:1.5px solid #1E8449;color:#1E8449;font-weight:600',
-        off='background:#fff;border:1px solid #d8dcd8;color:#666';
-  $('lista').innerHTML=`
-    <div class="card" style="padding:16px">
-      <h3 style="margin:0 0 4px">Nueva incidencia</h3>
-      <div class="desc" style="margin-bottom:12px">Lo que entra al taller sin pasar por el capataz. Queda asignada a vos.</div>
-      <div class="dl">Tipo</div>
-      <div style="display:flex;gap:8px;margin:6px 0 12px">
-        <button style="flex:1;padding:10px;border-radius:9px;font-size:14px;${co?sel:off}" onclick="altaTipo='correctivo';renderNueva()">🔧 Correctivo</button>
-        <button style="flex:1;padding:10px;border-radius:9px;font-size:14px;${co?off:selP}" onclick="altaTipo='preventivo';renderNueva()">🛡️ Preventivo</button>
-      </div>
-      ${co?'':'<div class="desc" style="background:#E8F6EE;border:1px dashed #1E8449;border-radius:8px;padding:8px 10px;color:#1E8449;margin-bottom:12px">Al finalizarla se actualiza el último service de esta unidad.</div>'}
-      <div class="dl">Equipo</div>
-      <div style="display:flex;gap:8px;margin:6px 0 12px">
-        <select id="al-equipo" style="flex:1.4;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;background:#fff">
-          ${ALTA_EQUIPOS.map(e=>`<option ${e===(window.alEq||'')?'selected':''}>${e}</option>`).join('')}
-        </select>
-        <input id="al-unidad" placeholder="N° o patente" value="${(window.alUni||'').replace(/"/g,'&quot;')}"
-          style="flex:1;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px">
-      </div>
-      <div class="dl">Objetivo <span style="font-weight:400;color:#9aa39a">(opcional)</span></div>
-      <select id="al-objetivo" style="width:100%;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;background:#fff;margin:6px 0 12px">
-        <option value="">Taller / sin objetivo</option>
-        ${(objsApp||[]).map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
-      </select>
-      <div class="dl">Descripción</div>
-      <textarea id="al-desc" placeholder="${co?'Qué le pasa o por qué entra…':'Cambio de aceite, filtros, engrase…'}"
-        style="width:100%;box-sizing:border-box;min-height:70px;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;font-family:inherit;margin:6px 0 14px"></textarea>
-      <button class="btn" style="width:100%" onclick="guardarAlta(this)">Dar de alta</button>
-      <div class="desc" id="al-msg" style="margin-top:10px"></div>
-    </div>`;
-  if(!objsApp)api('/api/app/objetivos').then(d=>{objsApp=d||[];if(tab==='nueva')renderNueva();}).catch(()=>{objsApp=[];});
-}
-async function guardarAlta(btn){
-  const eq=$('al-equipo').value, uni=$('al-unidad').value.trim(), desc=$('al-desc').value.trim();
-  window.alEq=eq;window.alUni=uni;
-  const msg=$('al-msg');
-  if(!uni){msg.textContent='⚠️ Cargá el número de unidad o la patente.';return;}
-  btn.disabled=true;btn.textContent='Guardando…';
-  try{
-    await api('/api/app/incidencias',{method:'POST',body:JSON.stringify({
-      tipo_mant:altaTipo,tipo_equipo:eq,numero_unidad:uni,
-      objetivo_id:$('al-objetivo').value||null,descripcion:desc})});
-    window.alUni='';altaTipo='correctivo';tab='activas';abierta=null;cargar();
-  }catch(e){
-    msg.textContent='⚠️ '+e.message;btn.disabled=false;btn.textContent='Dar de alta';
-  }
-}
-
-/* ── Supervisor: incidencias por objetivo a cargo ── */
-let supObjAbierto=null, supIncAbierta=null;
-let supVista='incidencias';   // 'incidencias' | 'combustible'
-let cbPaso='foto';            // 'foto' | 'tipos' | 'repartir'
-let cbData=null;              // datos leídos del remito
-let cbObjetivos=[];           // objetivos para el buscador
-let cbReparto={gasoil:[],super:[]};  // renglones de reparto por tipo
-const SUP_PRIO={critico:['Crítico','#C0392B','#FDEDEB'],alta:['Alta','#B9770E','#FCF3DE'],media:['Media','#2471A3','#EAF2FA'],baja:['Baja','#1E8449','#E8F6EE']};
-const SUP_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esperando repuestos',en_reparacion:'En reparación',finalizado:'Finalizado'};
-function renderSupervisor(){
-  if(supVista==='combustible')return renderCombustibleSup();
-  const objetivos=(datos&&datos.objetivos)||[];
-  if(datos&&datos.sin_asignar){
-    $('kpis').innerHTML='';$('tabs').innerHTML='';
-    $('lista').innerHTML='<div class="vacio">Todavía no tenés objetivos asignados.<br>Pedile a administración que te los asigne en el panel.</div>';
-    return;
-  }
-  const totAbiertas=objetivos.reduce((s,o)=>s+o.abiertas,0);
-  const totCriticas=objetivos.reduce((s,o)=>s+o.criticas,0);
-  const totReclam=objetivos.reduce((s,o)=>s+o.reclamadas,0);
-  $('kpis').innerHTML=`
-    <div class="kpi amber"><div class="v">${totAbiertas}</div><div class="l">Abiertas</div></div>
-    <div class="kpi ${totCriticas?'amber':''}"><div class="v">${totCriticas}</div><div class="l">Críticas</div></div>
-    <div class="kpi"><div class="v">${totReclam}</div><div class="l">Reclamadas</div></div>`;
-  $('tabs').innerHTML=`<button class="tab-cta" onclick="abrirCombustible()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">⛽ Cargar combustible</button>`;
-  if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
-  // Vista lista de objetivos (cantidad) → click abre incidencias
-  $('lista').innerHTML=objetivos.map(o=>{
-    const ab=supObjAbierto===o.objetivo_id;
-    return `<div class="card" style="padding:0;overflow:hidden">
-      <div style="padding:12px;cursor:pointer" onclick="supObjAbierto=supObjAbierto==='${o.objetivo_id}'?null:'${o.objetivo_id}';supIncAbierta=null;render()">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <b>${o.objetivo}</b>
-          <div style="display:flex;gap:6px;align-items:center">
-            ${o.criticas?`<span style="background:#FDEDEB;color:#C0392B;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">${o.criticas} críticas</span>`:''}
-            ${o.reclamadas?`<span style="background:#FCF3DE;color:#B9770E;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600">⏰ ${o.reclamadas}</span>`:''}
-            <span style="background:#eef1ee;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700">${o.abiertas}</span>
-          </div>
-        </div>
-        <div class="meta">${o.abiertas} incidencia${o.abiertas===1?'':'s'} abierta${o.abiertas===1?'':'s'} · tocá para ver ${ab?'▲':'▼'}</div>
-      </div>
-      ${ab?`<div style="border-top:1px solid #eef1ee;padding:8px 12px 12px">${o.incidencias.map(supCardInc).join('')}</div>`:''}
-    </div>`;}).join('');
-}
-function supCardInc(i){
-  const [petq,pcol,pbg]=SUP_PRIO[i.prioridad]||[i.prioridad,'#666','#eee'];
-  const ab=supIncAbierta===i.id;
-  return `<div class="card" style="padding:11px;margin-bottom:8px;${i.reclamada?'border:1px solid #E9C46A':''}">
-    <div style="cursor:pointer" onclick="supIncAbierta=supIncAbierta==='${i.id}'?null:'${i.id}';render()">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <b style="font-size:14px">${i.parado?'🛑 ':''}${i.equipo}${i.unidad?' · N° '+i.unidad:''}</b>
-        <span style="background:${pbg};color:${pcol};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">${petq}</span>
-      </div>
-      <div class="meta">${i.falla||i.descripcion||'—'} · ${SUP_EST[i.estado]||i.estado} · hace ${i.dias}d${i.reclamada?' · <b style="color:#B9770E">⏰ reclamada</b>':''}</div>
-    </div>
-    ${ab?`<div style="margin-top:8px;border-top:1px solid #eef1ee;padding-top:8px">
-      <div class="dl">Estado</div><div class="desc" style="font-size:13px">${SUP_EST[i.estado]||i.estado}</div>
-      ${i.mecanico?`<div class="dl" style="margin-top:6px">Mecánico</div><div class="desc" style="font-size:13px">${i.mecanico}</div>`:''}
-      ${i.descripcion?`<div class="dl" style="margin-top:6px">Reporte</div><div class="desc" style="font-size:13px">${i.descripcion}</div>`:''}
-      ${i.ultima_nota?`<div class="dl" style="margin-top:6px">Última nota del mecánico</div><div class="desc" style="font-size:13px;font-style:italic">"${i.ultima_nota}"</div>`:''}
-      <button class="btn ${i.reclamada?'sec':''}" style="margin-top:10px" onclick="event.stopPropagation();reclamarPrisa('${i.id}')">${i.reclamada?'✓ Ya reclamaste — quitar':'⏰ Reclamar la prisa'}</button>
-    </div>`:''}
-  </div>`;
-}
-async function reclamarPrisa(id){
-  try{
-    const r=await api('/api/app/supervisor/incidencia/'+id+'/reclamar',{method:'POST',body:'{}'});
-    toast(r.reclamada?'Marcada como urgente ⏰':'Reclamo quitado');
-    cargar();
-  }catch(e){toast('Error: '+e.message);}
-}
-
-/* ── (viejo) Supervisor de insumos — sin uso ── */
-let supBusca='', supEstado='', supAbierto=null;
-
-/* ── Combustible supervisor: foto → IA lee tipos → repartir → guardar ── */
-async function abrirCombustible(){
-  supVista='combustible';cbPaso='foto';cbData=null;cbReparto={gasoil:[],super:[]};
-  if(!cbObjetivos.length){try{cbObjetivos=await api('/api/app/supervisor/objetivos');}catch(e){cbObjetivos=[];}}
-  render();
-}
-function cerrarCombustible(){supVista='incidencias';cbPaso='foto';cbData=null;render();}
-
-function renderCombustibleSup(){
-  $('kpis').innerHTML='';$('tabs').innerHTML='';
-  if(cbPaso==='foto')return renderCbFoto();
-  if(cbPaso==='tipos')return renderCbTipos();
-  if(cbPaso==='repartir')return renderCbRepartir();
-}
-
-function renderCbFoto(){
-  $('lista').innerHTML=`
-    <button class="btn-volver" onclick="cerrarCombustible()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
-    <div class="card" style="padding:16px">
-      <h3 style="margin:0 0 4px">Cargar combustible</h3>
-      <div class="desc" style="margin-bottom:14px">Sacale una foto al remito con la carga completa. La leo yo y después repartís cada tipo a los objetivos.</div>
-      <div id="cb-msg" style="font-size:13px;color:var(--tinta-2,#586B60);margin-bottom:12px"></div>
-      <input type="file" id="cb-file" accept="image/*" capture="environment" style="display:none" onchange="cbFoto(this)">
-      <input type="file" id="cb-file-gal" accept="image/*" style="display:none" onchange="cbFoto(this)">
-      <button onclick="document.getElementById('cb-file').click()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">📷 Sacar foto del remito</button>
-      <button onclick="document.getElementById('cb-file-gal').click()" style="width:100%;padding:12px;border:1px solid var(--brote);border-radius:12px;background:#fff;color:var(--brote-2);font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px">🖼 Buscar en la galería</button>
-      <button onclick="cbManual()" style="width:100%;padding:10px;border:none;background:none;color:var(--tinta-3,#7C8A84);font-size:12.5px;font-family:inherit;cursor:pointer;margin-top:4px">o cargar los litros a mano</button>
-    </div>`;
-}
-
-function cbFoto(input){
-  const f=input.files&&input.files[0];if(!f)return;
-  const quien=(nombre||'').split(' ')[0]||'';
-  $('cb-msg').innerHTML=`<div style="background:var(--brote-soft);border-radius:10px;padding:12px 14px;color:var(--brote-2);font-weight:600;display:flex;align-items:center;gap:8px"><span style="font-size:18px">📄</span> Leyendo remito${quien?', '+quien:''}… <span style="font-weight:400">puede tardar unos segundos ⏳</span></div>`;
-  const img=new Image();
-  img.onload=async()=>{
-    const esc=Math.min(1,1600/Math.max(img.width,img.height));
-    const cv=document.createElement('canvas');
-    cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
-    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-    const b64=cv.toDataURL('image/jpeg',0.85).split(',')[1];
-    try{
-      const d=await api('/api/app/supervisor/combustible/leer',{method:'POST',
-        body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
-      if(d.__error){$('cb-msg').textContent=d.__error;return;}
-      cbData=d;cbPaso='tipos';render();
-    }catch(e){$('cb-msg').textContent='Error: '+e.message;}
+// Middleware: exige token válido y, opcionalmente, un rol puntual.
+function authApp(rol) {
+  return (req, res, next) => {
+    const h = req.headers.authorization || '';
+    const p = verificar(h.startsWith('Bearer ') ? h.slice(7) : null);
+    if (!p || !p.rol) return res.status(401).json({ error: 'No autorizado' });
+    if (rol && p.rol !== rol) return res.status(403).json({ error: 'Sin permiso' });
+    req.app_user = p;
+    next();
   };
-  img.src=URL.createObjectURL(f);
-  input.value='';
-}
-function cbManual(){
-  cbData={proveedor:'',numero:'',fecha:new Date().toISOString().slice(0,10),litros:{gasoil:0,super:0}};
-  cbPaso='tipos';render();
 }
 
-function renderCbTipos(){
-  const d=cbData;
-  $('lista').innerHTML=`
-    <button class="btn-volver" onclick="cbPaso='foto';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
-    <div class="card" style="padding:16px">
-      ${d.proveedor?`<div style="display:inline-flex;align-items:center;gap:5px;background:var(--brote-soft);color:var(--brote-2);font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;margin-bottom:12px">✓ ${d.proveedor}${d.numero?' · '+d.numero:''}</div>`:''}
-      <h3 style="margin:0 0 4px">¿Cuántos litros de cada tipo?</h3>
-      <div class="desc" style="margin-bottom:14px">Confirmá lo que trajo el remito. Después repartís cada uno a dónde fue.</div>
-      <div style="margin-bottom:12px"><div class="dl" style="font-size:12px;color:#586B60;margin-bottom:4px">🛢 Gasoil / Diesel (litros)</div>
-        <input type="number" id="cb-gasoil" value="${d.litros.gasoil||''}" placeholder="0" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:9px;font-size:16px;font-family:monospace"></div>
-      <div style="margin-bottom:8px"><div class="dl" style="font-size:12px;color:#586B60;margin-bottom:4px">⛽ Super (litros)</div>
-        <input type="number" id="cb-super" value="${d.litros.super||''}" placeholder="0" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:9px;font-size:16px;font-family:monospace"></div>
-      <button onclick="cbIrRepartir()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px">Repartir a los destinos →</button>
-    </div>`;
-}
-
-function cbIrRepartir(){
-  const g=Number($('cb-gasoil').value)||0, s=Number($('cb-super').value)||0;
-  if(g<=0&&s<=0){toast('Cargá al menos un tipo de combustible');return;}
-  cbData.litros={gasoil:g,super:s};
-  // Prefill: un renglón vacío por cada tipo que tenga litros
-  cbReparto={gasoil:g>0?[{litros:'',destino:'bidon',objetivo:''}]:[],super:s>0?[{litros:'',destino:'bidon',objetivo:''}]:[]};
-  cbPaso='repartir';render();
-}
-
-function cbSumado(tipo){return cbReparto[tipo].reduce((a,r)=>a+(Number(r.litros)||0),0);}
-function cbCuadra(tipo){return Math.abs(cbSumado(tipo)-(cbData.litros[tipo]||0))<0.01;}
-
-function renderCbRepartir(){
-  const objOpts=cbObjetivos.map(o=>`<option value="${o.nombre.replace(/"/g,'&quot;')}">`).join('');
-  const bloque=(tipo,label,emoji,color)=>{
-    if(!(cbData.litros[tipo]>0))return '';
-    const tot=cbData.litros[tipo], sum=cbSumado(tipo), rest=Math.round((tot-sum)*100)/100;
-    const estado=cbCuadra(tipo)?`<div style="font-size:12px;font-weight:600;color:var(--brote-2);margin-bottom:10px">✓ Repartido ${sum} de ${tot}</div>`
-      :rest>0?`<div style="font-size:12px;font-weight:600;color:#B9770E;margin-bottom:10px">⚠ Te faltan repartir ${rest} lt (${sum} de ${tot})</div>`
-      :`<div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:10px">✕ Te pasaste ${Math.abs(rest)} lt (${sum} de ${tot})</div>`;
-    const pct=Math.min(100,Math.round(sum*100/tot));
-    const barColor=cbCuadra(tipo)?color:rest>0?'#D98A1F':'#C0392B';
-    const renglones=cbReparto[tipo].map((r,i)=>`
-      <div style="display:flex;align-items:center;gap:7px;padding:8px;background:#F4F6F3;border-radius:10px;margin-bottom:7px">
-        <input type="number" value="${r.litros}" placeholder="0" onchange="cbSet('${tipo}',${i},'litros',this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
-        <span style="color:#8C9B92">→</span>
-        ${r.destino==='unidad'
-          ? `<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600;display:flex;align-items:center;gap:4px">🚛 A la unidad<span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tanque</span></div>`
-          : `<input type="text" list="cb-objs" value="${(r.objetivo||'').replace(/"/g,'&quot;')}" placeholder="Objetivo…" onchange="cbSet('${tipo}',${i},'objetivo',this.value)" style="flex:1;min-width:0;padding:7px 9px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box">`}
-        <button onclick="cbDestino('${tipo}',${i})" title="Cambiar destino" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
-        <button onclick="cbQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
-      </div>`).join('');
-    return `<div style="border:1px solid #E6EBE4;border-top:3px solid ${color};border-radius:14px;padding:14px;margin-bottom:13px;background:#fff">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;font-size:15px">${emoji} ${label}</span><span style="font-family:monospace;font-weight:700;font-size:14px">${tot} lt</span></div>
-      <div style="height:8px;background:#F4F6F3;border-radius:5px;overflow:hidden;margin-bottom:5px"><div style="width:${pct}%;height:100%;background:${barColor}"></div></div>
-      ${estado}
-      ${renglones}
-      <button onclick="cbAgregar('${tipo}')" style="width:100%;padding:9px;border:1px dashed #d8dcd8;border-radius:9px;background:none;color:#586B60;font-size:12.5px;font-family:inherit;cursor:pointer;font-weight:500">＋ Agregar destino</button>
-    </div>`;
-  };
-  const todoCuadra=(cbData.litros.gasoil>0?cbCuadra('gasoil'):true)&&(cbData.litros.super>0?cbCuadra('super'):true);
-  $('lista').innerHTML=`
-    <button class="btn-volver" onclick="cbPaso='tipos';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>
-    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#8C9B92;font-weight:600;margin-bottom:10px">¿A dónde fue cada uno?</div>
-    ${bloque('gasoil','Gasoil','🛢','#D98A1F')}
-    ${bloque('super','Super','⛽','#3B7DC4')}
-    <datalist id="cb-objs">${objOpts}</datalist>
-    <button onclick="cbGuardar()" ${todoCuadra?'':'disabled'} style="width:100%;padding:15px;border:none;border-radius:12px;background:${todoCuadra?'var(--brote)':'#d8dcd8'};color:${todoCuadra?'#fff':'#8C9B92'};font-size:15px;font-weight:700;font-family:inherit;cursor:${todoCuadra?'pointer':'default'}">Confirmar carga</button>
-    ${todoCuadra?'':'<div style="text-align:center;font-size:12px;color:#C0392B;margin-top:6px">Ajustá los litros hasta que cada tipo cuadre.</div>'}`;
-}
-
-function cbSet(tipo,i,campo,val){cbReparto[tipo][i][campo]=val;render();}
-function cbAgregar(tipo){cbReparto[tipo].push({litros:'',destino:'bidon',objetivo:''});render();}
-function cbQuitar(tipo,i){cbReparto[tipo].splice(i,1);render();}
-function cbDestino(tipo,i){const r=cbReparto[tipo][i];r.destino=r.destino==='unidad'?'bidon':'unidad';if(r.destino==='unidad')r.objetivo='';render();}
-
-async function cbGuardar(){
-  const repartos=[];
-  ['gasoil','super'].forEach(tipo=>{
-    cbReparto[tipo].forEach(r=>{
-      const l=Number(r.litros)||0;if(l<=0)return;
-      repartos.push({tipo,litros:l,destino:r.destino,objetivo_nombre:r.destino==='bidon'?(r.objetivo||null):null});
-    });
+// ── Login ─────────────────────────────────────────────────────
+/** PANOL_USERS = "panol:clave123" (mismo formato que PANEL_USERS) */
+function usuariosPanol() {
+  const map = {};
+  (process.env.PANOL_USERS || '').split(',').forEach(par => {
+    const i = par.indexOf(':');
+    if (i > 0) map[par.slice(0, i).trim()] = par.slice(i + 1);
   });
-  if(!repartos.length){toast('No hay litros para cargar');return;}
-  // Validar que los bidones tengan objetivo
-  if(repartos.some(r=>r.destino==='bidon'&&!r.objetivo_nombre)){toast('Cada bidón necesita un objetivo');return;}
-  try{
-    const d=await api('/api/app/supervisor/combustible',{method:'POST',
-      body:JSON.stringify({proveedor:cbData.proveedor,numero:cbData.numero,fecha:cbData.fecha,tipo_doc:cbData.tipo_doc||'remito',repartos,datos_ia:cbData.items_raw?{items:cbData.items_raw}:null})});
-    if(d&&d.ok){cbResumenGuardado(repartos);}
-    else toast('No se pudo guardar');
-  }catch(e){toast('Error: '+e.message);}
+  return map;
 }
 
-function cbResumenGuardado(repartos){
-  const totG=repartos.filter(r=>r.tipo==='gasoil').reduce((a,r)=>a+Number(r.litros),0);
-  const totS=repartos.filter(r=>r.tipo==='super').reduce((a,r)=>a+Number(r.litros),0);
-  const filas=repartos.map(r=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eee;font-size:13px">
-    <span><b>${r.litros} lt</b> ${r.tipo==='super'?'Super':'Gasoil'}</span>
-    <span style="color:#586B60">${r.destino==='bidon'?'→ '+(r.objetivo_nombre||'?'):'→ a la unidad'}</span></div>`).join('');
-  const bg=document.createElement('div');
-  bg.style.cssText='position:fixed;inset:0;background:rgba(20,32,28,.55);display:flex;align-items:center;justify-content:center;z-index:300;padding:20px';
-  bg.innerHTML=`<div style="background:#fff;border-radius:18px;max-width:400px;width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-    <div style="background:var(--brote);padding:22px;text-align:center;color:#fff">
-      <div style="font-size:40px;margin-bottom:6px">✓</div>
-      <div style="font-size:18px;font-weight:700">¡Carga guardada!</div>
-      <div style="font-size:12.5px;opacity:.9;margin-top:2px">Se registró correctamente en el sistema</div>
-    </div>
-    <div style="padding:18px 20px">
-      <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#7C8A84;font-weight:600;margin-bottom:8px">Resumen de la carga</div>
-      ${filas}
-      <div style="display:flex;justify-content:space-between;padding:12px 0 2px;font-weight:700;font-size:14px">
-        <span>Total</span><span>${totG+totS} lt</span></div>
-      <div style="font-size:12px;color:#7C8A84;margin-bottom:14px">${totG>0?totG+' lt gasoil':''}${totG>0&&totS>0?' · ':''}${totS>0?totS+' lt super':''}</div>
-      <button onclick="this.closest('div[style*=fixed]').remove();cerrarCombustible()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">Listo</button>
-    </div></div>`;
-  document.body.appendChild(bg);
-}
+router.post('/api/app/login', async (req, res) => {
+  try {
+    const usuario = String((req.body || {}).usuario || '').trim();
+    const clave   = String((req.body || {}).clave || '');
+    if (!usuario || !clave) return res.status(400).json({ error: 'Faltan usuario y clave' });
+    // Anti fuerza bruta: 5 intentos fallidos por IP+usuario → 15 min bloqueado
+    if (seg.loginBloqueado(req, usuario)) {
+      return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos y probá de nuevo.' });
+    }
+    const exp = Date.now() + 30 * 24 * 60 * 60 * 1000;   // 30 días (es una app de campo)
 
-/* ── Planilla de service: foto → IA → revisión → guardar ── */
-let svData=null;      // datos extraídos en revisión (null = pantalla inicial)
-let svEditId=null;    // id del service que se está editando (null = alta nueva)
-let svHist=null;      // historial de services (todos los mecánicos)
-let svBusca='';       // filtro por unidad/patente
-let svAbierto=null;   // service expandido en el historial
-function renderService(){
-  $('kpis').innerHTML='';
-  $('tabs').innerHTML=[['activas','Activas',''],['finalizadas','Terminadas','']]
-    .map(([k,l])=>`<div class="tab" onclick="tab='${k}';svData=null;cargar()">${l}</div>`).join('')
-    +`<div class="tab on">🔧 Service</div>`
-    +`<div class="tab" onclick="tab='nueva';render()">➕ Nueva</div>`;
-  if(svData)return renderSvRevision();
-  // Shell fija: el buscador NO se re-renderiza (solo #sv-hist), así no pierde el foco
-  $('lista').innerHTML=`
-    <div class="card" style="padding:16px">
-      <h3 style="margin:0 0 6px">Planilla de service</h3>
-      <div class="desc" style="margin-bottom:12px">Sacale una foto a la planilla completada y la leo yo. Después revisás y guardás.</div>
-      <input type="file" id="sv-file" accept="image/*" capture="environment" style="display:none" onchange="svFoto(this)">
-      <button class="btn" onclick="$('sv-file').click()">📷 Fotografiar planilla</button>
-      <div class="desc" id="sv-msg" style="margin-top:10px"></div>
-    </div>
-    <div class="dl" style="margin:14px 4px 6px">Services realizados</div>
-    <input type="text" id="sv-busca" placeholder="🔍 Buscar por unidad o patente…" value="${svBusca.replace(/"/g,'&quot;')}"
-      oninput="svBusca=this.value;renderSvHist()"
-      style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-bottom:8px">
-    <div id="sv-hist"></div>`;
-  cargarSvHist();
-}
-async function cargarSvHist(){
-  try{
-    if(!svHist)svHist=await api('/api/app/services');
-    renderSvHist();
-  }catch(e){const c=$('sv-hist');if(c)c.innerHTML=`<div class="vacio">${e.message}</div>`;}
-}
-// Resumen del servicio: si tildó casi todo el checklist es un "service completo";
-// si no, muestra las primeras tareas + cuántas más hay.
-function svResumen(d){
-  const ts=(d.tareas||[]).map(t=>t.tarea).filter(Boolean);
-  if(!ts.length)return 'Sin tareas registradas';
-  if(ts.length>=8)return `Service completo · ${ts.length} tareas`;
-  const seg=(d.tareas||[]).filter(t=>t.estado==='seguimiento').length;
-  return ts.slice(0,3).join(' · ')+(ts.length>3?` · +${ts.length-3} más`:'')+(seg?` · ⚠ ${seg} en seguimiento`:'');
-}
-// Arma el pedido de repuestos del service y lo comparte (o copia) para
-// mandárselo al proveedor tal cual.
-async function svPedido(id){
-  const s=(svHist||[]).find(x=>x.id===id);if(!s)return;
-  const d=s.data||{};
-  const reps=(d.repuestos_entregados||[]).filter(r=>r.repuesto);
-  if(!reps.length){toast('Este service no tiene repuestos cargados');return;}
-  const txt=`🛒 *Pedido de repuestos — EcoService*\n`+
-    `Unidad: ${d.unidad||d.patente||'—'}${d.marca_modelo?' ('+d.marca_modelo+')':''}\n`+
-    `Service del ${d.fecha_service||''} · ${d.km_horas||''}\n\n`+
-    reps.map(r=>`• ${r.repuesto}${r.marca?' '+r.marca:''} x${r.cantidad||1}${r.codigo?' — cód. '+r.codigo:''}`).join('\n')+
-    `\n\nSolicita: ${s.mecanico_nombre||d.mecanico||''} · EcoService`;
-  if(navigator.share){try{await navigator.share({text:txt});return;}catch(e){if(e.name==='AbortError')return;}}
-  try{await navigator.clipboard.writeText(txt);toast('Pedido copiado ✓ pegalo en WhatsApp');}
-  catch(e){prompt('Copiá el pedido:',txt);}
-}
-function renderSvHist(){
-  const c=$('sv-hist');if(!c)return;
-  const b=svBusca.trim().toLowerCase();
-  const lista=(svHist||[]).filter(s=>{const d=s.data||{};
-    return !b||[d.unidad,d.patente,d.marca_modelo].some(v=>String(v||'').toLowerCase().includes(b));});
-  c.innerHTML=lista.length?lista.map(s=>{
-    const d=s.data||{};const ab=svAbierto===s.id;
-    return `<div class="card" style="padding:12px" onclick="svAbierto=svAbierto==='${s.id}'?null:'${s.id}';renderSvHist()">
-      <b>${d.unidad||d.patente||'—'}</b>${d.tipo_unidad?' · '+d.tipo_unidad:''}${d.marca_modelo?' · '+d.marca_modelo:''}
-      <div class="meta">${d.fecha_service||''}${d.patente&&d.unidad?' · '+d.patente:''} · ${d.km_horas||'s/km'}${d.proximo_service?' → próximo: '+d.proximo_service:''}</div>
-      <div class="desc" style="margin-top:5px;font-size:12px">🔧 ${svResumen(d)}</div>
-      ${ab?`
-        <div class="dl" style="margin:10px 0 4px">Tareas</div>
-        ${(d.tareas||[]).map(t=>`<div class="desc" style="font-size:12px;padding:3px 0;border-bottom:1px solid #eef1ee">
-          ${t.estado==='seguimiento'?'⚠':'✓'} ${t.tarea||'—'}${t.repuestos?` · <span style="opacity:.7">${t.repuestos}</span>`:''}</div>`).join('')||'<div class="desc" style="font-size:12px">—</div>'}
-        <div class="dl" style="margin:10px 0 4px">Repuestos (con código)</div>
-        ${(d.repuestos_entregados||[]).map(r=>`<div class="desc" style="font-size:12px;padding:3px 0;border-bottom:1px solid #eef1ee">
-          📦 ${r.repuesto||'—'}${r.marca?' · '+r.marca:''} x${r.cantidad||1}${r.codigo?` · <b style="font-family:monospace">${r.codigo}</b>`:''}${r.observaciones?` · <span style="opacity:.7">${r.observaciones}</span>`:''}</div>`).join('')||'<div class="desc" style="font-size:12px">—</div>'}
-        ${d.observaciones?`<div class="dl" style="margin:10px 0 4px">Observaciones</div><div class="desc" style="font-size:12px">${d.observaciones}</div>`:''}
-        <button class="btn sec" style="margin-top:10px" onclick="event.stopPropagation();svPedido('${s.id}')">📤 Pedido de repuestos al proveedor</button>
-        <button class="btn sec" style="margin-top:8px" onclick="event.stopPropagation();svEditar('${s.id}')">✎ Editar service</button>
-      `:''}
-      <div class="meta" style="margin-top:5px">👨‍🔧 ${s.mecanico_nombre||d.mecanico||'—'}${d.editado_por?' · ✎ editado por '+d.editado_por:''}${ab?'':' · <span style="opacity:.7">tocá para ver detalle</span>'}</div>
-    </div>`;}).join('')
-    :`<div class="vacio">${b?'Nada coincide con "'+svBusca+'".':'Todavía no hay services cargados.'}</div>`;
-}
-// Comprime la foto en el celular (máx 1600px, JPEG) para que suba rápido y la
-// letra manuscrita siga legible para la IA.
-function svFoto(input){
-  const f=input.files&&input.files[0];if(!f)return;
-  $('sv-msg').textContent='Leyendo la planilla… puede tardar unos segundos ⏳';
-  const img=new Image();
-  img.onload=async()=>{
-    const esc=Math.min(1,1600/Math.max(img.width,img.height));
-    const cv=document.createElement('canvas');
-    cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
-    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-    const b64=cv.toDataURL('image/jpeg',0.85).split(',')[1];
-    try{
-      const d=await api('/api/app/service/extract',{method:'POST',
-        body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
-      if(d.__error){$('sv-msg').textContent=d.__error;return;}
-      svData=d;svData.tareas=svData.tareas||[];svData.repuestos_entregados=svData.repuestos_entregados||[];
-      render();
-    }catch(e){$('sv-msg').textContent='Error: '+e.message;}
-  };
-  img.src=URL.createObjectURL(f);
-  input.value='';
-}
-function svCampo(id,label,val){
-  return `<div style="margin-bottom:8px"><div class="dl">${label}</div>
-    <input type="text" id="${id}" value="${String(val||'').replace(/"/g,'&quot;')}"
-      style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px"></div>`;
-}
-function renderSvRevision(){
-  const d=svData;
-  $('lista').innerHTML=`
-    <div class="card" style="padding:16px">
-      <h3 style="margin:0 0 4px">${svEditId?'Editando service':'Revisá lo que leí'}</h3>
-      <div class="desc" style="margin-bottom:12px">${svEditId?'Corregí lo que haga falta y guardá.':'Corregí lo que haga falta antes de guardar.'}</div>
-      ${svCampo('sv-fecha','Fecha del service (AAAA-MM-DD)',d.fecha_service)}
-      ${svCampo('sv-unidad','Unidad / código interno',d.unidad)}
-      ${svCampo('sv-patente','Patente',d.patente)}
-      ${svCampo('sv-tipo','Tipo de unidad',d.tipo_unidad)}
-      ${svCampo('sv-marca','Marca / modelo',d.marca_modelo)}
-      ${svCampo('sv-km','Horas / Km del service',d.km_horas)}
-      ${svCampo('sv-prox','⏭ Próximo service (km u horas) — completalo vos',d.proximo_service)}
-      <div class="dl" style="margin:12px 0 6px">Tareas realizadas</div>
-      <div id="sv-tareas">${d.tareas.map((t,i)=>svTareaRow(t,i)).join('')||'<div class="desc">Ninguna leída.</div>'}</div>
-      <button class="btn sec" style="margin-top:6px" onclick="svData.tareas.push({tarea:'',estado:'ok',repuestos:''});render()">＋ Agregar tarea</button>
-      <div class="dl" style="margin:12px 0 6px">Repuestos entregados</div>
-      <div id="sv-reps">${d.repuestos_entregados.map((r,i)=>svRepRow(r,i)).join('')||'<div class="desc">Ninguno leído.</div>'}</div>
-      <button class="btn sec" style="margin-top:6px" onclick="svData.repuestos_entregados.push({repuesto:'',marca:'',cantidad:1,codigo:''});render()">＋ Agregar repuesto</button>
-      ${svCampo('sv-obs','Observaciones',d.observaciones)}
-      <button class="btn" style="margin-top:12px" onclick="svGuardar()">✓ ${svEditId?'Guardar cambios':'Guardar service'}</button>
-      <button class="btn sec" style="margin-top:8px" onclick="svData=null;svEditId=null;render()">Cancelar</button>
-    </div>`;
-}
-function svTareaRow(t,i){
-  return `<div style="border:1px solid #e4e7e4;border-radius:8px;padding:8px;margin-bottom:6px">
-    <input type="text" id="sv-t-n-${i}" value="${String(t.tarea||'').replace(/"/g,'&quot;')}" placeholder="Tarea"
-      style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px;margin-bottom:5px">
-    <div style="display:flex;gap:6px">
-      <input type="text" id="sv-t-r-${i}" value="${String(t.repuestos||t.descripcion||'').replace(/"/g,'&quot;')}" placeholder="Repuestos / detalle"
-        style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-      <select id="sv-t-e-${i}" style="padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-        <option value="ok" ${t.estado!=='seguimiento'?'selected':''}>OK</option>
-        <option value="seguimiento" ${t.estado==='seguimiento'?'selected':''}>Seguim.</option>
-      </select>
-      <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.tareas.splice(${i},1);svLeer();render()">✕</button>
-    </div></div>`;
-}
-function svRepRow(r,i){
-  return `<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">
-    <input type="text" id="sv-r-n-${i}" value="${String(r.repuesto||'').replace(/"/g,'&quot;')}" placeholder="Repuesto"
-      style="flex:2;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-m-${i}" value="${String(r.marca||'').replace(/"/g,'&quot;')}" placeholder="Marca"
-      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-c-${i}" value="${r.cantidad!=null?r.cantidad:''}" placeholder="Cant" inputmode="numeric"
-      style="width:44px;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-k-${i}" value="${String(r.codigo||'').replace(/"/g,'&quot;')}" placeholder="Código"
-      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.repuestos_entregados.splice(${i},1);svLeer();render()">✕</button>
-  </div>`;
-}
-// Vuelca lo que hay en los inputs a svData (antes de borrar filas o guardar)
-function svLeer(){
-  const d=svData;if(!d)return;
-  d.fecha_service=$('sv-fecha')?.value.trim()||null;
-  d.unidad=$('sv-unidad')?.value.trim()||null;
-  d.patente=$('sv-patente')?.value.trim()||null;
-  d.tipo_unidad=$('sv-tipo')?.value.trim()||null;
-  d.marca_modelo=$('sv-marca')?.value.trim()||null;
-  d.km_horas=$('sv-km')?.value.trim()||null;
-  d.proximo_service=$('sv-prox')?.value.trim()||null;
-  d.observaciones=$('sv-obs')?.value.trim()||null;
-  d.tareas=d.tareas.map((t,i)=>({
-    tarea:$('sv-t-n-'+i)?.value.trim()||t.tarea||'',
-    repuestos:$('sv-t-r-'+i)?.value.trim()||'',
-    estado:$('sv-t-e-'+i)?.value||t.estado||'ok',
-  })).filter(t=>t.tarea);
-  d.repuestos_entregados=d.repuestos_entregados.map((r,i)=>({
-    repuesto:$('sv-r-n-'+i)?.value.trim()||r.repuesto||'',
-    marca:$('sv-r-m-'+i)?.value.trim()||'',
-    cantidad:Number($('sv-r-c-'+i)?.value)||r.cantidad||1,
-    codigo:$('sv-r-k-'+i)?.value.trim()||'',
-  })).filter(r=>r.repuesto);
-}
-// Cargar un service guardado en el formulario de revisión para corregirlo
-function svEditar(id){
-  const s=(svHist||[]).find(x=>x.id===id);if(!s)return;
-  const d=s.data||{};
-  svData={...d,
-    tareas:(d.tareas||[]).map(t=>({...t})),
-    repuestos_entregados:(d.repuestos_entregados||[]).map(r=>({...r}))};
-  svEditId=id;
-  render();
-}
-async function svGuardar(){
-  svLeer();
-  const d=svData;
-  if(!d.unidad&&!d.patente){toast('Cargá al menos la unidad o la patente');return;}
-  if(!d.proximo_service&&!confirm('No cargaste el PRÓXIMO service (km u horas). ¿Guardar igual?'))return;
-  try{
-    if(svEditId)await api('/api/app/service/'+svEditId,{method:'PUT',body:JSON.stringify(d)});
-    else await api('/api/app/service',{method:'POST',body:JSON.stringify(d)});
-    toast(svEditId?'Service actualizado ✓':'Service guardado ✓');
-    svData=null;svEditId=null;svHist=null;
-    render();
-  }catch(e){toast('Error: '+e.message);}
-}
-function cardIncidencia(i){
-  const eq=i.equipos?(i.equipos.nombre||i.equipos.tipo||'Equipo'):(i.tipo_equipo||'Equipo');
-  const cod=i.equipos&&i.equipos.codigo?' · '+i.equipos.codigo:'';
-  const prev=i.tipo_mant==='preventivo'?' <span style="font-size:10px;font-weight:700;background:#E8F6EE;color:#1E8449;padding:2px 7px;border-radius:5px;vertical-align:2px">PREV</span>':'';
-  const idx=ESTADOS.indexOf(i.estado);
-  const fin=i.estado==='finalizado';
-  const obs=(i.comentarios_incidencias||[]).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
-  const sig=!fin&&idx>=0&&idx<ESTADOS.length-1?ESTADOS[idx+1]:null;
-  return `<div class="card">
-    <div class="card-top" onclick="toggle('${i.id}')">
-      <div class="txt">
-        <h3>${eq}${cod}${prev}</h3>
-        <div class="meta">${i.objetivos?i.objetivos.nombre:'—'} · ${hace(i.created_at)}</div>
-      </div>
-      <span class="pill p-${i.prioridad||'media'}">${i.prioridad||'media'}</span>
-    </div>
-    <div class="rail">${ESTADOS.map((_,n)=>`<div class="s ${n<idx?'done':n===idx?'cur':''}"></div>`).join('')}</div>
-    <div class="detalle ${abierta===i.id?'open':''}" id="d-${i.id}">
-      <div class="dl">Estado</div>
-      <div class="desc"><b>${LABEL[i.estado]||i.estado}</b>${i.capataces?' · reportó '+i.capataces.nombre:''}</div>
-      <div class="dl">Problema</div>
-      <div class="desc">${i.descripcion||'Sin descripción'}</div>
-      <div class="dl">Observaciones</div>
-      ${obs.length?obs.map(c=>`<div class="obs">${c.texto}
-        <div class="m">${c.mecanico_nombre||'—'} · ${hace(c.created_at)}</div></div>`).join('')
-        :'<div class="desc">Sin observaciones todavía.</div>'}
-      <div class="dl">Repuestos necesarios</div>
-      ${(function(){const rp=(i.repuestos_taller||[]).find(x=>x.estado!=='entregado')||(i.repuestos_taller||[])[0];
-        if(!rp)return fin?'<div class="desc">Sin pedido de repuestos.</div>':'<div class="desc" id="rp-vacio-'+i.id+'">Sin pedido todavía.</div>';
-        const its=rp.items||[];const nc=its.filter(x=>x.comprado).length;
-        const parcial=rp.estado==='a_comprar'&&nc>0;
-        const est=parcial?['🛒 Comprados '+nc+'/'+its.length+' · faltan '+(its.length-nc),'#B9770E']
-          :({a_comprar:['🕐 A comprar','#B9770E'],comprado:['🛒 Todo comprado · en camino','#2471A3'],entregado:['✅ Entregado — repuestos en el taller','#1E8449']}[rp.estado]||[rp.estado,'#666']);
-        return `<div class="desc" style="color:${est[1]};font-weight:600;font-size:12.5px">${est[0]}</div>`+
-          its.map(x=>`<div class="desc" style="font-size:12px">${rp.estado!=='entregado'?(x.comprado?'✅ ':'⬜ '):''}x${x.cantidad||1} ${x.descripcion}${x.codigo?' · '+x.codigo:''}</div>`).join('');})()}
-      ${fin?'':`
-        <div id="rp-form-${i.id}" style="display:none;margin-top:6px">
-          <div id="rp-hint-${i.id}" class="desc" style="display:none;font-size:12px;color:#1E8449;margin-bottom:5px"></div>
-          <div id="rp-filas-${i.id}"></div>
-          <div style="display:flex;gap:6px;margin-top:4px">
-            <button class="btn sec" style="flex:1;margin:0" onclick="rpAddFila('${i.id}')">＋ otra fila</button>
-            <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${i.id}')">✨ Sugerir de nuevo</button>
-            <button class="btn sec" style="flex:0 0 auto;margin:0" onclick="rpVaciar('${i.id}')">🗑 Vaciar</button>
-          </div>
-          <textarea id="rp-nota-${i.id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)"></textarea>
-          <button class="btn" onclick="rpGuardar('${i.id}')">Guardar pedido de repuestos</button>
-        </div>
-        <button class="btn sec" id="rp-toggle-${i.id}" onclick="rpAbrir('${i.id}')">🛒 ${(i.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Pedir'} repuestos</button>
-        <textarea id="obs-${i.id}" placeholder="Agregá una observación…"></textarea>
-        <button class="btn sec" onclick="comentar('${i.id}')">Guardar observación</button>
-        ${sig?`<button class="btn" onclick="avanzar('${i.id}','${sig}')">${sig==='finalizado'?'✓ Terminar reparación':'Pasar a '+LABEL[sig]}</button>`:''}
-      `}
-    </div>
-  </div>`;
-}
-function renderPanol(){
-  const pend=datos.filter(p=>p.estado==='pendiente'||p.estado==='en_compra');
-  const ent=datos.filter(p=>p.estado==='entregado');
-  $('kpis').innerHTML=`
-    <div class="kpi amber"><div class="v">${pend.length}</div><div class="l">Pendientes</div></div>
-    <div class="kpi green"><div class="v">${ent.length}</div><div class="l">Entregados</div></div>`;
-  $('tabs').innerHTML=[['pendientes','Pendientes',pend.length],['entregados','Entregados',ent.length]]
-    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('');
-  const lista=tab==='entregados'?ent:pend;
-  $('lista').innerHTML=lista.length?lista.map(cardPedido).join('')
-    :'<div class="vacio">No hay pedidos acá.</div>';
-}
-function cardPedido(p){
-  const items=p.pedidos_insumos_items||[];
-  const entregado=p.estado==='entregado';
-  return `<div class="card">
-    <div class="card-top" onclick="toggle('${p.id}')">
-      <div class="txt">
-        <h3>${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</h3>
-        <div class="meta">${p.capataces?p.capataces.nombre:'—'} · ${hace(p.created_at)}</div>
-      </div>
-      <span class="pill ${entregado?'p-entregado':'p-pendiente'}">${entregado?'entregado':'pendiente'}</span>
-    </div>
-    <div class="rail"><div class="s done"></div><div class="s ${entregado?'done':''}"></div></div>
-    <div class="detalle ${abierta===p.id?'open':''}" id="d-${p.id}">
-      <div class="dl">${entregado?'Se entregó':'Pidió'}</div>
-      ${items.length?items.map((i,n)=>entregado
-        ?`<div class="obs">${i.item}${i.cantidad?' — '+i.cantidad:''}</div>`
-        :`<div class="item-ent">
-            <input type="checkbox" id="ck-${p.id}-${n}" checked>
-            <span class="n">${i.item}</span>
-            <input type="text" id="ct-${p.id}-${n}" value="${(i.cantidad||'').replace(/"/g,'&quot;')}" placeholder="cant.">
-          </div>`).join('')
-        :'<div class="desc">Sin materiales cargados.</div>'}
-      ${entregado?'':`
-        <div class="desc" style="margin-top:12px;font-size:13px">Destildá lo que no tengas y ajustá cantidades. Al capataz le llega lo que entregás.</div>
-        <button class="btn" onclick="entregar('${p.id}')">✓ Entregar y avisar</button>`}
-    </div>
-  </div>`;
-}
-function toggle(id){
-  abierta=abierta===id?null:id;
-  document.querySelectorAll('.detalle').forEach(d=>d.classList.remove('open'));
-  const d=$('d-'+id);
-  if(abierta&&d){d.classList.add('open');
-    setTimeout(()=>d.scrollIntoView({behavior:'smooth',block:'nearest'}),60);}
-}
+    // Usuarios de la app: viven todos en `mecanicos`, con rol_app = mecanico | panol.
+    // Se dan de alta desde el panel (Maestros → Mecánicos).
+    const { data: u } = await supabase
+      .from('mecanicos').select('id, nombre, clave_hash, activo, rol_app')
+      .eq('usuario', usuario).maybeSingle();
+    if (u && u.activo && verificarClave(clave, u.clave_hash)) {
+      seg.loginOk(req, usuario);
+      const rol = u.rol_app === 'panol' ? 'panol' : u.rol_app === 'supervisor' ? 'supervisor' : 'mecanico';
+      return res.json({
+        token: firmar({ rol, mid: u.id, nombre: u.nombre, exp }),
+        rol, nombre: u.nombre,
+      });
+    }
 
-// ── Acciones ────────────────────────────────────────────
-async function avanzar(id,estado){
-  if(estado==='finalizado'&&!confirm('¿Terminar la reparación? Se le avisa al capataz.'))return;
-  try{
-    const r=await api('/api/app/incidencia/'+id+'/estado',
-      {method:'POST',body:JSON.stringify({estado})});
-    toast(estado==='finalizado'
-      ?(r._notificado?'Terminada · le avisamos al capataz':'Terminada')
-      :'→ '+LABEL[estado]);
-    await cargar();
-  }catch(e){toast(e.message);}
-}
-/* ── Pedido de repuestos desde la reparación ── */
-function rpFilaHTML(x){
-  x=x||{};
-  return `<div style="display:flex;gap:5px;margin-bottom:5px">
-    <input class="rp-cant" type="text" inputmode="numeric" value="${x.cantidad||1}" style="width:42px;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;text-align:center">
-    <input class="rp-desc" type="text" placeholder="Repuesto" value="${String(x.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
-    <input class="rp-cod" type="text" placeholder="Código" value="${String(x.codigo||'').replace(/"/g,'&quot;')}" style="flex:1;box-sizing:border-box;padding:8px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
-    <button class="btn sec" style="padding:6px 10px;margin:0;flex:0 0 auto" onclick="this.parentElement.remove()">✕</button>
-  </div>`;
-}
-function rpAddFila(id){document.getElementById('rp-filas-'+id).insertAdjacentHTML('beforeend',rpFilaHTML());}
-function rpAbrir(id){
-  const i=datos.find(x=>String(x.id)===String(id));
-  const rp=i&&(i.repuestos_taller||[]).find(x=>x.estado!=='entregado');
-  document.getElementById('rp-filas-'+id).innerHTML=(rp&&rp.items&&rp.items.length?rp.items:[{},{}]).map(rpFilaHTML).join('');
-  document.getElementById('rp-nota-'+id).value=rp&&rp.nota||'';
-  document.getElementById('rp-form-'+id).style.display='';
-  document.getElementById('rp-toggle-'+id).style.display='none';
-  // Sin pedido previo → la IA analiza la falla y propone la lista (editable)
-  if(!rp)rpSugerir(id);
-}
-async function rpSugerir(id){
-  const hint=document.getElementById('rp-hint-'+id);
-  if(hint){hint.style.display='';hint.textContent='✨ Analizando la falla y los comentarios…';}
-  try{
-    const s=await api('/api/app/incidencia/'+id+'/repuestos/sugerir',{method:'POST',body:'{}'});
-    document.getElementById('rp-filas-'+id).innerHTML=(s.items||[]).map(rpFilaHTML).join('')||rpFilaHTML();
-    if(hint)hint.textContent='✨ '+(s.razon||'Sugerido según la falla')+' — revisá, corregí o agregá lo que falte.';
-  }catch(e){
-    if(hint)hint.textContent='No pude sugerir esta vez — cargalo a mano.';
+    // Compatibilidad: pañol por variable de entorno (PANOL_USERS), si se usó
+    const panol = usuariosPanol();
+    if (panol[usuario] && panol[usuario] === clave) {
+      seg.loginOk(req, usuario);
+      return res.json({ token: firmar({ rol: 'panol', usuario, exp }), rol: 'panol', nombre: 'Pañol' });
+    }
+
+    seg.loginFallido(req, usuario);
+    res.status(401).json({ error: 'Usuario o clave incorrectos' });
+  } catch (err) {
+    console.error('app login:', err);
+    res.status(500).json({ error: 'Error de login' });
   }
-}
-function rpVaciar(id){
-  document.getElementById('rp-filas-'+id).innerHTML=rpFilaHTML();
-  const hint=document.getElementById('rp-hint-'+id);
-  if(hint){hint.style.display='';hint.textContent='Lista vacía — cargá los repuestos que necesités.';}
-}
-async function rpGuardar(id){
-  const items=[...document.querySelectorAll('#rp-filas-'+id+' > div')].map(f=>({
-    cantidad:Number(f.querySelector('.rp-cant').value)||1,
-    descripcion:f.querySelector('.rp-desc').value.trim(),
-    codigo:f.querySelector('.rp-cod').value.trim(),
-  })).filter(x=>x.descripcion);
-  if(!items.length){toast('Cargá al menos un repuesto');return;}
-  const nota=document.getElementById('rp-nota-'+id).value.trim();
-  try{
-    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota})});
-    toast('Pedido enviado a compras ✓');
-    abierta=id;cargar();
-  }catch(e){toast('Error: '+e.message);}
-}
-async function comentar(id){
-  const t=$('obs-'+id);const texto=(t.value||'').trim();
-  if(!texto){toast('Escribí algo primero');return;}
-  try{
-    await api('/api/app/incidencia/'+id+'/comentario',{method:'POST',body:JSON.stringify({texto})});
-    t.value='';toast('Observación guardada');
-    await cargar();
-  }catch(e){toast(e.message);}
-}
-async function entregar(id){
-  const p=datos.find(x=>String(x.id)===String(id));if(!p)return;
-  const orig=p.pedidos_insumos_items||[];
-  const items=orig.map((i,n)=>({
-    ck:$('ck-'+id+'-'+n).checked,item:i.item,
-    cantidad:($('ct-'+id+'-'+n).value||'').trim()||null,
-  })).filter(i=>i.ck).map(({item,cantidad})=>({item,cantidad}));
-  if(orig.length&&!items.length){toast('No tildaste ningún material');return;}
-  if(!confirm('¿Entregar el pedido? Se le avisa al capataz.'))return;
-  try{
-    const r=await api('/api/app/pedidos/'+id+'/entregar',{method:'POST',body:JSON.stringify({items})});
-    toast(r._notificado?'Entregado · le avisamos al capataz':'Entregado');
-    await cargar();
-  }catch(e){toast(e.message);}
+});
+
+// ── MECÁNICO ──────────────────────────────────────────────────
+const CAMPO_FECHA = {
+  diagnostico:         'fecha_diagnostico',
+  esperando_repuestos: 'fecha_espera_repuestos',
+  en_reparacion:       'fecha_en_reparacion',
+  finalizado:          'fecha_finalizado',
+};
+const ESTADOS = ['pendiente', 'diagnostico', 'esperando_repuestos', 'en_reparacion', 'finalizado'];
+
+// Solo las incidencias asignadas a ESTE mecánico (el token manda, no el cliente).
+router.get('/api/app/mis-incidencias', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('incidencias')
+      .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, numero_unidad, tipo_equipo, tipo_mant, ' +
+              'equipos(nombre,tipo,codigo), objetivos(nombre), capataces(nombre,telefono), ' +
+              'comentarios_incidencias(mecanico_nombre,texto,created_at), ' +
+              'repuestos_taller(id,items,nota,estado,created_at)')
+      .eq('mecanico_id', req.app_user.mid)
+      .order('created_at', { ascending: false })
+      .limit(150);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app incidencias:', err);
+    res.status(500).json({ error: 'Error cargando tus reparaciones' });
+  }
+});
+
+// Objetivos activos, para el selector del alta manual
+router.get('/api/app/objetivos', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app objetivos:', err);
+    res.status(500).json({ error: 'Error cargando objetivos' });
+  }
+});
+
+// Alta manual de incidencia por el mecánico (lo que entra al taller sin pasar
+// por el bot del capataz). Puede ser correctivo o preventivo; queda asignada
+// al mecánico que la crea.
+router.post('/api/app/incidencias', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    const tipoMant = d.tipo_mant === 'preventivo' ? 'preventivo' : 'correctivo';
+    const tipoEquipo = String(d.tipo_equipo || '').trim();
+    const numeroUnidad = String(d.numero_unidad || '').trim();
+    if (!tipoEquipo) return res.status(400).json({ error: 'Falta el tipo de equipo' });
+    if (!numeroUnidad) return res.status(400).json({ error: 'Falta el número de unidad o la patente' });
+    const descripcion = String(d.descripcion || '').trim() ||
+      (tipoMant === 'preventivo' ? 'Service preventivo' : 'Ingreso a taller');
+    const PRIOS = ['critico', 'alta', 'media', 'baja'];
+    const prioridad = PRIOS.includes(d.prioridad) ? d.prioridad
+      : (tipoMant === 'preventivo' ? 'baja' : 'media');
+
+    const { data: inc, error } = await supabase.from('incidencias').insert({
+      capataz_id: null, objetivo_id: d.objetivo_id || null, equipo_id: null,
+      mecanico_id: req.app_user.mid,
+      prioridad, estado: 'pendiente', equipo_parado: false,
+      descripcion, numero_unidad: numeroUnidad, tipo_equipo: tipoEquipo,
+      tipo_falla: tipoMant === 'preventivo' ? 'Preventivo' : 'Ingreso taller',
+      tipo_mant: tipoMant, origen: 'app',
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: inc.id });
+  } catch (err) {
+    console.error('app alta incidencia:', err);
+    res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
+  }
+});
+
+router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, res) => {
+  try {
+    const estado = String((req.body || {}).estado || '');
+    if (!ESTADOS.includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+
+    // Verificar que la incidencia sea suya antes de tocarla
+    const { data: inc, error: e0 } = await supabase
+      .from('incidencias')
+      .select('id, mecanico_id, numero_unidad, tipo_equipo, equipos(nombre,tipo), capataces(nombre,telefono)')
+      .eq('id', req.params.id).single();
+    if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
+    if (String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+
+    const patch = { estado };
+    const campo = CAMPO_FECHA[estado];
+    if (campo) patch[campo] = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('incidencias').update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+
+    // Aviso al capataz en cada avance (diagnóstico, esperando repuestos,
+    // en reparación, finalizado), con la última nota del mecánico si dejó una
+    let notificado = false;
+    const AVISAN = ['diagnostico', 'esperando_repuestos', 'en_reparacion', 'finalizado'];
+    if (AVISAN.includes(estado) && inc.capataces && inc.capataces.telefono) {
+      let comentario = null;
+      try {
+        const { data: com } = await supabase.from('comentarios_incidencias')
+          .select('texto').eq('incidencia_id', req.params.id)
+          .order('created_at', { ascending: false }).limit(1).maybeSingle();
+        if (com) comentario = com.texto;
+      } catch (e) { /* sin comentarios */ }
+      const msg = mensajeEstadoIncidencia(estado, {
+        equipo:   inc.equipos ? (inc.equipos.nombre || inc.equipos.tipo) : (inc.tipo_equipo || 'el equipo'),
+        unidad:   inc.numero_unidad,
+        mecanico: req.app_user.nombre,
+        comentario,
+      });
+      if (msg) notificado = await notificarCapataz(inc.capataces.telefono, msg);
+    }
+    res.json({ ...data, _notificado: notificado });
+  } catch (err) {
+    console.error('app estado:', err);
+    res.status(500).json({ error: 'Error cambiando el estado' });
+  }
+});
+
+router.post('/api/app/incidencia/:id/comentario', authApp('mecanico'), async (req, res) => {
+  try {
+    const texto = String((req.body || {}).texto || '').trim();
+    if (!texto) return res.status(400).json({ error: 'Falta el texto' });
+    const { data: inc } = await supabase
+      .from('incidencias').select('mecanico_id').eq('id', req.params.id).single();
+    if (!inc || String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    const { data, error } = await supabase.from('comentarios_incidencias')
+      .insert({ incidencia_id: req.params.id, mecanico_nombre: req.app_user.nombre, texto })
+      .select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('app comentario:', err);
+    res.status(500).json({ error: 'Error guardando la observación' });
+  }
+});
+
+// Sugerencia IA: analiza la falla + comentarios y propone la lista probable
+// (editable — el mecánico agrega/borra/corrige antes de mandar)
+router.post('/api/app/incidencia/:id/repuestos/sugerir', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data: inc } = await supabase.from('incidencias')
+      .select('mecanico_id').eq('id', req.params.id).single();
+    if (!inc || String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    const { sugerirRepuestos } = require('./repuestos_ia');
+    res.json(await sugerirRepuestos(req.params.id));
+  } catch (err) {
+    console.error('app repuestos sugerir:', err);
+    res.status(500).json({ error: 'No pude armar la sugerencia. Cargalo a mano.' });
+  }
+});
+
+// Pedir repuestos para una reparación (crea o reemplaza el pedido pendiente)
+router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req, res) => {
+  try {
+    const items = (Array.isArray((req.body || {}).items) ? req.body.items : [])
+      .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim() }))
+      .filter(i => i.descripcion);
+    if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
+    const { data: inc } = await supabase.from('incidencias')
+      .select('mecanico_id').eq('id', req.params.id).single();
+    if (!inc || String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    // Si ya hay un pedido sin entregar para esta reparación, se actualiza
+    const { data: prev } = await supabase.from('repuestos_taller')
+      .select('id, items').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+    // Si se edita un pedido existente, conservar los tildes de "comprado" que
+    // ya haya puesto compras (match por descripción)
+    if (prev && Array.isArray(prev.items)) {
+      const marcados = {};
+      prev.items.forEach(i => { if (i.comprado) marcados[String(i.descripcion || '').toLowerCase()] = true; });
+      items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
+    }
+    const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: req.app_user.nombre };
+    let q;
+    if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id }).select().single();
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('app repuestos:', err);
+    res.status(500).json({ error: 'Error guardando el pedido de repuestos' });
+  }
+});
+
+// ── SUPERVISOR de objetivos ───────────────────────────────────
+// Ve las incidencias abiertas de los objetivos que tiene a cargo, agrupadas
+// por objetivo; puede abrir el detalle (estados) y "reclamar la prisa".
+router.get('/api/app/supervisor/incidencias', authApp('supervisor'), async (req, res) => {
+  try {
+    // Objetivos a cargo del supervisor (guardados en mecanicos.objetivos_cargo)
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+    if (!aCargo.length) return res.json({ objetivos: [], sin_asignar: true });
+
+    const { data, error } = await supabase.from('incidencias')
+      .select('id, estado, prioridad, descripcion, created_at, equipo_parado, numero_unidad, tipo_equipo, tipo_falla, reclamada, reclamada_at, objetivo_id, objetivos(nombre), equipos(nombre,tipo), mecanicos(nombre), comentarios_incidencias(texto,mecanico_nombre,created_at)')
+      .in('objetivo_id', aCargo)
+      .neq('estado', 'finalizado')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    // Agrupar por objetivo
+    const porObj = {};
+    (data || []).forEach(i => {
+      const oid = String(i.objetivo_id);
+      const o = porObj[oid] || (porObj[oid] = {
+        objetivo_id: oid, objetivo: i.objetivos ? i.objetivos.nombre : 'Sin objetivo',
+        incidencias: [], abiertas: 0, criticas: 0, reclamadas: 0,
+      });
+      const ult = (i.comentarios_incidencias || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      o.incidencias.push({
+        id: i.id, estado: i.estado, prioridad: i.prioridad,
+        equipo: i.tipo_equipo || (i.equipos && (i.equipos.nombre || i.equipos.tipo)) || 'Equipo',
+        unidad: i.numero_unidad, falla: i.tipo_falla, descripcion: i.descripcion,
+        parado: i.equipo_parado, mecanico: i.mecanicos ? i.mecanicos.nombre : null,
+        dias: Math.floor((Date.now() - new Date(i.created_at)) / 86400000),
+        reclamada: !!i.reclamada, ultima_nota: ult ? ult.texto : null,
+      });
+      o.abiertas++;
+      if (i.prioridad === 'critico') o.criticas++;
+      if (i.reclamada) o.reclamadas++;
+    });
+    // Ordenar objetivos por criticidad
+    const objetivos = Object.values(porObj).sort((a, b) => (b.criticas - a.criticas) || (b.abiertas - a.abiertas));
+    res.json({ objetivos });
+  } catch (err) {
+    console.error('supervisor incidencias:', err);
+    res.status(500).json({ error: 'Error cargando incidencias' });
+  }
+});
+
+router.post('/api/app/supervisor/incidencia/:id/reclamar', authApp('supervisor'), async (req, res) => {
+  try {
+    // Solo puede reclamar incidencias de sus objetivos
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+    const { data: inc } = await supabase.from('incidencias')
+      .select('objetivo_id, reclamada').eq('id', req.params.id).maybeSingle();
+    if (!inc || !aCargo.includes(String(inc.objetivo_id))) {
+      return res.status(403).json({ error: 'Esa incidencia no es de tus objetivos' });
+    }
+    const nuevo = !inc.reclamada;   // toggle
+    const patch = nuevo
+      ? { reclamada: true, reclamada_at: new Date().toISOString(), reclamada_por: req.app_user.nombre }
+      : { reclamada: false, reclamada_at: null, reclamada_por: null };
+    const { error } = await supabase.from('incidencias').update(patch).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true, reclamada: nuevo });
+  } catch (err) {
+    console.error('supervisor reclamar:', err);
+    res.status(500).json({ error: 'Error al reclamar' });
+  }
+});
+
+// ── SUPERVISOR: pedidos de insumos (solo lectura) ─────────────
+router.get('/api/app/insumos-pedidos', authApp('supervisor'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('pedidos_insumos')
+      .select('*, pedidos_insumos_items(*), capataces(nombre), objetivos(nombre)')
+      .order('created_at', { ascending: false }).limit(200);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app insumos supervisor:', err);
+    res.status(500).json({ error: 'Error cargando pedidos' });
+  }
+});
+
+// ── PLANILLA DE SERVICE (foto → IA → revisión → guardar) ─────
+// El mecánico fotografía la planilla de papel; la IA la extrae y él revisa
+// antes de guardar. Tabla: services_unidades (data jsonb flexible, como facturas).
+const MODEL_SERVICE = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+
+router.post('/api/app/service/extract', authApp('mecanico'), async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta la foto' });
+    const part = { type: 'image', source: { type: 'base64', media_type: fileType || 'image/jpeg', data: fileData } };
+    const prompt = 'Esta es una foto de una "Planilla de Service de Unidades" de EcoService, ' +
+      'completada A MANO por un mecánico. Extraé los datos y devolvé ÚNICAMENTE JSON sin backticks:\n' +
+      '{"fecha_service":"YYYY-MM-DD","unidad":"string","tipo_unidad":"tractor|giro cero|camioneta|otro",' +
+      '"marca_modelo":"string","patente":"string","km_horas":"string",' +
+      '"tareas":[{"tarea":"string","descripcion":"string","repuestos":"string","estado":"ok|seguimiento"}],' +
+      '"repuestos_entregados":[{"repuesto":"string","marca":"string","cantidad":1,"codigo":"string","observaciones":"string"}],' +
+      '"mecanico":"string","observaciones":"string"}\n' +
+      'Reglas:\n' +
+      '- Es letra manuscrita: interpretá con cuidado. Si un campo es ilegible o está vacío, poné null.\n' +
+      '- En "tareas" incluí SOLO las filas del checklist que tengan algo escrito (descripción, repuestos o estado). ' +
+      'Usá el nombre impreso de la tarea (ej. "Cambio de aceite motor").\n' +
+      '- "estado": "ok" si dice OK, "seguimiento" si requiere seguimiento, null si no está claro.\n' +
+      '- En "repuestos_entregados" una entrada por fila escrita de la tabla de repuestos.\n' +
+      '- "tipo_unidad": el que esté tildado/marcado; si escribieron la marca (ej. Iveco) y no tildaron nada, deducilo (camión/camioneta→"camioneta", si no "otro").\n' +
+      '- "km_horas" como texto tal cual (ej. "40.279 km").\n' +
+      '- "mecanico": el nombre del mecánico responsable si está escrito.';
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model:      MODEL_SERVICE,
+        max_tokens: 3000,
+        messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
+      }),
+    });
+    const data = await resp.json();
+    const txt = (data.content || []).map(c => c.text || '').join('');
+    console.log(`[service] planilla extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+      `(${MODEL_SERVICE}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
+    try {
+      res.json(JSON.parse(txt.replace(/```json|```/g, '').trim()));
+    } catch (e) {
+      res.json({ __error: 'No pude leer la planilla. Sacá la foto más derecha y con buena luz, o cargá los datos a mano.' });
+    }
+  } catch (err) {
+    console.error('service extract:', err);
+    res.status(500).json({ error: 'Error extrayendo la planilla' });
+  }
+});
+
+// Guardar el service revisado. El mecánico que guarda queda registrado por token.
+router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    if (!d.unidad && !d.patente) return res.status(400).json({ error: 'Falta identificar la unidad (unidad o patente)' });
+    const fila = {
+      data: {
+        fecha_service:       d.fecha_service || null,
+        unidad:              d.unidad || null,
+        tipo_unidad:         d.tipo_unidad || null,
+        marca_modelo:        d.marca_modelo || null,
+        patente:             d.patente || null,
+        km_horas:            d.km_horas || null,
+        proximo_service:     d.proximo_service || null,
+        tareas:              Array.isArray(d.tareas) ? d.tareas : [],
+        repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
+        mecanico:            d.mecanico || req.app_user.nombre || null,
+        observaciones:       d.observaciones || null,
+      },
+      mecanico_id: req.app_user.mid || null,
+      mecanico_nombre: req.app_user.nombre || null,
+    };
+    const { data, error } = await supabase.from('services_unidades').insert(fila).select().single();
+    if (error) throw error;
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('service guardar:', err);
+    res.status(500).json({ error: 'Error guardando el service' });
+  }
+});
+
+// Editar un service ya guardado (cualquier mecánico puede corregir; queda
+// registrado quién lo editó y cuándo)
+router.put('/api/app/service/:id', authApp('mecanico'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    if (!d.unidad && !d.patente) return res.status(400).json({ error: 'Falta identificar la unidad (unidad o patente)' });
+    const { data: prev, error: e1 } = await supabase
+      .from('services_unidades').select('data').eq('id', req.params.id).single();
+    if (e1 || !prev) return res.status(404).json({ error: 'Service no encontrado' });
+    const data = {
+      ...prev.data,
+      fecha_service:        d.fecha_service || null,
+      unidad:               d.unidad || null,
+      tipo_unidad:          d.tipo_unidad || null,
+      marca_modelo:         d.marca_modelo || null,
+      patente:              d.patente || null,
+      km_horas:             d.km_horas || null,
+      proximo_service:      d.proximo_service || null,
+      tareas:               Array.isArray(d.tareas) ? d.tareas : [],
+      repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
+      observaciones:        d.observaciones || null,
+      editado_por:          req.app_user.nombre || null,
+      editado_at:           new Date().toISOString(),
+    };
+    const { error } = await supabase.from('services_unidades')
+      .update({ data }).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('service editar:', err);
+    res.status(500).json({ error: 'Error editando el service' });
+  }
+});
+
+// ══ CARGA DE COMBUSTIBLE · SUPERVISORES ══════════════════════
+// El supervisor fotografía el remito, la IA lo lee (reusa extraerComprobante),
+// él confirma litros por tipo y reparte cada tipo a destinos (unidad/bidones a
+// objetivos). Entra a cargas_combustible como cualquier carga → aparece en el
+// panel de Combustible con su modal de detalle. Solo super y gasoil.
+const MODEL_REMITO_SUP = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-20251001';
+
+// Un remito que el supervisor carga hoy no puede ser de hace años ni del futuro.
+// Si el OCR leyó una fecha fuera de una ventana razonable (últimos 90 días,
+// nunca futura), la descartamos y usamos hoy. Evita que la carga quede
+// enterrada en 2007/2019 por una mala lectura y no aparezca en el panel.
+function fechaValida(f) {
+  const hoy = new Date();
+  const hoyISO = hoy.toISOString().slice(0, 10);
+  if (!f || !/^\d{4}-\d{2}-\d{2}$/.test(String(f))) return hoyISO;
+  const d = new Date(f + 'T12:00:00');
+  if (isNaN(d)) return hoyISO;
+  const dias = (hoy - d) / 86400000;
+  if (dias < -1 || dias > 90) return hoyISO;  // futura o más vieja que 90 días → hoy
+  return String(f);
 }
 
-$('in-pass').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-if('serviceWorker' in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
-if(token&&rol)arrancar();
-</script>
-</body>
-</html>
+// 1) Leer el remito: foto → IA precarga proveedor, número, fecha y litros por tipo
+router.post('/api/app/supervisor/combustible/leer', authApp('supervisor'), async (req, res) => {
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta la foto del remito' });
+    const { extraerComprobante } = require('./extraccion');
+    const buffer = Buffer.from(fileData, 'base64');
+    const datos = await extraerComprobante(buffer, fileType || 'image/jpeg');
+    // Agrupar litros por tipo (super / gasoil), que es como reparte el supervisor
+    const norm = s => String(s || '').toUpperCase();
+    const tipos = { gasoil: 0, super: 0 };
+    (datos.items || []).forEach(it => {
+      const p = norm(it.producto), l = Number(it.litros) || 0;
+      if (/SUPER|NAFTA/.test(p) && !/DIESEL|GASOIL/.test(p)) tipos.super += l;
+      else tipos.gasoil += l;  // diesel/gasoil y cualquier otro combustible líquido
+    });
+    res.json({
+      ok: true,
+      proveedor: datos.proveedor || null,
+      cuit: datos.cuit || null,
+      numero: datos.numero || null,
+      fecha: datos.fecha || null,
+      tipo_doc: datos.tipo_doc || 'remito',
+      litros: {
+        gasoil: Math.round(tipos.gasoil * 100) / 100,
+        super:  Math.round(tipos.super  * 100) / 100,
+      },
+      items_raw: datos.items || [],
+    });
+  } catch (err) {
+    console.error('sup combustible leer:', err);
+    res.json({ __error: 'No pude leer el remito. Sacá la foto más derecha y con buena luz, o cargá los litros a mano.' });
+  }
+});
+
+// 2) Guardar la carga con su reparto multi-destino.
+// body: { proveedor, numero, fecha, tipo_doc, imagen(base64 opcional),
+//   repartos:[{ tipo:'gasoil'|'super', litros, destino:'unidad'|'bidon',
+//               objetivo_nombre, objetivo_id, patente }] }
+router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    const repartos = Array.isArray(d.repartos) ? d.repartos.filter(r => Number(r.litros) > 0) : [];
+    if (!repartos.length) return res.status(400).json({ error: 'No hay litros para cargar' });
+
+    // Resolver proveedor por nombre (o dejar en raw). Best-effort, nunca frena.
+    let proveedorId = null;
+    if (d.proveedor) {
+      const { data: prov } = await supabase.from('proveedores')
+        .select('id').ilike('nombre', d.proveedor.trim()).limit(1).maybeSingle();
+      if (prov) proveedorId = prov.id;
+    }
+    // Resolver objetivos por nombre para los que no vengan con id
+    const nombresObj = [...new Set(repartos.filter(r => r.destino === 'bidon' && !r.objetivo_id && r.objetivo_nombre).map(r => r.objetivo_nombre.trim()))];
+    const mapaObj = {};
+    if (nombresObj.length) {
+      const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
+      (objs || []).forEach(o => { mapaObj[o.nombre.trim().toUpperCase()] = o.id; });
+    }
+
+    // El supervisor suele existir TAMBIÉN como capataz (mismo nombre). Lo
+    // buscamos para poner capataz_id y, sobre todo, para usar SU objetivo
+    // (ej. "Supervisores") como objetivo de la carga — igual que el bot.
+    let capatazId = null, objetivoCapataz = null;
+    const nombreSup = (req.app_user.nombre || '').trim();
+    if (nombreSup) {
+      const { data: cap } = await supabase.from('capataces')
+        .select('id, objetivo_id').ilike('nombre', nombreSup).eq('activo', true).limit(1).maybeSingle();
+      if (cap) { capatazId = cap.id; objetivoCapataz = cap.objetivo_id || null; }
+    }
+
+    const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
+    // El campo 'destino' de la carga solo acepta 'unidad' | 'bidon' | 'mixto'
+    // (check constraint). Se calcula igual que en el bot.
+    const dests = repartos.map(r => r.destino === 'bidon' ? 'bidon' : 'unidad');
+    const destinoCarga = dests.length && dests.every(d => d === 'unidad') ? 'unidad'
+                       : dests.length && dests.every(d => d === 'bidon')  ? 'bidon'
+                       : 'mixto';
+    const resumenTxt = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ ' + (r.objetivo_nombre || '?') : '→ unidad'}`).join(' · ');
+
+    const { data: carga, error } = await supabase.from('cargas_combustible').insert({
+      origen: 'remito_capataz',  // valor permitido por el check (como el bot); el detalle de que fue el supervisor queda en respuesta_capataz
+      tipo_doc: d.tipo_doc || 'remito',
+      estado: 'sin_facturar',
+      destino: destinoCarga,
+      // El objetivo de la CARGA es el del supervisor (ej. "Supervisores"), como
+      // en el bot; los objetivos de cada bidón viven en los items.
+      objetivo_id: objetivoCapataz
+        || repartos.find(r => r.objetivo_id)?.objetivo_id
+        || (repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre) ? mapaObj[repartos.find(r => r.destino === 'bidon' && r.objetivo_nombre).objetivo_nombre.trim().toUpperCase()] : null) || null,
+      capataz_id: capatazId,
+      proveedor_id: proveedorId,
+      fecha: fechaValida(d.fecha),
+      numero_remito: d.numero || null,
+      patente_raw: repartos.find(r => r.patente)?.patente || null,
+      litros_total: litrosTotal,
+      datos_ia: d.datos_ia || null,
+      respuesta_capataz: `Cargado por supervisor: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
+    }).select('id').single();
+    if (error || !carga) throw (error || new Error('no se creó la carga'));
+
+    const items = repartos.map(r => {
+      const oid = r.objetivo_id || (r.destino === 'bidon' && r.objetivo_nombre ? mapaObj[r.objetivo_nombre.trim().toUpperCase()] : null) || null;
+      return {
+        carga_id: carga.id,
+        producto: r.tipo === 'super' ? 'SUPER' : 'GASOIL',
+        es_combustible: true,
+        litros: Number(r.litros),
+        destino: r.destino === 'bidon' ? 'bidon' : 'unidad',
+        objetivo_id: r.destino === 'bidon' ? oid : null,
+        destino_detalle: r.destino === 'bidon' ? (r.objetivo_nombre || null) : null,
+      };
+    });
+    await supabase.from('cargas_combustible_items').insert(items);
+    res.json({ ok: true, id: carga.id });
+  } catch (err) {
+    console.error('sup combustible guardar:', err);
+    res.status(500).json({ error: 'Error guardando la carga: ' + (err.message || err.details || err.hint || 'desconocido') });
+  }
+});
+
+// Objetivos para el buscador del reparto
+router.get('/api/app/supervisor/objetivos', authApp('supervisor'), async (req, res) => {
+  try {
+    const { data } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+    res.json(data || []);
+  } catch (err) {
+    res.json([]);
+  }
+});
+
+// Últimos services cargados (de TODOS los mecánicos: en el taller todos
+// necesitan ver qué service se le hizo a cada unidad)
+router.get('/api/app/services', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('services_unidades').select('*')
+      .order('created_at', { ascending: false }).limit(100);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app services:', err);
+    res.status(500).json({ error: 'Error cargando services' });
+  }
+});
+
+// ── PAÑOL ─────────────────────────────────────────────────────
+router.get('/api/app/pedidos', authApp('panol'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('pedidos_insumos')
+      .select('*, pedidos_insumos_items(*), capataces(nombre), objetivos(nombre)')
+      .order('created_at', { ascending: false }).limit(120);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('app pedidos:', err);
+    res.status(500).json({ error: 'Error cargando los pedidos' });
+  }
+});
+
+// Entrega con ajuste: se entrega lo que realmente sale del depósito.
+router.post('/api/app/pedidos/:id/entregar', authApp('panol'), async (req, res) => {
+  try {
+    const items = Array.isArray((req.body || {}).items) ? req.body.items : null;
+    if (items) {
+      const limpios = items
+        .map(i => ({ pedido_id: req.params.id,
+          item: String(i.item || '').trim(),
+          cantidad: i.cantidad ? String(i.cantidad).trim() : null }))
+        .filter(i => i.item);
+      const { error: eDel } = await supabase
+        .from('pedidos_insumos_items').delete().eq('pedido_id', req.params.id);
+      if (eDel) throw eDel;
+      if (limpios.length) {
+        const { error: eIns } = await supabase.from('pedidos_insumos_items').insert(limpios);
+        if (eIns) throw eIns;
+      }
+    }
+    const { data, error } = await supabase
+      .from('pedidos_insumos').update({ estado: 'entregado' }).eq('id', req.params.id)
+      .select('*, capataces(nombre,telefono), objetivos(nombre), pedidos_insumos_items(*)').single();
+    if (error) throw error;
+
+    let notificado = false;
+    if (data.capataces && data.capataces.telefono) {
+      const obj = data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || '—');
+      const lista = (data.pedidos_insumos_items || [])
+        .map(i => `• ${i.item}${i.cantidad ? ' — ' + i.cantidad : ''}`).join('\n');
+      notificado = await notificarCapataz(
+        data.capataces.telefono,
+        `📦 *Pedido listo para retirar*\n\n📍 Objetivo: ${obj}\n` +
+        (lista ? `\n${lista}\n` : '') +
+        `\nTu pedido de insumos ya está disponible en depósito. ✅\n\n_EcoService · Depósito_`
+      );
+    }
+    res.json({ ...data, _notificado: notificado });
+  } catch (err) {
+    console.error('app entregar:', err);
+    res.status(500).json({ error: 'Error entregando el pedido' });
+  }
+});
+
+// ── Archivos de la PWA ────────────────────────────────────────
+router.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'app.html')));
+router.get('/app/manifest.json', (_req, res) => res.sendFile(path.join(__dirname, 'app-manifest.json')));
+router.get('/app/sw.js', (_req, res) => {
+  res.type('application/javascript');
+  res.sendFile(path.join(__dirname, 'app-sw.js'));
+});
+// Los iconos van embebidos en base64 (app_icons.js) en vez de como archivos
+// binarios: así se pueden subir al repo por la interfaz web de GitHub sin que
+// se corrompan, que es lo que rompía la instalación de la PWA.
+const ICONOS = require('./app_icons');
+function servirIcono(b64) {
+  return (_req, res) => {
+    const buf = Buffer.from(b64, 'base64');
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  };
+}
+router.get('/app/icon-192.png', servirIcono(ICONOS.icon192));
+router.get('/app/icon-512.png', servirIcono(ICONOS.icon512));
+
+module.exports = { router, hashClave };
