@@ -387,7 +387,8 @@ function renderCbFoto(){
 
 function cbFoto(input){
   const f=input.files&&input.files[0];if(!f)return;
-  $('cb-msg').textContent='Leyendo el remito… puede tardar unos segundos ⏳';
+  const quien=(nombre||'').split(' ')[0]||'';
+  $('cb-msg').innerHTML=`<div style="background:var(--brote-soft);border-radius:10px;padding:12px 14px;color:var(--brote-2);font-weight:600;display:flex;align-items:center;gap:8px"><span style="font-size:18px">📄</span> Leyendo remito${quien?', '+quien:''}… <span style="font-weight:400">puede tardar unos segundos ⏳</span></div>`;
   const img=new Image();
   img.onload=async()=>{
     const esc=Math.min(1,1600/Math.max(img.width,img.height));
@@ -496,9 +497,34 @@ async function cbGuardar(){
   try{
     const d=await api('/api/app/supervisor/combustible',{method:'POST',
       body:JSON.stringify({proveedor:cbData.proveedor,numero:cbData.numero,fecha:cbData.fecha,tipo_doc:cbData.tipo_doc||'remito',repartos,datos_ia:cbData.items_raw?{items:cbData.items_raw}:null})});
-    if(d&&d.ok){toast('Carga guardada ✓');cerrarCombustible();}
+    if(d&&d.ok){cbResumenGuardado(repartos);}
     else toast('No se pudo guardar');
   }catch(e){toast('Error: '+e.message);}
+}
+
+function cbResumenGuardado(repartos){
+  const totG=repartos.filter(r=>r.tipo==='gasoil').reduce((a,r)=>a+Number(r.litros),0);
+  const totS=repartos.filter(r=>r.tipo==='super').reduce((a,r)=>a+Number(r.litros),0);
+  const filas=repartos.map(r=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eee;font-size:13px">
+    <span><b>${r.litros} lt</b> ${r.tipo==='super'?'Super':'Gasoil'}</span>
+    <span style="color:#586B60">${r.destino==='bidon'?'→ '+(r.objetivo_nombre||'?'):'→ a la unidad'}</span></div>`).join('');
+  const bg=document.createElement('div');
+  bg.style.cssText='position:fixed;inset:0;background:rgba(20,32,28,.55);display:flex;align-items:center;justify-content:center;z-index:300;padding:20px';
+  bg.innerHTML=`<div style="background:#fff;border-radius:18px;max-width:400px;width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="background:var(--brote);padding:22px;text-align:center;color:#fff">
+      <div style="font-size:40px;margin-bottom:6px">✓</div>
+      <div style="font-size:18px;font-weight:700">¡Carga guardada!</div>
+      <div style="font-size:12.5px;opacity:.9;margin-top:2px">Se registró correctamente en el sistema</div>
+    </div>
+    <div style="padding:18px 20px">
+      <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#7C8A84;font-weight:600;margin-bottom:8px">Resumen de la carga</div>
+      ${filas}
+      <div style="display:flex;justify-content:space-between;padding:12px 0 2px;font-weight:700;font-size:14px">
+        <span>Total</span><span>${totG+totS} lt</span></div>
+      <div style="font-size:12px;color:#7C8A84;margin-bottom:14px">${totG>0?totG+' lt gasoil':''}${totG>0&&totS>0?' · ':''}${totS>0?totS+' lt super':''}</div>
+      <button onclick="this.closest('div[style*=fixed]').remove();cerrarCombustible()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">Listo</button>
+    </div></div>`;
+  document.body.appendChild(bg);
 }
 
 /* ── Planilla de service: foto → IA → revisión → guardar ── */
