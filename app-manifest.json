@@ -1,6 +1,6 @@
 {
-  "name": "EcoService Taller",
-  "short_name": "Taller",
+  "name": "EcoService v1",
+  "short_name": "EcoService",
   "description": "Reparaciones y pañol de EcoService",
   "start_url": "/app",
   "scope": "/app",
