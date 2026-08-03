@@ -191,6 +191,42 @@ router.post('/api/usuarios', auth, soloAdmin, async (req, res) => {
   }
 });
 
+// ── Credenciales de app para CAPATACES ────────────────────────
+// Lista de capataces con su estado de acceso a la app
+router.get('/api/capataces-login', auth, soloAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('capataces')
+      .select('id, nombre, usuario, activo, objetivo_id, unidad_id, clave_hash, objetivos(nombre), unidades(patente)')
+      .order('nombre');
+    if (error) throw error;
+    res.json((data || []).map(c => ({
+      id: c.id, nombre: c.nombre, usuario: c.usuario || null,
+      activo: c.activo !== false, tiene_clave: !!c.clave_hash,
+      objetivo: c.objetivos ? c.objetivos.nombre : null,
+      patente: c.unidades ? c.unidades.patente : null,
+      listo: !!(c.objetivo_id && c.unidad_id),
+    })));
+  } catch (err) { res.status(500).json({ error: 'Error cargando capataces' }); }
+});
+// Asignar/actualizar usuario y clave de un capataz (hashea con el SECRET de la app)
+router.post('/api/capataces-login', auth, soloAdmin, async (req, res) => {
+  try {
+    const { id, usuario, clave, activo } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'Falta el capataz' });
+    const fila = {};
+    if (usuario != null) fila.usuario = String(usuario).trim().toLowerCase() || null;
+    if (activo != null) fila.activo = !!activo;
+    if (clave) fila.clave_hash = hashClave(clave);   // formato de la app (verificarClave)
+    if (!Object.keys(fila).length) return res.status(400).json({ error: 'Nada para actualizar' });
+    const { error } = await supabase.from('capataces').update(fila).eq('id', id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('capataces-login save:', err);
+    res.status(500).json({ error: err.message && err.message.includes('duplicate') ? 'Ese usuario ya está en uso' : 'Error guardando credenciales' });
+  }
+});
+
 // ── Dashboard ─────────────────────────────────────────────────
 router.get('/api/dashboard', auth, async (req, res) => {
   try {
@@ -436,26 +472,43 @@ router.get('/api/insumos', auth, async (req, res) => {
 
 router.post('/api/insumos/:id', auth, async (req, res) => {
   try {
-    // Si el panel manda items, reemplazan a los del pedido (lo que realmente
-    // se entrega puede diferir de lo pedido). El pedido original queda en
-    // texto_original como respaldo.
+    // Si el panel manda items, registra la ENTREGA: cada item queda marcado
+    // como entregado (con su cantidad real) o como faltante. NO se borran los
+    // no entregados — así se conserva pedido vs entregado y se ve si hubo
+    // faltantes. `items` trae {item, cantidad, entregado} por cada material.
+    let huboFaltante = false;
     if (Array.isArray(req.body.items)) {
-      const limpios = req.body.items
-        .map(i => ({ pedido_id: req.params.id,
-          item: String(i.item || '').trim(), cantidad: i.cantidad ? String(i.cantidad).trim() : null }))
-        .filter(i => i.item);
-      const { error: eDel } = await supabase
-        .from('pedidos_insumos_items').delete().eq('pedido_id', req.params.id);
-      if (eDel) throw eDel;
-      if (limpios.length) {
-        const { error: eIns } = await supabase.from('pedidos_insumos_items').insert(limpios);
-        if (eIns) throw eIns;
+      // Traigo los items actuales para actualizarlos uno a uno por nombre
+      const { data: actuales } = await supabase
+        .from('pedidos_insumos_items').select('*').eq('pedido_id', req.params.id);
+      const mapa = {};
+      (actuales || []).forEach(a => { mapa[String(a.item).trim().toLowerCase()] = a; });
+      for (const it of req.body.items) {
+        const nombre = String(it.item || '').trim();
+        if (!nombre) continue;
+        const entregado = it.entregado !== false;
+        if (!entregado) huboFaltante = true;
+        const fila = mapa[nombre.toLowerCase()];
+        const campos = {
+          cantidad: it.cantidad ? String(it.cantidad).trim() : null,
+          entregado,
+          cantidad_entregada: entregado ? (it.cantidad ? String(it.cantidad).trim() : null) : null,
+        };
+        if (fila) {
+          await supabase.from('pedidos_insumos_items').update(campos).eq('id', fila.id);
+        } else {
+          await supabase.from('pedidos_insumos_items')
+            .insert({ pedido_id: req.params.id, item: nombre, ...campos });
+        }
       }
     }
 
     const patch = {};
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
-    if (req.body.estado === 'entregado') patch.entregado_at = new Date().toISOString();
+    if (req.body.estado === 'entregado') {
+      patch.entregado_at = new Date().toISOString();
+      if (Array.isArray(req.body.items)) patch.entrega_completa = !huboFaltante;
+    }
     const { data, error } = await supabase
       .from('pedidos_insumos').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), objetivos(nombre), pedidos_insumos_items(*)').single();
@@ -465,13 +518,18 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
     let notificado = false;
     if (req.body.estado === 'entregado' && data.capataces && data.capataces.telefono) {
       const obj = data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || '—');
-      const items = (data.pedidos_insumos_items || [])
+      const entregados = (data.pedidos_insumos_items || []).filter(i => i.entregado !== false);
+      const faltantes = (data.pedidos_insumos_items || []).filter(i => i.entregado === false);
+      const itemsTxt = entregados
         .map(i => `• ${i.item}${i.cantidad ? ' — ' + i.cantidad : ''}`).join('\n');
+      const faltaTxt = faltantes.length
+        ? `\n⚠️ *No disponible por ahora:*\n${faltantes.map(i => `• ${i.item}`).join('\n')}\n` : '';
       notificado = await notificarCapataz(
         data.capataces.telefono,
         `📦 *Pedido listo para retirar*\n\n` +
         `📍 Objetivo: ${obj}\n` +
-        (items ? `\n${items}\n` : '') +
+        (itemsTxt ? `\n${itemsTxt}\n` : '') +
+        faltaTxt +
         `\nTu pedido de insumos ya está disponible en depósito. ✅\n\n_EcoService · Depósito_`
       );
     }
