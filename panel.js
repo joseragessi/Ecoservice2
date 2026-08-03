@@ -390,7 +390,8 @@ async function vInsumos(view){
     const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
     if(filtroIns==='pendiente')insumosData=insumosData.filter(esPend);
     else if(filtroIns==='entregado')insumosData=insumosData.filter(p=>p.estado==='entregado');
-    const chips=[['','Todos'],['pendiente','Pendiente'],['entregado','Entregado']].map(([e,l])=>
+    else if(filtroIns==='faltantes')insumosData=insumosData.filter(p=>p.estado==='entregado'&&p.entrega_completa===false);
+    const chips=[['','Todos'],['pendiente','Pendiente'],['entregado','Entregado'],['faltantes','Con faltantes']].map(([e,l])=>
       `<div class="chip-f ${filtroIns===e?'on':''}" onclick="filtroIns='${e}';go('insumos')">${l}</div>`).join('');
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Pedidos de insumos</div>
@@ -407,7 +408,7 @@ async function vInsumos(view){
             <td><div style="font-weight:600">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div><div class="sub">${p.capataces?p.capataces.nombre:''}</div></td>
             <td>${items||'—'}</td>
             <td class="mono" style="font-size:12px">${fechaAR(p.created_at)}</td>
-            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?'Entregado':'Pendiente')+(pt?' · <span style="color:'+pt.color+';font-weight:600">'+pt.texto+'</span>':'')+'</div>'}</td></tr>`;}).join('')
+            <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?(p.entrega_completa===false?'<span style="color:var(--diesel);font-weight:600">⚠ Entregado con faltantes</span>':'<span style="color:var(--brote-2);font-weight:600">✓ Entregado completo</span>'):'Pendiente')+(pt?' · <span style="color:'+pt.color+';font-weight:600">'+pt.texto+'</span>':'')+'</div>'}</td></tr>`;}).join('')
           :'<tr><td colspan="3"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>No hay pedidos.</div></div></td></tr>'}</tbody></table></div>
       <div class="side" id="ins-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>Elegí un pedido<br>para ver el detalle</div></div></div>
     </div>`;
@@ -431,11 +432,30 @@ function selInsumo(ix){
   const p=insumosData[ix];
   document.querySelectorAll('#ins-body tr').forEach(t=>t.classList.toggle('sel',+t.dataset.ix===ix));
   const idx=p.estado==='entregado'?1:0;
-  const items=(p.pedidos_insumos_items||[]).map(i=>`<div class="mcard-row"><span>${i.item}</span><b>${i.cantidad||'—'}</b></div>`).join('');
+  const all=p.pedidos_insumos_items||[];
+  let items;
+  if(p.estado==='entregado'){
+    // Una línea por material del pedido: ✓ verde si se entregó (con la cantidad
+    // que salió) o ✕ ámbar si faltó. Así se ve pedido vs entregado de un vistazo.
+    items=all.map(i=>{
+      const ent=i.entregado!==false;
+      const cant=ent?(i.cantidad_entregada||i.cantidad||''):(i.cantidad||'');
+      return `<div class="mcard-row" style="${ent?'':'color:var(--diesel)'}">
+        <span>${ent?'<span style="color:var(--brote-2)">✓</span>':'<span style="color:var(--diesel)">✕</span>'} ${i.item}${ent?'':' <span style="font-size:11px">(faltó)</span>'}</span>
+        <b>${cant||(ent?'—':'')}</b></div>`;
+    }).join('');
+  }else{
+    items=all.map(i=>`<div class="mcard-row"><span>${i.item}</span><b>${i.cantidad||'—'}</b></div>`).join('');
+  }
   let acc='';
   if(p.estado!=='cancelado'&&p.estado!=='entregado')
     acc=`<button class="btn" style="width:100%;justify-content:center" onclick="abrirEntrega(${ix})">Marcar entregado →</button>`;
   const cancelar=(p.estado!=='cancelado'&&p.estado!=='entregado')?`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px;color:var(--rojo);border-color:var(--rojo-soft)" onclick="cambiarInsumo('${p.id}','cancelado')">Cancelar pedido</button>`:'';
+  const estadoEntrega=p.estado==='entregado'
+    ? (p.entrega_completa===false
+        ? '<div style="background:var(--diesel-soft);color:#854F0B;border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:600;margin:10px 0">⚠ Se entregó con faltantes — revisá qué comprar</div>'
+        : '<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:600;margin:10px 0">✓ Entregado completo</div>')
+    : '';
   document.getElementById('ins-side').innerHTML=`
     <div class="side-id">PEDIDO DE INSUMOS</div>
     <div class="side-title">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div>
@@ -444,9 +464,10 @@ function selInsumo(ix){
       if(p.estado==='entregado'&&p.entregado_at)return `<div class="side-meta" style="margin-top:2px">Entregado el ${fechaAR(p.entregado_at)} · <b style="color:${pt?pt.color:'inherit'}">${pt?(pt.dias<=2?'puntual ('+pt.dias+'d)':'demorado ('+pt.dias+'d)'):''}</b></div>`;
       if(pt&&p.estado!=='entregado')return `<div class="side-meta" style="margin-top:2px">Esperando <b style="color:${pt.color}">${pt.dias} día(s)</b></div>`;
       return '';})()}
+    ${estadoEntrega}
     ${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+railLabels(['Pendiente','Entregado'],idx)}
     <div class="divider"></div>
-    <div class="field-l" style="margin-bottom:8px">Materiales</div>${items||'<div class="sub">—</div>'}
+    <div class="field-l" style="margin-bottom:8px">${p.estado==='entregado'?'Pedido y entrega':'Materiales pedidos'}</div>${items||'<div class="sub">—</div>'}
     <div class="divider"></div>${acc}${cancelar}`;
 }
 // Modal de entrega: se entrega lo tildado, con cantidades editables.
@@ -476,11 +497,13 @@ async function confirmarEntrega(){
   const p=insumoEntrega;if(!p)return;
   const orig=p.pedidos_insumos_items||[];
   const items=orig.map((i,n)=>({
-    incluir:document.getElementById('ent-ck-'+n).checked,
     item:i.item,
     cantidad:document.getElementById('ent-cant-'+n).value.trim()||null,
-  })).filter(i=>i.incluir).map(({item,cantidad})=>({item,cantidad}));
-  if(orig.length&&!items.length){alert('No tildaste ningún material. Si no se entrega nada, cancelá el pedido.');return;}
+    entregado:document.getElementById('ent-ck-'+n).checked,
+  }));
+  const algunoEntregado=items.some(i=>i.entregado);
+  if(orig.length&&!algunoEntregado){alert('No tildaste ningún material. Si no se entrega nada, cancelá el pedido.');return;}
+  const faltan=items.filter(i=>!i.entregado).length;
   const btn=document.getElementById('ent-btn');
   if(btn){btn.disabled=true;btn.textContent='Entregando…';}
   try{
