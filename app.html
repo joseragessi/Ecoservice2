@@ -191,8 +191,9 @@ function arrancar(){
   $('login').style.display='none';$('app').style.display='flex';
   $('h-ini').textContent=ini(nombre);
   $('h-nombre').textContent=nombre;
-  $('h-rol').textContent=rol==='panol'?'Pañol · depósito':rol==='supervisor'?'Supervisor':'Mecánico';
+  $('h-rol').textContent=rol==='panol'?'Pañol · depósito':rol==='supervisor'?'Supervisor':rol==='capataz'?'Capataz':'Mecánico';
   tab=rol==='panol'?'pendientes':rol==='supervisor'?'todos':'activas';abierta=null;
+  if(rol==='capataz'){supVista='combustible';abrirCombustibleCapataz();return;}
   cargar();
 }
 async function cargar(){
@@ -205,6 +206,7 @@ async function cargar(){
 
 // ── Render ──────────────────────────────────────────────
 function render(){
+  if(rol==='capataz')return renderCombustibleCapataz();
   if(rol==='panol')return renderPanol();
   if(rol==='supervisor')return renderSupervisor();
   if(tab==='service')return renderService();
@@ -355,13 +357,110 @@ async function reclamarPrisa(id){
 /* ── (viejo) Supervisor de insumos — sin uso ── */
 let supBusca='', supEstado='', supAbierto=null;
 
+/* ── Combustible CAPATAZ: como supervisor pero a SU unidad y SU objetivo ── */
+let capData=null, capPaso='foto', capUnidad={gasoil:[],super:[]};
+let capObjNombre='', capPatente='';
+
+function abrirCombustibleCapataz(){capPaso='foto';capData=null;render();}
+function renderCombustibleCapataz(){
+  $('kpis').innerHTML='';$('tabs').innerHTML='';
+  if(capPaso==='foto')return renderCapFoto();
+  if(capPaso==='repartir')return renderCapRepartir();
+}
+function renderCapFoto(){
+  $('lista').innerHTML=`
+    <div class="card" style="padding:16px">
+      <h3 style="margin:0 0 4px">Cargar combustible</h3>
+      <div class="desc" style="margin-bottom:14px">Sacale una foto al remito. Leo los litros y vos repartís cuánto va a tu unidad y cuánto a bidones.</div>
+      <div id="cap-msg" style="font-size:13px;color:var(--tinta-2,#586B60);margin-bottom:12px"></div>
+      <input type="file" id="cap-file" accept="image/*" capture="environment" style="display:none" onchange="capFoto(this)">
+      <input type="file" id="cap-file-gal" accept="image/*" style="display:none" onchange="capFoto(this)">
+      <button onclick="document.getElementById('cap-file').click()" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">📷 Sacar foto del remito</button>
+      <button onclick="document.getElementById('cap-file-gal').click()" style="width:100%;padding:12px;border:1px solid var(--brote);border-radius:12px;background:#fff;color:var(--brote-2);font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px">🖼 Buscar en la galería</button>
+    </div>`;
+}
+function capFoto(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const quien=(nombre||'').split(' ')[0]||'';
+  $('cap-msg').innerHTML=`<div style="background:var(--brote-soft);border-radius:10px;padding:12px 14px;color:var(--brote-2);font-weight:600">📄 Leyendo remito${quien?', '+quien:''}… ⏳</div>`;
+  const img=new Image();
+  img.onload=async()=>{
+    const esc=Math.min(1,1600/Math.max(img.width,img.height));
+    const cv=document.createElement('canvas');cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    const b64=cv.toDataURL('image/jpeg',0.85).split(',')[1];
+    try{
+      const d=await api('/api/app/capataz/combustible/leer',{method:'POST',body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
+      if(d.__error){$('cap-msg').textContent=d.__error;return;}
+      capData=d;capObjNombre=d.objetivo_nombre||'tu objetivo';capPatente=d.patente||'tu unidad';
+      capUnidad={gasoil:d.litros.gasoil>0?[{litros:'',destino:'unidad'}]:[],super:d.litros.super>0?[{litros:'',destino:'unidad'}]:[]};
+      capPaso='repartir';render();
+    }catch(e){$('cap-msg').textContent='Error: '+e.message;}
+  };
+  img.src=URL.createObjectURL(f);input.value='';
+}
+function capSum(t){return capUnidad[t].reduce((a,r)=>a+(Number(r.litros)||0),0);}
+function capCuadra(t){return Math.abs(capSum(t)-(capData.litros[t]||0))<0.01;}
+function renderCapRepartir(){
+  const bloque=(tipo,label,emoji,color)=>{
+    if(!(capData.litros[tipo]>0))return '';
+    const tot=capData.litros[tipo],sum=capSum(tipo),rest=Math.round((tot-sum)*100)/100;
+    const estado=capCuadra(tipo)?`<div style="font-size:12px;font-weight:600;color:var(--brote-2);margin-bottom:10px">✓ Repartido ${sum} de ${tot}</div>`
+      :rest>0?`<div style="font-size:12px;font-weight:600;color:#B9770E;margin-bottom:10px">⚠ Faltan ${rest} lt (${sum} de ${tot})</div>`
+      :`<div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:10px">✕ Te pasaste ${Math.abs(rest)} lt</div>`;
+    const pct=Math.min(100,Math.round(sum*100/tot));
+    const barCol=capCuadra(tipo)?color:rest>0?'#D98A1F':'#C0392B';
+    const rens=capUnidad[tipo].map((r,i)=>`
+      <div style="display:flex;align-items:center;gap:7px;padding:8px;background:#F4F6F3;border-radius:10px;margin-bottom:7px">
+        <input type="number" value="${r.litros}" placeholder="0" onchange="capSet('${tipo}',${i},this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
+        <span style="color:#8C9B92">→</span>
+        ${r.destino==='unidad'
+          ?`<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600">🚛 ${capPatente} <span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tu unidad</span></div>`
+          :`<div style="flex:1;font-size:12.5px;color:#7C5CBF;font-weight:600">🛢 Bidones → ${capObjNombre}</div>`}
+        <button onclick="capDest('${tipo}',${i})" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
+        <button onclick="capQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
+      </div>`).join('');
+    return `<div style="border:1px solid #E6EBE4;border-top:3px solid ${color};border-radius:14px;padding:14px;margin-bottom:13px;background:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;font-size:15px">${emoji} ${label}</span><span style="font-family:monospace;font-weight:700;font-size:14px">${tot} lt</span></div>
+      <div style="height:8px;background:#F4F6F3;border-radius:5px;overflow:hidden;margin-bottom:5px"><div style="width:${pct}%;height:100%;background:${barCol}"></div></div>
+      ${estado}${rens}
+      <button onclick="capAgregar('${tipo}')" style="width:100%;padding:9px;border:1px dashed #d8dcd8;border-radius:9px;background:none;color:#586B60;font-size:12.5px;font-family:inherit;cursor:pointer;font-weight:500">＋ Agregar (unidad o bidón)</button>
+    </div>`;
+  };
+  const cuadra=(capData.litros.gasoil>0?capCuadra('gasoil'):true)&&(capData.litros.super>0?capCuadra('super'):true);
+  $('lista').innerHTML=`
+    <button onclick="capPaso='foto';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:6px;cursor:pointer">← Volver</button>
+    <div style="font-size:12px;color:#586B60;margin-bottom:12px">Los bidones van a <b>${capObjNombre}</b> · la unidad es <b>${capPatente}</b></div>
+    ${bloque('gasoil','Gasoil','🛢','#D98A1F')}
+    ${bloque('super','Super','⛽','#3B7DC4')}
+    <button onclick="capGuardar()" ${cuadra?'':'disabled'} style="width:100%;padding:15px;border:none;border-radius:12px;background:${cuadra?'var(--brote)':'#d8dcd8'};color:${cuadra?'#fff':'#8C9B92'};font-size:15px;font-weight:700;font-family:inherit;cursor:${cuadra?'pointer':'default'}">Confirmar carga</button>
+    ${cuadra?'':'<div style="text-align:center;font-size:12px;color:#C0392B;margin-top:6px">Ajustá los litros hasta que cuadre.</div>'}`;
+}
+function capSet(t,i,v){capUnidad[t][i].litros=v;render();}
+function capAgregar(t){capUnidad[t].push({litros:'',destino:'bidon'});render();}
+function capQuitar(t,i){capUnidad[t].splice(i,1);render();}
+function capDest(t,i){const r=capUnidad[t][i];r.destino=r.destino==='unidad'?'bidon':'unidad';render();}
+async function capGuardar(){
+  const repartos=[];
+  ['gasoil','super'].forEach(t=>capUnidad[t].forEach(r=>{const l=Number(r.litros)||0;if(l>0)repartos.push({tipo:t,litros:l,destino:r.destino});}));
+  if(!repartos.length){toast('No hay litros para cargar');return;}
+  try{
+    const d=await api('/api/app/capataz/combustible',{method:'POST',body:JSON.stringify({proveedor:capData.proveedor,numero:capData.numero,fecha:capData.fecha,tipo_doc:capData.tipo_doc||'remito',repartos,datos_ia:capData.items_raw?{items:capData.items_raw}:null})});
+    if(d&&d.ok){cbResumenGuardado(repartos.map(r=>({...r,objetivo_nombre:r.destino==='bidon'?capObjNombre:null})));capPaso='foto';capData=null;}
+    else toast('No se pudo guardar');
+  }catch(e){toast('Error: '+e.message);}
+}
+
 /* ── Combustible supervisor: foto → IA lee tipos → repartir → guardar ── */
 async function abrirCombustible(){
   supVista='combustible';cbPaso='foto';cbData=null;cbReparto={gasoil:[],super:[]};
   if(!cbObjetivos.length){try{cbObjetivos=await api('/api/app/supervisor/objetivos');}catch(e){cbObjetivos=[];}}
   render();
 }
-function cerrarCombustible(){supVista='incidencias';cbPaso='foto';cbData=null;render();}
+function cerrarCombustible(){
+  if(rol==='capataz'){capPaso='foto';capData=null;render();return;}
+  supVista='incidencias';cbPaso='foto';cbData=null;render();
+}
 
 function renderCombustibleSup(){
   $('kpis').innerHTML='';$('tabs').innerHTML='';
