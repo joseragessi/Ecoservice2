@@ -651,10 +651,13 @@ async function probarConexion() {
     x => ({ codigo: x.codigoejercicio ?? x.codigo, descripcion: (x.descripcion ?? x.nombre ?? '') + (x.fechadesde ? ' (' + x.fechadesde + ' → ' + (x.fechahasta || '') + ')' : '') }));
   out.proyectos     = await trae('/compras/gastosporproyecto/proyectos', x => ({ codigo: x.codigoproyecto, descripcion: x.descripcion }));
   // Plan de cuentas contables: para poder imputar a la cuenta correcta
-  // (ej. Bienes de Uso en vez de Mercaderías). Probamos rutas candidatas.
+  // (ej. Bienes de Uso en vez de Mercaderías). Probamos muchas rutas candidatas.
   out.plan_cuentas = await traePrimera(
-    ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentascontables', '/contabilidad/cuentas', '/contabilidad/plancuentas'],
-    x => ({ codigo: x.codigocuenta ?? x.codigo ?? x.numero, descripcion: x.descripcion ?? x.nombre ?? x.detalle,
+    ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentascontables', '/cuentacontable',
+     '/contabilidad/cuentas', '/contabilidad/plancuentas', '/contabilidad/plandecuentas',
+     '/cuentasimputables', '/cuentascontable', '/contabilidad/cuenta', '/cuenta',
+     '/planctas', '/ctacontable', '/contabilidad/ctas', '/rubroscontables'],
+    x => ({ codigo: x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta, descripcion: x.descripcion ?? x.nombre ?? x.detalle,
             imputable: x.imputable ?? x.esimputable ?? x.admiteimputacion }));
   out.centro_costo_via = (Array.isArray(out.centros_costo) && out.centros_costo.length && !out.centros_costo[0].error)
     ? 'centros de costo (apropiación contable sobre el asiento)'
