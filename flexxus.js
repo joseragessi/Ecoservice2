@@ -525,6 +525,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
         JSON.stringify(lineasAsiento.map(l => ({ linea: l.linea, desc: l.descripcion, usa_cc: l.utilizacentrocosto }))).slice(0, 300) });
     }
     // Un PUT por línea apropiable, cada una con SU codigoasiento (viene por línea).
+    const putResps = [];
     for (const l of apropiables) {
       const ca = l.codigoasiento ?? envAsiento;
       if (ca == null) {
@@ -536,8 +537,16 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
         codigousuario: codUsuario,
         apropiacion: [{ linea: l.linea ?? 1, valor }],
       };
-      await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
+      try {
+        const rp = await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
+        putResps.push({ linea: l.linea, ca: Number(ca), enviado: valor, resp: rp });
+      } catch (ePut) {
+        putResps.push({ linea: l.linea, ca: Number(ca), enviado: valor, error: String(ePut.message || ePut).slice(0, 300) });
+      }
     }
+    // Guardar el diagnóstico crudo del PUT en la línea del console.log
+    console.log('[flexxus] PUT apropiacion resp: ' + JSON.stringify(putResps).slice(0, 1500));
+    global.__ultimoPutFlexxus = putResps;  // accesible para diagnóstico
   } else {
     // No se pudo leer el asiento: camino a ciegas, solo con la variable fijada.
     const ca = codigoasiento ?? envAsiento;
@@ -551,22 +560,41 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   }
 
   // Verificación REAL: releer el asiento y confirmar que cada centro del
-  // reparto quedó con porcentaje > 0 en las líneas apropiables.
-  let verificado = null;
+  // reparto quedó con porcentaje > 0. Si NO se puede confirmar, NO se reporta
+  // como éxito — se avisa que quedó sin verificar (antes un null se tragaba
+  // como ok y daba falsos "verificado" con el asiento en 0%).
+  let verificado = null, apropiadoReal = null;
   try {
     const g2 = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
     const arr2 = Array.isArray(g2.data || g2) ? (g2.data || g2) : [];
     const apro2 = arr2.filter(l => l && l.utilizacentrocosto === true);
     if (apro2.length) {
-      verificado = reparto.every(r => apro2.every(l =>
-        (l.centrocosto || []).some(c => Number(c.codigocentrocosto) === r.codigocentrocosto && Number(c.porcentaje) > 0)));
+      // Junto TODOS los centros con % > 0 de TODAS las líneas apropiables
+      // (cada ítem se apropia a su centro; no todos van en todas las líneas).
+      const centrosAplicados = new Set();
+      apro2.forEach(l => (l.centrocosto || []).forEach(c => {
+        if (Number(c.porcentaje) > 0) centrosAplicados.add(Number(c.codigocentrocosto));
+      }));
+      apropiadoReal = [...centrosAplicados];
+      // Verificado = cada centro del reparto aparece aplicado en alguna línea
+      verificado = reparto.every(r => centrosAplicados.has(r.codigocentrocosto));
+    } else {
+      verificado = false;  // releí y NO hay líneas apropiables → algo falló
     }
-  } catch (e) { verificado = null; }
+  } catch (e) { verificado = null; }  // no pude releer → queda explícitamente sin verificar
   console.log('[flexxus] centro de costo (asiento ' + numeroasiento + '/' + codigoejercicio +
-    ', verificado=' + verificado + '): ' + reparto.map(r => r.objetivo + '=' + r.porcentaje + '%').join(', '));
+    ', verificado=' + verificado + ', aplicados=' + JSON.stringify(apropiadoReal) + '): ' +
+    reparto.map(r => r.objetivo + '=' + r.porcentaje + '%(' + r.codigocentrocosto + ')').join(', '));
   if (verificado === false) {
+    const diag = global.__ultimoPutFlexxus ? ' · Respuesta del PUT: ' + JSON.stringify(global.__ultimoPutFlexxus).slice(0, 600) : '';
     return conAsiento({ ok: false, motivo: 'Flexxus aceptó la apropiación pero al releer el asiento los porcentajes NO quedaron aplicados. ' +
-      'Asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + '. Avisame con este texto y lo miro.' });
+      'Centros esperados: ' + reparto.map(r => r.codigocentrocosto).join(',') + ' · aplicados realmente: ' + (apropiadoReal && apropiadoReal.length ? apropiadoReal.join(',') : 'NINGUNO') + '. ' +
+      'Asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + '.' + diag });
+  }
+  if (verificado === null) {
+    // No se pudo releer para confirmar: NO afirmar que quedó bien.
+    return conAsiento({ ok: false, motivo: 'La apropiación se envió pero NO pude releer el asiento para confirmar que quedó aplicada. ' +
+      'Revisá en Flexxus el asiento ' + numeroasiento + ' (ejercicio ' + codigoejercicio + ') antes de darla por hecha.' });
   }
   return { ok: true, numeroasiento, codigoejercicio, reparto,
            verificado, get_diagnostico: getErrores.length ? getErrores : undefined };
