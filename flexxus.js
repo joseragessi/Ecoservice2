@@ -49,6 +49,21 @@ async function token() {
   return login();
 }
 
+// Traduce mensajes crudos del API de Flexxus a algo que se entienda en el panel.
+function traducirErrorFlexxus(msg) {
+  const M = (msg || '').toUpperCase();
+  if (M.includes('NO HAY NINGUN EJERCICIO ACTIVO') || M.includes('EJERCICIO ACTIVO PARA LA FECHA'))
+    return 'La fecha de la factura corresponde a un período contable que Flexxus no tiene abierto. ' +
+           'Revisá la fecha de la factura: tiene que caer dentro de un ejercicio contable activo en Flexxus.';
+  if (M.includes('NO HAY EJERCICIO'))
+    return 'Flexxus no tiene un ejercicio contable abierto para esa fecha. Verificá la fecha de la factura.';
+  if (M.includes('SUMATORIA DE LOS PORCENTAJES'))
+    return 'Los porcentajes del centro de costo no suman 100. (El sistema debería corregirlo solo — avisame si persiste.)';
+  if (M.includes('PROVEEDOR') && (M.includes('NO EXISTE') || M.includes('NO ENCONTRAD')))
+    return 'El proveedor no existe en Flexxus. Revisá el CUIT o dalo de alta antes de imputar.';
+  return msg;  // el resto, tal cual
+}
+
 // fetch autenticado con un reintento si el token se venció
 async function flx(path, opts = {}, reint = true) {
   const t = await token();
@@ -67,7 +82,9 @@ async function flx(path, opts = {}, reint = true) {
     if (Array.isArray(m)) m = m.map(plano).join('\n· ');
     else if (m && typeof m === 'object') m = plano(m);
     const msg = m || texto.slice(0, 300) || ('HTTP ' + r.status);
-    const err = new Error(String(msg)); err.status = r.status; err.data = d;
+    // Traducir los errores más comunes de Flexxus a algo entendible
+    const amigable = traducirErrorFlexxus(String(msg));
+    const err = new Error(amigable); err.status = r.status; err.data = d; err.crudo = String(msg);
     throw err;
   }
   return d;
@@ -633,6 +650,12 @@ async function probarConexion() {
     ['/ejercicios', '/ejercicio', '/contabilidad/ejercicios', '/codigoejercicio'],
     x => ({ codigo: x.codigoejercicio ?? x.codigo, descripcion: (x.descripcion ?? x.nombre ?? '') + (x.fechadesde ? ' (' + x.fechadesde + ' → ' + (x.fechahasta || '') + ')' : '') }));
   out.proyectos     = await trae('/compras/gastosporproyecto/proyectos', x => ({ codigo: x.codigoproyecto, descripcion: x.descripcion }));
+  // Plan de cuentas contables: para poder imputar a la cuenta correcta
+  // (ej. Bienes de Uso en vez de Mercaderías). Probamos rutas candidatas.
+  out.plan_cuentas = await traePrimera(
+    ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentascontables', '/contabilidad/cuentas', '/contabilidad/plancuentas'],
+    x => ({ codigo: x.codigocuenta ?? x.codigo ?? x.numero, descripcion: x.descripcion ?? x.nombre ?? x.detalle,
+            imputable: x.imputable ?? x.esimputable ?? x.admiteimputacion }));
   out.centro_costo_via = (Array.isArray(out.centros_costo) && out.centros_costo.length && !out.centros_costo[0].error)
     ? 'centros de costo (apropiación contable sobre el asiento)'
     : (Array.isArray(out.proyectos) && out.proyectos.length && !out.proyectos[0].error)
