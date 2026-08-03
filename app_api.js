@@ -102,6 +102,24 @@ router.post('/api/app/login', async (req, res) => {
       });
     }
 
+    // Capataces: viven en `capataces` (misma tabla que usa el bot, con su
+    // objetivo_id y unidad). Se les agregan credenciales (usuario/clave_hash)
+    // para que entren a la app y carguen combustible a su unidad/objetivo.
+    const { data: cap } = await supabase
+      .from('capataces').select('id, nombre, clave_hash, activo, usuario, objetivo_id, objetivos(nombre), unidad_id, unidades(id, patente)')
+      .eq('usuario', usuario).maybeSingle();
+    if (cap && cap.activo && cap.clave_hash && verificarClave(clave, cap.clave_hash)) {
+      seg.loginOk(req, usuario);
+      return res.json({
+        token: firmar({ rol: 'capataz', cid: cap.id, nombre: cap.nombre,
+          objetivo_id: cap.objetivo_id || null,
+          objetivo_nombre: cap.objetivos ? cap.objetivos.nombre : null,
+          unidad_id: cap.unidad_id || null,
+          patente: cap.unidades ? cap.unidades.patente : null, exp }),
+        rol: 'capataz', nombre: cap.nombre,
+      });
+    }
+
     // Compatibilidad: pañol por variable de entorno (PANOL_USERS), si se usó
     const panol = usuariosPanol();
     if (panol[usuario] && panol[usuario] === clave) {
@@ -670,6 +688,102 @@ router.get('/api/app/supervisor/objetivos', authApp('supervisor'), async (req, r
     res.json(data || []);
   } catch (err) {
     res.json([]);
+  }
+});
+
+// ══ CARGA DE COMBUSTIBLE · CAPATACES ═════════════════════════
+// Igual que supervisor pero SIMPLE: todo va a SU objetivo y SU unidad
+// (automáticos del login). El capataz solo reparte cuántos litros a la
+// unidad y cuántos a bidones — sin elegir objetivo.
+
+// Leer el remito (idéntico al del supervisor)
+router.post('/api/app/capataz/combustible/leer', authApp('capataz'), async (req, res) => {
+  try {
+    const { fileData, fileType } = req.body || {};
+    if (!fileData) return res.status(400).json({ error: 'Falta la foto del remito' });
+    const { extraerComprobante } = require('./extraccion');
+    const buffer = Buffer.from(fileData, 'base64');
+    const datos = await extraerComprobante(buffer, fileType || 'image/jpeg');
+    const norm = s => String(s || '').toUpperCase();
+    const tipos = { gasoil: 0, super: 0 };
+    (datos.items || []).forEach(it => {
+      const p = norm(it.producto), l = Number(it.litros) || 0;
+      if (/SUPER|NAFTA/.test(p) && !/DIESEL|GASOIL/.test(p)) tipos.super += l;
+      else tipos.gasoil += l;
+    });
+    res.json({
+      ok: true, proveedor: datos.proveedor || null, cuit: datos.cuit || null,
+      numero: datos.numero || null, fecha: datos.fecha || null, tipo_doc: datos.tipo_doc || 'remito',
+      litros: { gasoil: Math.round(tipos.gasoil * 100) / 100, super: Math.round(tipos.super * 100) / 100 },
+      items_raw: datos.items || [],
+      // El capataz ve a dónde va (su objetivo y unidad), no los elige
+      objetivo_nombre: req.app_user.objetivo_nombre || null,
+      patente: req.app_user.patente || null,
+    });
+  } catch (err) {
+    console.error('capataz combustible leer:', err);
+    res.json({ __error: 'No pude leer el remito. Sacá la foto más derecha y con buena luz, o cargá los litros a mano.' });
+  }
+});
+
+// Guardar: objetivo y unidad salen del token del capataz
+router.post('/api/app/capataz/combustible', authApp('capataz'), async (req, res) => {
+  try {
+    const d = req.body || {};
+    const repartos = Array.isArray(d.repartos) ? d.repartos.filter(r => Number(r.litros) > 0) : [];
+    if (!repartos.length) return res.status(400).json({ error: 'No hay litros para cargar' });
+
+    const objetivoId = req.app_user.objetivo_id || null;
+    const objetivoNom = req.app_user.objetivo_nombre || null;
+    const unidadId = req.app_user.unidad_id || null;
+
+    let proveedorId = null;
+    if (d.proveedor) {
+      const { data: prov } = await supabase.from('proveedores')
+        .select('id').ilike('nombre', d.proveedor.trim()).limit(1).maybeSingle();
+      if (prov) proveedorId = prov.id;
+    }
+
+    const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
+    const dests = repartos.map(r => r.destino === 'bidon' ? 'bidon' : 'unidad');
+    const destinoCarga = dests.every(x => x === 'unidad') ? 'unidad'
+                       : dests.every(x => x === 'bidon') ? 'bidon' : 'mixto';
+    const resumenTxt = repartos.map(r => `${r.litros}lt ${r.tipo} ${r.destino === 'bidon' ? '→ bidón' : '→ unidad'}`).join(' · ');
+
+    const { data: carga, error } = await supabase.from('cargas_combustible').insert({
+      origen: 'remito_capataz',
+      tipo_doc: d.tipo_doc || 'remito',
+      estado: 'sin_facturar',
+      destino: destinoCarga,
+      objetivo_id: objetivoId,
+      capataz_id: req.app_user.cid || null,
+      unidad_id: unidadId,
+      proveedor_id: proveedorId,
+      fecha: fechaValida(d.fecha),
+      numero_remito: d.numero || null,
+      patente_raw: req.app_user.patente || null,
+      litros_total: litrosTotal,
+      datos_ia: d.datos_ia || null,
+      respuesta_capataz: `Cargado por capataz: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
+    }).select('id').single();
+    if (error || !carga) throw (error || new Error('no se creó la carga'));
+
+    const items = repartos.map(r => ({
+      carga_id: carga.id,
+      producto: r.tipo === 'super' ? 'SUPER' : 'GASOIL',
+      es_combustible: true,
+      litros: Number(r.litros),
+      destino: r.destino === 'bidon' ? 'bidon' : 'unidad',
+      // Los bidones del capataz caen a SU objetivo; la unidad al tanque
+      objetivo_id: r.destino === 'bidon' ? objetivoId : null,
+      unidad_id: r.destino === 'bidon' ? null : unidadId,
+      destino_detalle: r.destino === 'bidon' ? objetivoNom : null,
+    }));
+    await supabase.from('cargas_combustible_items').insert(items);
+    res.json({ ok: true, id: carga.id });
+  } catch (err) {
+    console.error('capataz combustible guardar:', err);
+    res.status(500).json({ error: 'Error guardando la carga: ' + (err.message || err.details || 'desconocido') });
   }
 });
 
