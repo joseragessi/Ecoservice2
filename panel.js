@@ -3585,12 +3585,22 @@ async function elegirClaseProveedor(prev){
       <div class="sub" style="margin-bottom:12px;font-size:12px">La clase define a qué cuenta contable va en Flexxus. Ej: <b>MAQUINAS</b> o <b>EQUIPOS VARIOS</b> → Bienes de Uso · <b>INSUMOS</b>/<b>COMBUSTIBLES</b> → gasto.</div>
       ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
       <label class="field-l">Clase contable</label>
-      <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:14px">${opts}</select>
+      <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:10px">${opts}</select>
+      <button id="cp-ficha" style="background:none;border:none;color:var(--brote-2);font-size:12px;cursor:pointer;padding:0;margin-bottom:12px;font-family:inherit;text-decoration:underline">🔍 Ver ficha técnica del proveedor en Flexxus</button>
+      <pre id="cp-ficha-out" style="display:none;background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:10px;font-size:10px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-bottom:12px"></pre>
       <div class="modal-acciones">
         <button class="btn-salir" id="cp-cancel">Cancelar</button>
         <button class="btn" id="cp-ok">Guardar y seguir →</button>
       </div></div>`;
     document.body.appendChild(bg);
+    bg.querySelector('#cp-ficha').onclick=async()=>{
+      const out=bg.querySelector('#cp-ficha-out');
+      out.style.display='block';out.textContent='Trayendo la ficha de Flexxus…';
+      try{
+        const fi=await api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm));
+        out.textContent=JSON.stringify(fi,null,2);
+      }catch(e){out.textContent='Error: '+e.message;}
+    };
     bg.querySelector('#cp-cancel').onclick=()=>{bg.remove();resolve('cancelar');};
     bg.querySelector('#cp-ok').onclick=async()=>{
       const sel=bg.querySelector('#cp-sel');
