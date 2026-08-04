@@ -1458,6 +1458,55 @@ router.get('/api/flexxus/estado', auth, async (req, res) => {
 });
 
 // Imputar una factura de Compras en Flexxus (manual, desde el detalle)
+// ── Clase contable por proveedor (deriva la cuenta en Flexxus) ──────
+// Lista las clases disponibles en Flexxus (para el selector)
+router.get('/api/compras/clases-proveedor', auth, async (req, res) => {
+  try {
+    const { listarClasesProveedor } = require('./flexxus');
+    const clases = await listarClasesProveedor();
+    res.json(clases);
+  } catch (err) {
+    console.error('clases proveedor:', err);
+    res.status(500).json({ error: 'No pude traer las clases de Flexxus: ' + (err.message || '') });
+  }
+});
+// Las clases ya asignadas a proveedores (por CUIT)
+router.get('/api/compras/proveedores-clase', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseCompras.from('proveedores_clase')
+      .select('*').order('razon_social');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Error cargando clases de proveedores' }); }
+});
+// Asignar/actualizar la clase fija de un proveedor
+router.post('/api/compras/proveedores-clase', auth, async (req, res) => {
+  try {
+    const { cuit, razon_social, codigo_clase, clase_descripcion } = req.body || {};
+    const cuitL = String(cuit || '').replace(/\D/g, '');
+    if (!cuitL) return res.status(400).json({ error: 'Falta el CUIT del proveedor' });
+    if (!codigo_clase) return res.status(400).json({ error: 'Falta la clase' });
+    const { error } = await supabaseCompras.from('proveedores_clase').upsert({
+      cuit: cuitL, razon_social: razon_social || null,
+      codigo_clase: String(codigo_clase), clase_descripcion: clase_descripcion || null,
+      actualizado_at: new Date().toISOString(),
+    }, { onConflict: 'cuit' });
+    if (error) throw error;
+    // UNIFICACIÓN: intentar actualizar también la ficha del proveedor en
+    // Flexxus, para que ambos sistemas queden con la misma clase. Best-effort:
+    // si el API no lo permite, la clase igual se aplica en cada imputación.
+    let flexxus_sync = null;
+    try {
+      const { actualizarClaseProveedorFlexxus } = require('./flexxus');
+      flexxus_sync = await actualizarClaseProveedorFlexxus(cuitL, String(codigo_clase));
+    } catch (e) { flexxus_sync = { ok: false, motivo: String(e.message || '').slice(0, 200) }; }
+    res.json({ ok: true, flexxus_sync });
+  } catch (err) {
+    console.error('proveedor clase save:', err);
+    res.status(500).json({ error: 'Error guardando la clase' });
+  }
+});
+
 router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
   try {
     const letra = ['A', 'B', 'C'].includes((req.body || {}).letra) ? req.body.letra : 'A';
@@ -1469,9 +1518,18 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
     }
     const { imputarFactura } = require('./flexxus');
+    // Clase contable fija del proveedor (si se le asignó una): deriva la cuenta
+    // contable en Flexxus. Se busca por CUIT.
+    let claseProveedor = null;
+    const cuitF = String(f.cuit || '').replace(/\D/g, '');
+    if (cuitF) {
+      const { data: pc } = await supabaseCompras.from('proveedores_clase')
+        .select('codigo_clase').eq('cuit', cuitF).maybeSingle();
+      if (pc) claseProveedor = pc.codigo_clase;
+    }
     let r;
     try {
-      r = await imputarFactura(f, letra, { permitirAlta: !!(req.body || {}).permitir_alta });
+      r = await imputarFactura(f, letra, { permitirAlta: !!(req.body || {}).permitir_alta, claseProveedor });
     } catch (e) {
       if (e.code === 'PROV_NO_EXISTE') return res.status(422).json({ error: e.message, code: 'PROV_NO_EXISTE' });
       if (e.code === 'NUMERO_INVALIDO') return res.status(422).json({ error: e.message, code: 'NUMERO_INVALIDO' });
@@ -1526,6 +1584,89 @@ router.get('/api/compras/facturas', auth, async (req, res) => {
   } catch (err) {
     console.error('compras facturas:', err);
     res.status(500).json({ error: 'Error cargando facturas de compras' });
+  }
+});
+
+// ── Reporte financiero contable (para Soledad) ────────────────
+// Agrega las facturas del mes: totales (neto/IVA/total), IVA crédito fiscal,
+// pagado vs pendiente, estado en Flexxus, y desgloses por clase contable
+// (= a qué cuenta va), por objetivo (centro de costo) y por proveedor.
+router.get('/api/compras/reporte-financiero', auth, async (req, res) => {
+  try {
+    const mes = String(req.query.mes || '').slice(0, 7);  // YYYY-MM ('' = todo)
+    const [{ data: filas, error: e1 }, { data: clasesProv }] = await Promise.all([
+      supabaseCompras.from('facturas').select('*'),
+      supabaseCompras.from('proveedores_clase').select('*'),
+    ]);
+    if (e1) throw e1;
+    const mapaClase = {};
+    (clasesProv || []).forEach(p => { mapaClase[p.cuit] = p; });
+
+    const fs = (filas || []).map(aplanar).filter(f => {
+      if (!mes) return true;
+      const ff = String(f.fecha_factura || f.createdAt || '').slice(0, 7);
+      return ff === mes;
+    });
+
+    const otrosDe = f => (f.otros_conceptos || []).filter(o => !o.exento).reduce((s, o) => s + (Number(o.monto) || 0), 0);
+    const totalDe = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0) + otrosDe(f);
+
+    const kpis = { cantidad: fs.length, neto: 0, iva: 0, otros: 0, total: 0,
+      pagado: 0, pendiente: 0, iva_credito_a: 0,
+      imputadas_flexxus: 0, sin_imputar: 0, cc_ok: 0, cc_pendiente: 0 };
+    const porClase = {}, porObjetivo = {}, porProveedor = {};
+
+    for (const f of fs) {
+      const neto = Number(f.total_sin_iva) || 0, iva = Number(f.total_iva) || 0;
+      const otros = otrosDe(f), total = totalDe(f);
+      kpis.neto += neto; kpis.iva += iva; kpis.otros += otros; kpis.total += total;
+      if (f.pagada) kpis.pagado += total; else kpis.pendiente += total;
+      if ((f.letra || '').toUpperCase() === 'A') kpis.iva_credito_a += iva;
+      const flx = f.flexxus || {};
+      if (flx.ok) {
+        kpis.imputadas_flexxus++;
+        const cc = flx.centro_costo || {};
+        if (cc.ok) kpis.cc_ok++; else kpis.cc_pendiente++;
+      } else kpis.sin_imputar++;
+
+      // Por clase contable (cuenta destino en Flexxus)
+      const cuitN = String(f.cuit || '').replace(/\D/g, '');
+      const cl = mapaClase[cuitN];
+      const kCl = cl ? (cl.codigo_clase + ' · ' + (cl.clase_descripcion || '')) : 'Sin clase asignada';
+      porClase[kCl] = porClase[kCl] || { neto: 0, iva: 0, total: 0, cant: 0 };
+      porClase[kCl].neto += neto; porClase[kCl].iva += iva; porClase[kCl].total += total; porClase[kCl].cant++;
+
+      // Por objetivo (centro de costo): total o por ítem según cómo se asignó
+      if (f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length) {
+        const items = f.items || [];
+        for (const [ix, a] of Object.entries(f.assignments)) {
+          if (!a || !a.objetivo) continue;
+          const it = items[Number(ix)] || {};
+          const m = (Number(it.monto_sin_iva) || 0) + (Number(it.iva) || 0);
+          porObjetivo[a.objetivo] = porObjetivo[a.objetivo] || { total: 0, cant: 0 };
+          porObjetivo[a.objetivo].total += m; porObjetivo[a.objetivo].cant++;
+        }
+      } else {
+        const obj = (f.totalAssign && f.totalAssign.objetivo) || 'Sin objetivo';
+        porObjetivo[obj] = porObjetivo[obj] || { total: 0, cant: 0 };
+        porObjetivo[obj].total += total; porObjetivo[obj].cant++;
+      }
+
+      // Por proveedor
+      const kP = f.proveedor || cuitN || '—';
+      porProveedor[kP] = porProveedor[kP] || { total: 0, cant: 0, cuit: cuitN, clase: cl ? cl.codigo_clase : null };
+      porProveedor[kP].total += total; porProveedor[kP].cant++;
+    }
+
+    const aLista = (o, extra) => Object.entries(o)
+      .map(([k, v]) => ({ nombre: k, ...v }))
+      .sort((a, b) => b.total - a.total);
+    res.json({ mes: mes || 'todo', kpis,
+      por_clase: aLista(porClase), por_objetivo: aLista(porObjetivo),
+      por_proveedor: aLista(porProveedor).slice(0, 20) });
+  } catch (err) {
+    console.error('reporte financiero:', err);
+    res.status(500).json({ error: 'Error armando el reporte financiero' });
   }
 });
 
@@ -1924,6 +2065,14 @@ router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) =
     if (e0 || !fila) return res.status(404).json({ error: 'Factura inexistente' });
     const { verificarImputacion } = require('./flexxus');
     const v = await verificarImputacion(fila.data || {}, String(req.query.letra || 'A').toUpperCase());
+    // Sumamos la clase contable fija del proveedor (si tiene una asignada)
+    const cuitP = String((fila.data || {}).cuit || '').replace(/\D/g, '');
+    if (cuitP) {
+      const { data: pc } = await supabaseCompras.from('proveedores_clase')
+        .select('codigo_clase, clase_descripcion').eq('cuit', cuitP).maybeSingle();
+      v.clase_asignada = pc || null;
+      v.cuit_norm = cuitP;
+    }
     res.json(v);
   } catch (err) {
     console.error('flexxus preview:', err.message);
