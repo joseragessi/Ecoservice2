@@ -733,14 +733,20 @@ async function fichaProveedorPorCuit(cuit) {
 // la ficha y se verifica que el texto coincida con lo elegido — si Flexxus
 // mapeó otro valor, se informa en vez de dar el éxito por hecho.
 const CLASES_COMPROBANTE = { 1: 'BIENES DE USO', 2: 'SERVICIOS', 3: 'OTROS', 4: 'LOCACIONES', 5: 'NACIONALIZACIONES' };
-async function colocarClaseComprobante(cuit, claseNum) {
+async function colocarClaseComprobante(cuit, claseNum, cuentaRubro) {
   const esperado = CLASES_COMPROBANTE[Number(claseNum)];
   if (!esperado) return { ok: false, motivo: 'Clase de comprobante inválida.' };
   const p = await buscarProveedorPorCuit(cuit);
   if (!p) return { ok: false, motivo: 'El proveedor no existe en Flexxus.' };
+  const actualNum = Number(p.clasecomprobante) || 0;
   const actualTxt = String(p.tipocomprobante || '').toUpperCase();
-  if (Number(p.clasecomprobante) !== 0 && actualTxt !== 'BIENES DE CAMBIO') {
-    return { ok: false, motivo: 'El proveedor ya tiene clase de comprobante fija en Flexxus (' + p.tipocomprobante + '). Se cambia solo desde el ERP.' };
+  // Se puede: colocar clase cuando está en blanco (0/Bienes de cambio), o
+  // corregir el RUBRO cuando la clase ya es la misma que se pide (ej. Bienes
+  // de uso con rubro default). Cambiar entre clases ya fijadas: desde el ERP.
+  const enBlanco = actualNum === 0 || actualTxt === 'BIENES DE CAMBIO';
+  const mismaClase = actualNum === Number(claseNum) || actualTxt === esperado;
+  if (!enBlanco && !mismaClase) {
+    return { ok: false, motivo: 'El proveedor ya tiene otra clase de comprobante fija (' + p.tipocomprobante + '). Se cambia solo desde el ERP.' };
   }
   const cuerpo = {
     codigoproveedor: String(p.codigoproveedor),
@@ -755,6 +761,7 @@ async function colocarClaseComprobante(cuit, claseNum) {
     codigolocalidad: String(p.codigolocalidad || codDe(p, 'localidades.codigolocalidad') || ''),
     clasecomprobante: Number(claseNum),
   };
+  if (cuentaRubro) cuerpo.cuenta = String(cuentaRubro);  // rubro = subcuenta del plan (ej. 12101005)
   const rutas = [
     ['/proveedores/' + encodeURIComponent(cuerpo.codigoproveedor), 'PUT'],
     ['/proveedores', 'PUT'],
@@ -765,11 +772,13 @@ async function colocarClaseComprobante(cuit, claseNum) {
       await flx(ruta, { method: metodo, body: JSON.stringify(cuerpo) });
       const p2 = await buscarProveedorPorCuit(cuit).catch(() => null);
       const txt2 = p2 ? String(p2.tipocomprobante || '').toUpperCase() : '';
-      if (txt2 === esperado) {
-        return { ok: true, motivo: 'Clase de comprobante colocada: ' + esperado + ' (verificado en la ficha).' };
+      const claseOk = txt2 === esperado || (p2 && Number(p2.clasecomprobante) === Number(claseNum));
+      const rubroOk = !cuentaRubro || (p2 && String(p2.cuenta || '') === String(cuentaRubro));
+      if (claseOk && rubroOk) {
+        return { ok: true, motivo: 'Clase de comprobante: ' + esperado + (cuentaRubro ? ' · rubro ' + cuentaRubro : '') + ' — verificado en la ficha.' };
       }
-      if (p2 && Number(p2.clasecomprobante) === Number(claseNum)) {
-        return { ok: true, motivo: 'Clase colocada (código ' + claseNum + '); la ficha dice "' + (p2.tipocomprobante || '?') + '".' };
+      if (claseOk && cuentaRubro && !rubroOk) {
+        return { ok: false, motivo: 'La clase quedó (' + esperado + ') pero el RUBRO no se grabó: la ficha muestra cuenta="' + (p2 ? p2.cuenta : '?') + '" (mandé ' + cuentaRubro + '). El campo del rubro puede ser otro — avisame con este texto.' };
       }
       intentos.push(metodo + ' ' + ruta + ': aceptado pero la ficha quedó en "' + (p2 ? p2.tipocomprobante : '?') + '" (esperaba ' + esperado + ')');
     } catch (e) {
@@ -777,6 +786,30 @@ async function colocarClaseComprobante(cuit, claseNum) {
     }
   }
   return { ok: false, motivo: 'No pude colocar la clase de comprobante. ' + intentos.join(' · ') };
+}
+
+// Rubros de BIENES DE USO tal como salen en Flexxus: son las subcuentas 121…
+// del plan de cuentas (12101001 HARDWARE Y SOFTWARE, 12101005 MAQUINAS Y
+// HERRAMIENTAS, 12101007 RODADOS, etc.). El plan SÍ se puede leer por API.
+const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentascontables', '/cuentacontable',
+  '/contabilidad/cuentas', '/contabilidad/plancuentas', '/contabilidad/plandecuentas',
+  '/cuentasimputables', '/cuentascontable', '/contabilidad/cuenta', '/cuenta',
+  '/planctas', '/ctacontable', '/contabilidad/ctas', '/rubroscontables'];
+async function listarRubrosBienesUso() {
+  for (const ruta of RUTAS_PLAN) {
+    try {
+      const d = await flx(ruta);
+      const l = d.data || d || [];
+      if (!Array.isArray(l) || !l.length) continue;
+      const filas = l.map(x => ({
+        codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
+        descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
+      })).filter(x => x.codigo);
+      const rubros = filas.filter(x => x.codigo.startsWith('121'));
+      if (rubros.length) return rubros;
+    } catch (e) { /* siguiente ruta */ }
+  }
+  return [];
 }
 
 async function listarClasesProveedor() {
@@ -833,4 +866,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante };
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
