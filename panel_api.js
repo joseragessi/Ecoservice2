@@ -1610,6 +1610,20 @@ router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
   }
 });
 
+// Colocar la clase de comprobante en la ficha del proveedor (solo si está
+// libre/en blanco = Bienes de cambio 0). Es la palanca de la cuenta contable.
+router.post('/api/compras/proveedor-clase-comprobante', auth, async (req, res) => {
+  try {
+    const cuit = String((req.body || {}).cuit || '').replace(/\D/g, '');
+    const clase = Number((req.body || {}).clase);
+    if (!cuit || !clase) return res.status(400).json({ error: 'Falta el CUIT o la clase' });
+    const { colocarClaseComprobante } = require('./flexxus');
+    res.json(await colocarClaseComprobante(cuit, clase));
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Error colocando la clase de comprobante' });
+  }
+});
+
 router.get('/api/compras/facturas', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
