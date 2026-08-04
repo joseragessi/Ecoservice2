@@ -1626,26 +1626,6 @@ async function vRepInd(view){
       <td class="num" style="font-weight:600;${u.n>=3?'color:#A32D2D':''}">${u.n}</td>
       <td class="num sub">${u.paradas||'—'}</td></tr>`).join('');
 
-  // Embudo: promedio de días en cada etapa (entre timestamps consecutivos disponibles)
-  const etapa=(a,b)=>{const ts=fs.map(r=>diasEntre(r[a],r[b])).filter(t=>t!=null);
-    return ts.length?{v:ts.reduce((s,t)=>s+t,0)/ts.length,n:ts.length}:null;};
-  const emb=[
-    ['Pendiente → Diagnóstico',etapa('created_at','fecha_diagnostico')],
-    ['Diagnóstico → Esp. repuestos',etapa('fecha_diagnostico','fecha_espera_repuestos')],
-    ['Esp. repuestos → En reparación',etapa('fecha_espera_repuestos','fecha_en_reparacion')],
-    ['En reparación → Finalizado',etapa('fecha_en_reparacion','fecha_finalizado')],
-  ];
-  const maxEmb=Math.max(...emb.map(([,e])=>e?e.v:0),0.1);
-  const htmlEmb=emb.some(([,e])=>e)?emb.map(([l,e])=>{
-    if(!e)return `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><b style="font-weight:500">${l}</b><span class="sub">sin datos aún</span></div></div>`;
-    const w=Math.max(3,Math.round(e.v*100/maxEmb));
-    return `<div style="margin-bottom:9px">
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-        <b style="font-weight:500">${l}</b><span class="mono">${Math.round(e.v*10)/10} d <span class="sub">(${e.n})</span></span></div>
-      <div style="height:6px;background:var(--papel);border-radius:3px"><div style="height:6px;width:${w}%;background:var(--azul);border-radius:3px"></div></div>
-    </div>`;}).join('')
-    :'<div class="sub" style="padding:10px 0">Las fechas por etapa se estampan en cada cambio de estado: este bloque se va llenando solo con el uso.</div>';
-
   // ── TALLER AHORA: lo accionable. Sobre TODAS las activas del presente
   // (no el filtro de mes): una máquina abierta hace 20 días es un problema de
   // hoy aunque se haya creado en otro período.
@@ -1807,14 +1787,6 @@ async function vRepInd(view){
       ${meses.map(m=>`<option value="${m}" ${m===repIndPer?'selected':''}>${mesStk(m)}</option>`).join('')}
     </select></div>
   ${tabsRep()}
-  <div class="kpis" style="grid-template-columns:repeat(6,1fr)">
-    <div class="kpi ${activas.length?'amber':''}"><div class="kpi-label">Activas</div><div class="kpi-val ${activas.length?'amber':''}">${activas.length}</div><div class="kpi-sub">${criticasAltas} crítico + alta</div></div>
-    <div class="kpi plain"><div class="kpi-label">Resolución prom.</div><div class="kpi-val">${tProm!=null?Math.round(tProm*10)/10:'—'}</div><div class="kpi-sub">días creada → finalizada</div></div>
-    <div class="kpi plain"><div class="kpi-label">% Preventivo</div><div class="kpi-val" style="${pctPrev>=25?'color:var(--brote-2)':''}">${pctPrev!=null?pctPrev+'%':'—'}</div><div class="kpi-sub">${finPrev.length} de ${finalizadas.length} finalizadas</div></div>
-    <div class="kpi plain"><div class="kpi-label">Cumplimiento prev.</div><div class="kpi-val" style="${cumpl!=null&&cumpl<70?'color:#A32D2D':cumpl!=null?'color:var(--brote-2)':''}">${cumpl!=null?cumpl+'%':'—'}</div><div class="kpi-sub">${cumplSub}</div></div>
-    <div class="kpi plain"><div class="kpi-label">Reincidencia 30d</div><div class="kpi-val" style="${pctReinc>=20?'color:#A32D2D':''}">${pctReinc!=null?pctReinc+'%':'—'}</div><div class="kpi-sub" title="La misma unidad volvió al taller dentro de los 30 días. No verifica que sea la misma falla.">misma unidad vuelve en 30 días</div></div>
-    <div class="kpi plain"><div class="kpi-label">Espera repuestos</div><div class="kpi-val">${espProm!=null?Math.round(espProm*10)/10:'—'}</div><div class="kpi-sub">días prom. · ${espAhora} esperando ahora</div></div>
-  </div>
   <div class="grid" style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:18px">
     <div class="panel"><div class="panel-title">Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas · paradas y críticas primero</span></div>
       ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">En este estado</th><th class="num">Abierta hace</th><th>Mecánico</th></tr></thead>
@@ -1841,11 +1813,7 @@ async function vRepInd(view){
       <tbody>${tablaUni||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
     </div>
   </div>
-  <div class="grid g-2" style="margin-bottom:18px">
-    <div class="panel"><div class="panel-title">Dónde se traba el taller <span class="sub" style="font-weight:400;font-size:11px">· días promedio por etapa</span></div>${htmlEmb}</div>
-    <div class="panel"><div class="panel-title">Por tipo de equipo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.tipo_equipo||(r.equipos?(r.equipos.tipo||r.equipos.nombre):null)||'Sin asignar';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--brote)')}</div>
-  </div>
-  <div class="panel"><div class="panel-title">Por objetivo</div>${barsGen((l=>{const m={};l.forEach(r=>{const k=r.objetivos?r.objetivos.nombre:'Taller / sin objetivo';m[k]=(m[k]||0)+1;});return Object.entries(m).map(([nombre,valor])=>({nombre,valor})).sort((a,b)=>b.valor-a.valor);})(fs),'var(--diesel)')}</div>`;
+`;
 }
 
 async function vReparaciones(view){
