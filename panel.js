@@ -3571,13 +3571,10 @@ function ncTotal(inv){
 // Muestra la clase contable del proveedor y permite fijarla antes de imputar.
 // La clase deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes de
 // Uso; INSUMOS/COMBUSTIBLES → gasto). Queda guardada como fija por proveedor.
-async function elegirClaseProveedor(prev){
-  let clases=[];
-  try{clases=await api('/api/compras/clases-proveedor');}catch(e){}
-  if(!clases.length)return 'seguir';  // sin clases del API, no frenamos la imputación
-  const actual=prev.clase_asignada;
+async function elegirClaseProveedor(prev,prog){
   // La ficha COMPLETA del proveedor (el preview trae uno resumido sin
-  // clasecomprobante): de acá sale la clase de comprobante real.
+  // clasecomprobante): de acá salen la CLASE DE COMPROBANTE y el RUBRO, que
+  // son los que definen a qué cuenta contable va el asiento en Flexxus.
   let pf=prev.proveedor||{};
   let rubros=[];
   try{
@@ -3588,17 +3585,16 @@ async function elegirClaseProveedor(prev){
     if(fi&&fi.existe&&fi.lista)pf=fi.lista;
     if(Array.isArray(ru))rubros=ru;
   }catch(e){}
+  if(prog)prog.cerrar();
   return new Promise(resolve=>{
+    const actual=prev.clase_asignada;
     const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
-    const opts=clases.map(c=>`<option value="${c.codigo}" ${actual&&actual.codigo_clase===c.codigo?'selected':''}>${c.codigo} · ${c.descripcion}</option>`).join('');
     bg.innerHTML=`<div class="modal" style="max-width:460px">
-      <div class="modal-tit">Clase contable del proveedor</div>
+      <div class="modal-tit">Clase de comprobante del proveedor</div>
       <div class="sub" style="margin:6px 0 4px">${prev.proveedor.razonsocial}${prev.proveedor.cuit?' · CUIT '+prev.proveedor.cuit:''}</div>
-      <div class="sub" style="margin-bottom:12px;font-size:12px">La clase define a qué cuenta contable va en Flexxus. Ej: <b>MAQUINAS</b> o <b>EQUIPOS VARIOS</b> → Bienes de Uso · <b>INSUMOS</b>/<b>COMBUSTIBLES</b> → gasto.</div>
-      ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
+      <div class="sub" style="margin-bottom:12px;font-size:12px">La clase de comprobante define a qué cuenta contable va la factura en Flexxus. <b>Bienes de uso</b> + rubro → cuenta 121…; <b>Bienes de cambio</b> → Mercaderías.</div>
+      ${actual?`<div class="sub" style="font-size:11.5px;margin-bottom:10px">Clase del proveedor en Flexxus: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:''}
       ${(()=>{
-        // CLASE DE COMPROBANTE + RUBRO: la palanca real de la cuenta contable,
-        // con las mismas opciones que muestra Flexxus.
         const enBlanco=Number(pf.clasecomprobante)===0||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE CAMBIO';
         const esBU=Number(pf.clasecomprobante)===1||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE USO';
         if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '<div class="sub" style="font-size:11px;margin-bottom:10px">No pude leer la clase de comprobante de la ficha (¿proveedor nuevo? se crea al imputar).</div>';
@@ -3626,51 +3622,30 @@ async function elegirClaseProveedor(prev){
             <option value="5">NACIONALIZACIONES</option>
           </select>${selRubro}</div>`;
       })()}
-      <label class="field-l">Clase contable</label>
-      <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:10px">${opts}</select>
-      <button id="cp-ficha" style="background:none;border:none;color:var(--brote-2);font-size:12px;cursor:pointer;padding:0;margin-bottom:12px;font-family:inherit;text-decoration:underline">🔍 Ver ficha técnica del proveedor en Flexxus</button>
-      <pre id="cp-ficha-out" style="display:none;background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:10px;font-size:10px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-bottom:12px"></pre>
       <div class="modal-acciones">
         <button class="btn-salir" id="cp-cancel">Cancelar</button>
         <button class="btn" id="cp-ok">Guardar y seguir →</button>
       </div></div>`;
     document.body.appendChild(bg);
-    bg.querySelector('#cp-ficha').onclick=async()=>{
-      const out=bg.querySelector('#cp-ficha-out');
-      out.style.display='block';out.textContent='Trayendo la ficha de Flexxus…';
-      try{
-        const fi=await api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm));
-        out.textContent=JSON.stringify(fi,null,2);
-      }catch(e){out.textContent='Error: '+e.message;}
-    };
     bg.querySelector('#cp-cancel').onclick=()=>{bg.remove();resolve('cancelar');};
     bg.querySelector('#cp-ok').onclick=async()=>{
-      const sel=bg.querySelector('#cp-sel');
-      const codigo=sel.value, desc=sel.options[sel.selectedIndex].textContent.split('·').slice(1).join('·').trim();
+      const compSel=bg.querySelector('#cp-comp');
+      const rubroSel=bg.querySelector('#cp-rubro');
+      const claseComp=compSel?compSel.value:'';
+      const rubro=rubroSel?rubroSel.value:'';
+      // Caso A: clase en blanco y eligió una → colocar clase (+rubro si eligió)
+      // Caso B: ya es Bienes de uso y eligió/cambió rubro → corregir el rubro
+      const yaBU=!compSel&&rubroSel;  // sin selector de clase = ya era Bienes de uso
+      if(!claseComp&&!(yaBU&&rubro)){bg.remove();resolve('seguir');return;}
+      const car=flxCargando('Cargando información en Flexxus…','Colocando la clase de comprobante y el rubro en la ficha del proveedor.',230);
       try{
-        const r=await api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
-          cuit:prev.cuit_norm, razon_social:prev.proveedor.razonsocial,
-          codigo_clase:codigo, clase_descripcion:desc})});
-        const s=r&&r.flexxus_sync;
-        if(s&&s.ok&&!s.sin_cambios)toast('Clase guardada ✓ y ficha del proveedor actualizada en Flexxus');
-        else if(s&&s.ok)toast('Clase guardada ✓ (la ficha en Flexxus ya la tenía)');
-        else if(s)toast('Clase guardada ✓ — '+(s.motivo||'no se pudo actualizar la ficha en Flexxus'),'error');
-        // Clase de COMPROBANTE + RUBRO (definen la cuenta contable)
-        const compSel=bg.querySelector('#cp-comp');
-        const rubroSel=bg.querySelector('#cp-rubro');
-        const claseComp=compSel?compSel.value:'';
-        const rubro=rubroSel?rubroSel.value:'';
-        // Caso A: clase en blanco y eligió una → colocar clase (+rubro si eligió)
-        // Caso B: ya es Bienes de uso y eligió/cambió rubro → corregir el rubro
-        const yaBU=!compSel&&rubroSel;  // sin selector de clase = ya era Bienes de uso
-        if(claseComp||(yaBU&&rubro)){
-          const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({
-            cuit:prev.cuit_norm,clase:claseComp?Number(claseComp):1,cuenta:(claseComp==='1'||yaBU)?(rubro||null):null})});
-          if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
-          else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
-        }
+        const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({
+          cuit:prev.cuit_norm,clase:claseComp?Number(claseComp):1,cuenta:(claseComp==='1'||yaBU)?(rubro||null):null})});
+        car.cerrar();
+        if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
+        else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
         bg.remove();resolve('seguir');
-      }catch(e){toast('No pude guardar la clase: '+e.message,'error');}
+      }catch(e){car.cerrar();toast('No pude guardar la clase: '+e.message,'error');}
     };
   });
 }
@@ -3685,16 +3660,19 @@ async function imputarFlexxus(id){
     if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
   }
   // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus
+  const busca=flxCargando('Buscando datos en Flexxus…','Traigo el proveedor, su ficha contable y el número de comprobante.',200);
   let prev=null;
   try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
   if(prev){
-    if(prev.numero==null){toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
-    // Paso de CLASE CONTABLE: la clase del proveedor deriva la cuenta en Flexxus
-    // (ej. MAQUINAS/EQUIPOS → Bienes de Uso). Se ofrece revisar/fijar antes.
+    if(prev.numero==null){busca.cerrar();toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
+    // Paso de CLASE DE COMPROBANTE + RUBRO: es lo que define la cuenta contable
+    // del asiento (Bienes de uso + rubro → 121…; en blanco → Mercaderías).
     if(prev.proveedor&&prev.cuit_norm){
-      const sigue=await elegirClaseProveedor(prev);
+      busca.paso('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.');
+      const sigue=await elegirClaseProveedor(prev,busca);  // cierra la ventana de espera
       if(sigue==='cancelar')return;
     }
+    busca.cerrar();
     if(prev.proveedor){
       if(!await uiConfirm(
         'Proveedor en Flexxus: '+prev.proveedor.razonsocial+' (cód. '+prev.proveedor.codigo+')'+
@@ -3713,6 +3691,7 @@ async function imputarFlexxus(id){
     await ejecutarImputacion(id,L,true);return;
   }
   // Sin preview (Flexxus caído u otro error): flujo clásico con aviso genérico
+  busca.cerrar();
   if(!await uiConfirm('No pude verificar contra Flexxus. Se va a intentar crear el comprobante F'+L+' con los datos de esta factura.','¿Continuar igual?',{ok:'Imputar'}))return;
   await ejecutarImputacion(id,L,false);
 }
@@ -3726,16 +3705,23 @@ async function reintentarCentroCosto(id){
     go('compras');
   }catch(e){toast(e.message,'error');}
 }
-function flxProgreso(){
-  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=200;
+// Ventana de espera con spinner. Se usa en todos los pasos que hablan con
+// Flexxus (buscar datos, guardar la clase, imputar) para que nunca quede la
+// pantalla quieta sin explicación.
+function flxCargando(titulo,detalle,z){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=z||200;
   bg.innerHTML=`<div class="modal" style="max-width:440px;text-align:center;padding:30px 26px">
     <div class="flx-spin" style="width:44px;height:44px;border:4px solid var(--linea);border-top-color:var(--brote);border-radius:50%;margin:0 auto 16px;animation:flxgira .8s linear infinite"></div>
-    <div style="font-weight:600;font-size:15px" id="flx-paso">Imputando en Flexxus…</div>
-    <div class="sub" style="margin-top:6px;font-size:12.5px" id="flx-detalle">Creando el comprobante y apropiando el centro de costo. No cierres esta ventana.</div>
+    <div style="font-weight:600;font-size:15px" data-flx="paso">${titulo||'Conectando con Flexxus…'}</div>
+    <div class="sub" style="margin-top:6px;font-size:12.5px" data-flx="detalle">${detalle||'No cierres esta ventana.'}</div>
   </div>`;
   if(!document.getElementById('flx-spin-style')){const st=document.createElement('style');st.id='flx-spin-style';st.textContent='@keyframes flxgira{to{transform:rotate(360deg)}}';document.head.appendChild(st);}
   document.body.appendChild(bg);
-  return {cerrar:()=>bg.remove(), paso:(t)=>{const e=bg.querySelector('#flx-paso');if(e)e.textContent=t;}};
+  const set=(k,t)=>{const e=bg.querySelector('[data-flx="'+k+'"]');if(e)e.textContent=t;};
+  return {cerrar:()=>{if(bg.parentNode)bg.remove();}, paso:(t,d)=>{set('paso',t);if(d)set('detalle',d);}};
+}
+function flxProgreso(){
+  return flxCargando('Imputando en Flexxus…','Creando el comprobante y apropiando el centro de costo. No cierres esta ventana.',200);
 }
 function flxResultadoModal(r){
   const cc=r.flexxus&&r.flexxus.centro_costo;
@@ -4190,11 +4176,9 @@ let comprasExtracted=null;     // datos extraídos (con items)
 let comprasAssignMode='total'; // 'total' | 'per-item'
 let comprasAssign={objetivo:'',unidad:'',comentario:''};  // modo total
 let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentario}}
-// Clase contable del proveedor (deriva la cuenta en Flexxus): se muestra y
-// se puede corregir en el mismo paso en que se asigna el centro de costo.
-let comprasClases=[];          // clases disponibles (del API de Flexxus)
-let comprasClaseActual=null;   // la fija ya asignada a este CUIT (o null)
-let comprasClaseSel='';        // la elegida en el formulario
+// La clase contable del proveedor YA NO se toca acá: la palanca real de la
+// cuenta contable es la CLASE DE COMPROBANTE + RUBRO de bienes de uso, que se
+// revisa en el modal al imputar a Flexxus.
 let comprasMsg='';
 
 function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
@@ -4218,25 +4202,6 @@ async function comprasExtraer(){
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
   comprasStep='assign';go('compras');
-  comprasCargarClase();  // async: trae las clases y la fija del proveedor, y re-renderiza
-}
-
-// Trae del backend las clases contables (API Flexxus) y la clase fija asignada
-// al CUIT de esta factura. Se corrige acá mismo si está mal.
-async function comprasCargarClase(){
-  comprasClaseActual=null;comprasClaseSel='';
-  const cuit=String((comprasExtracted||{}).cuit||'').replace(/\D/g,'');
-  try{
-    if(!comprasClases.length)comprasClases=await api('/api/compras/clases-proveedor');
-  }catch(e){comprasClases=[];}
-  if(cuit){
-    try{
-      const todas=await api('/api/compras/proveedores-clase');
-      const mia=(todas||[]).find(p=>p.cuit===cuit);
-      if(mia){comprasClaseActual=mia;comprasClaseSel=mia.codigo_clase;}
-    }catch(e){}
-  }
-  if(comprasStep==='assign')go('compras');
 }
 
 // Lee lo que hay en el DOM y lo guarda en el estado (para no perderlo al re-renderizar)
@@ -4252,7 +4217,6 @@ function comprasCaptura(){
     comprasExtracted.total_sin_iva=parseFloat(g('cf-neto').value)||0;
     comprasExtracted.total_iva=parseFloat(g('cf-iva').value)||0;
   }
-  if(g('cf-clase'))comprasClaseSel=g('cf-clase').value||'';
   if(comprasAssignMode==='total'&&g('cf-obj')){
     comprasAssign={objetivo:g('cf-obj').value||'',unidad:g('cf-uni').value||'',comentario:g('cf-com').value||''};
   }
@@ -4277,19 +4241,6 @@ async function comprasGuardar(){
     const conObj=asigs.filter(a=>a&&a.objetivo);
     if(!conObj.length){toast('Asigná al menos un ítem a un objetivo.','error');return;}
     if(conObj.some(a=>!String(a.comentario||'').trim())){toast('Cada ítem asignado necesita observaciones. Completalas antes de guardar.','error');return;}
-  }
-  // Clase contable: si se eligió/cambió, queda fija para el proveedor (y se
-  // intenta actualizar también su ficha en Flexxus). No frena el guardado.
-  const cuitCl=String(d.cuit||'').replace(/\D/g,'');
-  if(comprasClaseSel&&cuitCl&&(!comprasClaseActual||comprasClaseActual.codigo_clase!==comprasClaseSel)){
-    const cl=comprasClases.find(c=>c.codigo===comprasClaseSel);
-    api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
-      cuit:cuitCl,razon_social:d.proveedor||null,
-      codigo_clase:comprasClaseSel,clase_descripcion:cl?cl.descripcion:null})})
-      .then(r=>{const s=r&&r.flexxus_sync;
-        if(s&&s.ok&&!s.sin_cambios)toast('Clase contable fijada ✓ y ficha actualizada en Flexxus');
-        else if(s&&!s.ok)toast('Clase fijada ✓ — '+(s.motivo||''),'error');})
-      .catch(()=>{});
   }
   const inv={
     fecha_factura:d.fecha_factura||null,
@@ -4373,28 +4324,17 @@ function vComprasCarga(view){
   const uoSel=val=>COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}"${optSel(u,val)}>${u}</option>`).join('');
   // Tabla de ítems
   const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="money tr">${money(it.monto_sin_iva)}</td><td class="money tr">${money(it.iva)}</td></tr>`).join('');
-  // Imputación
-  // Clase contable del proveedor: se revisa/corrige acá, junto con el centro
-  // de costo. Deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes
-  // de Uso; INSUMOS/COMBUSTIBLES → gasto/mercadería).
-  const claseOpts=comprasClases.map(c=>`<option value="${c.codigo}"${comprasClaseSel===c.codigo?' selected':''}>${c.codigo} · ${c.descripcion}</option>`).join('');
-  const bloqueClase=comprasClases.length?`
-    <div class="mm-field" style="background:${comprasClaseActual?'var(--brote-soft)':'var(--diesel-soft)'};border-radius:10px;padding:10px 12px;margin-bottom:12px">
-      <label style="display:flex;justify-content:space-between;align-items:baseline">Clase contable del proveedor
-        <span style="font-weight:400;font-size:11px;color:${comprasClaseActual?'var(--brote-2)':'#854F0B'}">${comprasClaseActual?'fija asignada ✓':'⚠ sin clase fija — revisala'}</span></label>
-      <select id="cf-clase" style="width:100%"><option value="">— Elegir clase (define la cuenta contable) —</option>${claseOpts}</select>
-      <div class="sub" style="font-size:11px;margin-top:4px">MAQUINAS / EQUIPOS VARIOS → Bienes de Uso · INSUMOS / COMBUSTIBLES → gasto. Queda fija para este proveedor.</div>
-    </div>`:'';
+  // Imputación (la clase contable se revisa al imputar a Flexxus, no acá)
   let imput;
   if(comprasAssignMode==='total'){
-    imput=bloqueClase+`
+    imput=`
       <div class="mm-field"><label>Objetivo</label>
         <input id="cf-obj" list="cf-obj-list" class="busca" style="width:100%" placeholder="Escribí para buscar…" value="${(comprasAssign.objetivo||'').replace(/"/g,'&quot;')}" autocomplete="off">
         <datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist></div>
       <div class="mm-field"><label>Unidad</label><select id="cf-uni"><option value="">— Seleccioná —</option>${uoSel(comprasAssign.unidad)}</select></div>
       <div class="mm-field"><label>Comentarios / observaciones <span style="color:var(--rojo)">*</span></label><textarea id="cf-com" rows="2" class="ta-panel" placeholder="Obligatorio: qué es, para qué, N° de orden, etc.">${comprasAssign.comentario||''}</textarea></div>`;
   }else{
-    imput=bloqueClase+`<datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist>`+items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
+    imput=`<datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist>`+items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
       <div class="item-imp">
         <div class="item-imp-head"><span>${it.descripcion||'Ítem '+(i+1)}</span><span class="money">${money((Number(it.monto_sin_iva)||0)+(Number(it.iva)||0))}</span></div>
         <div class="grid g-2">
