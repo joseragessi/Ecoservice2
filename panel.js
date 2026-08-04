@@ -3649,6 +3649,59 @@ async function elegirClaseProveedor(prev,prog){
     };
   });
 }
+// PASO DE REVISIÓN del centro de costo, antes de imputar. Una vez imputada la
+// factura no se puede editar, así que acá se ve el reparto exacto que se va a
+// mandar y si cada objetivo tiene su código y existe en Flexxus.
+async function revisarCentroCosto(id){
+  let d=null;
+  const esp=flxCargando('Revisando el centro de costo…','Contrastando los códigos de Maestros contra Flexxus.',210);
+  try{d=await api('/api/compras/facturas/'+id+'/centrocosto-preview');}catch(e){d={error:e.message};}
+  esp.cerrar();
+  return new Promise(resolve=>{
+    const problema=!d||d.error||!d.ok||Math.abs((d.suma||0)-100)>0.001||(d.reparto||[]).some(x=>x.existe===false);
+    const filas=(d&&d.reparto||[]).map(x=>{
+      const mal=!x.codigo||x.existe===false;
+      return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;padding:8px 12px;border-bottom:1px solid var(--linea);font-size:12.5px">
+        <div style="flex:1">
+          <div style="font-weight:600">${x.objetivo}</div>
+          <div class="sub" style="font-size:11px;color:${mal?'#A32D2D':'#586B60'}">${
+            !x.codigo?'⚠ sin código de Flexxus cargado en Maestros'
+            :x.existe===false?'✕ el código '+x.codigo+' NO existe en Flexxus'
+            :'cód. '+x.codigo+(x.nombre_flexxus?' · en Flexxus: '+x.nombre_flexxus:'')}</div>
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div class="mono" style="font-weight:600;color:${mal?'#A32D2D':'var(--brote-2)'}">${x.porcentaje}%</div>
+          <div class="sub mono" style="font-size:11px">${money(x.monto)}</div>
+        </div></div>`;}).join('');
+    const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+    bg.innerHTML=`<div class="modal" style="max-width:520px">
+      <div class="modal-tit">Revisá el centro de costo</div>
+      <div class="sub" style="margin:6px 0 12px;font-size:12px">Una vez imputada en Flexxus, la factura <b>ya no se puede editar</b>. Confirmá que el reparto sea el correcto.</div>
+      ${d&&d.error?`<div style="background:#FCEBED;border:1px solid #EFB9C0;color:#A32D2D;border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:10px">No pude armar la vista previa: ${d.error}</div>`:''}
+      ${filas?`<div style="border:1px solid var(--linea);border-radius:10px;overflow:hidden;margin-bottom:8px">
+        <div style="background:var(--papel);padding:7px 12px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600">Reparto · ${d.modo==='per-item'?'por ítem':'total de factura'}</div>
+        ${filas}
+        <div style="display:flex;justify-content:space-between;padding:8px 12px;background:var(--papel);font-size:12.5px;font-weight:600">
+          <span>Suma</span><span class="mono" style="color:${Math.abs((d.suma||0)-100)<0.001?'var(--brote-2)':'#A32D2D'}">${d.suma}%</span></div>
+      </div>`:''}
+      ${d&&(d.sin_codigo||[]).length?`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:10px">
+        ⚠ Sin código de Flexxus: <b>${d.sin_codigo.join(', ')}</b><br>Cargalo en <b>Maestros → Centros de costo</b> y volvé a imputar, o imputá igual y el centro de costo queda pendiente.</div>`:''}
+      ${d&&d.flexxus_leido===false?`<div class="sub" style="font-size:11.5px;margin-bottom:10px">No pude leer los centros de costo de Flexxus para contrastarlos${d.motivo_flexxus?' ('+d.motivo_flexxus+')':''}. Los códigos se muestran sin verificar.</div>`:''}
+      <div class="modal-acciones">
+        <button class="btn-salir" id="cc-cancel">Cancelar</button>
+        ${problema?`<button class="btn-salir" id="cc-igual" style="color:var(--rojo);border-color:#EFB9C0">Imputar igual</button>`
+                  :`<button class="btn" id="cc-ok">Confirmar e imputar →</button>`}
+      </div></div>`;
+    document.body.appendChild(bg);
+    const fin=v=>{bg.remove();resolve(v);};
+    bg.querySelector('#cc-cancel').onclick=()=>fin('cancelar');
+    const ok=bg.querySelector('#cc-ok');if(ok)ok.onclick=()=>fin('seguir');
+    const ig=bg.querySelector('#cc-igual');
+    if(ig)ig.onclick=async()=>{
+      if(await uiConfirm('El centro de costo va a quedar PENDIENTE y la factura ya no se va a poder editar. Podés corregir los códigos en Maestros y usar "↻ Reintentar" después.','¿Imputar igual?',{ok:'Imputar igual',danger:true}))fin('seguir');
+    };
+  });
+}
 async function imputarFlexxus(id){
   // La letra sale del OCR (inv.letra); solo se pregunta si no vino.
   const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer:null;
@@ -3673,6 +3726,8 @@ async function imputarFlexxus(id){
       if(sigue==='cancelar')return;
     }
     busca.cerrar();
+    // Antes de tocar Flexxus: revisar el centro de costo (después no se edita)
+    if(await revisarCentroCosto(id)==='cancelar')return;
     if(prev.proveedor){
       if(!await uiConfirm(
         'Proveedor en Flexxus: '+prev.proveedor.razonsocial+' (cód. '+prev.proveedor.codigo+')'+
@@ -3747,6 +3802,7 @@ function flxResultadoModal(r){
       <div style="background:var(--papel);padding:8px 12px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600">Centro de costo apropiado</div>
       ${okCC?filas:`<div style="padding:11px 12px;font-size:12.5px;color:#854F0B">${cc?cc.motivo:'No se registró apropiación de centro de costo.'}</div>`}
       ${okCC?`<div style="padding:8px 12px;font-size:11.5px;color:${verif?'var(--brote-2)':'var(--tinta-3)'}">${verif?'✓✓ Verificado contra Flexxus (asiento releído del API)':'✓ Enviado — no pude releer el asiento para confirmarlo'}</div>`:''}
+    ${okCC&&cc.variante&&cc.variante!=='decimales'?`<div style="padding:8px 12px;font-size:11.5px;color:#854F0B;background:var(--diesel-soft)">⚠ Flexxus rechazó el reparto con decimales. Se aplicó con <b>${cc.variante}</b> — revisá los porcentajes en el asiento.</div>`:''}
     </div>
     <div class="modal-acciones"><button class="btn primary" id="flx-ok">Listo</button></div>
   </div>`;
