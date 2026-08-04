@@ -3953,22 +3953,20 @@ function vComprasDetalle(view){
           <div class="mm-field"><label>Objetivo</label><select id="ec-obj"><option value="">— sin asignar —</option>${oo}</select></div>
           <div class="mm-field"><label>Unidad</label><select id="ec-uni"><option value="">— sin asignar —</option>${uo}</select></div>`
         :`<div class="sub">Cada ítem se imputa por separado, abajo en la tabla. El gasto se reparte proporcional al monto de cada línea.</div>`}`
-      :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
-        <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
-        ${(inv.totalAssign&&inv.totalAssign.comentario)?`<div class="mcard-row" style="align-items:flex-start"><span>Observaciones</span><b style="text-align:right;font-weight:500;max-width:62%">${inv.totalAssign.comentario}</b></div>`:''}
-        <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
+      :`${inv.assignmentMode==='per-item'
+          ?`<div class="mcard-row"><span>Modo</span><b>Imputada por ítem</b></div>`
+          :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
+            <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
+            ${(inv.totalAssign&&inv.totalAssign.comentario)?`<div class="mcard-row" style="align-items:flex-start"><span>Observaciones</span><b style="text-align:right;font-weight:500;max-width:62%">${inv.totalAssign.comentario}</b></div>`:''}
+            <div class="sub" style="margin-top:6px">Total de factura</div>`}
+        <div class="divider" style="margin:10px 0 8px"></div>
+        <div class="field-l" style="margin-bottom:6px">Reparto por centro de costo</div>
+        <div id="imp-reparto" class="sub" style="font-size:12px">Calculando el reparto…</div>
+        ${inv.flexxus&&inv.flexxus.centro_costo&&!inv.flexxus.centro_costo.ok
+          ?`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''} <button class="mini-btn" style="margin-left:6px" onclick="reintentarCentroCosto('${inv.id}')">↻ Reintentar</button></div>`:''}
         <div class="divider" style="margin:10px 0 8px"></div>
         <div class="field-l" style="margin-bottom:6px">Destino contable en Flexxus</div>
-        <div id="imp-destino" class="sub" style="font-size:12px">Leyendo la ficha del proveedor…</div>
-        ${inv.flexxus&&inv.flexxus.centro_costo?(inv.flexxus.centro_costo.ok
-          ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ${inv.flexxus.centro_costo.verificado===true?'✓✓ VERIFICADO contra Flexxus':'✓ enviado'}: ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}${inv.flexxus.centro_costo.verificado===true?' (releído del API)':' — sin relectura de confirmación'}</div>`
-          :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''} <button class="mini-btn" style="margin-left:6px" onclick="reintentarCentroCosto('${inv.id}')">↻ Reintentar</button></div>`):''}
-        ${inv.assignmentMode==='per-item'?`<div class="divider"></div>
-          ${(inv.items||[]).map((it,ix)=>{const asg=(inv.assignments||{})[ix]||{};
-            return `<div class="queue-item" style="margin-bottom:6px">
-              <div style="flex:1"><div style="font-size:12px;font-weight:500">${it.descripcion||'—'}</div>
-              <div class="sub" style="font-size:11px">${asg.objetivo||'sin asignar'}${asg.unidad?' · '+asg.unidad:''}</div></div>
-              <div class="money sub">${money(it.monto_sin_iva||0)}</div></div>`;}).join('')}`:''}`}
+        <div id="imp-destino" class="sub" style="font-size:12px">Leyendo la ficha del proveedor…</div>`}
       ${nc?`<div class="divider"></div>
         <div class="panel-title" style="margin-bottom:8px">Notas de crédito</div>
         ${(inv.notas_credito||[]).map(n=>`
@@ -4039,7 +4037,7 @@ function vComprasDetalle(view){
     })()}
   </div>`;
   if(inv.comprobante&&inv.comprobante.ruta)cargarVisorComprobante(inv.id);
-  if(!comprasEdit)cargarDestinoContable(inv.id);
+  if(!comprasEdit){cargarDestinoContable(inv.id);pintarRepartoCC(inv);}
 }
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
 // lo que el usuario venía editando para no perderlo.
@@ -4069,6 +4067,32 @@ function comprasSetEditMode(modo){
   }
   comprasEditMode=modo;
   go('compras');
+}
+
+// Reparto por centro de costo: qué porcentaje se llevó cada objetivo. Si la
+// factura YA se imputó se muestra el reparto REAL que quedó en el asiento; si
+// todavía no, el que se va a mandar (mismo cálculo que usa la apropiación).
+async function pintarRepartoCC(inv){
+  const pinta=html=>{const c=document.getElementById('imp-reparto');if(c)c.innerHTML=html;};
+  const fila=(obj,pct,monto,ok)=>`<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--linea)">
+    <span style="font-weight:600;font-size:12.5px">${obj}</span>
+    <span style="white-space:nowrap;text-align:right">
+      <b class="mono" style="color:${ok===false?'#854F0B':'var(--brote-2)'}">${pct}%${ok===true?' ✓':''}</b>
+      ${monto!=null?`<span class="sub mono" style="font-size:11px;margin-left:8px">${money(monto)}</span>`:''}
+    </span></div>`;
+  const cc=inv.flexxus&&inv.flexxus.centro_costo;
+  if(cc&&cc.ok&&(cc.reparto||[]).length){
+    const verif=cc.verificado===true;
+    pinta(cc.reparto.map(x=>fila(x.objetivo,x.porcentaje,null,verif)).join('')+
+      `<div class="sub" style="margin-top:6px;font-size:11.5px;color:${verif?'var(--brote-2)':'var(--tinta-3)'}">${verif?'✓✓ Verificado contra Flexxus (asiento releído)':'✓ Enviado — sin relectura de confirmación'} · asiento ${cc.numeroasiento||'—'}${cc.variante&&cc.variante!=='decimales'?' · aplicado con '+cc.variante:''}</div>`);
+    return;
+  }
+  try{
+    const d=await api('/api/compras/facturas/'+inv.id+'/centrocosto-preview');
+    if(!(d.reparto||[]).length){pinta(d.motivo||'La factura no tiene imputación por objetivo.');return;}
+    pinta(d.reparto.map(x=>fila(x.objetivo,x.porcentaje,x.monto,x.codigo?undefined:false)).join('')+
+      `<div class="sub" style="margin-top:6px;font-size:11.5px">Suma ${d.suma}% · ${inv.flexxus&&inv.flexxus.ok?'sin apropiar en el asiento':'todavía sin imputar'}${(d.sin_codigo||[]).length?' · ⚠ sin código de Flexxus: '+d.sin_codigo.join(', '):''}</div>`);
+  }catch(e){pinta('No pude calcular el reparto: '+e.message);}
 }
 
 // Destino contable: a qué cuenta de Flexxus va (o fue) esta factura. Antes de
