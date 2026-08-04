@@ -2050,6 +2050,30 @@ router.put('/api/compras/factura/:id', auth, async (req, res) => {
   }
 });
 
+// ANULAR en Flexxus el comprobante de una factura ya imputada. No borra nada
+// del panel: devuelve si Flexxus la anuló (verificado releyendo el asiento) o
+// el detalle de por qué no pudo, y el panel decide qué hacer.
+router.post('/api/compras/facturas/:id/flexxus-anular', auth, async (req, res) => {
+  try {
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    if (!f.flexxus || !f.flexxus.ok) return res.status(422).json({ error: 'La factura no está imputada en Flexxus.' });
+    const { anularComprobanteCompra } = require('./flexxus');
+    const r = await anularComprobanteCompra(f);
+    if (r.ok) {
+      // Queda registrado por si no se borra la factura del panel
+      const flexxus = { ...f.flexxus, anulada: true, anulada_at: new Date().toISOString(), anulada_por: req.usuario || 'panel', anulada_via: r.via };
+      await supabaseCompras.from('facturas').update({ data: { ...f, flexxus } }).eq('id', req.params.id);
+    }
+    res.json(r);
+  } catch (err) {
+    console.error('flexxus anular:', err.message);
+    res.status(500).json({ error: err.message || 'No pude anular el comprobante en Flexxus' });
+  }
+});
+
 router.delete('/api/compras/factura/:id', auth, async (req, res) => {
   try {
     // Borrar también el comprobante del bucket, para no dejar archivos huérfanos
