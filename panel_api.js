@@ -1570,6 +1570,24 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       proveedor_nombre: r.proveedor_nombre, por: req.usuario || 'panel',
       centro_costo: centroCosto,
     };
+    // VERIFICACIÓN DE CUENTA: no podemos elegir la cuenta por API, pero sí
+    // leer a cuál fue el asiento. Si el proveedor es de bienes de uso (clase
+    // 016 EQUIPOS/017 MAQUINAS) y el asiento fue a MERCADERIAS, avisamos al
+    // instante para corregirlo en Flexxus (en vez de descubrirlo después).
+    try {
+      const esBienUso = ['016', '017'].includes(String(claseProveedor || ''));
+      const na = centroCosto && centroCosto.numeroasiento, ce = centroCosto && centroCosto.codigoejercicio;
+      if (esBienUso && na && ce) {
+        const { leerCuentasAsiento } = require('./flexxus');
+        const cuentas = await leerCuentasAsiento(na, ce);
+        const fueMercaderia = cuentas.some(c => /MERCADERIA/i.test(c));
+        const fueBienUso = cuentas.some(c => /BIEN.*DE.*USO|BIENES DE USO/i.test(c));
+        if (fueMercaderia && !fueBienUso) {
+          flexxus.advertencia_cuenta = 'OJO: el proveedor es de bienes de uso (clase ' + claseProveedor +
+            ') pero el asiento ' + na + ' fue a MERCADERIAS. Hay que corregir la cuenta en Flexxus (asiento o parametrización).';
+        }
+      }
+    } catch (e) { /* la advertencia es best-effort, no frena la imputación */ }
     await supabaseCompras.from('facturas')
       .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
     res.json({ ok: true, flexxus });
