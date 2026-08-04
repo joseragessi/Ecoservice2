@@ -1800,6 +1800,33 @@ const MODEL_EXTRACT = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-2
 const MODEL_FACTURAS = process.env.ANTHROPIC_MODEL_FACTURAS || 'claude-sonnet-4-6';
 
 // Extraer datos de una factura con IA (proxy a Claude, key server-side)
+// Pasa el JSON compacto del extractor (claves cortas, ítems como arrays) al
+// formato de siempre. Si el modelo responde en el formato largo, lo deja pasar
+// tal cual: así un cambio de modelo no rompe la carga.
+function expandirFactura(d) {
+  if (!d || typeof d !== 'object') return d;
+  if ('fecha_factura' in d || 'total_sin_iva' in d) return d;   // formato largo
+  const TIPO = { p: 'percepcion', i: 'impuesto', x: 'otro' };
+  const num = v => (v == null || v === '' ? null : Number(v));
+  const item = x => Array.isArray(x)
+    ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0 }
+    : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0 };
+  const otro = x => Array.isArray(x)
+    ? { concepto: x[0] ?? null, monto: num(x[1]) || 0, tipo: TIPO[x[2]] || x[2] || 'otro' }
+    : { concepto: (x && (x.concepto ?? x.c)) ?? null, monto: num(x && (x.monto ?? x.m)) || 0, tipo: TIPO[x && x.tipo] || (x && x.tipo) || 'otro' };
+  return {
+    fecha_factura: d.f ?? null,
+    numero_factura: d.n ?? null,
+    letra: d.l ?? null,
+    proveedor: d.p ?? null,
+    cuit: d.c ?? null,
+    total_sin_iva: num(d.tn) || 0,
+    total_iva: num(d.ti) || 0,
+    items: Array.isArray(d.i) ? d.i.map(item) : [],
+    otros_conceptos: Array.isArray(d.o) ? d.o.map(otro) : [],
+  };
+}
+
 router.post('/api/compras/extract', auth, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -1809,42 +1836,35 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     const part = isImg
       ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
       : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
-    const prompt = 'Analizá esta factura argentina y devolvé ÚNICAMENTE JSON sin backticks:\n' +
-      '{"fecha_factura":"YYYY-MM-DD","numero_factura":"string","letra":"A|B|C","proveedor":"string","cuit":"string",' +
-      '"items":[{"descripcion":"string","cantidad":1,"monto_sin_iva":0.00,"monto_iva":0.00}],' +
-      '"total_sin_iva":0.00,"total_iva":0.00,' +
-      '"otros_conceptos":[{"concepto":"string","monto":0.00,"tipo":"percepcion|impuesto|otro"}]}\n' +
+    // FORMATO COMPACTO: claves de 1-2 letras y los ítems como arrays. El
+    // grueso del tiempo de extracción son los tokens que el modelo ESCRIBE;
+    // con este formato una factura de 10 ítems escribe la mitad. Se remapea
+    // acá abajo al formato de siempre, así el resto del sistema no cambia.
+    const prompt = 'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
+      '{"f":"YYYY-MM-DD","n":"numero","l":"A|B|C","p":"razon social emisor","c":"cuit emisor",' +
+      '"tn":neto_sin_iva,"ti":iva_total,"i":[["descripcion",monto_sin_iva]],' +
+      '"o":[["concepto",monto,"p|i|x"]]}\n' +
       'Reglas:\n' +
-      '- Montos como números, sin separador de miles. Campos ilegibles: null.\n' +
-      '- "proveedor" es la razón social del EMISOR, transcripta EXACTA carácter por carácter ' +
-      '(no corrijas ni interpretes apellidos: si dice COCCONI es COCCONI). Nunca uses el nombre ' +
-      'de fantasía/logo si figura la razón social. ECOSERVICE (CUIT 30-70793029-9) es siempre el ' +
-      'CLIENTE: jamás lo pongas como proveedor ni uses su CUIT.\n' +
-      '- "cuit" es el CUIT del emisor. Transcribí números EXACTOS, dígito por dígito.\n' +
-      '- "letra": el tipo de comprobante impreso en el recuadro grande del centro/derecha ' +
-      '(la letra sola A, B o C — factura C es la de monotributistas). Si no se ve, null.\n' +
-      '- PROHIBIDO tomar como ítem o como concepto las líneas de TOTALES del pie: ' +
-      '"Subtotal", "Total", "Importe Total", "Total a pagar", "Neto Gravado", "IVA 21%", ' +
-      '"Importe Otros Tributos" y similares son SUMAS de lo anterior, no conceptos nuevos. ' +
-      'Meterlas duplica la factura.\n' +
-      '- Los datos fiscales del encabezado (CUIT, Ingresos Brutos, Inicio de Actividades, ' +
-      'condición IVA, CAE) son identificación, NUNCA montos ni impuestos.\n' +
-      '- Factura C (monotributista): no discrimina IVA → total_iva=0, y el importe de cada ' +
-      'ítem va completo en monto_sin_iva.\n' +
-      '- El IVA de cada ítem va en "monto_iva" (NO en "iva").\n' +
-      '- Si la factura NO desglosa el IVA por ítem y solo lo trae en el total, ' +
-      'prorrateá el IVA total entre los ítems proporcional a su monto_sin_iva, ' +
-      'de modo que la suma de los monto_iva dé exactamente total_iva.\n' +
-      '- La suma de monto_sin_iva de los ítems tiene que dar total_sin_iva.\n' +
-      '- "otros_conceptos": SOLO cargos extra reales que no son neto ni IVA: percepciones ' +
-      '(IIBB/Ingresos Brutos de cualquier provincia, percepción IVA, ganancias), impuestos ' +
-      '(sellados, tasa SSN, servicios sociales, gastos notariales, impuestos internos, tasa municipal), ' +
-      'bonificaciones/descuentos (monto negativo). Nombre tal como figura, en "concepto". ' +
-      'tipo="percepcion" para percepciones, tipo="impuesto" para sellados/tasas/servicios, tipo="otro" para el resto. ' +
-      'Si no hay ninguno, otros_conceptos = [].\n' +
-      '- VERIFICACIÓN FINAL obligatoria: total_sin_iva + total_iva + suma de otros_conceptos ' +
-      'tiene que dar EXACTAMENTE el "Importe Total"/"Total" impreso en la factura. ' +
-      'Si no cierra, revisá: casi siempre metiste un subtotal o total como concepto. Corregilo antes de responder.';
+      '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n' +
+      '- "p": razón social del EMISOR transcripta EXACTA carácter por carácter (si dice COCCONI es ' +
+      'COCCONI, no corrijas apellidos). Nunca el nombre de fantasía/logo si figura la razón social. ' +
+      'ECOSERVICE (CUIT 30-70793029-9) es el CLIENTE: jamás va como emisor ni su CUIT en "c".\n' +
+      '- "c": CUIT del emisor, dígito por dígito.\n' +
+      '- "l": la letra sola impresa en el recuadro grande del centro (C = monotributista). Si no se ve, null.\n' +
+      '- PROHIBIDO tomar como ítem o concepto las líneas de TOTALES del pie ("Subtotal", "Total", ' +
+      '"Importe Total", "Total a pagar", "Neto Gravado", "IVA 21%", "Importe Otros Tributos"): son ' +
+      'sumas de lo anterior, meterlas duplica la factura.\n' +
+      '- Los datos fiscales del encabezado (CUIT, Ingresos Brutos, Inicio de Actividades, condición ' +
+      'IVA, CAE) son identificación, NUNCA montos.\n' +
+      '- Cada ítem lleva SOLO su importe sin IVA. El IVA no va por ítem.\n' +
+      '- Factura C: no discrimina IVA → "ti":0 y el importe completo de cada ítem en su monto.\n' +
+      '- La suma de los montos de "i" tiene que dar "tn".\n' +
+      '- "o" = SOLO cargos extra reales que no son neto ni IVA: percepciones (IIBB de cualquier ' +
+      'provincia, percepción IVA, ganancias) → "p"; impuestos/tasas (sellados, tasa SSN, servicios ' +
+      'sociales, gastos notariales, impuestos internos, tasa municipal) → "i"; el resto ' +
+      '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
+      '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
+      'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -1854,16 +1874,17 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       },
       body: JSON.stringify({
         model:      MODEL_FACTURAS,
-        max_tokens: 4000,   // una factura rara vez pasa de 30 ítems
+        max_tokens: 2500,   // con el formato compacto sobra para 30+ ítems
         messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
       }),
     });
     const data = await resp.json();
     const txt = (data.content || []).map(c => c.text || '').join('');
     console.log(`[factura] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
-      `(${MODEL_FACTURAS}, ${(data.usage && data.usage.output_tokens) || '?'} tokens)`);
+      `(${MODEL_FACTURAS}, ${Math.round(String(fileData).length * 0.75 / 1024)} KB de archivo, ` +
+      `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out tokens)`);
     try {
-      const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      const parsed = expandirFactura(JSON.parse(txt.replace(/```json|```/g, '').trim()));
       // ── Defensas duras post-extracción (independientes del prompt) ──
       const avisos = [];
       const RX_TOTAL = /^(sub\s*-?\s*totales?|totales?\b|importe\s+total|total\s+a\s+pagar|neto(\s+gravado)?$|iva(\s*21.*)?$|importe\s+otros\s+tributos|saldo|son\s+pesos)/i;
