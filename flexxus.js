@@ -305,6 +305,12 @@ async function imputarFactura(f, letra, opts = {}) {
       codigoprovincia: String(p.codigoprovincia || codDe(p, 'provincia.codigoprovincia') || ''),
       codigolocalidad: String(p.codigolocalidad || codDe(p, 'localidades.codigolocalidad') || ''),
     };
+    // Clase contable FIJA por proveedor: si se eligió una (opts.claseProveedor),
+    // pisa la que trae Flexxus. Así RAGAGLIA va a "017 MAQUINAS" (Bienes de Uso)
+    // en vez de la clase que tuviera cargada (que derivaba a Mercaderías).
+    if (opts.claseProveedor != null && String(opts.claseProveedor).trim() !== '') {
+      proveedor.codigoclaseproveedor = String(opts.claseProveedor).trim();
+    }
     // Si al proveedor existente le faltara algún requerido, lo completamos con
     // la plantilla/tablas (mismo mecanismo que el alta), sin inventar.
     const faltan0 = ['codigocondicioniva', 'codigoclaseproveedor', 'codigoprovincia', 'codigolocalidad']
@@ -328,7 +334,7 @@ async function imputarFactura(f, letra, opts = {}) {
       cuit: cuitLimpio(f.cuit) || undefined,
       ingresosbrutos: cuitLimpio(f.cuit) || '0',
       codigocondicioniva: String(alta.codigocondicioniva),
-      codigoclaseproveedor: String(alta.codigoclaseproveedor),
+      codigoclaseproveedor: String(opts.claseProveedor != null && String(opts.claseProveedor).trim() !== '' ? String(opts.claseProveedor).trim() : alta.codigoclaseproveedor),
       codigoprovincia: String(alta.codigoprovincia),
       codigolocalidad: String(alta.codigolocalidad),
     };
@@ -678,4 +684,60 @@ async function probarConexion() {
   return out;
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus };
+// Lista de clases de proveedor de Flexxus (para elegir la clase contable
+// fija de cada proveedor). Cada clase deriva a una cuenta contable en Flexxus.
+async function listarClasesProveedor() {
+  const d = await flx('/clasesproveedores');
+  const l = d.data || d || [];
+  return (Array.isArray(l) ? l : []).map(x => ({
+    codigo: String(x.codigoclaseproveedor),
+    descripcion: x.descripcion || x.nombre || '',
+  }));
+}
+
+// Intenta actualizar la CLASE en la ficha del proveedor en Flexxus, para que
+// los dos sistemas queden unificados (también las cargas manuales en el ERP
+// salen con la clase correcta). El API no documenta un update de proveedores,
+// así que es best-effort: se prueban las rutas típicas; si ninguna existe,
+// se devuelve ok:false y la clase igual se aplica en cada imputación nuestra.
+async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
+  const p = await buscarProveedorPorCuit(cuit);
+  if (!p) return { ok: false, motivo: 'El proveedor no existe en Flexxus todavía (se creará con la clase al imputar).' };
+  if (String(p.codigoclaseproveedor || '') === String(codigoClase)) {
+    return { ok: true, motivo: 'La ficha en Flexxus ya tiene esa clase.', sin_cambios: true };
+  }
+  const cuerpo = {
+    codigoproveedor: String(p.codigoproveedor),
+    razonsocial: String(p.razonsocial || '').slice(0, 50),
+    direccion: (String(p.direccion || '').trim() || 'S/D').slice(0, 50),
+    telefono: (String(p.telefono || '').trim() || '0').slice(0, 50),
+    cuit: p.cuit || undefined,
+    ingresosbrutos: String(p.ingresosbrutos || '0'),
+    codigocondicioniva: String(p.condicioniva || codDe(p, 'tipoivacompra.codigotipo') || ''),
+    codigoclaseproveedor: String(codigoClase),
+    codigoprovincia: String(p.codigoprovincia || codDe(p, 'provincia.codigoprovincia') || ''),
+    codigolocalidad: String(p.codigolocalidad || codDe(p, 'localidades.codigolocalidad') || ''),
+  };
+  const rutas = [
+    ['/proveedores/' + encodeURIComponent(cuerpo.codigoproveedor), 'PUT'],
+    ['/proveedores', 'PUT'],
+    ['/proveedores/' + encodeURIComponent(cuerpo.codigoproveedor), 'PATCH'],
+  ];
+  const intentos = [];
+  for (const [ruta, metodo] of rutas) {
+    try {
+      await flx(ruta, { method: metodo, body: JSON.stringify(cuerpo) });
+      // Verificar releyendo la ficha
+      const p2 = await buscarProveedorPorCuit(cuit).catch(() => null);
+      if (p2 && String(p2.codigoclaseproveedor || '') === String(codigoClase)) {
+        return { ok: true, motivo: 'Ficha del proveedor actualizada en Flexxus (' + metodo + ' ' + ruta + ').' };
+      }
+      intentos.push(metodo + ' ' + ruta + ': aceptado pero la ficha no refleja el cambio');
+    } catch (e) {
+      intentos.push(metodo + ' ' + ruta + ': ' + String(e.crudo || e.message).slice(0, 120));
+    }
+  }
+  return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
+}
+
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus };
