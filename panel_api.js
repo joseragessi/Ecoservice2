@@ -1597,6 +1597,19 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
   }
 });
 
+// Ficha técnica cruda del proveedor en Flexxus (para descubrir el campo de la
+// clase de comprobante comparando un proveedor bien configurado vs uno libre)
+router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
+  try {
+    const cuit = String(req.query.cuit || '').replace(/\D/g, '');
+    if (!cuit) return res.status(400).json({ error: 'Falta el CUIT' });
+    const { fichaProveedorPorCuit } = require('./flexxus');
+    res.json(await fichaProveedorPorCuit(cuit));
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Error trayendo la ficha' });
+  }
+});
+
 router.get('/api/compras/facturas', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
