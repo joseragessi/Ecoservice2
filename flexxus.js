@@ -710,6 +710,22 @@ async function leerCuentasAsiento(numeroasiento, codigoejercicio) {
   return arr.map(l => String(l.descripcion || '')).filter(Boolean);
 }
 
+// Ficha COMPLETA y cruda del proveedor (lista + detalle por código). Sirve
+// para descubrir en qué campo vive la clase de comprobante (bienes de uso):
+// comparando la ficha de un proveedor que la tiene fija contra uno que no,
+// el campo que difiere es la palanca a setear.
+async function fichaProveedorPorCuit(cuit) {
+  const p = await buscarProveedorPorCuit(cuit);
+  if (!p) return { existe: false };
+  let detalle = null;
+  try {
+    const d = await flx('/proveedores/' + encodeURIComponent(p.codigoproveedor));
+    detalle = d.data || d;
+    if (Array.isArray(detalle)) detalle = detalle[0] || null;
+  } catch (e) { /* la lista alcanza */ }
+  return { existe: true, lista: p, detalle };
+}
+
 async function listarClasesProveedor() {
   const d = await flx('/clasesproveedores');
   const l = d.data || d || [];
@@ -764,4 +780,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento };
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit };
