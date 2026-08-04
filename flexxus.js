@@ -713,6 +713,74 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
            get_diagnostico: getErrores.length ? getErrores : undefined };
 }
 
+// ── Anulación del comprobante de compra ──────────────────────────────────
+// El API de Flexxus NO documenta (ni nos expuso) una ruta de anulación, así
+// que en vez de asumir una se PRUEBAN las candidatas y se informa exactamente
+// qué respondió cada una. Después se VERIFICA releyendo el asiento: si sigue
+// existiendo, no se canta éxito. Si ninguna ruta funciona, el log de intentos
+// queda para el ticket a Procom y la anulación se hace a mano en el ERP.
+async function anularComprobanteCompra(f) {
+  const fx = f.flexxus || {};
+  const tipo = fx.tipocomprobante || null;
+  const numero = fx.numerocomprobante ?? null;
+  if (!tipo || numero == null) {
+    return { ok: false, motivo: 'No tengo guardado el tipo y número del comprobante en Flexxus.' };
+  }
+  const cc = fx.centro_costo || {};
+  const numeroasiento = cc.numeroasiento ?? null;
+  const codigoejercicio = cc.codigoejercicio ?? (process.env.FLEXXUS_CODIGO_EJERCICIO ? Number(process.env.FLEXXUS_CODIGO_EJERCICIO) : null);
+  const codUsuario = process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER;
+  const cuerpo = {
+    tipocomprobante: tipo, numerocomprobante: numero,
+    codigoproveedor: fx.proveedor_codigo || undefined,
+    codigousuario: codUsuario,
+    motivo: 'Anulada desde Panel EcoService',
+  };
+  const candidatas = [
+    ['DELETE', '/comprobantescompras/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero), null],
+    ['DELETE', '/comprobantescompras/' + encodeURIComponent(numero), null],
+    ['DELETE', '/comprobantescompras', cuerpo],
+    ['PUT',    '/comprobantescompras/anular', cuerpo],
+    ['POST',   '/comprobantescompras/anular', cuerpo],
+    ['PUT',    '/comprobantescompras/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero) + '/anular', cuerpo],
+    ['POST',   '/anulacioncomprobantescompras', cuerpo],
+  ];
+  const intentos = [];
+  let acepto = null;
+  for (const [method, ruta, body] of candidatas) {
+    try {
+      const r = await flx(ruta, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
+      intentos.push({ method, ruta, ok: true, resp: JSON.stringify(r).slice(0, 200) });
+      acepto = { method, ruta };
+      break;
+    } catch (e) {
+      intentos.push({ method, ruta, status: e.status || null, error: String(e.crudo || e.message || e).slice(0, 200) });
+    }
+  }
+  global.__ultimaAnulacionFlexxus = intentos;
+  console.log('[flexxus] anulación ' + tipo + ' ' + numero + ': ' + JSON.stringify(intentos).slice(0, 1200));
+  if (!acepto) {
+    return { ok: false, intentos,
+      motivo: 'El API de Flexxus no aceptó ninguna de las formas de anulación que probé. ' +
+        'Hay que anular el comprobante ' + tipo + ' ' + formatearNumeroFlexxus(numero) + ' a mano en Flexxus.' };
+  }
+  // Verificación: si el asiento sigue leyéndose, la anulación no impactó.
+  let verificado = null;
+  if (numeroasiento != null && codigoejercicio != null) {
+    try {
+      const g = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
+      const arr = Array.isArray(g.data || g) ? (g.data || g) : [];
+      verificado = arr.length ? false : true;   // sigue existiendo = NO se anuló
+    } catch (e) { verificado = true; }          // ya no se puede leer = anulado
+  }
+  if (verificado === false) {
+    return { ok: false, via: acepto, intentos, verificado,
+      motivo: 'Flexxus aceptó el pedido (' + acepto.method + ' ' + acepto.ruta + ') pero el asiento ' +
+        numeroasiento + ' se sigue leyendo, así que el comprobante NO quedó anulado. Revisalo en el ERP.' };
+  }
+  return { ok: true, via: acepto, intentos, verificado, tipocomprobante: tipo, numerocomprobante: numero };
+}
+
 async function probarConexion() {
   await login();
   const out = { ok: true, url: process.env.FLEXXUS_URL, usuario: process.env.FLEXXUS_USER };
@@ -956,4 +1024,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { repartoCentroCosto, listarCentrosCosto, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
