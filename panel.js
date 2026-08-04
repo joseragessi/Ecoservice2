@@ -3584,6 +3584,24 @@ async function elegirClaseProveedor(prev){
       <div class="sub" style="margin:6px 0 4px">${prev.proveedor.razonsocial}${prev.proveedor.cuit?' · CUIT '+prev.proveedor.cuit:''}</div>
       <div class="sub" style="margin-bottom:12px;font-size:12px">La clase define a qué cuenta contable va en Flexxus. Ej: <b>MAQUINAS</b> o <b>EQUIPOS VARIOS</b> → Bienes de Uso · <b>INSUMOS</b>/<b>COMBUSTIBLES</b> → gasto.</div>
       ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
+      ${(()=>{
+        // CLASE DE COMPROBANTE: la palanca real de la cuenta contable.
+        const pf=prev.proveedor||{};
+        const enBlanco=Number(pf.clasecomprobante)===0||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE CAMBIO';
+        if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '';
+        if(!enBlanco)return `<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase de comprobante en Flexxus: <b>${pf.tipocomprobante}</b> ✓ (define la cuenta contable)</div>`;
+        return `<div style="background:var(--diesel-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div style="font-size:12.5px;color:#854F0B;font-weight:600;margin-bottom:6px">⚠ Clase de comprobante EN BLANCO (Bienes de cambio → Mercaderías)</div>
+          <div style="font-size:11.5px;color:#854F0B;margin-bottom:7px">Si este proveedor no vende mercadería, colocale la clase correcta — define a qué cuenta van sus facturas:</div>
+          <select id="cp-comp" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
+            <option value="">— Dejar como está (Bienes de cambio · Mercaderías) —</option>
+            <option value="1">BIENES DE USO (máquinas, equipos, rodados…)</option>
+            <option value="2">SERVICIOS</option>
+            <option value="3">OTROS</option>
+            <option value="4">LOCACIONES</option>
+            <option value="5">NACIONALIZACIONES</option>
+          </select></div>`;
+      })()}
       <label class="field-l">Clase contable</label>
       <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:10px">${opts}</select>
       <button id="cp-ficha" style="background:none;border:none;color:var(--brote-2);font-size:12px;cursor:pointer;padding:0;margin-bottom:12px;font-family:inherit;text-decoration:underline">🔍 Ver ficha técnica del proveedor en Flexxus</button>
@@ -3605,6 +3623,8 @@ async function elegirClaseProveedor(prev){
     bg.querySelector('#cp-ok').onclick=async()=>{
       const sel=bg.querySelector('#cp-sel');
       const codigo=sel.value, desc=sel.options[sel.selectedIndex].textContent.split('·').slice(1).join('·').trim();
+      const compSel=bg.querySelector('#cp-comp');
+      const claseComp=compSel?compSel.value:'';
       try{
         const r=await api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
           cuit:prev.cuit_norm, razon_social:prev.proveedor.razonsocial,
@@ -3613,6 +3633,12 @@ async function elegirClaseProveedor(prev){
         if(s&&s.ok&&!s.sin_cambios)toast('Clase guardada ✓ y ficha del proveedor actualizada en Flexxus');
         else if(s&&s.ok)toast('Clase guardada ✓ (la ficha en Flexxus ya la tenía)');
         else if(s)toast('Clase guardada ✓ — '+(s.motivo||'no se pudo actualizar la ficha en Flexxus'),'error');
+        // Clase de COMPROBANTE (la que define la cuenta contable): solo si eligió una
+        if(claseComp){
+          const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({cuit:prev.cuit_norm,clase:Number(claseComp)})});
+          if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
+          else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
+        }
         bg.remove();resolve('seguir');
       }catch(e){toast('No pude guardar la clase: '+e.message,'error');}
     };
