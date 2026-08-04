@@ -2165,6 +2165,48 @@ router.post('/api/compras/facturas/:id/flexxus-centrocosto', auth, async (req, r
   }
 });
 
+// PASO DE REVISIÓN del centro de costo ANTES de imputar. Una vez imputada la
+// factura ya no se puede editar, así que acá se muestra exactamente el reparto
+// que se va a mandar, con el código de cada objetivo CONTRASTADO contra la
+// lista real de centros de costo de Flexxus.
+router.get('/api/compras/facturas/:id/centrocosto-preview', auth, async (req, res) => {
+  try {
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    const { repartoCentroCosto, listarCentrosCosto } = require('./flexxus');
+    const { data: objs } = await supabase.from('centros_costo').select('nombre, codigo_flexxus');
+    const r = repartoCentroCosto(f, objs || []);
+    // Contraste contra Flexxus: que el código exista y con qué nombre figura allá
+    let centrosFlx = null, motivoFlx = null;
+    try { centrosFlx = await listarCentrosCosto(); }
+    catch (e) { motivoFlx = e.message; }
+    const total = (Number(f.total_sin_iva) || 0);
+    const pesoTot = (r.reparto || []).reduce((s, x) => s + (Number(x.peso) || 0), 0) || 1;
+    const filas = (r.reparto || []).map(x => {
+      const enFlx = centrosFlx ? centrosFlx.find(c => c.codigo === Number(x.codigocentrocosto)) : null;
+      return {
+        objetivo: x.objetivo,
+        codigo: x.codigocentrocosto,
+        porcentaje: x.porcentaje,
+        monto: Math.round(total * (Number(x.peso) || 0) / pesoTot * 100) / 100,
+        nombre_flexxus: enFlx ? enFlx.descripcion : null,
+        existe: centrosFlx ? !!enFlx : null,
+      };
+    });
+    res.json({
+      ok: r.ok, motivo: r.motivo || null, sin_codigo: r.sin_codigo || [],
+      modo: f.assignmentMode === 'per-item' ? 'per-item' : 'total',
+      reparto: filas,
+      suma: Math.round(filas.reduce((s, x) => s + (Number(x.porcentaje) || 0), 0) * 100) / 100,
+      flexxus_leido: !!centrosFlx, motivo_flexxus: motivoFlx,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'No pude armar la vista previa del centro de costo' });
+  }
+});
+
 // Verificación previa: a qué proveedor de Flexxus iría la factura y con qué
 // número, SIN imputar nada. El panel la muestra antes de confirmar.
 router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) => {
