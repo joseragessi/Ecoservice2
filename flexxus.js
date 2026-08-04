@@ -686,6 +686,16 @@ async function probarConexion() {
 
 // Lista de clases de proveedor de Flexxus (para elegir la clase contable
 // fija de cada proveedor). Cada clase deriva a una cuenta contable en Flexxus.
+// Lee las cuentas (descripciones de línea) del asiento generado. No podemos
+// ELEGIR la cuenta por API (Flexxus no lo expone), pero sí DETECTAR a cuál
+// fue, para avisar al instante si fue a la equivocada (ej. Mercaderías cuando
+// el proveedor es de bienes de uso).
+async function leerCuentasAsiento(numeroasiento, codigoejercicio) {
+  const g = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
+  const arr = Array.isArray(g.data || g) ? (g.data || g) : [];
+  return arr.map(l => String(l.descripcion || '')).filter(Boolean);
+}
+
 async function listarClasesProveedor() {
   const d = await flx('/clasesproveedores');
   const l = d.data || d || [];
@@ -740,4 +750,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus };
+module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento };
