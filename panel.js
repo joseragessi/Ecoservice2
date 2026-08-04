@@ -1840,85 +1840,6 @@ async function vRepInd(view){
     :'<div class="sub" style="padding:10px 0">No hay máquinas abiertas ahora 🎉</div>';
   function peorTxt(x){return (x.r.tipo_equipo||'—')+' '+(x.r.numero_unidad||'')+' · '+Math.round(x.dEst*10)/10+' d en este estado';}
 
-  // Carga actual por mecánico: la más vieja que tiene cada uno a cargo
-  const masViejaMec={};
-  abiertas.forEach(({r,dAb})=>{
-    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    if(!masViejaMec[k]||dAb>masViejaMec[k])masViejaMec[k]=dAb;
-  });
-
-  // Productividad por mecánico: máquinas/día, reincidencia atribuida, resolución
-  const mecs={};
-  fs.forEach(r=>{
-    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    mecs[k]=mecs[k]||{activas:0,finalizadas:0,prev:0,tiempos:[],dias:new Set(),reinc:0,enTallerHoy:0};
-    if(r.estado==='finalizado'){mecs[k].finalizadas++;if(esPrev(r))mecs[k].prev++;
-      const t=diasEntre(r.created_at,r.fecha_finalizado);if(t!=null)mecs[k].tiempos.push(t);
-      if(r.fecha_finalizado)mecs[k].dias.add(String(r.fecha_finalizado).slice(0,10));}
-    else mecs[k].activas++;
-  });
-  // "En taller ahora" es un dato del PRESENTE (no del período): se cuenta sobre
-  // toda la base, no sobre el filtro de mes.
-  todas.filter(r=>r.estado!=='finalizado').forEach(r=>{
-    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    if(mecs[k])mecs[k].enTallerHoy++;
-  });
-  // Reincidencia atribuida al mecánico que reparó la 1ª vez (misma unidad vuelve
-  // en 30d, dentro del período filtrado). No distingue si es la misma falla.
-  finConUni.forEach(f=>{
-    const k=normU(f.numero_unidad),ff=new Date(f.fecha_finalizado).getTime();
-    const volvio=fs.some(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k&&(()=>{const c=new Date(o.created_at).getTime();return c>ff&&c-ff<=30*86400000;})());
-    if(volvio){const m=f.mecanicos?f.mecanicos.nombre:'Sin asignar';if(mecs[m])mecs[m].reinc++;}
-  });
-  const tablaMec=Object.entries(mecs).sort((a,b)=>{
-      const pa=a[1].dias.size?a[1].finalizadas/a[1].dias.size:0, pb=b[1].dias.size?b[1].finalizadas/b[1].dias.size:0;
-      return pb-pa;})
-    .map(([n,v])=>{
-      const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
-      const maqDia=v.dias.size?Math.round(v.finalizadas/v.dias.size*10)/10:null;
-      const pctR=v.finalizadas?Math.round(v.reinc*100/v.finalizadas):null;
-      const rCol=pctR==null?'':pctR===0?'color:var(--brote-2)':pctR>=15?'color:#A32D2D':'color:var(--diesel)';
-      return `<tr><td style="font-weight:500">${n}</td>
-        <td class="num">${v.finalizadas}</td>
-        <td class="num sub">${v.dias.size||'—'}</td>
-        <td class="num" style="font-weight:700;color:var(--brote-2);font-size:14px">${maqDia!=null?maqDia:'—'}</td>
-        <td class="num" style="${rCol}">${pctR!=null?pctR+'%':'—'}</td>
-        <td class="num sub">${tp!=null?Math.round(tp*10)/10+' d':'—'}</td></tr>`;}).join('');
-
-  // Cards visuales de productividad (top mecánicos por máq/día)
-  const cardsMec=Object.entries(mecs).sort((a,b)=>{
-      const pa=a[1].dias.size?a[1].finalizadas/a[1].dias.size:0, pb=b[1].dias.size?b[1].finalizadas/b[1].dias.size:0;
-      return pb-pa;})
-    .filter(([n])=>n!=='Sin asignar').slice(0,6)
-    .map(([n,v])=>{
-      const tp=v.tiempos.length?v.tiempos.reduce((s,t)=>s+t,0)/v.tiempos.length:null;
-      const maqDia=v.dias.size?Math.round(v.finalizadas/v.dias.size*10)/10:null;
-      const pctR=v.finalizadas?Math.round(v.reinc*100/v.finalizadas):null;
-      const iniciales=n.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
-      const rTag=pctR==null?'':pctR===0?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--brote-soft);color:var(--brote-2)">sin rebotes</span>'
-        :pctR>=15?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:#FCEBED;color:#A32D2D">alta</span>'
-        :'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--diesel-soft);color:#854F0B">seguir</span>';
-      const rCol=pctR==null?'':pctR===0?'var(--brote-2)':pctR>=15?'#A32D2D':'var(--diesel)';
-      return `<div style="background:#fff;border:1px solid var(--linea);border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(22,40,30,.05)">
-        <div style="padding:13px 16px;border-bottom:1px solid var(--linea);display:flex;align-items:center;gap:10px">
-          <div style="width:34px;height:34px;border-radius:50%;background:var(--brote-soft);color:var(--brote-2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0">${iniciales}</div>
-          <div><div style="font-weight:600;font-size:13.5px">${n}</div><div class="sub">${v.finalizadas} finalizadas · ${v.dias.size} día${v.dias.size===1?'':'s'}</div></div>
-        </div>
-        <div style="padding:6px 16px 14px">
-          <div style="background:var(--brote-soft);margin:0 -16px 0;padding:10px 16px;display:flex;justify-content:space-between;align-items:baseline">
-            <span style="font-size:12px;color:var(--tinta-2)">Máquinas por día</span>
-            <span class="mono" style="font-weight:700;font-size:22px;color:var(--brote-2)">${maqDia!=null?maqDia:'—'}</span></div>
-          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--linea)">
-            <span style="font-size:12px;color:var(--tinta-2)">Reincidencia</span>
-            <span class="mono" style="font-weight:700;font-size:16px;color:${rCol}">${pctR!=null?pctR+'% ':'— '}${rTag}</span></div>
-          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--linea)">
-            <span style="font-size:12px;color:var(--tinta-2)">Resolución prom.</span>
-            <span class="mono" style="font-weight:700;font-size:16px">${tp!=null?Math.round(tp*10)/10+' d':'—'}</span></div>
-          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:9px 0 0">
-            <span style="font-size:12px;color:var(--tinta-2)">En taller ahora</span>
-            <span class="mono" style="font-weight:700;font-size:16px">${v.enTallerHoy}${(()=>{const mv=masViejaMec[n];return v.enTallerHoy&&mv!=null?` <span class="sub" style="font-size:11px;font-weight:400;${mv>=7?'color:#A32D2D':''}">· la más vieja ${Math.round(mv*10)/10} d</span>`:'';})()}</span></div>
-        </div></div>`;}).join('');
-
   // Detalle de máquinas que volvieron al taller (misma unidad en 30 días, en el período)
   const reincidencias=[];
   finConUni.forEach(f=>{
@@ -1981,11 +1902,6 @@ async function vRepInd(view){
     </div>
     <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}</div>
   </div>
-  ${cardsMec?`<div style="font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:6px 0 10px">Productividad por mecánico <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--tinta-3)">· máquinas por día y rebotes</span></div>
-  <div class="grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:18px">${cardsMec}</div>`:''}
-  ${Object.keys(mecs).length>6?`<div class="panel" style="margin-bottom:18px"><div class="panel-title">Todos los mecánicos <span class="sub" style="font-weight:400;font-size:11px">· comparativo completo</span></div>
-    <table style="font-size:12px"><thead><tr><th>Mecánico</th><th class="num">Finalizadas</th><th class="num">Días</th><th class="num">Máq/día</th><th class="num">Reincid.</th><th class="num">Resol.</th></tr></thead>
-    <tbody>${tablaMec}</tbody></table></div>`:''}
   <div class="panel" style="margin-bottom:18px"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · verificá que sea la misma falla</span></div>
     <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días entre visitas</th><th>Reparó (1ª vez)</th></tr></thead>
     <tbody>${tablaReinc||'<tr><td colspan="5" class="sub" style="padding:10px">Sin reincidencias en el período 🎉</td></tr>'}</tbody></table>
