@@ -665,6 +665,20 @@ async function probarConexion() {
      '/planctas', '/ctacontable', '/contabilidad/ctas', '/rubroscontables'],
     x => ({ codigo: x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta, descripcion: x.descripcion ?? x.nombre ?? x.detalle,
             imputable: x.imputable ?? x.esimputable ?? x.admiteimputacion }));
+  // CLASE DE COMPROBANTE: la palanca REAL de la cuenta contable en compras
+  // (BIENES DE CAMBIO → Mercaderías; BIENES DE USO + rubro → cta de bienes de
+  // uso). Si el API la expone por GET, es muy probable que el POST del
+  // comprobante acepte el código.
+  out.clases_comprobante = await traePrimera(
+    ['/clasescomprobantes', '/clasecomprobante', '/clasesdecomprobante', '/clasesdecomprobantes',
+     '/compras/clasescomprobantes', '/compras/clasecomprobante', '/clasescompra', '/clasescompras',
+     '/tiposbien', '/tipobien', '/clasesbien'],
+    x => ({ codigo: x.codigoclasecomprobante ?? x.codigoclase ?? x.codigo, descripcion: x.descripcion ?? x.nombre }));
+  // Rubros de bienes de uso (MAQUINAS Y HERRAMIENTAS, RODADOS, etc.)
+  out.rubros_bienes_uso = await traePrimera(
+    ['/rubrosbienesuso', '/rubrosbienesdeuso', '/bienesuso', '/bienesdeuso', '/rubrosbien',
+     '/compras/rubrosbienesuso', '/rubros', '/subrubros'],
+    x => ({ codigo: x.codigorubro ?? x.codigo, descripcion: x.descripcion ?? x.nombre }));
   out.centro_costo_via = (Array.isArray(out.centros_costo) && out.centros_costo.length && !out.centros_costo[0].error)
     ? 'centros de costo (apropiación contable sobre el asiento)'
     : (Array.isArray(out.proyectos) && out.proyectos.length && !out.proyectos[0].error)
