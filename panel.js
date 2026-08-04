@@ -1779,6 +1779,31 @@ async function vRepInd(view){
     <td class="num">${x.dias} d</td>
     <td style="font-size:12px">${x.mec}</td></tr>`).join('');
 
+  // Incidencias por objetivo: qué objetivo genera más taller. Días de taller =
+  // resolución real de las finalizadas + lo que llevan abiertas las activas.
+  const porObj={};
+  fs.filter(r=>!esPrev(r)).forEach(r=>{
+    const k=r.objetivos?r.objetivos.nombre:'Taller / sin objetivo';
+    porObj[k]=porObj[k]||{n:0,unis:new Set(),paradas:0,dias:0,peor:null};
+    const o=porObj[k];o.n++;
+    if(r.numero_unidad)o.unis.add(normU(r.numero_unidad));
+    if(r.equipo_parado)o.paradas++;
+    const d=r.estado==='finalizado'?diasEntre(r.created_at,r.fecha_finalizado):diasEntre(r.created_at,new Date().toISOString());
+    if(d!=null){o.dias+=d;if(!o.peor||d>o.peor.d)o.peor={d,eq:r.tipo_equipo||'—',uni:r.numero_unidad||''};}
+  });
+  const objsTop=Object.entries(porObj).sort((a,b)=>b[1].n-a[1].n||b[1].dias-a[1].dias);
+  const maxObjN=objsTop.length?objsTop[0][1].n:1;
+  const tablaObj=objsTop.map(([nom,v],i)=>`<tr>
+    <td class="sub mono" style="width:24px">${i+1}</td>
+    <td><div style="font-weight:500">${nom}</div>
+      <div style="height:4px;background:var(--papel);border-radius:2px;margin-top:4px;max-width:220px"><div style="height:4px;width:${Math.max(4,Math.round(v.n*100/maxObjN))}%;background:var(--diesel);border-radius:2px"></div></div></td>
+    <td class="num" style="font-weight:600;${v.n>=5?'color:#A32D2D':''}">${v.n}</td>
+    <td class="num sub">${v.unis.size||'—'}</td>
+    <td class="num sub" style="${v.paradas?'color:#A32D2D':''}">${v.paradas||'—'}</td>
+    <td class="num mono">${Math.round(v.dias*10)/10} d</td>
+    <td class="sub" style="font-size:11px">${v.peor?v.peor.eq+' '+v.peor.uni+' · '+Math.round(v.peor.d*10)/10+' d':'—'}</td>
+  </tr>`).join('');
+
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Reparaciones · Indicadores</div>
     <div class="view-desc">Servicio sobre toda la maquinaria: correctivo, preventivo y flujo del taller</div></div>
@@ -1812,6 +1837,10 @@ async function vRepInd(view){
       <table style="font-size:12px"><thead><tr><th></th><th>Equipo</th><th>Unidad</th><th class="num">Correctivos</th><th class="num">Paradas</th></tr></thead>
       <tbody>${tablaUni||'<tr><td colspan="5" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
     </div>
+  </div>
+  <div class="panel"><div class="panel-title">Incidencias por objetivo <span class="sub" style="font-weight:400;font-size:11px">· correctivos del período · dónde se genera el taller</span></div>
+    <table style="font-size:12px"><thead><tr><th></th><th>Objetivo</th><th class="num">Correctivos</th><th class="num">Unidades</th><th class="num">Paradas</th><th class="num">Días de taller</th><th>La más larga</th></tr></thead>
+    <tbody>${tablaObj||'<tr><td colspan="7" class="sub" style="padding:10px">Sin datos</td></tr>'}</tbody></table>
   </div>
 `;
 }
