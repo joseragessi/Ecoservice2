@@ -450,6 +450,63 @@ async function imputarFactura(f, letra, opts = {}) {
 // total): nadie carga porcentajes — salen solos del peso de cada ítem.
 // Best-effort: si algo falla, la factura queda imputada igual y el motivo
 // se guarda para reintentarlo o resolverlo a mano.
+// Reparto por objetivo a partir de lo que la factura YA tiene imputado en el
+// panel. Es una función PURA (no habla con Flexxus): la usan tanto la
+// apropiación real como la vista previa que se revisa antes de imputar, así
+// lo que se muestra es exactamente lo que se va a mandar.
+function repartoCentroCosto(f, objetivos) {
+  const pesos = {};
+  if (f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length) {
+    const items = f.items || [];
+    for (const [ix, a] of Object.entries(f.assignments)) {
+      const obj = a && a.objetivo; if (!obj) continue;
+      const peso = Math.abs(Number((items[+ix] || {}).monto_sin_iva)) || 1;
+      pesos[obj] = (pesos[obj] || 0) + peso;
+    }
+  } else if (f.totalAssign && f.totalAssign.objetivo) {
+    pesos[f.totalAssign.objetivo] = 1;
+  }
+  const nombres = Object.keys(pesos);
+  if (!nombres.length) return { ok: false, motivo: 'La factura no tiene imputación por objetivo en el panel.', reparto: [] };
+  const norm = s => String(s || '').trim().toLowerCase();
+  const mapa = {};
+  (objetivos || []).forEach(o => {
+    if (o.codigo_flexxus) mapa[norm(o.nombre)] = String(o.codigo_flexxus).trim().replace(/^0+(?=\d)/, '');
+  });
+  const sinCodigo = nombres.filter(n => !mapa[norm(n)]);
+  // Porcentajes proporcionales al neto, cerrando EXACTO en 100.00: método de
+  // mayor resto sobre centésimas enteras (Flexxus exige suma === 100).
+  const total = nombres.reduce((s, n) => s + pesos[n], 0) || 1;
+  const cent = nombres.map(n => {
+    const exacto = pesos[n] * 10000 / total;
+    const base = Math.floor(exacto);
+    return { objetivo: n, codigocentrocosto: mapa[norm(n)] ? Number(mapa[norm(n)]) : null, peso: pesos[n], base, resto: exacto - base };
+  });
+  let sobran = 10000 - cent.reduce((s, c) => s + c.base, 0);
+  cent.sort((a, b) => b.resto - a.resto);
+  for (let i = 0; i < cent.length && sobran > 0; i++, sobran--) cent[i].base++;
+  const reparto = cent.map(c => ({
+    objetivo: c.objetivo, codigocentrocosto: c.codigocentrocosto,
+    peso: c.peso, porcentaje: c.base / 100,
+  }));
+  if (sinCodigo.length) {
+    return { ok: false, motivo: 'Sin código de Flexxus en Maestros → Centros de costo: ' + sinCodigo.join(', '),
+             sin_codigo: sinCodigo, reparto };
+  }
+  return { ok: true, reparto, sin_codigo: [] };
+}
+
+// Lista de centros de costo tal como los tiene Flexxus (para contrastar los
+// códigos de Maestros contra el ERP antes de imputar).
+async function listarCentrosCosto() {
+  const d = await flx('/centrodecosto');
+  const l = d.data || d || [];
+  return (Array.isArray(l) ? l : []).map(x => ({
+    codigo: Number(x.codigocentrocosto),
+    descripcion: String(x.descripcion || x.centro || ''),
+  })).filter(x => !isNaN(x.codigo));
+}
+
 async function apropiarCentroCosto(f, resPost, objetivos) {
   // 1) Reparto por objetivo desde lo ya imputado
   const pesos = {};
@@ -539,6 +596,7 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   const lineasAsiento = Array.isArray(asiento) ? asiento
     : (asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle)) || null;
 
+  let varianteUsada = null;
   if (Array.isArray(lineasAsiento) && lineasAsiento.length) {
     // Solo se apropian las líneas que usan centro de costo (la del gasto;
     // proveedores/IVA vienen con utilizacentrocosto=false).
@@ -548,29 +606,60 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
         JSON.stringify(lineasAsiento.map(l => ({ linea: l.linea, desc: l.descripcion, usa_cc: l.utilizacentrocosto }))).slice(0, 300) });
     }
     // Un PUT por línea apropiable, cada una con SU codigoasiento (viene por línea).
+    // Flexxus rechaza con "los porcentajes no suman 100" repartos que SÍ suman
+    // 100 exacto cuando hay varios centros con decimales. No sabemos por qué,
+    // así que en vez de adivinar se prueban variantes en orden y se REPORTA
+    // cuál aceptó (queda como evidencia para el ticket a Procom):
+    //   A) porcentajes con 2 decimales (el reparto real)
+    //   B) porcentajes ENTEROS (mayor resto sobre unidades, suma 100)
+    //   C) el array COMPLETO de centros de la línea, con 0 en los no usados
     const putResps = [];
+    const enteros = (() => {
+      const c = reparto.map(r => ({ cod: r.codigocentrocosto, base: Math.floor(r.porcentaje), resto: r.porcentaje - Math.floor(r.porcentaje) }));
+      let sobran = 100 - c.reduce((s, x) => s + x.base, 0);
+      c.sort((a, b) => b.resto - a.resto);
+      for (let i = 0; i < c.length && sobran > 0; i++, sobran--) c[i].base++;
+      return c.map(x => ({ codigocentrocosto: x.cod, porcentaje: x.base }));
+    })();
     for (const l of apropiables) {
       const ca = l.codigoasiento ?? envAsiento;
       if (ca == null) {
         return conAsiento({ ok: false, motivo: 'La línea ' + (l.linea ?? '?') + ' (' + (l.descripcion || '') +
           ') no trae codigoasiento y no hay FLEXXUS_CODIGO_ASIENTO de respaldo.' });
       }
-      const put = {
-        numeroasiento, codigoejercicio, codigoasiento: Number(ca),
-        codigousuario: codUsuario,
-        apropiacion: [{ linea: l.linea ?? 1, valor }],
-      };
-      try {
-        const rp = await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
-        putResps.push({ linea: l.linea, ca: Number(ca), enviado: valor, resp: rp });
-      } catch (ePut) {
-        putResps.push({ linea: l.linea, ca: Number(ca), enviado: valor, error: String(ePut.message || ePut).slice(0, 300) });
+      const completo = (l.centrocosto || []).length
+        ? l.centrocosto.map(c => {
+            const m = valor.find(v => Number(v.codigocentrocosto) === Number(c.codigocentrocosto));
+            return { codigocentrocosto: Number(c.codigocentrocosto), porcentaje: m ? m.porcentaje : 0 };
+          })
+        : null;
+      const variantes = [['decimales', valor], ['enteros', enteros]];
+      if (completo) variantes.push(['array completo', completo]);
+      for (const [nombreVar, val] of variantes) {
+        const put = {
+          numeroasiento, codigoejercicio, codigoasiento: Number(ca),
+          codigousuario: codUsuario,
+          apropiacion: [{ linea: l.linea ?? 1, valor: val }],
+        };
+        try {
+          const rp = await flx('/apropiacioncentrocosto', { method: 'PUT', body: JSON.stringify(put) });
+          putResps.push({ linea: l.linea, ca: Number(ca), variante: nombreVar, enviado: val, resp: rp });
+          varianteUsada = nombreVar;
+          break;
+        } catch (ePut) {
+          const msg = String(ePut.message || ePut).slice(0, 300);
+          putResps.push({ linea: l.linea, ca: Number(ca), variante: nombreVar, enviado: val, error: msg });
+          // Si el rechazo NO es por la suma, reintentar con otra forma del
+          // mismo reparto no aporta: se corta acá.
+          if (!/suman? 100|sumatoria/i.test(msg)) break;
+        }
       }
     }
     // Guardar el diagnóstico crudo del PUT en la línea del console.log
     console.log('[flexxus] PUT apropiacion resp: ' + JSON.stringify(putResps).slice(0, 1500));
     global.__ultimoPutFlexxus = putResps;  // accesible para diagnóstico
   } else {
+    varianteUsada = 'a ciegas';
     // No se pudo leer el asiento: camino a ciegas, solo con la variable fijada.
     const ca = codigoasiento ?? envAsiento;
     if (ca == null) {
@@ -620,7 +709,8 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
       'Revisá en Flexxus el asiento ' + numeroasiento + ' (ejercicio ' + codigoejercicio + ') antes de darla por hecha.' });
   }
   return { ok: true, numeroasiento, codigoejercicio, reparto,
-           verificado, get_diagnostico: getErrores.length ? getErrores : undefined };
+           verificado, variante: varianteUsada,
+           get_diagnostico: getErrores.length ? getErrores : undefined };
 }
 
 async function probarConexion() {
@@ -866,4 +956,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = { repartoCentroCosto, listarCentrosCosto, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
