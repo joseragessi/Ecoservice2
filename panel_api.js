@@ -1610,15 +1610,24 @@ router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
   }
 });
 
+// Rubros de bienes de uso (subcuentas 121… del plan, tal como salen en Flexxus)
+router.get('/api/compras/rubros-bienes-uso', auth, async (req, res) => {
+  try {
+    const { listarRubrosBienesUso } = require('./flexxus');
+    res.json(await listarRubrosBienesUso());
+  } catch (err) { res.json([]); }
+});
+
 // Colocar la clase de comprobante en la ficha del proveedor (solo si está
 // libre/en blanco = Bienes de cambio 0). Es la palanca de la cuenta contable.
 router.post('/api/compras/proveedor-clase-comprobante', auth, async (req, res) => {
   try {
     const cuit = String((req.body || {}).cuit || '').replace(/\D/g, '');
     const clase = Number((req.body || {}).clase);
+    const cuenta = String((req.body || {}).cuenta || '') || null;
     if (!cuit || !clase) return res.status(400).json({ error: 'Falta el CUIT o la clase' });
     const { colocarClaseComprobante } = require('./flexxus');
-    res.json(await colocarClaseComprobante(cuit, clase));
+    res.json(await colocarClaseComprobante(cuit, clase, cuenta));
   } catch (err) {
     res.status(500).json({ error: err.message || 'Error colocando la clase de comprobante' });
   }
