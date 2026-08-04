@@ -1463,7 +1463,38 @@ function perfPesoEquipo(tipo){
   return {p:2,et:'otro'};
 }
 let perfPer='', perfOpen=null;   // mes filtrado y card expandida
+// Candado extra: los mecánicos también entran al panel, así que además de ser
+// admin la vista pide el PIN de súper admin (env PERFORMANCE_PIN en Railway).
+// El OK dura lo que dure la pestaña del navegador (sessionStorage).
+async function perfValidarPin(){
+  const inp=document.getElementById('perf-pin'),msg=document.getElementById('perf-pin-msg');
+  const pin=inp?inp.value:'';
+  try{
+    const r=await api('/api/reparaciones/performance-pin',{method:'POST',body:JSON.stringify({pin})});
+    if(r&&r.ok){
+      sessionStorage.setItem('eco_perf_ok','1');
+      if(r.sin_pin)toast('PERFORMANCE_PIN no está configurada en Railway: la vista queda abierta para admins. Sételo para el candado.','error');
+      go('reparaciones');
+    }
+  }catch(e){if(msg)msg.textContent=e.message||'PIN incorrecto';if(inp){inp.value='';inp.focus();}}
+}
 async function vRepPerf(view){
+  if(sessionStorage.getItem('eco_perf_ok')!=='1'){
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Reparaciones · Performance</div>
+      <div class="view-desc">Ranking para el bono · requiere PIN de súper admin</div></div></div>
+    ${tabsRep()}
+    <div class="panel" style="max-width:380px;margin:40px auto;text-align:center">
+      <div style="font-size:26px;margin-bottom:8px">🔒</div>
+      <div style="font-weight:600;margin-bottom:4px">Vista protegida</div>
+      <div class="sub" style="margin-bottom:14px">Ingresá el PIN de súper admin para ver el ranking del bono.</div>
+      <input type="password" id="perf-pin" class="busca" style="width:100%;text-align:center;font-size:16px;letter-spacing:3px" placeholder="PIN" onkeydown="if(event.key==='Enter')perfValidarPin()">
+      <div class="sub" id="perf-pin-msg" style="min-height:16px;margin-top:6px;color:var(--rojo)"></div>
+      <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="perfValidarPin()">Entrar</button>
+    </div>`;
+    setTimeout(()=>{const i=document.getElementById('perf-pin');if(i)i.focus();},50);
+    return;
+  }
   const todas=repData||[];
   // Los meses salen de la fecha de FINALIZACIÓN (es lo que puntúa): una
   // reparación creada en julio y finalizada en agosto puntúa en agosto.
