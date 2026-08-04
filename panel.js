@@ -4213,17 +4213,51 @@ async function guardarEdicionCompra(){
 }
 async function borrarCompra(id){
   const inv=comprasData.find(i=>String(i.id)===String(id))||comprasVer;
-  if(inv&&inv.flexxus&&inv.flexxus.ok){
-    if(!await uiConfirm('Esta factura ya está imputada en Flexxus ('+
-      (inv.flexxus.tipocomprobante||'')+' '+(inv.flexxus.numerocomprobante||'')+').\n\n'+
-      'Eliminarla acá la saca de tu panel, PERO el comprobante SIGUE en Flexxus — los dos sistemas van a quedar descoordinados.\n\n'+
-      'Para anular un comprobante ya cargado se hace una NOTA DE CRÉDITO en el ERP, no se borra.',
-      '⚠️ Factura imputada en Flexxus',{ok:'Eliminar igual',danger:true}))return;
-  } else {
+  const borrarLocal=async()=>{
+    try{await api('/api/compras/factura/'+id,{method:'DELETE'});volverCompras();}
+    catch(e){toast('No pude eliminar: '+(e.message||''),'error');}
+  };
+  // Sin imputar: se borra y listo
+  if(!(inv&&inv.flexxus&&inv.flexxus.ok&&!inv.flexxus.anulada)){
     if(!await uiConfirm('¿Eliminar esta factura? No se puede deshacer.','Eliminar factura',{ok:'Eliminar',danger:true}))return;
+    return borrarLocal();
   }
-  try{await api('/api/compras/factura/'+id,{method:'DELETE'});volverCompras();}
-  catch(e){toast('No pude eliminar: '+(e.message||''),'error');}
+  // Imputada en Flexxus: hay que decidir qué pasa con el comprobante del ERP
+  const num=inv.flexxus.numerocomprobante_fmt||((inv.flexxus.tipocomprobante||'')+' '+(inv.flexxus.numerocomprobante||''));
+  const opcion=await new Promise(resolve=>{
+    const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+    bg.innerHTML=`<div class="modal" style="max-width:470px">
+      <div class="modal-tit">Eliminar factura imputada</div>
+      <div class="sub" style="margin:6px 0 12px;font-size:12.5px">Esta factura está imputada en Flexxus como <b>${num}</b>${inv.flexxus.centro_costo&&inv.flexxus.centro_costo.numeroasiento?' · asiento '+inv.flexxus.centro_costo.numeroasiento:''}. Si la borrás solo del panel, el comprobante <b>sigue vivo en el ERP</b> y los dos sistemas quedan descoordinados.</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn" id="an-anular" style="width:100%">Anular en Flexxus y eliminar acá</button>
+        <button class="btn-salir" id="an-solo" style="width:100%;color:var(--rojo);border-color:#EFB9C0">Eliminar solo del panel</button>
+        <button class="btn-salir" id="an-cancel" style="width:100%">Cancelar</button>
+      </div></div>`;
+    document.body.appendChild(bg);
+    const fin=v=>{bg.remove();resolve(v);};
+    bg.querySelector('#an-anular').onclick=()=>fin('anular');
+    bg.querySelector('#an-solo').onclick=()=>fin('solo');
+    bg.querySelector('#an-cancel').onclick=()=>fin('cancelar');
+  });
+  if(opcion==='cancelar')return;
+  if(opcion==='solo'){
+    if(!await uiConfirm('El comprobante '+num+' va a QUEDAR en Flexxus y vas a tener que anularlo a mano en el ERP.','¿Eliminar solo del panel?',{ok:'Eliminar igual',danger:true}))return;
+    return borrarLocal();
+  }
+  const prog=flxCargando('Anulando en Flexxus…','Pidiendo la anulación del comprobante y verificando el asiento.',220);
+  let r=null;
+  try{r=await api('/api/compras/facturas/'+id+'/flexxus-anular',{method:'POST'});}
+  catch(e){r={ok:false,motivo:e.message};}
+  prog.cerrar();
+  if(r&&r.ok){
+    toast('Comprobante anulado en Flexxus ✓');
+    return borrarLocal();
+  }
+  // No se pudo: se muestra el motivo y se decide si igual se borra del panel
+  if(await uiConfirm((r&&r.motivo||'No pude anular el comprobante en Flexxus.')+
+    '\n\nPodés anularlo a mano en el ERP. ¿Querés eliminar igual la factura del panel?',
+    'No pude anular en Flexxus',{ok:'Eliminar igual',danger:true}))return borrarLocal();
 }
 function abrirNC(){
   const inv=comprasVer;if(!inv)return;
