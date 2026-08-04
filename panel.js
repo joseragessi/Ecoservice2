@@ -1441,7 +1441,138 @@ function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${repTab==='services'?'on':''}" onclick="repTab='services';go('reparaciones')">Services</button>
   <button class="${repTab==='preventivo'?'on':''}" onclick="repTab='preventivo';go('reparaciones')">Preventivo</button>
   <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
+  ${localStorage.getItem('eco_admin')==='1'?`<button class="${repTab==='performance'?'on':''}" onclick="repTab='performance';go('reparaciones')">Performance</button>`:''}
 </div>`;}
+
+/* ── Reparaciones · Performance (SOLO ADMIN): ranking para el bono ──
+   Cada mecánico suma puntos por trabajo ponderado por dificultad; la calidad
+   (reincidencia) no suma puntos: HABILITA o bloquea el bono. El detalle de
+   cada punto se muestra al expandir la card — el sistema tiene que poder
+   explicarse solo, si no nadie le cree. Los pesos y umbrales están acá
+   arriba para ajustarlos cuando haya 2-3 meses de datos reales. */
+const PERF_OBJETIVO=30;            // puntos del mes para cobrar (provisorio)
+const PERF_REINC_MAX=15;           // % de reincidencia (90 días) que bloquea
+const PERF_DORMIDA_DIAS=7;         // abierta sin justificar más de esto descuenta
+const PERF_PESOS_EQUIPO=[          // [regex sobre tipo de equipo, puntos, etiqueta]
+  [/cami[oó]n|tractor(?!.*mini)|hidro/i,5,'pesado'],
+  [/extensible|plana|giro|mini|desmalezadora|camioneta/i,3,'mediano'],
+  [/motoguada|sopladora|motosierra/i,1,'liviano'],
+];
+function perfPesoEquipo(tipo){
+  for(const [rx,p,et] of PERF_PESOS_EQUIPO)if(rx.test(String(tipo||'')))return {p,et};
+  return {p:2,et:'otro'};
+}
+let perfPer='', perfOpen=null;   // mes filtrado y card expandida
+async function vRepPerf(view){
+  const todas=repData||[];
+  // Los meses salen de la fecha de FINALIZACIÓN (es lo que puntúa): una
+  // reparación creada en julio y finalizada en agosto puntúa en agosto.
+  const meses=[...new Set(todas.filter(r=>r.fecha_finalizado).map(r=>mesDe(r.fecha_finalizado)))].filter(m=>m!=='sin fecha').sort().reverse();
+  if(!perfPer)perfPer=meses[0]||'';
+  const normU=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const esPrev=r=>r.tipo_mant==='preventivo';
+  const nomMec=r=>r.mecanicos?r.mecanicos.nombre:null;
+  const fin=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado);
+  const finMes=fin.filter(r=>mesDe(r.fecha_finalizado)===perfPer);
+
+  // Reincidencia 90 días rodantes (no solo el mes): finalizadas de los últimos
+  // 90 días cuya unidad volvió como correctivo dentro de los 30 días siguientes.
+  const hoy=Date.now(), MS90=90*86400000, MS30=30*86400000;
+  const base90=fin.filter(r=>!esPrev(r)&&normU(r.numero_unidad)&&hoy-new Date(r.fecha_finalizado).getTime()<=MS90);
+  const rebotes={};   // mecánico → [{eq,uni,dias}]
+  base90.forEach(f=>{
+    const k=normU(f.numero_unidad), ff=new Date(f.fecha_finalizado).getTime();
+    const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
+      .map(o=>new Date(o.created_at).getTime()).filter(c=>c>ff&&c-ff<=MS30).sort((a,b)=>a-b)[0];
+    if(vuelta){const m=nomMec(f)||'Sin asignar';(rebotes[m]=rebotes[m]||[]).push({eq:f.tipo_equipo||'—',uni:f.numero_unidad||'',dias:Math.round((vuelta-ff)/86400000)});}
+  });
+  const base90PorMec={};
+  base90.forEach(f=>{const m=nomMec(f)||'Sin asignar';base90PorMec[m]=(base90PorMec[m]||0)+1;});
+
+  // Dormidas HOY: abiertas hace más de N días que no esperan repuestos
+  const dormidas={};
+  todas.filter(r=>r.estado!=='finalizado'&&r.estado!=='esperando_repuestos').forEach(r=>{
+    const d=diasEntre(r.created_at,new Date().toISOString());
+    if(d!=null&&d>PERF_DORMIDA_DIAS){const m=nomMec(r)||'Sin asignar';(dormidas[m]=dormidas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',dias:Math.round(d*10)/10});}
+  });
+
+  // Puntaje del mes, con el detalle línea por línea (el "por qué")
+  const mecs={};
+  finMes.forEach(r=>{
+    const m=nomMec(r);if(!m)return;
+    const M=mecs[m]=mecs[m]||{lineas:[],trabajo:0,urgencia:0,prev:0,total:0,nFin:0,nPrev:0};
+    M.nFin++;
+    if(esPrev(r)){M.prev+=2;M.total+=2;M.nPrev++;
+      M.lineas.push({tit:(r.tipo_equipo||'Preventivo')+' '+(r.numero_unidad||''),det:'preventivo realizado',pts:'+2'});return;}
+    const {p,et}=perfPesoEquipo(r.tipo_equipo||(r.equipos?r.equipos.nombre:''));
+    let extra=0;const motivos=[et+' +'+p];
+    if(r.prioridad==='critico'){extra+=2;motivos.push('crítica +2');}
+    else if(r.prioridad==='alta'){extra+=1;motivos.push('alta +1');}
+    if(r.equipo_parado){extra+=1;motivos.push('destrabó parada +1');}
+    M.trabajo+=p;M.urgencia+=extra;M.total+=p+extra;
+    M.lineas.push({tit:(r.tipo_equipo||'—')+' '+(r.numero_unidad||''),det:motivos.join(' · '),pts:'+'+(p+extra)});
+  });
+  // Descuento por dormidas (presente, no del mes)
+  Object.entries(dormidas).forEach(([m,ds])=>{
+    const M=mecs[m];if(!M)return;
+    ds.forEach(d=>{M.total-=2;M.lineas.push({tit:d.eq+' '+d.uni,det:'abierta hace '+d.dias+' d sin esperar repuestos',pts:'−2',mal:true});});
+  });
+
+  const filas=Object.entries(mecs).map(([n,M])=>{
+    const nBase=base90PorMec[n]||0, nReb=(rebotes[n]||[]).length;
+    const pctR=nBase?Math.round(nReb*100/nBase):null;
+    const pocaMuestra=nBase<8;
+    const habilitado=pctR==null||pctR<=PERF_REINC_MAX;
+    return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,cumple:M.total>=PERF_OBJETIVO&&habilitado};
+  }).sort((a,b)=>b.M.total-a.M.total);
+
+  const cards=filas.map((f,i)=>{
+    const ini=f.n.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+    const abierto=perfOpen===f.n;
+    const estado=f.cumple?'<span class="badge b-green">✓ objetivo cumplido</span>'
+      :!f.habilitado?'<span class="badge" style="background:#FCEBED;color:#A32D2D">✕ no cobra: calidad</span>'
+      :`<span class="badge b-gray">en carrera · faltan ${Math.max(0,PERF_OBJETIVO-f.M.total)}</span>`;
+    const barra=Math.min(100,Math.max(2,Math.round(f.M.total*100/PERF_OBJETIVO)));
+    const colBarra=f.cumple?'var(--brote)':!f.habilitado?'#B4B2A9':'var(--diesel)';
+    const calidad=f.pctR==null?'<span class="sub">sin base de cálculo aún</span>'
+      :`reincidencia 90d: <b style="color:${f.habilitado?'var(--brote-2)':'#A32D2D'}">${f.pctR}%</b> (${f.nReb} de ${f.nBase})${f.pocaMuestra?' <span class="sub" title="Con menos de 8 reparaciones en 90 días el % salta mucho con un solo caso">⚠ muestra chica</span>':''} — límite ${PERF_REINC_MAX}%`;
+    const detalle=!abierto?'':`
+      <div style="border-top:1px solid var(--linea);margin-top:10px;padding-top:10px">
+        <div class="field-l" style="margin-bottom:6px">Por qué ${f.M.total} puntos</div>
+        ${f.M.lineas.map(l=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--linea);font-size:12px">
+          <div><b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span></div>
+          <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}</b></div>`).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
+        ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
+          ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0">↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d</div>`).join('')}`:''}
+        <div class="sub" style="font-size:11px;margin-top:8px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
+      </div>`;
+    return `<div class="panel" style="cursor:pointer;margin-bottom:10px" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0">
+          <span class="sub mono">${i+1}</span>
+          <div style="width:34px;height:34px;border-radius:50%;background:var(--brote-soft);color:var(--brote-2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0">${ini}</div>
+          <div style="min-width:0"><div style="font-weight:600;font-size:13.5px">${f.n}</div>
+            <div class="sub" style="font-size:11px">${f.M.nFin} finalizada${f.M.nFin===1?'':'s'}${f.M.nPrev?' · '+f.M.nPrev+' preventivo'+(f.M.nPrev===1?'':'s'):''} · ${abierto?'▲ cerrar detalle':'▼ ver por qué'}</div></div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div class="mono" style="font-weight:700;font-size:20px">${f.M.total} pts</div>${estado}</div>
+      </div>
+      <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${barra}%;background:${colBarra};border-radius:3px"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-2);flex-wrap:wrap;gap:4px">
+        <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}</span>
+        <span>${calidad}</span>
+      </div>${detalle}</div>`;}).join('');
+
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Reparaciones · Performance</div>
+    <div class="view-desc">Ranking para el bono · solo administradores · click en cada mecánico para ver el porqué</div></div>
+    <select class="busca" style="width:auto" onchange="perfPer=this.value;perfOpen=null;go('reparaciones')">
+      ${meses.map(m=>`<option value="${m}" ${m===perfPer?'selected':''}>${mesStk(m)}</option>`).join('')}
+    </select></div>
+  ${tabsRep()}
+  <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> (provisorio — se ajusta con 2-3 meses de datos) · para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
+  ${cards||'<div class="empty" style="height:200px"><div>Sin reparaciones finalizadas en el período.</div></div>'}`;
+}
 
 /* ── Reparaciones · Services (planillas cargadas por foto desde la app) ── */
 let svPanelData=null, svPanelSel=null;
@@ -1852,6 +1983,7 @@ async function vReparaciones(view){
     if(repTab==='services'){vRepServices(view);return;}
     if(repTab==='preventivo'){vRepPreventivo(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
+    if(repTab==='performance'){if(localStorage.getItem('eco_admin')==='1'){vRepPerf(view);return;}repTab='resumen';}
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
 }
