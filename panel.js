@@ -3576,6 +3576,13 @@ async function elegirClaseProveedor(prev){
   try{clases=await api('/api/compras/clases-proveedor');}catch(e){}
   if(!clases.length)return 'seguir';  // sin clases del API, no frenamos la imputación
   const actual=prev.clase_asignada;
+  // La ficha COMPLETA del proveedor (el preview trae uno resumido sin
+  // clasecomprobante): de acá sale la clase de comprobante real.
+  let pf=prev.proveedor||{};
+  try{
+    const fi=await api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm));
+    if(fi&&fi.existe&&fi.lista)pf=fi.lista;
+  }catch(e){}
   return new Promise(resolve=>{
     const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
     const opts=clases.map(c=>`<option value="${c.codigo}" ${actual&&actual.codigo_clase===c.codigo?'selected':''}>${c.codigo} · ${c.descripcion}</option>`).join('');
@@ -3586,9 +3593,8 @@ async function elegirClaseProveedor(prev){
       ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
       ${(()=>{
         // CLASE DE COMPROBANTE: la palanca real de la cuenta contable.
-        const pf=prev.proveedor||{};
         const enBlanco=Number(pf.clasecomprobante)===0||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE CAMBIO';
-        if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '';
+        if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '<div class="sub" style="font-size:11px;margin-bottom:10px">No pude leer la clase de comprobante de la ficha (¿proveedor nuevo? se crea al imputar).</div>';
         if(!enBlanco)return `<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase de comprobante en Flexxus: <b>${pf.tipocomprobante}</b> ✓ (define la cuenta contable)</div>`;
         return `<div style="background:var(--diesel-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
           <div style="font-size:12.5px;color:#854F0B;font-weight:600;margin-bottom:6px">⚠ Clase de comprobante EN BLANCO (Bienes de cambio → Mercaderías)</div>
