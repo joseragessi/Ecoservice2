@@ -3673,6 +3673,7 @@ function flxProgreso(){
 }
 function flxResultadoModal(r){
   const cc=r.flexxus&&r.flexxus.centro_costo;
+  const advCta=r.flexxus&&r.flexxus.advertencia_cuenta;
   const num=r.flexxus&&r.flexxus.numerocomprobante_fmt||(r.flexxus&&('F'+(r.flexxus.tipocomprobante||'').slice(-1)+' '+(r.flexxus.numerocomprobante||'')));
   let filas='';
   if(cc&&cc.ok&&(cc.reparto||[]).length){
@@ -3689,6 +3690,7 @@ function flxResultadoModal(r){
       <h3 style="margin:8px 0 2px">${r.ya_existia?'Ya estaba imputada':'Imputación realizada'}</h3>
       <div class="sub" style="font-size:12.5px">${num?'Comprobante '+num+' · ':''}asiento ${cc&&cc.numeroasiento||'—'}</div>
     </div>
+    ${advCta?`<div style="background:var(--rojo-soft,#FCEBED);border:1px solid #EFB9C0;color:#A32D2D;border-radius:10px;padding:10px 13px;font-size:12.5px;font-weight:500;margin-bottom:10px">🔴 ${advCta}</div>`:''}
     <div style="border:1px solid var(--linea);border-radius:10px;overflow:hidden;margin-bottom:6px">
       <div style="background:var(--papel);padding:8px 12px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600">Centro de costo apropiado</div>
       ${okCC?filas:`<div style="padding:11px 12px;font-size:12.5px;color:#854F0B">${cc?cc.motivo:'No se registró apropiación de centro de costo.'}</div>`}
