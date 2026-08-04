@@ -3579,9 +3579,14 @@ async function elegirClaseProveedor(prev){
   // La ficha COMPLETA del proveedor (el preview trae uno resumido sin
   // clasecomprobante): de acá sale la clase de comprobante real.
   let pf=prev.proveedor||{};
+  let rubros=[];
   try{
-    const fi=await api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm));
+    const [fi,ru]=await Promise.all([
+      api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm)),
+      api('/api/compras/rubros-bienes-uso'),
+    ]);
     if(fi&&fi.existe&&fi.lista)pf=fi.lista;
+    if(Array.isArray(ru))rubros=ru;
   }catch(e){}
   return new Promise(resolve=>{
     const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
@@ -3592,21 +3597,34 @@ async function elegirClaseProveedor(prev){
       <div class="sub" style="margin-bottom:12px;font-size:12px">La clase define a qué cuenta contable va en Flexxus. Ej: <b>MAQUINAS</b> o <b>EQUIPOS VARIOS</b> → Bienes de Uso · <b>INSUMOS</b>/<b>COMBUSTIBLES</b> → gasto.</div>
       ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
       ${(()=>{
-        // CLASE DE COMPROBANTE: la palanca real de la cuenta contable.
+        // CLASE DE COMPROBANTE + RUBRO: la palanca real de la cuenta contable,
+        // con las mismas opciones que muestra Flexxus.
         const enBlanco=Number(pf.clasecomprobante)===0||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE CAMBIO';
+        const esBU=Number(pf.clasecomprobante)===1||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE USO';
         if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '<div class="sub" style="font-size:11px;margin-bottom:10px">No pude leer la clase de comprobante de la ficha (¿proveedor nuevo? se crea al imputar).</div>';
-        if(!enBlanco)return `<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase de comprobante en Flexxus: <b>${pf.tipocomprobante}</b> ✓ (define la cuenta contable)</div>`;
+        const rubroActual=String(pf.cuenta||'');
+        const rubroOpts=rubros.map(r=>`<option value="${r.codigo}"${rubroActual===r.codigo?' selected':''}>${r.descripcion} (${r.codigo})</option>`).join('');
+        const selRubro=rubros.length?`
+          <div id="cp-rubro-wrap" style="display:${(esBU)?'block':'none'};margin-top:7px">
+            <div style="font-size:11px;color:#586B60;margin-bottom:3px">Rubro de bienes de uso (define la cuenta exacta):</div>
+            <select id="cp-rubro" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
+              <option value="">— Elegir rubro —</option>${rubroOpts}</select></div>`:'';
+        if(!enBlanco&&!esBU)return `<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase de comprobante en Flexxus: <b>${pf.tipocomprobante}</b> ✓ (define la cuenta contable)</div>`;
+        if(esBU)return `<div style="background:var(--brote-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div style="font-size:12.5px;color:var(--brote-2);font-weight:600">Clase de comprobante: BIENES DE USO ✓</div>
+          <div style="font-size:11.5px;color:#586B60;margin-top:3px">Rubro actual: <b>${rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (usa el primero: Hardware y software)'}</b> — corregilo si no corresponde:</div>
+          ${selRubro}</div>`;
         return `<div style="background:var(--diesel-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
           <div style="font-size:12.5px;color:#854F0B;font-weight:600;margin-bottom:6px">⚠ Clase de comprobante EN BLANCO (Bienes de cambio → Mercaderías)</div>
           <div style="font-size:11.5px;color:#854F0B;margin-bottom:7px">Si este proveedor no vende mercadería, colocale la clase correcta — define a qué cuenta van sus facturas:</div>
-          <select id="cp-comp" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
+          <select id="cp-comp" onchange="const w=document.getElementById('cp-rubro-wrap');if(w)w.style.display=this.value==='1'?'block':'none'" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
             <option value="">— Dejar como está (Bienes de cambio · Mercaderías) —</option>
             <option value="1">BIENES DE USO (máquinas, equipos, rodados…)</option>
             <option value="2">SERVICIOS</option>
             <option value="3">OTROS</option>
             <option value="4">LOCACIONES</option>
             <option value="5">NACIONALIZACIONES</option>
-          </select></div>`;
+          </select>${selRubro}</div>`;
       })()}
       <label class="field-l">Clase contable</label>
       <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:10px">${opts}</select>
@@ -3629,8 +3647,6 @@ async function elegirClaseProveedor(prev){
     bg.querySelector('#cp-ok').onclick=async()=>{
       const sel=bg.querySelector('#cp-sel');
       const codigo=sel.value, desc=sel.options[sel.selectedIndex].textContent.split('·').slice(1).join('·').trim();
-      const compSel=bg.querySelector('#cp-comp');
-      const claseComp=compSel?compSel.value:'';
       try{
         const r=await api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
           cuit:prev.cuit_norm, razon_social:prev.proveedor.razonsocial,
@@ -3639,9 +3655,17 @@ async function elegirClaseProveedor(prev){
         if(s&&s.ok&&!s.sin_cambios)toast('Clase guardada ✓ y ficha del proveedor actualizada en Flexxus');
         else if(s&&s.ok)toast('Clase guardada ✓ (la ficha en Flexxus ya la tenía)');
         else if(s)toast('Clase guardada ✓ — '+(s.motivo||'no se pudo actualizar la ficha en Flexxus'),'error');
-        // Clase de COMPROBANTE (la que define la cuenta contable): solo si eligió una
-        if(claseComp){
-          const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({cuit:prev.cuit_norm,clase:Number(claseComp)})});
+        // Clase de COMPROBANTE + RUBRO (definen la cuenta contable)
+        const compSel=bg.querySelector('#cp-comp');
+        const rubroSel=bg.querySelector('#cp-rubro');
+        const claseComp=compSel?compSel.value:'';
+        const rubro=rubroSel?rubroSel.value:'';
+        // Caso A: clase en blanco y eligió una → colocar clase (+rubro si eligió)
+        // Caso B: ya es Bienes de uso y eligió/cambió rubro → corregir el rubro
+        const yaBU=!compSel&&rubroSel;  // sin selector de clase = ya era Bienes de uso
+        if(claseComp||(yaBU&&rubro)){
+          const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({
+            cuit:prev.cuit_norm,clase:claseComp?Number(claseComp):1,cuenta:(claseComp==='1'||yaBU)?(rubro||null):null})});
           if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
           else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
         }
