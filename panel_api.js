@@ -1091,6 +1091,26 @@ router.get('/api/services', auth, async (req, res) => {
   }
 });
 
+// PIN de súper admin para la vista Performance (ranking del bono). Los
+// mecánicos SÍ entran al panel, así que ocultar el botón no alcanza: la vista
+// exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
+// del código y de la DB). Sin la env seteada, alcanza con ser admin (fail-open
+// avisado). Rate limit reusado del login para que no se pueda adivinar.
+router.post('/api/reparaciones/performance-pin', auth, async (req, res) => {
+  const envPin = String(process.env.PERFORMANCE_PIN || '').trim();
+  if (!envPin) return res.json({ ok: true, sin_pin: true });
+  const quien = 'perf|' + (req.usuario || 'panel');
+  if (seg.loginBloqueado(req, quien)) {
+    return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' });
+  }
+  if (String((req.body || {}).pin || '').trim() === envPin) {
+    seg.loginOk(req, quien);
+    return res.json({ ok: true });
+  }
+  seg.loginFallido(req, quien);
+  res.status(401).json({ error: 'PIN incorrecto' });
+});
+
 // Avanzar estado / reasignar mecánico
 const FECHA_ESTADO = {
   diagnostico:         'fecha_diagnostico',
