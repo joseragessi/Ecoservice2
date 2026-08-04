@@ -3745,6 +3745,11 @@ async function probarFlexxus(){
       ${tabla('Tipos de asiento (FLEXXUS_CODIGO_ASIENTO — usá el de compras)',d.tipos_asiento)}
       ${tabla('Ejercicios contables (FLEXXUS_CODIGO_EJERCICIO — usá el vigente)',d.ejercicios)}
       ${tabla('Proyectos (GET /compras/gastosporproyecto/proyectos)',d.proyectos)}
+      <div class="divider"></div>
+      <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Cuenta contable — la palanca real es la CLASE DE COMPROBANTE</div>
+      ${tabla('Clases de comprobante (Bienes de cambio / Bienes de uso / Servicios…)',d.clases_comprobante)}
+      ${tabla('Rubros de bienes de uso (Maquinas y herramientas, Rodados…)',d.rubros_bienes_uso)}
+      ${tabla('Plan de cuentas contables',d.plan_cuentas)}
       <div style="font-weight:600;font-size:12.5px;margin:12px 0 4px">Alta de proveedor nuevo usaría</div>${alta}
       <div class="modal-acciones"><button class="btn" id="fx-cerrar">Cerrar</button></div>
     </div>`;
