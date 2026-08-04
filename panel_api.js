@@ -1610,6 +1610,57 @@ router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
   }
 });
 
+// DESTINO CONTABLE de una factura: a qué cuenta va (o fue) en Flexxus.
+// Antes de imputar sale de la ficha del proveedor (clase de comprobante +
+// rubro); después de imputar se RELEEN las cuentas reales del asiento, que es
+// la única verdad (Flexxus puede haber mandado el gasto a otro lado).
+router.get('/api/compras/facturas/:id/destino-contable', auth, async (req, res) => {
+  const out = { imputada: false, clase: null, rubro: null, rubro_desc: null, cuentas: [], asiento: null };
+  try {
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    const cuit = String(f.cuit || '').replace(/\D/g, '');
+    const { fichaProveedorPorCuit, listarRubrosBienesUso, leerCuentasAsiento } = require('./flexxus');
+    // 1) Lo que dice la ficha del proveedor (lo que VA a pasar al imputar)
+    if (cuit) {
+      try {
+        const fi = await fichaProveedorPorCuit(cuit);
+        const pf = (fi && fi.existe && fi.lista) || {};
+        if ('clasecomprobante' in pf || pf.tipocomprobante) {
+          out.clase = pf.tipocomprobante || (Number(pf.clasecomprobante) === 0 ? 'BIENES DE CAMBIO' : null);
+          const cta = String(pf.cuenta || '');
+          if (cta && cta !== '0') {
+            out.rubro = cta;
+            try {
+              const rubros = await listarRubrosBienesUso();
+              const r = (rubros || []).find(x => x.codigo === cta);
+              if (r) out.rubro_desc = r.descripcion;
+            } catch (e) { /* el código solo ya sirve */ }
+          }
+        }
+      } catch (e) { out.motivo_ficha = e.message; }
+    }
+    // 2) Lo que REALMENTE quedó en el asiento (si ya se imputó)
+    const fx = f.flexxus || {};
+    if (fx.ok) {
+      out.imputada = true;
+      out.comprobante = fx.numerocomprobante_fmt || fx.numerocomprobante || null;
+      out.advertencia = fx.advertencia_cuenta || null;
+      const cc = fx.centro_costo || {};
+      if (cc.numeroasiento && cc.codigoejercicio) {
+        out.asiento = cc.numeroasiento;
+        try { out.cuentas = await leerCuentasAsiento(cc.numeroasiento, cc.codigoejercicio); }
+        catch (e) { out.motivo_asiento = e.message; }
+      }
+    }
+    res.json(out);
+  } catch (err) {
+    res.json({ ...out, error: err.message || 'No pude leer el destino contable' });
+  }
+});
+
 // Rubros de bienes de uso (subcuentas 121… del plan, tal como salen en Flexxus)
 router.get('/api/compras/rubros-bienes-uso', auth, async (req, res) => {
   try {
