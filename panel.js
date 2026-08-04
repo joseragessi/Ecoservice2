@@ -1646,6 +1646,65 @@ async function vRepInd(view){
     </div>`;}).join('')
     :'<div class="sub" style="padding:10px 0">Las fechas por etapa se estampan en cada cambio de estado: este bloque se va llenando solo con el uso.</div>';
 
+  // ── TALLER AHORA: lo accionable. Sobre TODAS las activas del presente
+  // (no el filtro de mes): una máquina abierta hace 20 días es un problema de
+  // hoy aunque se haya creado en otro período.
+  const ETIQ_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esp. repuestos',en_reparacion:'En reparación'};
+  const fechaEstado=r=>({diagnostico:r.fecha_diagnostico,esperando_repuestos:r.fecha_espera_repuestos,en_reparacion:r.fecha_en_reparacion}[r.estado])||r.created_at;
+  const hoyMs=Date.now();
+  const abiertas=todas.filter(r=>r.estado!=='finalizado').map(r=>{
+    const dAb=diasEntre(r.created_at,new Date().toISOString());
+    const dEst=diasEntre(fechaEstado(r),new Date().toISOString());
+    return {r,dAb:dAb!=null?dAb:0,dEst:dEst!=null?dEst:0};
+  });
+  // Orden de ataque: parada > prioridad > días abierta
+  const PESO_PRIO={critico:3,alta:2,media:1,baja:0};
+  abiertas.sort((a,b)=>((b.r.equipo_parado?1:0)-(a.r.equipo_parado?1:0))||((PESO_PRIO[b.r.prioridad]||0)-(PESO_PRIO[a.r.prioridad]||0))||(b.dAb-a.dAb));
+  const colDias=d=>d>=7?'color:#A32D2D;font-weight:700':d>=3?'color:#854F0B;font-weight:600':'';
+  const tablaAbiertas=abiertas.map(({r,dAb,dEst})=>{
+    const prio=r.prioridad==='critico'?'<span class="badge" style="background:#FCEBED;color:#A32D2D">crítico</span>'
+      :r.prioridad==='alta'?'<span class="badge b-amber">alta</span>'
+      :`<span class="badge b-gray">${r.prioridad||'—'}</span>`;
+    return `<tr class="fila">
+      <td><div style="font-weight:600">${r.tipo_equipo||(r.equipos?r.equipos.nombre:'—')}</div>
+        <div class="sub" style="font-size:11px;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.descripcion||r.falla||''}</div></td>
+      <td><span class="uni-num">${r.numero_unidad||'—'}</span></td>
+      <td>${prio}${r.equipo_parado?'<div class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px;margin-top:3px">⛔ parada</div>':''}</td>
+      <td>${ETIQ_EST[r.estado]||r.estado}</td>
+      <td class="num mono" style="${colDias(dEst)}">${Math.round(dEst*10)/10} d</td>
+      <td class="num mono" style="${colDias(dAb)}">${Math.round(dAb*10)/10} d</td>
+      <td style="font-size:12px">${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
+    </tr>`;}).join('');
+
+  // Trabas por estado AHORA: cuántas hay en cada etapa y hace cuánto están ahí
+  const trabas=Object.keys(ETIQ_EST).map(est=>{
+    const enEst=abiertas.filter(x=>x.r.estado===est);
+    if(!enEst.length)return null;
+    const prom=enEst.reduce((s,x)=>s+x.dEst,0)/enEst.length;
+    const peor=enEst.reduce((m,x)=>x.dEst>m.dEst?x:m,enEst[0]);
+    return {est,n:enEst.length,prom,peor};
+  }).filter(Boolean);
+  const maxTraba=Math.max(...trabas.map(t=>t.prom),0.1);
+  const htmlTrabas=trabas.length?trabas.map(t=>{
+    const w=Math.max(3,Math.round(t.prom*100/maxTraba));
+    const rojo=t.prom>=5;
+    return `<div style="margin-bottom:11px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+        <b style="font-weight:500">${ETIQ_EST[t.est]} <span class="sub">(${t.n})</span></b>
+        <span class="mono" style="${rojo?'color:#A32D2D;font-weight:700':''}">${Math.round(t.prom*10)/10} d prom.</span></div>
+      <div style="height:6px;background:var(--papel);border-radius:3px"><div style="height:6px;width:${w}%;background:${rojo?'#A32D2D':'var(--diesel)'};border-radius:3px"></div></div>
+      <div class="sub" style="font-size:10.5px;margin-top:2px">Peor: ${peorTxt(t.peor)}</div>
+    </div>`;}).join('')
+    :'<div class="sub" style="padding:10px 0">No hay máquinas abiertas ahora 🎉</div>';
+  function peorTxt(x){return (x.r.tipo_equipo||'—')+' '+(x.r.numero_unidad||'')+' · '+Math.round(x.dEst*10)/10+' d en este estado';}
+
+  // Carga actual por mecánico: la más vieja que tiene cada uno a cargo
+  const masViejaMec={};
+  abiertas.forEach(({r,dAb})=>{
+    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
+    if(!masViejaMec[k]||dAb>masViejaMec[k])masViejaMec[k]=dAb;
+  });
+
   // Productividad por mecánico: máquinas/día, reincidencia atribuida, resolución
   const mecs={};
   fs.forEach(r=>{
@@ -1717,65 +1776,6 @@ async function vRepInd(view){
             <span style="font-size:12px;color:var(--tinta-2)">En taller ahora</span>
             <span class="mono" style="font-weight:700;font-size:16px">${v.enTallerHoy}${(()=>{const mv=masViejaMec[n];return v.enTallerHoy&&mv!=null?` <span class="sub" style="font-size:11px;font-weight:400;${mv>=7?'color:#A32D2D':''}">· la más vieja ${Math.round(mv*10)/10} d</span>`:'';})()}</span></div>
         </div></div>`;}).join('');
-
-  // ── TALLER AHORA: lo accionable. Sobre TODAS las activas del presente
-  // (no el filtro de mes): una máquina abierta hace 20 días es un problema de
-  // hoy aunque se haya creado en otro período.
-  const ETIQ_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esp. repuestos',en_reparacion:'En reparación'};
-  const fechaEstado=r=>({diagnostico:r.fecha_diagnostico,esperando_repuestos:r.fecha_espera_repuestos,en_reparacion:r.fecha_en_reparacion}[r.estado])||r.created_at;
-  const hoyMs=Date.now();
-  const abiertas=todas.filter(r=>r.estado!=='finalizado').map(r=>{
-    const dAb=diasEntre(r.created_at,new Date().toISOString());
-    const dEst=diasEntre(fechaEstado(r),new Date().toISOString());
-    return {r,dAb:dAb!=null?dAb:0,dEst:dEst!=null?dEst:0};
-  });
-  // Orden de ataque: parada > prioridad > días abierta
-  const PESO_PRIO={critico:3,alta:2,media:1,baja:0};
-  abiertas.sort((a,b)=>((b.r.equipo_parado?1:0)-(a.r.equipo_parado?1:0))||((PESO_PRIO[b.r.prioridad]||0)-(PESO_PRIO[a.r.prioridad]||0))||(b.dAb-a.dAb));
-  const colDias=d=>d>=7?'color:#A32D2D;font-weight:700':d>=3?'color:#854F0B;font-weight:600':'';
-  const tablaAbiertas=abiertas.map(({r,dAb,dEst})=>{
-    const prio=r.prioridad==='critico'?'<span class="badge" style="background:#FCEBED;color:#A32D2D">crítico</span>'
-      :r.prioridad==='alta'?'<span class="badge b-amber">alta</span>'
-      :`<span class="badge b-gray">${r.prioridad||'—'}</span>`;
-    return `<tr class="fila">
-      <td><div style="font-weight:600">${r.tipo_equipo||(r.equipos?r.equipos.nombre:'—')}</div>
-        <div class="sub" style="font-size:11px;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.descripcion||r.falla||''}</div></td>
-      <td><span class="uni-num">${r.numero_unidad||'—'}</span></td>
-      <td>${prio}${r.equipo_parado?'<div class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px;margin-top:3px">⛔ parada</div>':''}</td>
-      <td>${ETIQ_EST[r.estado]||r.estado}</td>
-      <td class="num mono" style="${colDias(dEst)}">${Math.round(dEst*10)/10} d</td>
-      <td class="num mono" style="${colDias(dAb)}">${Math.round(dAb*10)/10} d</td>
-      <td style="font-size:12px">${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
-    </tr>`;}).join('');
-
-  // Trabas por estado AHORA: cuántas hay en cada etapa y hace cuánto están ahí
-  const trabas=Object.keys(ETIQ_EST).map(est=>{
-    const enEst=abiertas.filter(x=>x.r.estado===est);
-    if(!enEst.length)return null;
-    const prom=enEst.reduce((s,x)=>s+x.dEst,0)/enEst.length;
-    const peor=enEst.reduce((m,x)=>x.dEst>m.dEst?x:m,enEst[0]);
-    return {est,n:enEst.length,prom,peor};
-  }).filter(Boolean);
-  const maxTraba=Math.max(...trabas.map(t=>t.prom),0.1);
-  const htmlTrabas=trabas.length?trabas.map(t=>{
-    const w=Math.max(3,Math.round(t.prom*100/maxTraba));
-    const rojo=t.prom>=5;
-    return `<div style="margin-bottom:11px">
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-        <b style="font-weight:500">${ETIQ_EST[t.est]} <span class="sub">(${t.n})</span></b>
-        <span class="mono" style="${rojo?'color:#A32D2D;font-weight:700':''}">${Math.round(t.prom*10)/10} d prom.</span></div>
-      <div style="height:6px;background:var(--papel);border-radius:3px"><div style="height:6px;width:${w}%;background:${rojo?'#A32D2D':'var(--diesel)'};border-radius:3px"></div></div>
-      <div class="sub" style="font-size:10.5px;margin-top:2px">Peor: ${peorTxt(t.peor)}</div>
-    </div>`;}).join('')
-    :'<div class="sub" style="padding:10px 0">No hay máquinas abiertas ahora 🎉</div>';
-  function peorTxt(x){return (x.r.tipo_equipo||'—')+' '+(x.r.numero_unidad||'')+' · '+Math.round(x.dEst*10)/10+' d en este estado';}
-
-  // Carga actual por mecánico: la más vieja que tiene cada uno a cargo
-  const masViejaMec={};
-  abiertas.forEach(({r,dAb})=>{
-    const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';
-    if(!masViejaMec[k]||dAb>masViejaMec[k])masViejaMec[k]=dAb;
-  });
 
   // Detalle de máquinas que volvieron al taller (misma unidad en 30 días, en el período)
   const reincidencias=[];
