@@ -3899,7 +3899,11 @@ function vComprasDetalle(view){
         :`<div class="sub">Cada ítem se imputa por separado, abajo en la tabla. El gasto se reparte proporcional al monto de cada línea.</div>`}`
       :`<div class="mcard-row"><span>Objetivo</span><b>${a.obj||'— sin asignar —'}</b></div>
         <div class="mcard-row"><span>Unidad</span><b>${a.uni||'—'}</b></div>
+        ${(inv.totalAssign&&inv.totalAssign.comentario)?`<div class="mcard-row" style="align-items:flex-start"><span>Observaciones</span><b style="text-align:right;font-weight:500;max-width:62%">${inv.totalAssign.comentario}</b></div>`:''}
         <div class="sub" style="margin-top:6px">${inv.assignmentMode==='per-item'?'Imputada por ítem':'Total de factura'}</div>
+        <div class="divider" style="margin:10px 0 8px"></div>
+        <div class="field-l" style="margin-bottom:6px">Destino contable en Flexxus</div>
+        <div id="imp-destino" class="sub" style="font-size:12px">Leyendo la ficha del proveedor…</div>
         ${inv.flexxus&&inv.flexxus.centro_costo?(inv.flexxus.centro_costo.ok
           ?`<div class="sub" style="margin-top:4px;color:var(--brote-2)">Centro de costo ${inv.flexxus.centro_costo.verificado===true?'✓✓ VERIFICADO contra Flexxus':'✓ enviado'}: ${(inv.flexxus.centro_costo.reparto||[]).map(x=>x.objetivo+' '+x.porcentaje+'%').join(' · ')} · asiento ${inv.flexxus.centro_costo.numeroasiento}${inv.flexxus.centro_costo.verificado===true?' (releído del API)':' — sin relectura de confirmación'}</div>`
           :`<div class="sub" style="margin-top:4px;color:#854F0B">⚠ Centro de costo pendiente: ${inv.flexxus.centro_costo.motivo||''} <button class="mini-btn" style="margin-left:6px" onclick="reintentarCentroCosto('${inv.id}')">↻ Reintentar</button></div>`):''}
@@ -3979,6 +3983,7 @@ function vComprasDetalle(view){
     })()}
   </div>`;
   if(inv.comprobante&&inv.comprobante.ruta)cargarVisorComprobante(inv.id);
+  if(!comprasEdit)cargarDestinoContable(inv.id);
 }
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
 // lo que el usuario venía editando para no perderlo.
@@ -4008,6 +4013,41 @@ function comprasSetEditMode(modo){
   }
   comprasEditMode=modo;
   go('compras');
+}
+
+// Destino contable: a qué cuenta de Flexxus va (o fue) esta factura. Antes de
+// imputar sale de la ficha del proveedor (clase de comprobante + rubro);
+// después de imputar se muestran las cuentas REALES releídas del asiento.
+async function cargarDestinoContable(id){
+  const pinta=html=>{const c=document.getElementById('imp-destino');if(c)c.innerHTML=html;};
+  try{
+    const d=await api('/api/compras/facturas/'+id+'/destino-contable');
+    const fila=(et,val,color)=>`<div class="mcard-row" style="padding:4px 0"><span>${et}</span><b style="${color?'color:'+color:''};text-align:right;max-width:62%">${val}</b></div>`;
+    let h='';
+    if(d.clase){
+      const esBU=/BIENES DE USO/i.test(d.clase);
+      h+=fila('Clase de comprobante',d.clase,esBU?'var(--brote-2)':'');
+      if(esBU)h+=fila('Rubro',d.rubro?((d.rubro_desc?d.rubro_desc+' · ':'')+d.rubro):'⚠ sin definir (cae en Hardware y software)',d.rubro?'':'#854F0B');
+      else if(/BIENES DE CAMBIO/i.test(d.clase))h+=`<div class="sub" style="font-size:11.5px;margin-top:2px">Va a <b>MERCADERIAS</b>. Si no es mercadería, cambiale la clase al imputar.</div>`;
+    }else{
+      h+=`<div class="sub" style="font-size:11.5px">No pude leer la clase de comprobante del proveedor${d.motivo_ficha?' ('+d.motivo_ficha+')':''}.</div>`;
+    }
+    if(d.imputada){
+      h+=`<div class="divider" style="margin:8px 0"></div>`;
+      h+=fila('Comprobante',d.comprobante||'—');
+      h+=fila('Asiento',d.asiento||'—');
+      if((d.cuentas||[]).length){
+        h+=`<div style="font-size:11px;color:#586B60;margin:6px 0 3px">Cuentas del asiento (releídas de Flexxus):</div>`;
+        h+=(d.cuentas||[]).map(c=>`<div style="font-size:11.5px;padding:2px 0 2px 8px;border-left:2px solid var(--linea)">${c}</div>`).join('');
+      }else if(d.motivo_asiento){
+        h+=`<div class="sub" style="font-size:11px">No pude releer el asiento: ${d.motivo_asiento}</div>`;
+      }
+      if(d.advertencia)h+=`<div style="background:#FCEBED;border:1px solid #EFB9C0;color:#A32D2D;border-radius:8px;padding:7px 10px;font-size:11.5px;margin-top:7px">🔴 ${d.advertencia}</div>`;
+    }else{
+      h+=`<div class="sub" style="font-size:11.5px;margin-top:5px">Todavía sin imputar en Flexxus.</div>`;
+    }
+    pinta(h);
+  }catch(e){pinta('No pude leer el destino contable: '+e.message);}
 }
 
 // El bucket es privado: se pide una URL firmada (vale 1 hora) y se embebe.
