@@ -2531,6 +2531,7 @@ function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px
   <button class="${comprasTab==='consumos'?'on':''}" onclick="comprasTab='consumos';go('compras')">Consumos</button>
   <button class="${comprasTab==='repuestos'?'on':''}" onclick="comprasTab='repuestos';go('compras')">Repuestos</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
+  <button class="${comprasTab==='financiero'?'on':''}" onclick="comprasTab='financiero';go('compras')">Reporte financiero</button>
 </div>`;}
 
 /* ===== Compras · Combustible por objetivo ===== */
@@ -3410,6 +3411,57 @@ function exportarComprasPDF(){
   w.document.close();
 }
 
+/* ===== Compras · Reporte financiero contable (para Soledad) ===== */
+let comprasFinMes=new Date().toISOString().slice(0,7);  // YYYY-MM
+
+async function vComprasFinanciero(view){
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Armando el reporte…</div>';
+  try{
+    const r=await api('/api/compras/reporte-financiero?mes='+encodeURIComponent(comprasFinMes));
+    const k=r.kpis||{};
+    const kpi=(l,v,sub)=>`<div class="kpi plain"><div class="kpi-label">${l}</div><div class="kpi-val" style="font-size:19px">${v}</div>${sub?`<div class="kpi-sub">${sub}</div>`:''}</div>`;
+    const fila3=(n,a,b,c)=>`<tr><td>${n}</td><td class="money tr">${money(a)}</td><td class="money tr">${money(b)}</td><td class="money tr"><b>${money(c)}</b></td></tr>`;
+    const tclase=(r.por_clase||[]).map(x=>fila3(x.nombre,x.neto,x.iva,x.total)).join('')||'<tr><td colspan="4" class="sub">Sin datos del período</td></tr>';
+    const tobj=(r.por_objetivo||[]).map(x=>`<tr><td>${x.nombre}</td><td class="tr mono">${x.cant}</td><td class="money tr"><b>${money(x.total)}</b></td></tr>`).join('')||'<tr><td colspan="3" class="sub">Sin datos</td></tr>';
+    const tprov=(r.por_proveedor||[]).map(x=>`<tr><td>${x.nombre}${x.clase?` <span class="badge b-green" style="font-size:9px">${x.clase}</span>`:' <span class="badge b-amber" style="font-size:9px">sin clase</span>'}</td><td class="tr mono">${x.cant}</td><td class="money tr"><b>${money(x.total)}</b></td></tr>`).join('')||'<tr><td colspan="3" class="sub">Sin datos</td></tr>';
+    // Selector de mes: últimos 13
+    const meses=[];const hoy=new Date();
+    for(let i=0;i<13;i++){const d0=new Date(hoy.getFullYear(),hoy.getMonth()-i,1);meses.push(d0.toISOString().slice(0,7));}
+    const selMes=`<select onchange="comprasFinMes=this.value;go('compras')" style="padding:8px 11px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px">
+      ${meses.map(m=>`<option value="${m}"${m===comprasFinMes?' selected':''}>${m}</option>`).join('')}
+      <option value=""${comprasFinMes===''?' selected':''}>Todo el histórico</option></select>`;
+
+    view.innerHTML=tabsCompras()+`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div><div style="font-weight:700;font-size:16px">Reporte financiero contable</div>
+        <div class="sub">Compras del período · para conciliar con Flexxus</div></div>
+      ${selMes}</div>
+
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      ${kpi('Facturado (neto)',money(k.neto),k.cantidad+' factura(s)')}
+      ${kpi('IVA',money(k.iva),'crédito fiscal F.A: '+money(k.iva_credito_a))}
+      ${kpi('Otros conceptos',money(k.otros),'percepciones/tributos no exentos')}
+      ${kpi('TOTAL',money(k.total),'pagado '+money(k.pagado)+' · pendiente '+money(k.pendiente))}
+    </div>
+
+    <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+      ${kpi('Imputadas en Flexxus',(k.imputadas_flexxus||0)+' / '+(k.cantidad||0),(k.sin_imputar||0)+' sin imputar')}
+      ${kpi('Centro de costo OK',String(k.cc_ok||0),(k.cc_pendiente||0)+' pendiente(s) de apropiar')}
+      ${kpi('IVA crédito fiscal (F.A)',money(k.iva_credito_a),'el que se recupera vía ARCA')}
+    </div>
+
+    <div class="panel" style="margin-bottom:14px"><div class="panel-title">Por clase contable <span class="sub" style="font-weight:400;font-size:11px">· a qué cuenta va en Flexxus</span></div>
+      <table><thead><tr><th>Clase</th><th class="tr">Neto</th><th class="tr">IVA</th><th class="tr">Total</th></tr></thead><tbody>${tclase}</tbody></table></div>
+
+    <div class="grid g-2" style="gap:14px">
+      <div class="panel"><div class="panel-title">Por objetivo (centro de costo)</div>
+        <table><thead><tr><th>Objetivo</th><th class="tr">Fact.</th><th class="tr">Total</th></tr></thead><tbody>${tobj}</tbody></table></div>
+      <div class="panel"><div class="panel-title">Por proveedor</div>
+        <table><thead><tr><th>Proveedor</th><th class="tr">Fact.</th><th class="tr">Total</th></tr></thead><tbody>${tprov}</tbody></table></div>
+    </div>`;
+  }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">No pude armar el reporte. ${e.message||''}</div>`;}
+}
+
 async function vCompras(view){
   await cargarListasCompras();   // los desplegables salen de Maestros
   if(comprasMode==='carga'){vComprasCarga(view);return;}
@@ -3418,6 +3470,7 @@ async function vCompras(view){
   if(comprasTab==='consumos'){vComprasConsumos(view);return;}
   if(comprasTab==='repuestos'){vComprasRepuestos(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
+  if(comprasTab==='financiero'){vComprasFinanciero(view);return;}
   if(comprasTab==='combustible'){comprasTab='resumen';}  // pestaña retirada — cae al resumen
   try{
     comprasData=await api('/api/compras/facturas');
@@ -3515,6 +3568,46 @@ function ncTotal(inv){
   return (inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
 }
 /* ── Flexxus ── */
+// Muestra la clase contable del proveedor y permite fijarla antes de imputar.
+// La clase deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes de
+// Uso; INSUMOS/COMBUSTIBLES → gasto). Queda guardada como fija por proveedor.
+async function elegirClaseProveedor(prev){
+  let clases=[];
+  try{clases=await api('/api/compras/clases-proveedor');}catch(e){}
+  if(!clases.length)return 'seguir';  // sin clases del API, no frenamos la imputación
+  const actual=prev.clase_asignada;
+  return new Promise(resolve=>{
+    const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+    const opts=clases.map(c=>`<option value="${c.codigo}" ${actual&&actual.codigo_clase===c.codigo?'selected':''}>${c.codigo} · ${c.descripcion}</option>`).join('');
+    bg.innerHTML=`<div class="modal" style="max-width:460px">
+      <div class="modal-tit">Clase contable del proveedor</div>
+      <div class="sub" style="margin:6px 0 4px">${prev.proveedor.razonsocial}${prev.proveedor.cuit?' · CUIT '+prev.proveedor.cuit:''}</div>
+      <div class="sub" style="margin-bottom:12px;font-size:12px">La clase define a qué cuenta contable va en Flexxus. Ej: <b>MAQUINAS</b> o <b>EQUIPOS VARIOS</b> → Bienes de Uso · <b>INSUMOS</b>/<b>COMBUSTIBLES</b> → gasto.</div>
+      ${actual?`<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase fija actual: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:`<div style="background:var(--diesel-soft);color:#854F0B;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">⚠ Este proveedor no tiene clase fija asignada — se usará la que tenga en Flexxus.</div>`}
+      <label class="field-l">Clase contable</label>
+      <select id="cp-sel" style="width:100%;padding:10px;border:1px solid var(--linea-2);border-radius:9px;font-family:inherit;font-size:13px;margin-bottom:14px">${opts}</select>
+      <div class="modal-acciones">
+        <button class="btn-salir" id="cp-cancel">Cancelar</button>
+        <button class="btn" id="cp-ok">Guardar y seguir →</button>
+      </div></div>`;
+    document.body.appendChild(bg);
+    bg.querySelector('#cp-cancel').onclick=()=>{bg.remove();resolve('cancelar');};
+    bg.querySelector('#cp-ok').onclick=async()=>{
+      const sel=bg.querySelector('#cp-sel');
+      const codigo=sel.value, desc=sel.options[sel.selectedIndex].textContent.split('·').slice(1).join('·').trim();
+      try{
+        const r=await api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
+          cuit:prev.cuit_norm, razon_social:prev.proveedor.razonsocial,
+          codigo_clase:codigo, clase_descripcion:desc})});
+        const s=r&&r.flexxus_sync;
+        if(s&&s.ok&&!s.sin_cambios)toast('Clase guardada ✓ y ficha del proveedor actualizada en Flexxus');
+        else if(s&&s.ok)toast('Clase guardada ✓ (la ficha en Flexxus ya la tenía)');
+        else if(s)toast('Clase guardada ✓ — '+(s.motivo||'no se pudo actualizar la ficha en Flexxus'),'error');
+        bg.remove();resolve('seguir');
+      }catch(e){toast('No pude guardar la clase: '+e.message,'error');}
+    };
+  });
+}
 async function imputarFlexxus(id){
   // La letra sale del OCR (inv.letra); solo se pregunta si no vino.
   const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer:null;
@@ -3530,6 +3623,12 @@ async function imputarFlexxus(id){
   try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
   if(prev){
     if(prev.numero==null){toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
+    // Paso de CLASE CONTABLE: la clase del proveedor deriva la cuenta en Flexxus
+    // (ej. MAQUINAS/EQUIPOS → Bienes de Uso). Se ofrece revisar/fijar antes.
+    if(prev.proveedor&&prev.cuit_norm){
+      const sigue=await elegirClaseProveedor(prev);
+      if(sigue==='cancelar')return;
+    }
     if(prev.proveedor){
       if(!await uiConfirm(
         'Proveedor en Flexxus: '+prev.proveedor.razonsocial+' (cód. '+prev.proveedor.codigo+')'+
@@ -4018,6 +4117,11 @@ let comprasExtracted=null;     // datos extraídos (con items)
 let comprasAssignMode='total'; // 'total' | 'per-item'
 let comprasAssign={objetivo:'',unidad:'',comentario:''};  // modo total
 let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentario}}
+// Clase contable del proveedor (deriva la cuenta en Flexxus): se muestra y
+// se puede corregir en el mismo paso en que se asigna el centro de costo.
+let comprasClases=[];          // clases disponibles (del API de Flexxus)
+let comprasClaseActual=null;   // la fija ya asignada a este CUIT (o null)
+let comprasClaseSel='';        // la elegida en el formulario
 let comprasMsg='';
 
 function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
@@ -4041,6 +4145,25 @@ async function comprasExtraer(){
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
   comprasStep='assign';go('compras');
+  comprasCargarClase();  // async: trae las clases y la fija del proveedor, y re-renderiza
+}
+
+// Trae del backend las clases contables (API Flexxus) y la clase fija asignada
+// al CUIT de esta factura. Se corrige acá mismo si está mal.
+async function comprasCargarClase(){
+  comprasClaseActual=null;comprasClaseSel='';
+  const cuit=String((comprasExtracted||{}).cuit||'').replace(/\D/g,'');
+  try{
+    if(!comprasClases.length)comprasClases=await api('/api/compras/clases-proveedor');
+  }catch(e){comprasClases=[];}
+  if(cuit){
+    try{
+      const todas=await api('/api/compras/proveedores-clase');
+      const mia=(todas||[]).find(p=>p.cuit===cuit);
+      if(mia){comprasClaseActual=mia;comprasClaseSel=mia.codigo_clase;}
+    }catch(e){}
+  }
+  if(comprasStep==='assign')go('compras');
 }
 
 // Lee lo que hay en el DOM y lo guarda en el estado (para no perderlo al re-renderizar)
@@ -4056,6 +4179,7 @@ function comprasCaptura(){
     comprasExtracted.total_sin_iva=parseFloat(g('cf-neto').value)||0;
     comprasExtracted.total_iva=parseFloat(g('cf-iva').value)||0;
   }
+  if(g('cf-clase'))comprasClaseSel=g('cf-clase').value||'';
   if(comprasAssignMode==='total'&&g('cf-obj')){
     comprasAssign={objetivo:g('cf-obj').value||'',unidad:g('cf-uni').value||'',comentario:g('cf-com').value||''};
   }
@@ -4080,6 +4204,19 @@ async function comprasGuardar(){
     const conObj=asigs.filter(a=>a&&a.objetivo);
     if(!conObj.length){toast('Asigná al menos un ítem a un objetivo.','error');return;}
     if(conObj.some(a=>!String(a.comentario||'').trim())){toast('Cada ítem asignado necesita observaciones. Completalas antes de guardar.','error');return;}
+  }
+  // Clase contable: si se eligió/cambió, queda fija para el proveedor (y se
+  // intenta actualizar también su ficha en Flexxus). No frena el guardado.
+  const cuitCl=String(d.cuit||'').replace(/\D/g,'');
+  if(comprasClaseSel&&cuitCl&&(!comprasClaseActual||comprasClaseActual.codigo_clase!==comprasClaseSel)){
+    const cl=comprasClases.find(c=>c.codigo===comprasClaseSel);
+    api('/api/compras/proveedores-clase',{method:'POST',body:JSON.stringify({
+      cuit:cuitCl,razon_social:d.proveedor||null,
+      codigo_clase:comprasClaseSel,clase_descripcion:cl?cl.descripcion:null})})
+      .then(r=>{const s=r&&r.flexxus_sync;
+        if(s&&s.ok&&!s.sin_cambios)toast('Clase contable fijada ✓ y ficha actualizada en Flexxus');
+        else if(s&&!s.ok)toast('Clase fijada ✓ — '+(s.motivo||''),'error');})
+      .catch(()=>{});
   }
   const inv={
     fecha_factura:d.fecha_factura||null,
@@ -4164,16 +4301,27 @@ function vComprasCarga(view){
   // Tabla de ítems
   const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="money tr">${money(it.monto_sin_iva)}</td><td class="money tr">${money(it.iva)}</td></tr>`).join('');
   // Imputación
+  // Clase contable del proveedor: se revisa/corrige acá, junto con el centro
+  // de costo. Deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes
+  // de Uso; INSUMOS/COMBUSTIBLES → gasto/mercadería).
+  const claseOpts=comprasClases.map(c=>`<option value="${c.codigo}"${comprasClaseSel===c.codigo?' selected':''}>${c.codigo} · ${c.descripcion}</option>`).join('');
+  const bloqueClase=comprasClases.length?`
+    <div class="mm-field" style="background:${comprasClaseActual?'var(--brote-soft)':'var(--diesel-soft)'};border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <label style="display:flex;justify-content:space-between;align-items:baseline">Clase contable del proveedor
+        <span style="font-weight:400;font-size:11px;color:${comprasClaseActual?'var(--brote-2)':'#854F0B'}">${comprasClaseActual?'fija asignada ✓':'⚠ sin clase fija — revisala'}</span></label>
+      <select id="cf-clase" style="width:100%"><option value="">— Elegir clase (define la cuenta contable) —</option>${claseOpts}</select>
+      <div class="sub" style="font-size:11px;margin-top:4px">MAQUINAS / EQUIPOS VARIOS → Bienes de Uso · INSUMOS / COMBUSTIBLES → gasto. Queda fija para este proveedor.</div>
+    </div>`:'';
   let imput;
   if(comprasAssignMode==='total'){
-    imput=`
+    imput=bloqueClase+`
       <div class="mm-field"><label>Objetivo</label>
         <input id="cf-obj" list="cf-obj-list" class="busca" style="width:100%" placeholder="Escribí para buscar…" value="${(comprasAssign.objetivo||'').replace(/"/g,'&quot;')}" autocomplete="off">
         <datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist></div>
       <div class="mm-field"><label>Unidad</label><select id="cf-uni"><option value="">— Seleccioná —</option>${uoSel(comprasAssign.unidad)}</select></div>
       <div class="mm-field"><label>Comentarios / observaciones <span style="color:var(--rojo)">*</span></label><textarea id="cf-com" rows="2" class="ta-panel" placeholder="Obligatorio: qué es, para qué, N° de orden, etc.">${comprasAssign.comentario||''}</textarea></div>`;
   }else{
-    imput=`<datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist>`+items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
+    imput=bloqueClase+`<datalist id="cf-obj-list">${COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">`).join('')}</datalist>`+items.map((it,i)=>{const a=comprasAssignments[i]||{};return`
       <div class="item-imp">
         <div class="item-imp-head"><span>${it.descripcion||'Ítem '+(i+1)}</span><span class="money">${money((Number(it.monto_sin_iva)||0)+(Number(it.iva)||0))}</span></div>
         <div class="grid g-2">
