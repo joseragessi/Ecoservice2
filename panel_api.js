@@ -1503,7 +1503,11 @@ router.post('/api/compras/proveedores-clase', auth, async (req, res) => {
     res.json({ ok: true, flexxus_sync });
   } catch (err) {
     console.error('proveedor clase save:', err);
-    res.status(500).json({ error: 'Error guardando la clase' });
+    const det = err.message || err.details || err.hint || '';
+    const falta = /does not exist|relation.*proveedores_clase/i.test(det);
+    res.status(500).json({ error: falta
+      ? 'Falta crear la tabla: corré proveedores_clase.sql en la base de COMPRAS (Supabase) y reintentá.'
+      : 'Error guardando la clase: ' + det });
   }
 });
 
