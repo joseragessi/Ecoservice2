@@ -60,7 +60,8 @@ function authApp(rol) {
     const h = req.headers.authorization || '';
     const p = verificar(h.startsWith('Bearer ') ? h.slice(7) : null);
     if (!p || !p.rol) return res.status(401).json({ error: 'No autorizado' });
-    if (rol && p.rol !== rol) return res.status(403).json({ error: 'Sin permiso' });
+    const permitidos = Array.isArray(rol) ? rol : (rol ? [rol] : null);
+    if (permitidos && !permitidos.includes(p.rol)) return res.status(403).json({ error: 'Sin permiso' });
     req.app_user = p;
     next();
   };
@@ -561,7 +562,10 @@ function fechaValida(f) {
 }
 
 // 1) Leer el remito: foto → IA precarga proveedor, número, fecha y litros por tipo
-router.post('/api/app/supervisor/combustible/leer', authApp('supervisor'), async (req, res) => {
+// La carga de combustible también la hacen el pañol y los mecánicos (mismo
+// flujo del supervisor: foto del remito → IA → reparto). La ruta conserva el
+// nombre "supervisor" para no romper la PWA ya instalada.
+router.post('/api/app/supervisor/combustible/leer', authApp(['supervisor', 'panol', 'mecanico']), async (req, res) => {
   try {
     const { fileData, fileType } = req.body || {};
     if (!fileData) return res.status(400).json({ error: 'Falta la foto del remito' });
@@ -599,7 +603,7 @@ router.post('/api/app/supervisor/combustible/leer', authApp('supervisor'), async
 // body: { proveedor, numero, fecha, tipo_doc, imagen(base64 opcional),
 //   repartos:[{ tipo:'gasoil'|'super', litros, destino:'unidad'|'bidon',
 //               objetivo_nombre, objetivo_id, patente }] }
-router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req, res) => {
+router.post('/api/app/supervisor/combustible', authApp(['supervisor', 'panol', 'mecanico']), async (req, res) => {
   try {
     const d = req.body || {};
     const repartos = Array.isArray(d.repartos) ? d.repartos.filter(r => Number(r.litros) > 0) : [];
@@ -682,7 +686,7 @@ router.post('/api/app/supervisor/combustible', authApp('supervisor'), async (req
 });
 
 // Objetivos para el buscador del reparto
-router.get('/api/app/supervisor/objetivos', authApp('supervisor'), async (req, res) => {
+router.get('/api/app/supervisor/objetivos', authApp(['supervisor', 'panol', 'mecanico']), async (req, res) => {
   try {
     const { data } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
     res.json(data || []);
