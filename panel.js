@@ -1487,7 +1487,7 @@ async function reenviarStock(id){
 
 /* ===== Reparaciones ===== */
 /* ===== Reparaciones · Indicadores ===== */
-let repTab='resumen', repIndPer='';
+let repTab='resumen', repIndPer='', repIndMec='';   // repIndMec: filtro por mecánico en Indicadores
 
 // Barras genéricas para paneles de indicadores
 function barsGen(lista,color,fmt){
@@ -1862,7 +1862,10 @@ async function vRepInd(view){
   const ETIQ_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esp. repuestos',en_reparacion:'En reparación'};
   const fechaEstado=r=>({diagnostico:r.fecha_diagnostico,esperando_repuestos:r.fecha_espera_repuestos,en_reparacion:r.fecha_en_reparacion}[r.estado])||r.created_at;
   const hoyMs=Date.now();
-  const abiertas=todas.filter(r=>r.estado!=='finalizado').map(r=>{
+  // Filtro por mecánico: aplica a "Qué atender hoy" y "Trabado ahora"
+  const mecsAbiertas=[...new Set(todas.filter(r=>r.estado!=='finalizado').map(r=>r.mecanicos?r.mecanicos.nombre:'Sin asignar'))].sort();
+  const abiertas=todas.filter(r=>r.estado!=='finalizado')
+    .filter(r=>!repIndMec||(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===repIndMec).map(r=>{
     const dAb=diasEntre(r.created_at,new Date().toISOString());
     const dEst=diasEntre(fechaEstado(r),new Date().toISOString());
     return {r,dAb:dAb!=null?dAb:0,dEst:dEst!=null?dEst:0};
@@ -1964,7 +1967,12 @@ async function vRepInd(view){
     </select></div>
   ${tabsRep()}
   <div class="grid" style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:18px">
-    <div class="panel"><div class="panel-title">Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas · paradas y críticas primero</span></div>
+    <div class="panel"><div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <span>Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas${repIndMec?' de '+repIndMec:''} · paradas y críticas primero</span></span>
+      <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndMec=this.value;go('reparaciones')">
+        <option value="">Todos los mecánicos</option>
+        ${mecsAbiertas.map(m=>`<option value="${m.replace(/"/g,'&quot;')}" ${repIndMec===m?'selected':''}>${m}</option>`).join('')}
+      </select></div>
       ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">En este estado</th><th class="num">Abierta hace</th><th>Mecánico</th></tr></thead>
       <tbody>${tablaAbiertas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay máquinas abiertas 🎉</div>'}
     </div>
