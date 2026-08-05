@@ -1884,8 +1884,8 @@ async function vRepInd(view){
       <td><span class="uni-num">${r.numero_unidad||'—'}</span></td>
       <td>${prio}${r.equipo_parado?'<div class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px;margin-top:3px">⛔ parada</div>':''}</td>
       <td>${ETIQ_EST[r.estado]||r.estado}</td>
-      <td class="num mono" style="${colDias(dEst)}">${Math.round(dEst*10)/10} d</td>
-      <td class="num mono" style="${colDias(dAb)}">${Math.round(dAb*10)/10} d</td>
+      <td class="num mono" style="${colDias(dEst)}">${Math.ceil(dEst)} d</td>
+      <td class="num mono" style="${colDias(dAb)}">${Math.ceil(dAb)} d</td>
       <td style="font-size:12px">${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
     </tr>`;}).join('');
 
@@ -1904,12 +1904,12 @@ async function vRepInd(view){
     return `<div style="margin-bottom:11px">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
         <b style="font-weight:500">${ETIQ_EST[t.est]} <span class="sub">(${t.n})</span></b>
-        <span class="mono" style="${rojo?'color:#A32D2D;font-weight:700':''}">${Math.round(t.prom*10)/10} d prom.</span></div>
+        <span class="mono" style="${rojo?'color:#A32D2D;font-weight:700':''}">${Math.ceil(t.prom)} d prom.</span></div>
       <div style="height:6px;background:var(--papel);border-radius:3px"><div style="height:6px;width:${w}%;background:${rojo?'#A32D2D':'var(--diesel)'};border-radius:3px"></div></div>
       <div class="sub" style="font-size:10.5px;margin-top:2px">Peor: ${peorTxt(t.peor)}</div>
     </div>`;}).join('')
     :'<div class="sub" style="padding:10px 0">No hay máquinas abiertas ahora 🎉</div>';
-  function peorTxt(x){return (x.r.tipo_equipo||'—')+' '+(x.r.numero_unidad||'')+' · '+Math.round(x.dEst*10)/10+' d en este estado';}
+  function peorTxt(x){return (x.r.tipo_equipo||'—')+' '+(x.r.numero_unidad||'')+' · '+Math.ceil(x.dEst)+' d en este estado';}
 
   // Detalle de máquinas que volvieron al taller (misma unidad en 30 días, en el período)
   const reincidencias=[];
@@ -1954,8 +1954,8 @@ async function vRepInd(view){
     <td class="num" style="font-weight:600;${v.n>=5?'color:#A32D2D':''}">${v.n}</td>
     <td class="num sub">${v.unis.size||'—'}</td>
     <td class="num sub" style="${v.paradas?'color:#A32D2D':''}">${v.paradas||'—'}</td>
-    <td class="num mono">${Math.round(v.dias*10)/10} d</td>
-    <td class="sub" style="font-size:11px">${v.peor?v.peor.eq+' '+v.peor.uni+' · '+Math.round(v.peor.d*10)/10+' d':'—'}</td>
+    <td class="num mono">${Math.ceil(v.dias)} d</td>
+    <td class="sub" style="font-size:11px">${v.peor?v.peor.eq+' '+v.peor.uni+' · '+Math.ceil(v.peor.d)+' d':'—'}</td>
   </tr>`).join('');
 
   view.innerHTML=`
