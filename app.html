@@ -207,6 +207,8 @@ async function cargar(){
 // ── Render ──────────────────────────────────────────────
 function render(){
   if(rol==='capataz')return renderCombustibleCapataz();
+  // Pañol y mecánicos también cargan combustible: mismo flujo del supervisor
+  if(supVista==='combustible'&&(rol==='panol'||rol==='mecanico'||!rol||rol==='supervisor'))return renderCombustibleSup();
   if(rol==='panol')return renderPanol();
   if(rol==='supervisor')return renderSupervisor();
   if(tab==='service')return renderService();
@@ -220,7 +222,8 @@ function render(){
   $('tabs').innerHTML=[['activas','Activas',act.length],['finalizadas','Terminadas',fin.length]]
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
     +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`
-    +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`;
+    +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`
+    +`<div class="tab" onclick="abrirCombustible()">⛽</div>`;
   if(tab==='nueva')return renderNueva();
   const lista=tab==='finalizadas'?fin:act;
   $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
@@ -459,7 +462,8 @@ async function abrirCombustible(){
 }
 function cerrarCombustible(){
   if(rol==='capataz'){capPaso='foto';capData=null;render();return;}
-  supVista='incidencias';cbPaso='foto';cbData=null;render();
+  supVista='incidencias';cbPaso='foto';cbData=null;
+  cargar();   // pañol/mecánico: recargar sus datos y volver a su vista
 }
 
 function renderCombustibleSup(){
@@ -899,7 +903,8 @@ function renderPanol(){
     <div class="kpi amber"><div class="v">${pend.length}</div><div class="l">Pendientes</div></div>
     <div class="kpi green"><div class="v">${ent.length}</div><div class="l">Entregados</div></div>`;
   $('tabs').innerHTML=[['pendientes','Pendientes',pend.length],['entregados','Entregados',ent.length]]
-    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('');
+    .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
+    +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`;
   const lista=tab==='entregados'?ent:pend;
   $('lista').innerHTML=lista.length?lista.map(cardPedido).join('')
     :'<div class="vacio">No hay pedidos acá.</div>';
