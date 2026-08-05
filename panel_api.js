@@ -470,6 +470,31 @@ router.get('/api/insumos', auth, async (req, res) => {
   }
 });
 
+// Marcar un insumo como COMPRADO en todos los pedidos pendientes que lo piden.
+// La agrupación es por nombre normalizado (sin mayúsculas/acentos): "Guantes"
+// y "guantes " son el mismo ítem. body: { item, comprado:true|false }
+router.post('/api/insumos/comprar', auth, async (req, res) => {
+  try {
+    const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+    const clave = norm((req.body || {}).item);
+    if (!clave) return res.status(400).json({ error: 'Falta el ítem' });
+    const marcar = (req.body || {}).comprado !== false;
+    const { data: pends } = await supabase.from('pedidos_insumos')
+      .select('id, estado, pedidos_insumos_items(id, item)')
+      .in('estado', ['pendiente', 'en_compra']);
+    const ids = [];
+    (pends || []).forEach(p => (p.pedidos_insumos_items || []).forEach(i => { if (norm(i.item) === clave) ids.push(i.id); }));
+    if (!ids.length) return res.json({ ok: true, actualizados: 0 });
+    const { error } = await supabase.from('pedidos_insumos_items')
+      .update({ comprado: marcar, comprado_at: marcar ? new Date().toISOString() : null }).in('id', ids);
+    if (error) throw error;
+    res.json({ ok: true, actualizados: ids.length });
+  } catch (err) {
+    console.error('insumos comprar:', err.message);
+    res.status(500).json({ error: 'No pude marcar el ítem: ' + (err.message || '') + (String(err.message||'').includes('comprado') ? ' — ¿corriste el SQL que agrega la columna comprado?' : '') });
+  }
+});
+
 router.post('/api/insumos/:id', auth, async (req, res) => {
   try {
     // Si el panel manda items, registra la ENTREGA: cada item queda marcado
