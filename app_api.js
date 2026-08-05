@@ -661,7 +661,7 @@ router.post('/api/app/supervisor/combustible', authApp(['supervisor', 'panol', '
       patente_raw: repartos.find(r => r.patente)?.patente || null,
       litros_total: litrosTotal,
       datos_ia: d.datos_ia || null,
-      respuesta_capataz: `Cargado por supervisor: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
+      respuesta_capataz: `Cargado por ${({supervisor:'supervisor',panol:'pañol',mecanico:'mecánico'})[req.app_user.rol] || 'app'}: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
     }).select('id').single();
     if (error || !carga) throw (error || new Error('no se creó la carga'));
 
