@@ -694,8 +694,10 @@ router.get('/api/app/supervisor/insumos', authApp('supervisor'), async (req, res
       .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
     const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
     if (!aCargo.length) return res.json({ pedidos: [], sin_asignar: true });
+    // Select con comodines: columnas como entrega_completa o comprado pueden
+    // no existir todavía (SQLs opcionales) y nombrarlas rompería el select.
     const { data, error } = await supabase.from('pedidos_insumos')
-      .select('id, estado, created_at, entrega_completa, objetivo_id, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item, cantidad, entregado, comprado)')
+      .select('*, objetivos(nombre), capataces(nombre), pedidos_insumos_items(*)')
       .in('objetivo_id', aCargo)
       .order('created_at', { ascending: false })
       .limit(60);
