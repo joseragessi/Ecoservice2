@@ -296,6 +296,7 @@ const SUP_PRIO={critico:['Crítico','#C0392B','#FDEDEB'],alta:['Alta','#B9770E',
 const SUP_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repuestos:'Esperando repuestos',en_reparacion:'En reparación',finalizado:'Finalizado'};
 function renderSupervisor(){
   if(supVista==='combustible')return renderCombustibleSup();
+  if(supVista==='insumos')return renderInsumosSup();
   const objetivos=(datos&&datos.objetivos)||[];
   if(datos&&datos.sin_asignar){
     $('kpis').innerHTML='';$('tabs').innerHTML='';
@@ -309,7 +310,10 @@ function renderSupervisor(){
     <div class="kpi amber"><div class="v">${totAbiertas}</div><div class="l">Abiertas</div></div>
     <div class="kpi ${totCriticas?'amber':''}"><div class="v">${totCriticas}</div><div class="l">Críticas</div></div>
     <div class="kpi"><div class="v">${totReclam}</div><div class="l">Reclamadas</div></div>`;
-  $('tabs').innerHTML=`<button class="tab-cta" onclick="abrirCombustible()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">⛽ Cargar combustible</button>`;
+  $('tabs').innerHTML=`<div style="display:flex;gap:8px">
+    <button class="tab-cta" onclick="abrirCombustible()" style="flex:1;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">⛽ Combustible</button>
+    <button class="tab-cta" onclick="abrirInsumosSup()" style="flex:1;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">📦 Insumos</button>
+  </div>`;
   if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
   // Vista lista de objetivos (cantidad) → click abre incidencias
   $('lista').innerHTML=objetivos.map(o=>{
@@ -327,6 +331,45 @@ function renderSupervisor(){
         <div class="meta">${o.abiertas} incidencia${o.abiertas===1?'':'s'} abierta${o.abiertas===1?'':'s'} · tocá para ver ${ab?'▲':'▼'}</div>
       </div>
       ${ab?`<div style="border-top:1px solid #eef1ee;padding:8px 12px 12px">${o.incidencias.map(supCardInc).join('')}</div>`:''}
+    </div>`;}).join('');
+}
+// Insumos de los objetivos del supervisor: qué está pedido y qué hay listo
+// para retirar del depósito y llevar. Solo lectura (la entrega la hace el pañol).
+let supInsumos=null, supInsAbierto=null;
+async function abrirInsumosSup(){
+  supVista='insumos';supInsumos=null;render();
+  try{supInsumos=await api('/api/app/supervisor/insumos');}catch(e){supInsumos={error:e.message};}
+  render();
+}
+function renderInsumosSup(){
+  $('kpis').innerHTML='';
+  $('tabs').innerHTML=`<button class="tab-cta" onclick="supVista='incidencias';render()" style="width:100%;padding:11px;border:1px solid #dfe4df;border-radius:12px;background:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">← Volver</button>`;
+  if(!supInsumos){$('lista').innerHTML='<div class="vacio">Cargando insumos…</div>';return;}
+  if(supInsumos.error){$('lista').innerHTML=`<div class="vacio">${supInsumos.error}</div>`;return;}
+  if(supInsumos.sin_asignar){$('lista').innerHTML='<div class="vacio">Todavía no tenés objetivos asignados.</div>';return;}
+  const peds=supInsumos.pedidos||[];
+  if(!peds.length){$('lista').innerHTML='<div class="vacio">No hay pedidos de insumos en tus objetivos. ✓</div>';return;}
+  const fecha=iso=>{const d=new Date(iso);return d.getDate()+'/'+(d.getMonth()+1);};
+  $('lista').innerHTML='<div class="meta" style="margin-bottom:8px">Pedidos de insumos de tus objetivos · la entrega la registra el pañol</div>'+peds.map(p=>{
+    const items=p.pedidos_insumos_items||[];
+    const ab=supInsAbierto===p.id;
+    const est=p.estado==='entregado'
+      ?(p.entrega_completa===false?['⚠ Con faltantes','#B9770E','#FCF3DE']:['✓ Entregado','#1B7E48','#E7F5EC'])
+      :p.estado==='en_compra'?['🛒 En compra','#3B6FB5','#E8F1FA']:['Pendiente','#B9770E','#FCF3DE'];
+    return `<div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:12px;cursor:pointer" onclick="supInsAbierto=supInsAbierto==='${p.id}'?null:'${p.id}';render()">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <b>${p.objetivos?p.objetivos.nombre:'—'}</b>
+          <span style="background:${est[2]};color:${est[1]};padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">${est[0]}</span>
+        </div>
+        <div class="meta">${fecha(p.created_at)}${p.capataces?' · pidió '+p.capataces.nombre:''} · ${items.length} ítem${items.length===1?'':'s'} · tocá para ver ${ab?'▲':'▼'}</div>
+      </div>
+      ${ab?`<div style="border-top:1px solid #eef1ee;padding:10px 12px 12px">
+        ${items.map(i=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px dashed #eef1ee;font-size:13px">
+          <span>${i.item}${i.cantidad&&String(i.cantidad).trim()!=='1'?' <span class="meta">('+i.cantidad+')</span>':''}</span>
+          <span style="white-space:nowrap;font-size:11.5px;color:${p.estado==='entregado'?(i.entregado?'#1B7E48':'#B9770E'):(i.comprado?'#1B7E48':'#8a938a')}">${p.estado==='entregado'?(i.entregado?'✓ entregado':'✕ faltó'):(i.comprado?'✓ comprado':'pedido')}</span>
+        </div>`).join('')}
+      </div>`:''}
     </div>`;}).join('');
 }
 function supCardInc(i){
