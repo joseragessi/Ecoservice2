@@ -686,6 +686,27 @@ router.post('/api/app/supervisor/combustible', authApp(['supervisor', 'panol', '
 });
 
 // Objetivos para el buscador del reparto
+// Insumos de los objetivos a cargo del supervisor: qué está pedido y qué hay
+// para retirar/llevar. Solo lectura — la entrega la registra el pañol.
+router.get('/api/app/supervisor/insumos', authApp('supervisor'), async (req, res) => {
+  try {
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+    if (!aCargo.length) return res.json({ pedidos: [], sin_asignar: true });
+    const { data, error } = await supabase.from('pedidos_insumos')
+      .select('id, estado, created_at, entrega_completa, objetivo_id, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item, cantidad, entregado, comprado)')
+      .in('objetivo_id', aCargo)
+      .order('created_at', { ascending: false })
+      .limit(60);
+    if (error) throw error;
+    res.json({ pedidos: data || [] });
+  } catch (err) {
+    console.error('supervisor insumos:', err.message);
+    res.status(500).json({ error: 'Error cargando insumos' });
+  }
+});
+
 router.get('/api/app/supervisor/objetivos', authApp(['supervisor', 'panol', 'mecanico']), async (req, res) => {
   try {
     const { data } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
