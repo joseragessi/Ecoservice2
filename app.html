@@ -557,7 +557,7 @@ function renderCbRepartir(){
         <input type="number" value="${r.litros}" placeholder="0" onchange="cbSet('${tipo}',${i},'litros',this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
         <span style="color:#8C9B92">→</span>
         ${r.destino==='unidad'
-          ? `<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600;display:flex;align-items:center;gap:4px">🚛 A la unidad<span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tanque</span></div>`
+          ? `<div style="flex:1;min-width:0;display:flex;align-items:center;gap:5px"><span style="font-size:13px">🚛</span><input type="text" value="${(r.patente||'').replace(/"/g,'&quot;')}" placeholder="Patente / N° unidad" onchange="cbSet('${tipo}',${i},'patente',this.value)" style="flex:1;min-width:0;padding:7px 9px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box;text-transform:uppercase"></div>`
           : `<input type="text" list="cb-objs" value="${(r.objetivo||'').replace(/"/g,'&quot;')}" placeholder="Objetivo…" onchange="cbSet('${tipo}',${i},'objetivo',this.value)" style="flex:1;min-width:0;padding:7px 9px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box">`}
         <button onclick="cbDestino('${tipo}',${i})" title="Cambiar destino" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
         <button onclick="cbQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
