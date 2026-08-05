@@ -536,6 +536,12 @@ let combAnaSelKey=null;         // patente seleccionada (clave normalizada)
 let combRemVer=null;            // id del listado con el detalle abierto
 let combRemFilas={};            // cache de filas por listado {id:[filas]}
 
+// Quién hizo la carga cuando no hay capataz vinculado (pañol, mecánicos y
+// supervisores sin ficha de capataz): se lee del texto "Cargado por rol: X · …"
+function quienCargoCombus(c){
+  const m=/^Cargado por ([^:]+): ([^·]+)/.exec(String(c.respuesta_capataz||''));
+  return m?`<div>${m[2].trim()}</div><div class="sub" style="font-size:10.5px">${m[1].trim()}</div>`:'—';
+}
 async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
     <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
@@ -616,7 +622,7 @@ async function vCombustible(view){
         const anulada=c.estado==='anulada';
         return `<tr class="click-row" style="cursor:pointer;${anulada?'opacity:.55':''}" onclick="verCarga('${c.id}')"><td class="mono">${fechaAR(c.fecha)}</td>
           <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}</div></td>
-          <td>${c.capataces?c.capataces.nombre:'—'}</td>
+          <td>${c.capataces?c.capataces.nombre:quienCargoCombus(c)}</td>
           <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
           <td><span class="uni-chip">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></td>
           <td style="font-size:12px">${items||'—'}</td>
