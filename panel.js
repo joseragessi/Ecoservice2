@@ -336,6 +336,7 @@ async function vDashboard(view){
 let insTab='resumen', insIndPer='';
 function tabsIns(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${insTab==='resumen'?'on':''}" onclick="insTab='resumen';go('insumos')">Resumen</button>
+  <button class="${insTab==='compra'?'on':''}" onclick="insTab='compra';go('insumos')">Qué comprar</button>
   <button class="${insTab==='indicadores'?'on':''}" onclick="insTab='indicadores';go('insumos')">Indicadores</button>
 </div>`;}
 
@@ -382,10 +383,71 @@ function vInsInd(view,todas){
   </div>`;
 }
 
+// "Qué comprar": todos los pedidos pendientes juntos, agrupados por insumo.
+// Una sola pasada de compra cubre todo; el ✓ marca el ítem comprado en TODOS
+// los pedidos que lo incluyen (el pañol después entrega por objetivo, igual
+// que siempre). Los específicos (una sola aparición) quedan como línea propia.
+function normIns(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();}
+async function vInsCompra(view,datos){
+  const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
+  const pends=(datos||[]).filter(esPend);
+  const grupos={};
+  pends.forEach(p=>{
+    const obj=p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—');
+    (p.pedidos_insumos_items||[]).forEach(i=>{
+      const k=normIns(i.item);if(!k)return;
+      const g=grupos[k]=grupos[k]||{nombre:i.item,n:0,objs:[],masViejo:null,comprados:0,cants:[]};
+      g.n++;g.objs.push(obj);
+      if(i.cantidad&&String(i.cantidad).trim()&&String(i.cantidad).trim()!=='1')g.cants.push(String(i.cantidad).trim());
+      if(i.comprado)g.comprados++;
+      const d=diasEntre(p.created_at,new Date().toISOString());
+      if(d!=null&&(g.masViejo==null||d>g.masViejo))g.masViejo=d;
+    });
+  });
+  const lista=Object.entries(grupos).map(([k,g])=>({k,...g,comprado:g.comprados>=g.n}))
+    .sort((a,b)=>(a.comprado?1:0)-(b.comprado?1:0)||b.n-a.n||(b.masViejo||0)-(a.masViejo||0));
+  const maxN=lista.length?Math.max(...lista.map(g=>g.n)):1;
+  const filas=lista.map(g=>{
+    const dias=g.masViejo!=null?Math.round(g.masViejo*10)/10:null;
+    const objsU=[...new Set(g.objs)];
+    return `<tr style="${g.comprado?'opacity:.5':''}">
+      <td><div style="font-weight:600">${g.nombre}${g.n===1?' <span class="badge b-amber" style="font-size:9.5px">específico</span>':''}${g.cants.length?` <span class="sub" style="font-size:11px">(${g.cants.join(' + ')})</span>`:''}</div>
+        ${g.n>1?`<div style="height:4px;background:var(--papel);border-radius:2px;margin-top:4px;max-width:140px"><div style="height:4px;width:${Math.max(6,Math.round(g.n*100/maxN))}%;background:var(--brote);border-radius:2px"></div></div>`:''}</td>
+      <td class="num mono" style="font-weight:600">${g.n}</td>
+      <td><span class="sub" style="font-size:11px">${objsU.slice(0,6).join(' · ')}${objsU.length>6?' <b>+'+(objsU.length-6)+'</b>':''}</span></td>
+      <td class="num mono" style="${dias>=3?'color:#854F0B;font-weight:600':''}">${dias!=null?dias+' d':'—'}</td>
+      <td class="num"><button class="mini-btn" style="${g.comprado?'color:var(--brote-2);border-color:var(--brote)':''}" onclick="insMarcarComprado('${g.k.replace(/'/g,"\\'")}',${g.comprado?'false':'true'})">${g.comprado?'✓ Comprado':'Marcar comprado'}</button></td>
+    </tr>`;}).join('');
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Qué comprar</div>
+    <div class="view-desc">${pends.length} pedidos abiertos · ${lista.length} ítems distintos · el ✓ tilda el ítem en todos los pedidos que lo incluyen</div></div>
+    <button class="btn-salir" onclick="insCopiarLista()">📋 Copiar lista de compra</button></div>
+  ${tabsIns()}
+  ${lista.length?`<div class="panel"><table style="font-size:12.5px">
+    <thead><tr><th>Insumo</th><th class="num">Pedidos</th><th>Lo esperan</th><th class="num">Más viejo</th><th></th></tr></thead>
+    <tbody>${filas}</tbody></table></div>`
+    :'<div class="empty" style="height:200px"><div>No hay pedidos pendientes 🎉</div></div>'}`;
+  window.__insListaCompra=lista.filter(g=>!g.comprado).map(g=>'• '+g.nombre+(g.n>1?' ×'+g.n+' pedidos':'')+(g.cants.length?' ('+g.cants.join(' + ')+')':''));
+}
+async function insMarcarComprado(clave,marcar){
+  try{
+    const r=await api('/api/insumos/comprar',{method:'POST',body:JSON.stringify({item:clave,comprado:marcar})});
+    toast(marcar?('Marcado comprado en '+r.actualizados+' pedido'+(r.actualizados===1?'':'s')+' ✓'):'Desmarcado');
+    go('insumos');
+  }catch(e){toast(e.message||'No pude marcar','error');}
+}
+function insCopiarLista(){
+  const l=window.__insListaCompra||[];
+  if(!l.length){toast('No queda nada por comprar 🎉');return;}
+  navigator.clipboard.writeText('LISTA DE COMPRA · '+fechaAR(new Date().toISOString())+'\n'+l.join('\n'))
+    .then(()=>toast('Lista copiada ('+l.length+' ítems) — pegala en WhatsApp o donde quieras'))
+    .catch(()=>toast('No pude copiar','error'));
+}
 async function vInsumos(view){
   try{
     insumosData=await api('/api/insumos');
     if(insTab==='indicadores'){vInsInd(view,insumosData);return;}
+    if(insTab==='compra'){vInsCompra(view,insumosData);return;}
     // 'en_compra' quedó como estado legacy: en la UI cuenta como pendiente.
     const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
     if(filtroIns==='pendiente')insumosData=insumosData.filter(esPend);
