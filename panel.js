@@ -1976,7 +1976,34 @@ async function vRepInd(view){
       ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">En este estado</th><th class="num">Abierta hace</th><th>Mecánico</th></tr></thead>
       <tbody>${tablaAbiertas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay máquinas abiertas 🎉</div>'}
     </div>
-    <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}</div>
+    <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}
+      ${(()=>{  // Máquinas con más de 7 días abiertas: lo que ya no puede esperar
+        const viejas=abiertas.filter(x=>x.dAb>7).sort((a,b)=>b.dAb-a.dAb);
+        if(!viejas.length)return '';
+        return `<div class="divider" style="margin:12px 0 8px"></div>
+        <div class="field-l" style="margin-bottom:6px;color:#A32D2D">⏰ Más de 7 días abiertas (${viejas.length})</div>
+        ${viejas.map(({r,dAb})=>`<div style="padding:6px 0;border-bottom:1px dashed var(--linea);font-size:12px">
+          <div style="display:flex;justify-content:space-between;gap:8px">
+            <b style="font-weight:600">${r.tipo_equipo||'—'} ${r.numero_unidad||''}</b>
+            <b class="mono" style="color:#A32D2D;white-space:nowrap">${Math.ceil(dAb)} d</b></div>
+          <div class="sub" style="font-size:11px;margin-top:1px">${(r.descripcion||r.falla||'—').slice(0,60)}</div>
+          <div class="sub" style="font-size:11px">${ETIQ_EST[r.estado]||r.estado} · ${r.mecanicos?r.mecanicos.nombre:'sin asignar'}</div>
+        </div>`).join('')}`;})()}
+      ${(()=>{  // Abiertas por mecánico: siempre sobre TODAS (ignora el filtro de arriba)
+        const cnt={};
+        todas.filter(r=>r.estado!=='finalizado').forEach(r=>{const k=r.mecanicos?r.mecanicos.nombre:'Sin asignar';cnt[k]=(cnt[k]||0)+1;});
+        const lista=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
+        if(!lista.length)return '';
+        const max=lista[0][1];
+        return `<div class="divider" style="margin:12px 0 8px"></div>
+        <div class="field-l" style="margin-bottom:6px">Abiertas por mecánico</div>
+        ${lista.map(([n,c])=>`<div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+            <span style="${n==='Sin asignar'?'color:#854F0B':''}">${n}</span>
+            <b class="mono" style="${c>=6?'color:#A32D2D':''}">${c}</b></div>
+          <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${Math.max(4,Math.round(c*100/max))}%;background:${c>=6?'#A32D2D':'var(--brote)'};border-radius:3px"></div></div>
+        </div>`).join('')}`;})()}
+    </div>
   </div>
   <div class="panel" style="margin-bottom:18px"><div class="panel-title">Máquinas que volvieron al taller <span class="sub" style="font-weight:400;font-size:11px">· misma unidad en 30 días · verificá que sea la misma falla</span></div>
     <table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Falla anterior</th><th class="num">Días entre visitas</th><th>Reparó (1ª vez)</th></tr></thead>
