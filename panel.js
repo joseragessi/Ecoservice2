@@ -1595,11 +1595,16 @@ async function vRepPerf(view){
     if(d!=null&&d>PERF_DORMIDA_DIAS){const m=nomMec(r)||'Sin asignar';(dormidas[m]=dormidas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',dias:Math.round(d*10)/10});}
   });
 
-  // Puntaje del mes, con el detalle línea por línea (el "por qué")
+  // Puntaje del mes, con el detalle línea por línea (el "por qué").
+  // Arrancan TODOS los mecánicos que aparecen en el sistema (con abiertas o
+  // finalizadas), aunque tengan 0 puntos: si no, el que no finalizó nada este
+  // mes desaparece del ranking y no se ve que está en cero.
   const mecs={};
+  const vacio=()=>({lineas:[],trabajo:0,urgencia:0,prev:0,total:0,nFin:0,nPrev:0});
+  todas.forEach(r=>{const m=nomMec(r);if(m&&!mecs[m])mecs[m]=vacio();});
   finMes.forEach(r=>{
     const m=nomMec(r);if(!m)return;
-    const M=mecs[m]=mecs[m]||{lineas:[],trabajo:0,urgencia:0,prev:0,total:0,nFin:0,nPrev:0};
+    const M=mecs[m]=mecs[m]||vacio();
     M.nFin++;
     if(esPrev(r)){M.prev+=2;M.total+=2;M.nPrev++;
       M.lineas.push({tit:(r.tipo_equipo||'Preventivo')+' '+(r.numero_unidad||''),det:'preventivo realizado',pts:'+2'});return;}
