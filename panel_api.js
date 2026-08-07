@@ -1036,6 +1036,71 @@ router.get('/api/compras/repuestos', auth, async (req, res) => {
   }
 });
 
+// ── Circuito de repuestos: APROBACIÓN (José) ─────────────────────────────
+// Aprobar la nota de pedido: cotizado → a_comprar. Protegido con el mismo PIN
+// de súper admin que Performance (env PERFORMANCE_PIN): los mecánicos también
+// entran al panel y esta es la decisión de gastar.
+router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
+  try {
+    const envPin = String(process.env.PERFORMANCE_PIN || '').trim();
+    if (envPin) {
+      const quien = 'perf|' + (req.usuario || 'panel');
+      if (seg.loginBloqueado(req, quien)) return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' });
+      if (String((req.body || {}).pin || '').trim() !== envPin) {
+        seg.loginFallido(req, quien);
+        return res.status(401).json({ error: 'PIN incorrecto' });
+      }
+      seg.loginOk(req, quien);
+    }
+    const { data: ped } = await supabase.from('repuestos_taller').select('estado').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    if (ped.estado !== 'cotizado') return res.status(422).json({ error: 'Solo se aprueban pedidos en estado "cotizado".' });
+    const ahora = new Date().toISOString();
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update({ estado: 'a_comprar', estado_desde: ahora, aprobado_at: ahora, aprobado_por: req.usuario || 'panel' })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('repuestos aprobar:', err.message);
+    res.status(500).json({ error: err.message || 'No pude aprobar' });
+  }
+});
+
+// Observar: devuelve el pedido al Referente con un comentario (→ en_cotizacion).
+router.post('/api/compras/repuestos/:id/observar', auth, async (req, res) => {
+  try {
+    const comentario = String((req.body || {}).comentario || '').trim();
+    if (!comentario) return res.status(400).json({ error: 'Escribí qué hay que revisar' });
+    const { data: ped } = await supabase.from('repuestos_taller').select('estado').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    if (ped.estado !== 'cotizado') return res.status(422).json({ error: 'Solo se observan pedidos cotizados.' });
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update({ estado: 'en_cotizacion', estado_desde: new Date().toISOString(), observacion: comentario + ' — ' + (req.usuario || 'panel') })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('repuestos observar:', err.message);
+    res.status(500).json({ error: 'No pude devolver el pedido' });
+  }
+});
+
+// Foto del pedido o adjunto de la nota, para el panel (URL firmada 1 hora)
+router.get('/api/compras/repuestos/:id/archivo', auth, async (req, res) => {
+  try {
+    const { data: ped } = await supabase.from('repuestos_taller')
+      .select('foto_ruta, nota_adjunto').eq('id', req.params.id).single();
+    const ruta = req.query.tipo === 'adjunto' ? (ped && ped.nota_adjunto) : (ped && ped.foto_ruta);
+    if (!ruta) return res.status(404).json({ error: 'Sin archivo' });
+    const { data, error } = await supabase.storage.from('repuestos').createSignedUrl(ruta, 3600);
+    if (error) throw error;
+    res.json({ url: data.signedUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude generar el enlace' });
+  }
+});
+
 // Marcar UN ítem como comprado / pendiente (compra parcial). El pedido pasa a
 // "comprado" recién cuando todos los ítems están tildados; si falta alguno,
 // sigue pendiente en "a_comprar".
