@@ -1002,7 +1002,9 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: 'Panel · ' + (req.usuario || 'admin') };
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
-    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id }).select().single();
+    // También los pedidos cargados desde el panel entran al circuito del
+    // Referente: nacen en 'pedido', no directo en a_comprar.
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: 'pedido', estado_desde: new Date().toISOString() }).select().single();
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
@@ -1033,6 +1035,47 @@ router.get('/api/compras/repuestos', auth, async (req, res) => {
   } catch (err) {
     console.error('compras repuestos:', err);
     res.status(500).json({ error: 'Error cargando repuestos (¿existe la tabla repuestos_taller?)' });
+  }
+});
+
+// ── Circuito de repuestos: acciones del REFERENTE desde el PANEL ─────────
+// El Referente gestiona desde el panel (decisión 7-ago): tomar, marcar pieza
+// en el proveedor y cargar la nota de pedido. Cualquier usuario del panel con
+// el módulo puede operar; queda registrado con su nombre.
+router.post('/api/compras/repuestos/:id/referente', auth, async (req, res) => {
+  try {
+    const { data: ped } = await supabase.from('repuestos_taller').select('*').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    const b = req.body || {};
+    const ahora = new Date().toISOString();
+    const patch = {};
+    if (b.accion === 'tomar') {
+      if (ped.estado !== 'pedido') return res.status(422).json({ error: 'El pedido no está en estado "pedido".' });
+      patch.estado = 'en_cotizacion'; patch.estado_desde = ahora;
+      patch.referente_nombre = req.usuario || 'panel';
+    } else if (b.accion === 'pieza_proveedor') {
+      patch.pieza_en_proveedor = b.quitar ? null : ahora.slice(0, 10);
+    } else if (b.accion === 'nota') {
+      if (!['pedido', 'en_cotizacion'].includes(ped.estado)) return res.status(422).json({ error: 'El pedido ya está cotizado o más adelante.' });
+      const proveedor = String(b.proveedor || '').trim();
+      const precio = Number(String(b.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+      const plazo = String(b.plazo || '').trim();
+      if (!proveedor || !precio || !plazo) return res.status(400).json({ error: 'La nota necesita proveedor, precio y plazo.' });
+      patch.nota_proveedor = proveedor; patch.nota_precio = precio; patch.nota_plazo = plazo;
+      patch.estado = 'cotizado'; patch.estado_desde = ahora;
+      patch.cotizado_at = ahora; patch.cotizado_por = req.usuario || 'panel';
+      patch.referente_nombre = ped.referente_nombre || req.usuario || 'panel';
+      patch.observacion = null;
+    } else {
+      return res.status(400).json({ error: 'Acción desconocida' });
+    }
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('referente panel:', err.message);
+    res.status(500).json({ error: err.message || 'No pude aplicar la acción' });
   }
 });
 
