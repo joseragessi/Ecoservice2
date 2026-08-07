@@ -1715,6 +1715,7 @@ async function vRepRepuestos(view){
   let all=[];
   try{all=await api('/api/compras/repuestos');}
   catch(e){view.innerHTML=tabsRep()+`<div class="cargando-v">${e.message||'No pude cargar.'}</div>`;return;}
+  circData=all;   // para los modales de edición/nota
   const dias=iso=>iso?Math.ceil((Date.now()-new Date(iso))/86400000):null;
   const MS30=30*86400000;
   const visibles=all.filter(p=>p.estado!=='entregado'||(p.entregado_at&&Date.now()-new Date(p.entregado_at)<MS30));
@@ -1756,8 +1757,10 @@ async function vRepRepuestos(view){
       <td style="font-size:12px">${p.referente_nombre||'—'}</td>
       <td class="num" style="white-space:nowrap">
         ${p.estado==='pedido'?`<button class="mini-btn" onclick="circAccion('${p.id}','tomar')">▶ Tomar</button>`:''}
-        ${p.estado==='en_cotizacion'?`<button class="mini-btn" onclick="circNota('${p.id}')">📝 Nota</button>
-          <button class="mini-btn" title="${p.pieza_en_proveedor?'Quitar la marca':'La pieza quedó en el proveedor'}" onclick="circAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">🏪</button>`:''}
+        ${['en_cotizacion','cotizado'].includes(p.estado)?`<button class="mini-btn" onclick="circNota('${p.id}')">📝 ${p.nota_proveedor?'Corregir nota':'Nota'}</button>`:''}
+        ${p.estado==='en_cotizacion'?`<button class="mini-btn" title="${p.pieza_en_proveedor?'Quitar la marca':'La pieza quedó en el proveedor'}" onclick="circAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">🏪</button>`:''}
+        ${p.estado!=='entregado'?`<button class="mini-btn" title="Editar repuestos" onclick="circEditar('${p.id}')">✏️</button>
+          <button class="mini-btn" title="Eliminar pedido" style="color:var(--rojo)" onclick="circEliminar('${p.id}')">🗑</button>`:''}
         ${p.observacion?`<div class="sub" style="font-size:10.5px;color:#854F0B;white-space:normal;max-width:150px">↩ ${p.observacion}</div>`:''}
       </td>
     </tr>`;}).join('');
@@ -1789,15 +1792,60 @@ async function circAccion(id,accion,quitar){
     toast('Listo ✓');go('reparaciones');
   }catch(e){toast(e.message||'No pude','error');}
 }
+// Editar los repuestos del pedido (por si se confundieron al cargar)
+let circData=null;   // cache de la última carga de /api/compras/repuestos en esta vista
+function circEditar(id){
+  const p=(circData||[]).find(x=>String(x.id)===String(id));if(!p)return;
+  const filas=(p.items&&p.items.length?p.items:[{}]).map(x=>`<div style="display:flex;gap:5px;margin-bottom:5px">
+    <input class="ce-cant" type="text" inputmode="numeric" value="${x.cantidad||1}" style="width:46px;text-align:center">
+    <input class="ce-desc" type="text" placeholder="Repuesto" value="${String(x.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2">
+    <input class="ce-cod" type="text" placeholder="Código" value="${String(x.codigo||'').replace(/"/g,'&quot;')}" style="flex:1">
+    <button class="mini-btn" onclick="this.parentElement.remove()">✕</button>
+  </div>`).join('');
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+  bg.innerHTML=`<div class="modal" style="max-width:480px">
+    <div class="modal-tit">✏️ Editar pedido</div>
+    <div class="sub" style="margin:4px 0 10px;font-size:12px">Corregí lo que haga falta — los tildes de comprado se conservan por descripción.</div>
+    <div id="ce-filas">${filas}</div>
+    <button class="mini-btn" onclick="document.getElementById('ce-filas').insertAdjacentHTML('beforeend','<div style=\'display:flex;gap:5px;margin-bottom:5px\'><input class=ce-cant type=text value=1 style=\'width:46px;text-align:center\'><input class=ce-desc type=text placeholder=Repuesto style=flex:2><input class=ce-cod type=text placeholder=Código style=flex:1><button class=mini-btn onclick=this.parentElement.remove()>✕</button></div>')">＋ otra fila</button>
+    <div class="mm-field" style="margin-top:8px"><label>Marca / modelo del equipo</label><input id="ce-marca" type="text" value="${String(p.marca_modelo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+    <div class="modal-acciones">
+      <button class="btn-salir" id="ce-cancel">Cancelar</button>
+      <button class="btn" id="ce-ok">Guardar cambios</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#ce-cancel').onclick=()=>bg.remove();
+  bg.querySelector('#ce-ok').onclick=async()=>{
+    const items=[...bg.querySelectorAll('#ce-filas > div')].map(f=>({
+      cantidad:Number(f.querySelector('.ce-cant').value)||1,
+      descripcion:f.querySelector('.ce-desc').value.trim(),
+      codigo:f.querySelector('.ce-cod').value.trim(),
+      comprado:(p.items||[]).some(x=>x.comprado&&String(x.descripcion||'').toLowerCase()===f.querySelector('.ce-desc').value.trim().toLowerCase()),
+    })).filter(x=>x.descripcion);
+    if(!items.length){toast('Tiene que quedar al menos un repuesto','error');return;}
+    try{
+      await api('/api/compras/repuestos/'+id+'/referente',{method:'POST',body:JSON.stringify({accion:'descripcion',items,marca_modelo:bg.querySelector('#ce-marca').value})});
+      bg.remove();toast('Pedido corregido ✓');go('reparaciones');
+    }catch(e){toast(e.message||'No pude guardar','error');}
+  };
+}
+async function circEliminar(id){
+  if(!await uiConfirm('Se elimina del circuito y no se puede deshacer. Si la reparación sigue necesitando el repuesto, el mecánico lo vuelve a pedir.','🗑 ¿Eliminar el pedido?',{ok:'Eliminar',danger:true}))return;
+  try{
+    await api('/api/compras/repuestos/'+id,{method:'DELETE'});
+    toast('Pedido eliminado');go('reparaciones');
+  }catch(e){toast(e.message||'No pude eliminar','error');}
+}
 function circNota(id){
+  const p=(circData||[]).find(x=>String(x.id)===String(id))||{};
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
   bg.innerHTML=`<div class="modal" style="max-width:400px">
     <div class="modal-tit">📝 Nota de pedido</div>
     <div class="sub" style="margin:4px 0 12px;font-size:12px">Proveedor + precio + plazo. La carga acá ES la cotización válida (de palabra vale). Al guardar pasa a COTIZADO y queda esperando la aprobación.</div>
-    <div class="mm-field"><label>Proveedor recomendado</label><input id="cn-prov" type="text" style="width:100%"></div>
+    <div class="mm-field"><label>Proveedor recomendado</label><input id="cn-prov" type="text" value="${String(p.nota_proveedor||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
     <div style="display:flex;gap:8px">
-      <div class="mm-field" style="flex:1"><label>Precio final $</label><input id="cn-precio" type="text" inputmode="decimal" style="width:100%"></div>
-      <div class="mm-field" style="flex:1"><label>Plazo</label><input id="cn-plazo" type="text" placeholder="ej: 48 hs" style="width:100%"></div>
+      <div class="mm-field" style="flex:1"><label>Precio final $</label><input id="cn-precio" type="text" inputmode="decimal" value="${p.nota_precio!=null?String(p.nota_precio).replace('.',','):''}" style="width:100%"></div>
+      <div class="mm-field" style="flex:1"><label>Plazo</label><input id="cn-plazo" type="text" placeholder="ej: 48 hs" value="${String(p.nota_plazo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
     </div>
     <div class="modal-acciones">
       <button class="btn-salir" id="cn-cancel">Cancelar</button>
