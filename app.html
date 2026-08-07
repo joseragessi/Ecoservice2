@@ -936,7 +936,7 @@ function cardIncidencia(i){
           </div>
           <input id="rp-marca-${i.id}" type="text" placeholder="Marca / modelo del equipo (ej: Husqvarna 545)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;margin-top:5px">
           <div style="display:flex;gap:6px;align-items:center;margin-top:5px">
-            <label class="btn sec" style="flex:1;margin:0;text-align:center;cursor:pointer">📷 Foto del repuesto (obligatoria)
+            <label class="btn sec" style="flex:1;margin:0;text-align:center;cursor:pointer">📷 Foto del repuesto (opcional)
               <input type="file" accept="image/*" capture="environment" style="display:none" onchange="rpFoto('${i.id}',this)"></label>
             <span id="rp-foto-ok-${i.id}" class="desc" style="font-size:12px;flex:0 0 auto"></span>
           </div>
@@ -1054,8 +1054,7 @@ function renderReferente(){
       <div class="meta">${eq}${i.equipo_parado?' · ⛔ parada':''} · ${i.prioridad||'—'} · pidió ${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">${estBadge}
         ${p.pieza_en_proveedor?`<span style="background:#EFEBFB;color:#3C3489;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">🏪 en el proveedor · ${p.pieza_en_proveedor.slice(8,10)}/${p.pieza_en_proveedor.slice(5,7)}</span>`:''}
-        ${!p.foto_ruta&&!p.sin_foto_motivo?'<span style="background:#F2F2F0;color:#8a938a;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">📷 sin foto — no avanza</span>':''}
-        ${p.sin_foto_motivo?'<span style="background:#F2F2F0;color:#586B60;border-radius:5px;padding:1px 7px;font-size:10.5px">identificado sin foto</span>':''}
+
         ${tope?'<span style="background:#FCF3DE;color:#854F0B;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:700">⚠ pasó los 3 días</span>':''}
       </div>
       ${p.observacion?`<div class="desc" style="font-size:12px;background:#FCF3DE;border-radius:7px;padding:6px 9px;color:#6B4A0E">↩ Observado: ${p.observacion}</div>`:''}
@@ -1064,7 +1063,7 @@ function renderReferente(){
         ${p.foto_ruta?`<button class="btn sec" style="margin:0 0 6px" onclick="refVerFoto('${p.id}')">📷 Ver foto</button>`:''}
         ${p.estado==='pedido'?`
           <button class="btn" style="margin:0 0 6px" onclick="refAccion('${p.id}','tomar')">▶ Tomar y cotizar</button>
-          ${!p.foto_ruta&&!p.sin_foto_motivo?`<button class="btn sec" style="margin:0 0 6px" onclick="refSinFoto('${p.id}')">Identificado sin foto…</button>`:''}`:''}
+`:''}
         ${p.estado==='en_cotizacion'?`
           <button class="btn" style="margin:0 0 6px" onclick="refNotaDe='${p.id}';refAdjunto=null;render()">📝 Cargar nota de pedido</button>
           <button class="btn sec" style="margin:0 0 6px" onclick="refAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">${p.pieza_en_proveedor?'Quitar "en el proveedor"':'🏪 La pieza quedó en el proveedor'}</button>`:''}
@@ -1185,10 +1184,6 @@ async function rpGuardar(id){
   if(!items.length){toast('Cargá al menos un repuesto');return;}
   const nota=document.getElementById('rp-nota-'+id).value.trim();
   const marca=(document.getElementById('rp-marca-'+id)||{}).value||'';
-  const yaTieneFoto=(datos.find(x=>String(x.id)===String(id))||{}).repuestos_taller?.some?.(r=>r.estado!=='entregado'&&r.foto_ruta);
-  if(!rpFotos[id]&&!yaTieneFoto){
-    if(!confirm('Falta la FOTO del repuesto. Sin foto, el Referente no puede avanzar el pedido.\n\n¿Guardar igual como incompleto?'))return;
-  }
   try{
     await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:marca,fotoData:rpFotos[id]||undefined})});
     delete rpFotos[id];
