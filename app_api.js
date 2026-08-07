@@ -342,9 +342,6 @@ router.post('/api/app/referente/repuestos/:id', authApp(['mecanico', 'panol']), 
     const ahora = new Date().toISOString();
     if (b.accion === 'tomar') {
       if (ped.estado !== 'pedido') return res.status(422).json({ error: 'El pedido no está en estado "pedido".' });
-      if (!ped.foto_ruta && !ped.sin_foto_motivo) {
-        return res.status(422).json({ error: 'Pedido sin foto: pedile la foto al mecánico o marcá "identificado sin foto" con el motivo.' });
-      }
       patch.estado = 'en_cotizacion'; patch.estado_desde = ahora;
       patch.referente_nombre = req.app_user.nombre;
     } else if (b.accion === 'sin_foto') {
@@ -365,7 +362,6 @@ router.post('/api/app/referente/repuestos/:id', authApp(['mecanico', 'panol']), 
       const precio = Number(String(b.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
       const plazo = String(b.plazo || '').trim();
       if (!proveedor || !precio || !plazo) return res.status(400).json({ error: 'La nota necesita proveedor, precio y plazo.' });
-      if (!ped.foto_ruta && !ped.sin_foto_motivo) return res.status(422).json({ error: 'Pedido sin foto: marcá "identificado sin foto" con el motivo antes de cotizar.' });
       patch.nota_proveedor = proveedor; patch.nota_precio = precio; patch.nota_plazo = plazo;
       patch.estado = 'cotizado'; patch.estado_desde = ahora;
       patch.cotizado_at = ahora; patch.cotizado_por = req.app_user.nombre;
@@ -432,9 +428,8 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
     }
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: req.app_user.nombre };
     // Circuito con Referente: marca/modelo y foto del repuesto. La foto es
-    // obligatoria de palabra (sin ella el Referente no puede tomar el pedido,
-    // salvo que marque "identificado sin foto" con motivo), pero el guardado
-    // no se bloquea: peor un pedido incompleto visible que un mecánico trabado.
+    // OPCIONAL (decisión 7-ago): suma para identificar la pieza, pero un
+    // pedido sin foto avanza igual por el circuito.
     if ((req.body || {}).marca_modelo !== undefined) fila.marca_modelo = String(req.body.marca_modelo || '').trim() || null;
     if ((req.body || {}).fotoData) {
       try {
