@@ -1736,21 +1736,22 @@ async function vRepRepuestos(view){
     const it=(p.items||[])[0]||{};
     const urg=i.equipo_parado||i.prioridad==='critico'||i.prioridad==='alta';
     const tope=!urg&&['pedido','en_cotizacion'].includes(p.estado)&&d>3;
-    const sub=p.estado==='cotizado'?'esperando aprobación de José'
+    const sub=p.estado==='cotizado'?'esperando aprobación'
       :p.pieza_en_proveedor?'🏪 pieza en el proveedor desde el '+p.pieza_en_proveedor.slice(8,10)+'/'+p.pieza_en_proveedor.slice(5,7)
       :p.estado==='pedido'?'esperando al Referente'
-      :p.estado==='a_comprar'?'aprobado — lo ejecuta Compras'
       :tope?'⚠ pasó el tope de 3 días hábiles':'';
+    const aprob=p.aprobado_at?`<div style="margin-top:3px"><span class="badge b-green">✓ APROBADO</span> <span class="sub" style="font-size:10.5px">por ${p.aprobado_por||'—'} · ${fechaAR(p.aprobado_at)}</span></div>`:'';
     return `<tr>
-      <td><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
+      <td style="${urg?'border-left:4px solid var(--rojo);padding-left:10px':tope?'border-left:4px solid #E8B96A;padding-left:10px':''}"><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
         <div class="sub" style="font-size:11px">${p.marca_modelo?p.marca_modelo+' · ':''}${p.foto_ruta?'📷 ✓':p.sin_foto_motivo?'identificado sin foto':''}${it.codigo?' · '+it.codigo:''}
         ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div></td>
       <td><span class="uni-num">${i.numero_unidad||'—'}</span> ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||''}
         ${i.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px">⛔ parada</span>':''}
         <div class="sub" style="font-size:11px">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'')}${i.id?' · rep. #'+String(i.id).slice(0,6):''}</div></td>
       <td><span class="badge" style="background:${bg};color:${col}">${etq}</span>
-        ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope||sub.startsWith('📷')?'color:#854F0B':''}">${sub}</div>`:''}
-        ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">${p.nota_proveedor} · ${money(p.nota_precio||0)} · ${p.nota_plazo||''}</div>`:''}</td>
+        ${aprob}
+        ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope?'color:#854F0B':''}">${sub}</div>`:''}
+        ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">📝 ${p.nota_proveedor} · <b class="mono">${money(p.nota_precio||0)}</b> · ${p.nota_plazo||''}${p.cotizado_por?' · cotizó '+p.cotizado_por:''}</div>`:''}</td>
       <td class="num mono" style="${d>3?'color:#A32D2D;font-weight:600':''}">${d!=null?d+' d':'—'}</td>
       <td style="font-size:12px">${p.referente_nombre||'—'}</td>
       <td class="num" style="white-space:nowrap">
@@ -3492,7 +3493,7 @@ function renderRtAprobacion(){
   const cots=(rtData||[]).filter(p=>p.estado==='cotizado');
   if(!cots.length){cont.innerHTML='';return;}
   cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--azul);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length}) <span class="sub" style="font-weight:400;font-size:11px">· 🔒 con PIN de súper admin</span></div>
+    <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length})</div>
     ${cots.map(p=>{
       const i=p.incidencias||{};
       const it=(p.items||[])[0]||{};
@@ -3515,20 +3516,13 @@ function renderRtAprobacion(){
   </div>`;
 }
 async function rtAprobar(id){
-  let pin=sessionStorage.getItem('eco_perf_pin')||'';
-  if(!pin){
-    pin=prompt('PIN de súper admin para aprobar la compra:')||'';
-    if(!pin.trim())return;
-  }
+  const p=(rtData||[]).find(x=>String(x.id)===String(id))||{};
+  if(!await uiConfirm('Nota: '+(p.nota_proveedor||'—')+' · '+money(p.nota_precio||0)+' · '+(p.nota_plazo||'—')+'\n\nAl aprobar pasa a A COMPRAR y Compras la ejecuta.','¿Aprobar la compra?',{ok:'✓ Aprobar'}))return;
   try{
-    await api('/api/compras/repuestos/'+id+'/aprobar',{method:'POST',body:JSON.stringify({pin:pin.trim()})});
-    sessionStorage.setItem('eco_perf_pin',pin.trim());   // vale mientras dure la pestaña
+    await api('/api/compras/repuestos/'+id+'/aprobar',{method:'POST',body:'{}'});
     toast('Aprobado ✓ — pasó a A COMPRAR');
     rtData=await api('/api/compras/repuestos');renderRt();
-  }catch(e){
-    sessionStorage.removeItem('eco_perf_pin');
-    toast(e.message||'No pude aprobar','error');
-  }
+  }catch(e){toast(e.message||'No pude aprobar','error');}
 }
 async function rtObservar(id){
   const c=prompt('¿Qué hay que revisar? (vuelve al Referente con este comentario)');
