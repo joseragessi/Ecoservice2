@@ -1055,8 +1055,16 @@ router.post('/api/compras/repuestos/:id/referente', auth, async (req, res) => {
       patch.referente_nombre = req.usuario || 'panel';
     } else if (b.accion === 'pieza_proveedor') {
       patch.pieza_en_proveedor = b.quitar ? null : ahora.slice(0, 10);
+    } else if (b.accion === 'descripcion') {
+      const items = (Array.isArray(b.items) ? b.items : [])
+        .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim(), comprado: !!i.comprado }))
+        .filter(i => i.descripcion);
+      if (!items.length) return res.status(400).json({ error: 'Tiene que quedar al menos un repuesto' });
+      patch.items = items;
+      if (b.marca_modelo !== undefined) patch.marca_modelo = String(b.marca_modelo || '').trim() || null;
     } else if (b.accion === 'nota') {
-      if (!['pedido', 'en_cotizacion'].includes(ped.estado)) return res.status(422).json({ error: 'El pedido ya está cotizado o más adelante.' });
+      // También se puede corregir una nota ya cargada mientras no esté aprobada
+      if (!['pedido', 'en_cotizacion', 'cotizado'].includes(ped.estado)) return res.status(422).json({ error: 'El pedido ya fue aprobado: no se edita la nota.' });
       const proveedor = String(b.proveedor || '').trim();
       const precio = Number(String(b.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
       const plazo = String(b.plazo || '').trim();
@@ -1076,6 +1084,22 @@ router.post('/api/compras/repuestos/:id/referente', auth, async (req, res) => {
   } catch (err) {
     console.error('referente panel:', err.message);
     res.status(500).json({ error: err.message || 'No pude aplicar la acción' });
+  }
+});
+
+// Eliminar un pedido del circuito (se confundieron, duplicado, etc.).
+// Los entregados no se borran: son historial del taller.
+router.delete('/api/compras/repuestos/:id', auth, async (req, res) => {
+  try {
+    const { data: ped } = await supabase.from('repuestos_taller').select('estado').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    if (ped.estado === 'entregado') return res.status(422).json({ error: 'Un pedido entregado no se elimina (es historial).' });
+    const { error } = await supabase.from('repuestos_taller').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('repuestos eliminar:', err.message);
+    res.status(500).json({ error: 'No pude eliminar el pedido' });
   }
 });
 
