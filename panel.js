@@ -1509,6 +1509,7 @@ function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${repTab==='services'?'on':''}" onclick="repTab='services';go('reparaciones')">Services</button>
   <button class="${repTab==='preventivo'?'on':''}" onclick="repTab='preventivo';go('reparaciones')">Preventivo</button>
   <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
+  <button class="${repTab==='repuestos'?'on':''}" onclick="repTab='repuestos';go('reparaciones')">Repuestos</button>
   ${localStorage.getItem('eco_admin')==='1'?`<button class="${repTab==='performance'?'on':''}" onclick="repTab='performance';go('reparaciones')">Performance</button>`:''}
 </div>`;}
 
@@ -1700,6 +1701,82 @@ async function vRepPerf(view){
   ${tabsRep()}
   <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> (provisorio — se ajusta con 2-3 meses de datos) · para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
   ${cards||'<div class="empty" style="height:200px"><div>Sin reparaciones finalizadas en el período.</div></div>'}`;
+}
+
+/* ── Reparaciones · Repuestos: SEGUIMIENTO del circuito con Referente ──
+   Acá se mira el circuito completo y la trazabilidad repuesto↔reparación↔
+   unidad. SIN botón de aprobar: la decisión de gastar vive en Compras →
+   Repuestos, para que la plata quede en un solo lugar. */
+const REP_CIRC_EST={pedido:['pedido','#A32D2D','#FCEBED'],en_cotizacion:['en cotización','#B9770E','#FBF0DC'],
+  cotizado:['cotizado','#3B7DC4','#E8F1FA'],a_comprar:['a comprar','#586B60','#F0F2EF'],
+  comprado:['comprado','#586B60','#F0F2EF'],entregado:['entregado','#0F7E40','#E5F5EC']};
+async function vRepRepuestos(view){
+  view.innerHTML=tabsRep()+'<div class="cargando-v">Cargando circuito…</div>';
+  let all=[];
+  try{all=await api('/api/compras/repuestos');}
+  catch(e){view.innerHTML=tabsRep()+`<div class="cargando-v">${e.message||'No pude cargar.'}</div>`;return;}
+  const dias=iso=>iso?Math.ceil((Date.now()-new Date(iso))/86400000):null;
+  const MS30=30*86400000;
+  const visibles=all.filter(p=>p.estado!=='entregado'||(p.entregado_at&&Date.now()-new Date(p.entregado_at)<MS30));
+  const cnt=e=>visibles.filter(p=>p.estado===e).length;
+  const activos=visibles.filter(p=>['pedido','en_cotizacion','cotizado'].includes(p.estado));
+  const cotProm=(()=>{const xs=visibles.filter(p=>p.cotizado_at).map(p=>(new Date(p.cotizado_at)-new Date(p.created_at))/86400000).filter(x=>x>=0);
+    return xs.length?Math.ceil(xs.reduce((a,b)=>a+b,0)/xs.length*10)/10&&Math.ceil(xs.reduce((a,b)=>a+b,0)/xs.length):null;})();
+  const paradas=activos.filter(p=>(p.incidencias||{}).equipo_parado).length;
+  const PESO={critico:3,alta:2,media:1,baja:0};
+  const orden=[...visibles].sort((a,b)=>{
+    const ORD={pedido:0,en_cotizacion:1,cotizado:2,a_comprar:3,comprado:4,entregado:5};
+    const ia=a.incidencias||{},ib=b.incidencias||{};
+    return (ORD[a.estado]-ORD[b.estado])||((ib.equipo_parado?1:0)-(ia.equipo_parado?1:0))||((PESO[ib.prioridad]||0)-(PESO[ia.prioridad]||0));
+  });
+  const filas=orden.map(p=>{
+    const i=p.incidencias||{};
+    const [etq,col,bg]=REP_CIRC_EST[p.estado]||[p.estado,'#586B60','#F0F2EF'];
+    const d=dias(p.estado_desde||p.created_at);
+    const it=(p.items||[])[0]||{};
+    const urg=i.equipo_parado||i.prioridad==='critico'||i.prioridad==='alta';
+    const tope=!urg&&['pedido','en_cotizacion'].includes(p.estado)&&d>3;
+    const sub=p.estado==='cotizado'?'esperando aprobación de José'
+      :p.pieza_en_proveedor?'🏪 pieza en el proveedor desde el '+p.pieza_en_proveedor.slice(8,10)+'/'+p.pieza_en_proveedor.slice(5,7)
+      :(!p.foto_ruta&&!p.sin_foto_motivo&&p.estado==='pedido')?'📷 sin foto → no avanza'
+      :tope?'⚠ pasó el tope de 3 días hábiles':'';
+    return `<tr>
+      <td><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
+        <div class="sub" style="font-size:11px">${p.marca_modelo?p.marca_modelo+' · ':''}${p.foto_ruta?'📷 ✓':p.sin_foto_motivo?'identificado sin foto':''}${it.codigo?' · '+it.codigo:''}
+        ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div></td>
+      <td><span class="uni-num">${i.numero_unidad||'—'}</span> ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||''}
+        ${i.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px">⛔ parada</span>':''}
+        <div class="sub" style="font-size:11px">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'')}</div></td>
+      <td><span class="badge" style="background:${bg};color:${col}">${etq}</span>
+        ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope||sub.startsWith('📷')?'color:#854F0B':''}">${sub}</div>`:''}
+        ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">${p.nota_proveedor} · ${money(p.nota_precio||0)} · ${p.nota_plazo||''}</div>`:''}</td>
+      <td class="num mono" style="${d>3?'color:#A32D2D;font-weight:600':''}">${d!=null?d+' d':'—'}</td>
+      <td style="font-size:12px">${p.referente_nombre||'—'}</td>
+    </tr>`;}).join('');
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Reparaciones · Repuestos</div>
+    <div class="view-desc">El circuito del taller: del pedido del mecánico a la entrega · la aprobación vive en Compras → Repuestos</div></div></div>
+  ${tabsRep()}
+  <div class="panel" style="margin-bottom:14px">
+    <div style="display:flex;gap:7px;flex-wrap:wrap">
+      ${[['pedido','#A32D2D','#FCEBED'],['en_cotizacion','#B9770E','#FBF0DC'],['cotizado','#3B7DC4','#E8F1FA'],['a_comprar','',''],['comprado','',''],['entregado','#0F7E40','#E5F5EC']].map(([e,col,bg])=>`
+        <div style="flex:1;min-width:76px;border-radius:9px;padding:9px 6px;text-align:center;background:${bg||'var(--hueso)'};border:1px solid var(--linea)">
+          <div class="mono" style="font-weight:700;font-size:18px;${col?'color:'+col:''}">${cnt(e)}</div>
+          <div style="font-size:10px;color:${col||'var(--tinta-3)'}">${(REP_CIRC_EST[e]||[e])[0]}${e==='entregado'?' 30d':''}</div>
+        </div>`).join('')}
+    </div>
+    <div class="sub" style="font-size:11.5px;margin-top:8px">⏱ pedido→cotizado prom.: <b class="mono">${cotProm!=null?cotProm+' d':'—'}</b> · máquinas paradas esperando repuesto: <b class="mono" style="${paradas?'color:#A32D2D':''}">${paradas}</b></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Circuito en curso <span class="sub" style="font-weight:400;font-size:11px">· ordenado por etapa y urgencia</span></div>
+    ${visibles.length?`<table style="font-size:12.5px">
+      <thead><tr><th>Repuesto</th><th>Máquina / pidió</th><th>Estado</th><th class="num">Días en estado</th><th>Referente</th></tr></thead>
+      <tbody>${filas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay repuestos en el circuito.</div>'}
+  </div>`;
+}
+async function rtVerArchivo(id,tipo){
+  try{const r=await api('/api/compras/repuestos/'+id+'/archivo?tipo='+tipo);window.open(r.url,'_blank');}
+  catch(e){toast('No pude abrir el archivo','error');}
 }
 
 /* ── Reparaciones · Services (planillas cargadas por foto desde la app) ── */
@@ -2063,6 +2140,7 @@ async function vReparaciones(view){
     if(repTab==='preventivo'){vRepPreventivo(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
     if(repTab==='performance'){if(localStorage.getItem('eco_admin')==='1'){vRepPerf(view);return;}repTab='resumen';}
+    if(repTab==='repuestos'){vRepRepuestos(view);return;}
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
 }
@@ -3353,6 +3431,7 @@ async function vComprasRepuestos(view){
     <div class="view-head"><div><div class="view-title">Compras · Repuestos de taller</div>
       <div class="view-desc">Lo que el taller espera para reparar — pedidos de los mecánicos con sus notas</div></div></div>
     ${tabsCompras()}
+    <div id="rt-aprobacion"></div>
     <div id="rt-kpis"></div>
     <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div class="toggle-imp" style="margin:0">
@@ -3365,10 +3444,69 @@ async function vComprasRepuestos(view){
     renderRt();
   }catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">${e.message||'No pude cargar repuestos.'}<br><span class="sub">¿Creaste la tabla repuestos_taller en Supabase?</span></div>`;}
 }
+// Cotizados pendientes de la aprobación de José. El PIN de súper admin se pide
+// en el momento de aprobar (mismo mecanismo que Performance): los mecánicos
+// también entran al panel y esta es la decisión de gastar.
+function renderRtAprobacion(){
+  const cont=document.getElementById('rt-aprobacion');if(!cont)return;
+  const cots=(rtData||[]).filter(p=>p.estado==='cotizado');
+  if(!cots.length){cont.innerHTML='';return;}
+  cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--azul);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length}) <span class="sub" style="font-weight:400;font-size:11px">· 🔒 con PIN de súper admin</span></div>
+    ${cots.map(p=>{
+      const i=p.incidencias||{};
+      const it=(p.items||[])[0]||{};
+      const dCot=p.cotizado_at?Math.ceil((new Date(p.cotizado_at)-new Date(p.created_at))/86400000):null;
+      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:11px 13px;margin-bottom:9px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:600;font-size:13.5px">${it.descripcion||'Repuesto'}${(p.items||[]).length>1?' +'+(p.items.length-1):''}
+              ${i.equipo_parado?`<span class="badge" style="background:#FCEBED;color:#A32D2D">⛔ ${i.tipo_equipo||''} ${i.numero_unidad||''} parada</span>`:''}</div>
+            <div class="sub" style="font-size:11.5px;margin-top:2px">Nota: <b>${p.nota_proveedor||'—'}</b> · <b class="mono">${money(p.nota_precio||0)}</b> · entrega <b>${p.nota_plazo||'—'}</b> · cotizó ${p.cotizado_por||p.referente_nombre||'—'}${p.nota_adjunto?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','adjunto')" style="color:var(--azul)">📎 adjunto</a>`:' · sin adjunto (de palabra)'}</div>
+            <div class="sub" style="font-size:11px;margin-top:2px">${i.tipo_equipo||''} ${i.numero_unidad?'· '+i.numero_unidad:''} · pidió ${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}${dCot!=null?' · pedido→cotizado: '+dCot+' d':''}${p.foto_ruta?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">📷 foto</a>`:''}</div>
+          </div>
+          <div style="display:flex;gap:7px;flex-shrink:0">
+            <button class="btn" onclick="rtAprobar('${p.id}')">✓ Aprobar → a comprar</button>
+            <button class="btn-salir" onclick="rtObservar('${p.id}')">Observar ↩</button>
+          </div>
+        </div>
+      </div>`;}).join('')}
+    <div class="sub" style="font-size:11px">"Observar" devuelve el pedido al Referente con tu comentario (vuelve a en cotización).</div>
+  </div>`;
+}
+async function rtAprobar(id){
+  let pin=sessionStorage.getItem('eco_perf_pin')||'';
+  if(!pin){
+    pin=prompt('PIN de súper admin para aprobar la compra:')||'';
+    if(!pin.trim())return;
+  }
+  try{
+    await api('/api/compras/repuestos/'+id+'/aprobar',{method:'POST',body:JSON.stringify({pin:pin.trim()})});
+    sessionStorage.setItem('eco_perf_pin',pin.trim());   // vale mientras dure la pestaña
+    toast('Aprobado ✓ — pasó a A COMPRAR');
+    rtData=await api('/api/compras/repuestos');renderRt();
+  }catch(e){
+    sessionStorage.removeItem('eco_perf_pin');
+    toast(e.message||'No pude aprobar','error');
+  }
+}
+async function rtObservar(id){
+  const c=prompt('¿Qué hay que revisar? (vuelve al Referente con este comentario)');
+  if(!c||!c.trim())return;
+  try{
+    await api('/api/compras/repuestos/'+id+'/observar',{method:'POST',body:JSON.stringify({comentario:c.trim()})});
+    toast('Devuelto al Referente ↩');
+    rtData=await api('/api/compras/repuestos');renderRt();
+  }catch(e){toast(e.message||'No pude','error');}
+}
 function renderRt(){
   const kp=document.getElementById('rt-kpis'),ls=document.getElementById('rt-lista');
   if(!kp||!ls)return;
-  const all=rtData||[];
+  renderRtAprobacion();
+  // La lista clásica de Compras muestra SOLO desde la aprobación en adelante:
+  // lo anterior (pedido / en cotización) es del Referente y se sigue en
+  // Reparaciones → Repuestos.
+  const all=(rtData||[]).filter(p=>!['pedido','en_cotizacion','cotizado'].includes(p.estado));
   const cnt=e=>all.filter(p=>p.estado===e);
   const abiertos=all.filter(p=>p.estado!=='entregado');
   const itFaltan=abiertos.reduce((s,p)=>s+(p.items||[]).filter(i=>!i.comprado).length,0);
