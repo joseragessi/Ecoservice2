@@ -1738,6 +1738,8 @@ async function vRepRepuestos(view){
     const tope=!urg&&['pedido','en_cotizacion'].includes(p.estado)&&d>3;
     const sub=p.estado==='cotizado'?'esperando aprobación de José'
       :p.pieza_en_proveedor?'🏪 pieza en el proveedor desde el '+p.pieza_en_proveedor.slice(8,10)+'/'+p.pieza_en_proveedor.slice(5,7)
+      :p.estado==='pedido'?'esperando al Referente'
+      :p.estado==='a_comprar'?'aprobado — lo ejecuta Compras'
       :tope?'⚠ pasó el tope de 3 días hábiles':'';
     return `<tr>
       <td><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
@@ -1745,12 +1747,18 @@ async function vRepRepuestos(view){
         ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div></td>
       <td><span class="uni-num">${i.numero_unidad||'—'}</span> ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||''}
         ${i.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px">⛔ parada</span>':''}
-        <div class="sub" style="font-size:11px">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'')}</div></td>
+        <div class="sub" style="font-size:11px">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'')}${i.id?' · rep. #'+String(i.id).slice(0,6):''}</div></td>
       <td><span class="badge" style="background:${bg};color:${col}">${etq}</span>
         ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope||sub.startsWith('📷')?'color:#854F0B':''}">${sub}</div>`:''}
         ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">${p.nota_proveedor} · ${money(p.nota_precio||0)} · ${p.nota_plazo||''}</div>`:''}</td>
       <td class="num mono" style="${d>3?'color:#A32D2D;font-weight:600':''}">${d!=null?d+' d':'—'}</td>
       <td style="font-size:12px">${p.referente_nombre||'—'}</td>
+      <td class="num" style="white-space:nowrap">
+        ${p.estado==='pedido'?`<button class="mini-btn" onclick="circAccion('${p.id}','tomar')">▶ Tomar</button>`:''}
+        ${p.estado==='en_cotizacion'?`<button class="mini-btn" onclick="circNota('${p.id}')">📝 Nota</button>
+          <button class="mini-btn" title="${p.pieza_en_proveedor?'Quitar la marca':'La pieza quedó en el proveedor'}" onclick="circAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">🏪</button>`:''}
+        ${p.observacion?`<div class="sub" style="font-size:10.5px;color:#854F0B;white-space:normal;max-width:150px">↩ ${p.observacion}</div>`:''}
+      </td>
     </tr>`;}).join('');
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Reparaciones · Repuestos</div>
@@ -1769,9 +1777,42 @@ async function vRepRepuestos(view){
   <div class="panel">
     <div class="panel-title">Circuito en curso <span class="sub" style="font-weight:400;font-size:11px">· ordenado por etapa y urgencia</span></div>
     ${visibles.length?`<table style="font-size:12.5px">
-      <thead><tr><th>Repuesto</th><th>Máquina / pidió</th><th>Estado</th><th class="num">Días en estado</th><th>Referente</th></tr></thead>
+      <thead><tr><th>Repuesto</th><th>Máquina / pidió</th><th>Estado</th><th class="num">Días en estado</th><th>Referente</th><th></th></tr></thead>
       <tbody>${filas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay repuestos en el circuito.</div>'}
   </div>`;
+}
+// Acciones del Referente desde el panel: tomar → en cotización; nota → cotizado
+async function circAccion(id,accion,quitar){
+  try{
+    await api('/api/compras/repuestos/'+id+'/referente',{method:'POST',body:JSON.stringify({accion,quitar:!!quitar})});
+    toast('Listo ✓');go('reparaciones');
+  }catch(e){toast(e.message||'No pude','error');}
+}
+function circNota(id){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+  bg.innerHTML=`<div class="modal" style="max-width:400px">
+    <div class="modal-tit">📝 Nota de pedido</div>
+    <div class="sub" style="margin:4px 0 12px;font-size:12px">Proveedor + precio + plazo. La carga acá ES la cotización válida (de palabra vale). Al guardar pasa a COTIZADO y queda esperando la aprobación.</div>
+    <div class="mm-field"><label>Proveedor recomendado</label><input id="cn-prov" type="text" style="width:100%"></div>
+    <div style="display:flex;gap:8px">
+      <div class="mm-field" style="flex:1"><label>Precio final $</label><input id="cn-precio" type="text" inputmode="decimal" style="width:100%"></div>
+      <div class="mm-field" style="flex:1"><label>Plazo</label><input id="cn-plazo" type="text" placeholder="ej: 48 hs" style="width:100%"></div>
+    </div>
+    <div class="modal-acciones">
+      <button class="btn-salir" id="cn-cancel">Cancelar</button>
+      <button class="btn" id="cn-ok">Guardar → COTIZADO</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  setTimeout(()=>{const i=bg.querySelector('#cn-prov');if(i)i.focus();},50);
+  bg.querySelector('#cn-cancel').onclick=()=>bg.remove();
+  bg.querySelector('#cn-ok').onclick=async()=>{
+    const v=k=>(bg.querySelector('#cn-'+k).value||'').trim();
+    if(!v('prov')||!v('precio')||!v('plazo')){toast('Completá proveedor, precio y plazo','error');return;}
+    try{
+      await api('/api/compras/repuestos/'+id+'/referente',{method:'POST',body:JSON.stringify({accion:'nota',proveedor:v('prov'),precio:v('precio'),plazo:v('plazo')})});
+      bg.remove();toast('Nota guardada → COTIZADO ✓');go('reparaciones');
+    }catch(e){toast(e.message||'No pude guardar','error');}
+  };
 }
 async function rtVerArchivo(id,tipo){
   try{const r=await api('/api/compras/repuestos/'+id+'/archivo?tipo='+tipo);window.open(r.url,'_blank');}
