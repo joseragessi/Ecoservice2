@@ -1738,7 +1738,6 @@ async function vRepRepuestos(view){
     const tope=!urg&&['pedido','en_cotizacion'].includes(p.estado)&&d>3;
     const sub=p.estado==='cotizado'?'esperando aprobación de José'
       :p.pieza_en_proveedor?'🏪 pieza en el proveedor desde el '+p.pieza_en_proveedor.slice(8,10)+'/'+p.pieza_en_proveedor.slice(5,7)
-      :(!p.foto_ruta&&!p.sin_foto_motivo&&p.estado==='pedido')?'📷 sin foto → no avanza'
       :tope?'⚠ pasó el tope de 3 días hábiles':'';
     return `<tr>
       <td><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
