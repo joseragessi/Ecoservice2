@@ -297,6 +297,117 @@ router.post('/api/app/incidencia/:id/repuestos/sugerir', authApp('mecanico'), as
   }
 });
 
+// ── Circuito de repuestos: REFERENTE ─────────────────────────────────────
+// El Referente es un mecánico con el flag es_referente en su ficha: valida
+// técnicamente los pedidos, cotiza y carga la nota de pedido. No compra ni
+// aprueba (eso es de José en el panel).
+async function esReferente(mid) {
+  try {
+    const { data } = await supabase.from('mecanicos').select('es_referente').eq('id', mid).maybeSingle();
+    return !!(data && data.es_referente);
+  } catch (e) { return false; }
+}
+
+// Cola del Referente: todo lo que está antes de la compra. Devuelve
+// es_referente:false (200, no 403) para que la app pueda decidir si muestra
+// el botón sin manejar errores.
+router.get('/api/app/referente/cola', authApp(['mecanico', 'panol']), async (req, res) => {
+  try {
+    if (!await esReferente(req.app_user.mid)) return res.json({ es_referente: false, pedidos: [] });
+    const { data, error } = await supabase.from('repuestos_taller')
+      .select('*, incidencias(id, prioridad, estado, equipo_parado, numero_unidad, tipo_equipo, created_at, equipos(nombre,tipo), mecanicos(nombre))')
+      .in('estado', ['pedido', 'en_cotizacion', 'cotizado'])
+      .order('created_at', { ascending: true }).limit(120);
+    if (error) throw error;
+    res.json({ es_referente: true, pedidos: data || [] });
+  } catch (err) {
+    console.error('referente cola:', err.message);
+    res.status(500).json({ error: 'Error cargando la cola' });
+  }
+});
+
+// Acciones del Referente sobre un pedido. body: { accion, ... }
+//  tomar            → pedido → en_cotizacion (exige foto o sin_foto_motivo)
+//  sin_foto         → marca "identificado sin foto" con motivo (obligatorio)
+//  pieza_proveedor  → sub-marca "la pieza quedó en el proveedor" (hoy)
+//  descripcion      → corrige la descripción técnica (items)
+//  nota             → carga la nota de pedido → cotizado (proveedor+precio+plazo, adjunto opcional)
+router.post('/api/app/referente/repuestos/:id', authApp(['mecanico', 'panol']), async (req, res) => {
+  try {
+    if (!await esReferente(req.app_user.mid)) return res.status(403).json({ error: 'Sin permiso de referente' });
+    const { data: ped } = await supabase.from('repuestos_taller').select('*').eq('id', req.params.id).single();
+    if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
+    const b = req.body || {};
+    const patch = {};
+    const ahora = new Date().toISOString();
+    if (b.accion === 'tomar') {
+      if (ped.estado !== 'pedido') return res.status(422).json({ error: 'El pedido no está en estado "pedido".' });
+      if (!ped.foto_ruta && !ped.sin_foto_motivo) {
+        return res.status(422).json({ error: 'Pedido sin foto: pedile la foto al mecánico o marcá "identificado sin foto" con el motivo.' });
+      }
+      patch.estado = 'en_cotizacion'; patch.estado_desde = ahora;
+      patch.referente_nombre = req.app_user.nombre;
+    } else if (b.accion === 'sin_foto') {
+      const motivo = String(b.motivo || '').trim();
+      if (!motivo) return res.status(400).json({ error: 'Falta el motivo' });
+      patch.sin_foto_motivo = motivo;
+    } else if (b.accion === 'pieza_proveedor') {
+      patch.pieza_en_proveedor = b.quitar ? null : ahora.slice(0, 10);
+    } else if (b.accion === 'descripcion') {
+      const items = (Array.isArray(b.items) ? b.items : [])
+        .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim(), comprado: !!i.comprado }))
+        .filter(i => i.descripcion);
+      if (!items.length) return res.status(400).json({ error: 'La descripción no puede quedar vacía' });
+      patch.items = items;
+    } else if (b.accion === 'nota') {
+      if (!['pedido', 'en_cotizacion'].includes(ped.estado)) return res.status(422).json({ error: 'El pedido ya está cotizado o más adelante.' });
+      const proveedor = String(b.proveedor || '').trim();
+      const precio = Number(String(b.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+      const plazo = String(b.plazo || '').trim();
+      if (!proveedor || !precio || !plazo) return res.status(400).json({ error: 'La nota necesita proveedor, precio y plazo.' });
+      if (!ped.foto_ruta && !ped.sin_foto_motivo) return res.status(422).json({ error: 'Pedido sin foto: marcá "identificado sin foto" con el motivo antes de cotizar.' });
+      patch.nota_proveedor = proveedor; patch.nota_precio = precio; patch.nota_plazo = plazo;
+      patch.estado = 'cotizado'; patch.estado_desde = ahora;
+      patch.cotizado_at = ahora; patch.cotizado_por = req.app_user.nombre;
+      patch.referente_nombre = ped.referente_nombre || req.app_user.nombre;
+      patch.observacion = null;   // si venía devuelto con observación, se limpia
+      if (b.adjuntoData) {
+        try {
+          const ext = (b.adjuntoTipo === 'application/pdf') ? '.pdf' : '.jpg';
+          const ruta = 'notas/' + req.params.id + '_' + Date.now() + ext;
+          const { error: eAdj } = await supabase.storage.from('repuestos')
+            .upload(ruta, Buffer.from(b.adjuntoData, 'base64'), { contentType: b.adjuntoTipo || 'image/jpeg' });
+          if (!eAdj) patch.nota_adjunto = ruta;
+        } catch (e) { console.error('nota adjunto:', e.message); }
+      }
+    } else {
+      return res.status(400).json({ error: 'Acción desconocida' });
+    }
+    const { data, error } = await supabase.from('repuestos_taller')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('referente accion:', err.message);
+    res.status(500).json({ error: err.message || 'No pude aplicar la acción' });
+  }
+});
+
+// Foto o adjunto de un pedido (URL firmada 1 hora)
+router.get('/api/app/referente/archivo/:id', authApp(), async (req, res) => {
+  try {
+    const { data: ped } = await supabase.from('repuestos_taller')
+      .select('foto_ruta, nota_adjunto').eq('id', req.params.id).single();
+    const ruta = req.query.tipo === 'adjunto' ? (ped && ped.nota_adjunto) : (ped && ped.foto_ruta);
+    if (!ruta) return res.status(404).json({ error: 'Sin archivo' });
+    const { data, error } = await supabase.storage.from('repuestos').createSignedUrl(ruta, 3600);
+    if (error) throw error;
+    res.json({ url: data.signedUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude generar el enlace' });
+  }
+});
+
 // Pedir repuestos para una reparación (crea o reemplaza el pedido pendiente)
 router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req, res) => {
   try {
@@ -320,9 +431,23 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
       items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
     }
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: req.app_user.nombre };
+    // Circuito con Referente: marca/modelo y foto del repuesto. La foto es
+    // obligatoria de palabra (sin ella el Referente no puede tomar el pedido,
+    // salvo que marque "identificado sin foto" con motivo), pero el guardado
+    // no se bloquea: peor un pedido incompleto visible que un mecánico trabado.
+    if ((req.body || {}).marca_modelo !== undefined) fila.marca_modelo = String(req.body.marca_modelo || '').trim() || null;
+    if ((req.body || {}).fotoData) {
+      try {
+        const ruta = 'pedidos/' + req.params.id + '_' + Date.now() + '.jpg';
+        const { error: eFoto } = await supabase.storage.from('repuestos')
+          .upload(ruta, Buffer.from(req.body.fotoData, 'base64'), { contentType: 'image/jpeg' });
+        if (!eFoto) fila.foto_ruta = ruta;
+        else console.error('repuestos foto:', eFoto.message);
+      } catch (e) { console.error('repuestos foto:', e.message); }
+    }
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
-    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id }).select().single();
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: 'pedido', estado_desde: new Date().toISOString() }).select().single();
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
