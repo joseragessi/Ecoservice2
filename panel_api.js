@@ -1083,18 +1083,10 @@ router.post('/api/compras/repuestos/:id/referente', auth, async (req, res) => {
 // Aprobar la nota de pedido: cotizado → a_comprar. Protegido con el mismo PIN
 // de súper admin que Performance (env PERFORMANCE_PIN): los mecánicos también
 // entran al panel y esta es la decisión de gastar.
+// Sin PIN (decisión 7-ago): aprueba cualquier usuario del panel con el módulo,
+// y queda registrado con su nombre en aprobado_por.
 router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
   try {
-    const envPin = String(process.env.PERFORMANCE_PIN || '').trim();
-    if (envPin) {
-      const quien = 'perf|' + (req.usuario || 'panel');
-      if (seg.loginBloqueado(req, quien)) return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' });
-      if (String((req.body || {}).pin || '').trim() !== envPin) {
-        seg.loginFallido(req, quien);
-        return res.status(401).json({ error: 'PIN incorrecto' });
-      }
-      seg.loginOk(req, quien);
-    }
     const { data: ped } = await supabase.from('repuestos_taller').select('estado').eq('id', req.params.id).single();
     if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
     if (ped.estado !== 'cotizado') return res.status(422).json({ error: 'Solo se aprueban pedidos en estado "cotizado".' });
