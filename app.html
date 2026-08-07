@@ -200,6 +200,10 @@ async function cargar(){
   $('lista').innerHTML='<div class="vacio">Cargando…</div>';
   try{
     datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias');
+    // ¿Este usuario es Referente de repuestos? (flag en su ficha — un solo GET)
+    if(rol==='mecanico'||rol==='panol'){
+      try{refCola=await api('/api/app/referente/cola');}catch(e){refCola=null;}
+    }
     render();
   }catch(e){$('lista').innerHTML=`<div class="vacio">${e.message}</div>`;}
 }
@@ -209,6 +213,7 @@ function render(){
   if(rol==='capataz')return renderCombustibleCapataz();
   // Pañol y mecánicos también cargan combustible: mismo flujo del supervisor
   if(supVista==='combustible'&&(rol==='panol'||rol==='mecanico'||!rol||rol==='supervisor'))return renderCombustibleSup();
+  if(tab==='referente'&&(rol==='mecanico'||rol==='panol'))return renderReferente();
   if(rol==='panol')return renderPanol();
   if(rol==='supervisor')return renderSupervisor();
   if(tab==='service')return renderService();
@@ -223,7 +228,8 @@ function render(){
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
     +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`
     +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`
-    +`<div class="tab" onclick="abrirCombustible()">⛽</div>`;
+    +`<div class="tab" onclick="abrirCombustible()">⛽</div>`
+    +(refCola&&refCola.es_referente?`<div class="tab ${tab==='referente'?'on':''}" onclick="tab='referente';abrirReferente()">🔧 Referente${(refCola.pedidos||[]).filter(p=>p.estado!=='cotizado').length?' ('+(refCola.pedidos||[]).filter(p=>p.estado!=='cotizado').length+')':''}</div>`:'');
   if(tab==='nueva')return renderNueva();
   const lista=tab==='finalizadas'?fin:act;
   $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
@@ -928,6 +934,12 @@ function cardIncidencia(i){
             <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${i.id}')">✨ Sugerir de nuevo</button>
             <button class="btn sec" style="flex:0 0 auto;margin:0" onclick="rpVaciar('${i.id}')">🗑 Vaciar</button>
           </div>
+          <input id="rp-marca-${i.id}" type="text" placeholder="Marca / modelo del equipo (ej: Husqvarna 545)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;margin-top:5px">
+          <div style="display:flex;gap:6px;align-items:center;margin-top:5px">
+            <label class="btn sec" style="flex:1;margin:0;text-align:center;cursor:pointer">📷 Foto del repuesto (obligatoria)
+              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="rpFoto('${i.id}',this)"></label>
+            <span id="rp-foto-ok-${i.id}" class="desc" style="font-size:12px;flex:0 0 auto"></span>
+          </div>
           <textarea id="rp-nota-${i.id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)"></textarea>
           <button class="btn" onclick="rpGuardar('${i.id}')">Guardar pedido de repuestos</button>
         </div>
@@ -947,7 +959,8 @@ function renderPanol(){
     <div class="kpi green"><div class="v">${ent.length}</div><div class="l">Entregados</div></div>`;
   $('tabs').innerHTML=[['pendientes','Pendientes',pend.length],['entregados','Entregados',ent.length]]
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
-    +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`;
+    +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`
+    +(refCola&&refCola.es_referente?`<div class="tab ${tab==='referente'?'on':''}" onclick="tab='referente';abrirReferente()">🔧 Referente</div>`:'');
   const lista=tab==='entregados'?ent:pend;
   $('lista').innerHTML=lista.length?lista.map(cardPedido).join('')
     :'<div class="vacio">No hay pedidos acá.</div>';
@@ -1000,6 +1013,132 @@ async function avanzar(id,estado){
     await cargar();
   }catch(e){toast(e.message);}
 }
+/* ── Circuito de repuestos: vista del REFERENTE ──
+   Cola ordenada por urgencia (parada > prioridad > días). El Referente toma
+   pedidos, marca "pieza en el proveedor", corrige la descripción y carga la
+   nota de pedido (proveedor + precio + plazo, adjunto opcional). */
+let refCola=null, refAbierto=null, refNotaDe=null, refAdjunto=null;
+async function abrirReferente(){
+  tab='referente';render();
+  try{refCola=await api('/api/app/referente/cola');}catch(e){refCola={error:e.message};}
+  render();
+}
+function renderReferente(){
+  const k=$('kpis');if(k)k.innerHTML='';
+  if(!refCola){$('lista').innerHTML='<div class="vacio">Cargando cola…</div>';return;}
+  if(refCola.error){$('lista').innerHTML=`<div class="vacio">${refCola.error}</div>`;return;}
+  const peds=refCola.pedidos||[];
+  if(!peds.length){$('lista').innerHTML='<div class="vacio">No hay pedidos en el circuito. ✓</div>';return;}
+  const PESO={critico:3,alta:2,media:1,baja:0};
+  const dias=iso=>Math.ceil((Date.now()-new Date(iso))/86400000);
+  const urgente=p=>{const i=p.incidencias||{};return i.equipo_parado||i.prioridad==='critico'||i.prioridad==='alta';};
+  const orden=[...peds].sort((a,b)=>{
+    const ia=a.incidencias||{},ib=b.incidencias||{};
+    return ((ib.equipo_parado?1:0)-(ia.equipo_parado?1:0))||((PESO[ib.prioridad]||0)-(PESO[ia.prioridad]||0))||(dias(b.estado_desde||b.created_at)-dias(a.estado_desde||a.created_at));
+  });
+  const card=p=>{
+    const i=p.incidencias||{};
+    const d=dias(p.estado_desde||p.created_at);
+    const ab=refAbierto===p.id, nota=refNotaDe===p.id;
+    const eq=(i.tipo_equipo||(i.equipos&&(i.equipos.nombre||i.equipos.tipo))||'Equipo')+(i.numero_unidad?' '+i.numero_unidad:'');
+    const desc=(p.items||[]).map(x=>'x'+(x.cantidad||1)+' '+x.descripcion+(x.codigo?' · '+x.codigo:'')).join(' — ');
+    const tope=!urgente(p)&&p.estado!=='cotizado'&&d>3;
+    const estBadge=p.estado==='pedido'?'<span style="background:#FCEBEB;color:#A32D2D;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">pedido</span>'
+      :p.estado==='en_cotizacion'?'<span style="background:#FCF3DE;color:#854F0B;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">en cotización</span>'
+      :'<span style="background:#E8F1FA;color:#3B6FB5;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">cotizado · espera aprobación</span>';
+    return `<div class="card" style="padding:12px;border-left:4px solid ${urgente(p)?'#DC4A5B':tope?'#E8B96A':'#e3e8e3'}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline" onclick="refAbierto=refAbierto==='${p.id}'?null:'${p.id}';refNotaDe=null;render()">
+        <b style="font-size:13.5px">${(p.items||[])[0]?(p.items[0].descripcion||'Repuesto'):'Repuesto'}</b>
+        <span style="font-family:monospace;font-weight:700;color:${d>3?'#A32D2D':'#586B60'}">${d} d</span>
+      </div>
+      <div class="meta">${eq}${i.equipo_parado?' · ⛔ parada':''} · ${i.prioridad||'—'} · pidió ${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">${estBadge}
+        ${p.pieza_en_proveedor?`<span style="background:#EFEBFB;color:#3C3489;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">🏪 en el proveedor · ${p.pieza_en_proveedor.slice(8,10)}/${p.pieza_en_proveedor.slice(5,7)}</span>`:''}
+        ${!p.foto_ruta&&!p.sin_foto_motivo?'<span style="background:#F2F2F0;color:#8a938a;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600">📷 sin foto — no avanza</span>':''}
+        ${p.sin_foto_motivo?'<span style="background:#F2F2F0;color:#586B60;border-radius:5px;padding:1px 7px;font-size:10.5px">identificado sin foto</span>':''}
+        ${tope?'<span style="background:#FCF3DE;color:#854F0B;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:700">⚠ pasó los 3 días</span>':''}
+      </div>
+      ${p.observacion?`<div class="desc" style="font-size:12px;background:#FCF3DE;border-radius:7px;padding:6px 9px;color:#6B4A0E">↩ Observado: ${p.observacion}</div>`:''}
+      ${ab?`<div style="border-top:1px solid #eef1ee;margin-top:7px;padding-top:8px">
+        <div class="desc" style="font-size:12.5px;margin-bottom:6px">${desc}${p.marca_modelo?' · <b>'+p.marca_modelo+'</b>':''}${p.nota?'<br>📝 '+p.nota:''}</div>
+        ${p.foto_ruta?`<button class="btn sec" style="margin:0 0 6px" onclick="refVerFoto('${p.id}')">📷 Ver foto</button>`:''}
+        ${p.estado==='pedido'?`
+          <button class="btn" style="margin:0 0 6px" onclick="refAccion('${p.id}','tomar')">▶ Tomar y cotizar</button>
+          ${!p.foto_ruta&&!p.sin_foto_motivo?`<button class="btn sec" style="margin:0 0 6px" onclick="refSinFoto('${p.id}')">Identificado sin foto…</button>`:''}`:''}
+        ${p.estado==='en_cotizacion'?`
+          <button class="btn" style="margin:0 0 6px" onclick="refNotaDe='${p.id}';refAdjunto=null;render()">📝 Cargar nota de pedido</button>
+          <button class="btn sec" style="margin:0 0 6px" onclick="refAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">${p.pieza_en_proveedor?'Quitar "en el proveedor"':'🏪 La pieza quedó en el proveedor'}</button>`:''}
+        ${nota?`<div style="background:#F7F9F6;border:1px solid #e3e8e3;border-radius:9px;padding:10px;margin-top:4px">
+          <input id="rn-prov-${p.id}" type="text" placeholder="Proveedor recomendado" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;margin-bottom:6px">
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <input id="rn-precio-${p.id}" type="text" inputmode="decimal" placeholder="Precio final $" style="flex:1;min-width:0;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
+            <input id="rn-plazo-${p.id}" type="text" placeholder="Plazo (ej: 48 hs)" style="flex:1;min-width:0;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px">
+          </div>
+          <label class="btn sec" style="margin:0 0 6px;display:block;text-align:center;cursor:pointer">📎 Adjunto (opcional — PDF o captura)
+            <input type="file" accept="image/*,application/pdf" style="display:none" onchange="refAdjArchivo(this)"></label>
+          <div id="rn-adj-ok" class="desc" style="font-size:11.5px">${refAdjunto?'✓ adjunto listo':'Cotización de palabra: la carga acá ES la cotización válida.'}</div>
+          <button class="btn" style="margin-top:6px" onclick="refGuardarNota('${p.id}')">Guardar → COTIZADO</button>
+        </div>`:''}
+      </div>`:''}
+    </div>`;
+  };
+  const urg=orden.filter(urgente), prog=orden.filter(p=>!urgente(p));
+  $('lista').innerHTML=
+    `<div class="meta" style="margin-bottom:6px">${peds.length} pedidos en el circuito · tocá cada uno para gestionarlo</div>`
+    +(urg.length?`<div class="meta" style="font-weight:700;color:#A32D2D;margin-bottom:5px">🔴 URGENTES — HOY (${urg.length})</div>`+urg.map(card).join(''):'')
+    +(prog.length?`<div class="meta" style="font-weight:700;margin:8px 0 5px">PROGRAMABLES — RECORRIDA (${prog.length})</div>`+prog.map(card).join(''):'');
+}
+async function refAccion(id,accion,quitar){
+  try{
+    await api('/api/app/referente/repuestos/'+id,{method:'POST',body:JSON.stringify({accion,quitar:!!quitar})});
+    toast('Listo ✓');abrirReferente();
+  }catch(e){toast(e.message||'No pude','');}
+}
+async function refSinFoto(id){
+  const motivo=prompt('¿Por qué se identifica sin foto? (ej: pieza estándar, código conocido)');
+  if(!motivo||!motivo.trim())return;
+  try{await api('/api/app/referente/repuestos/'+id,{method:'POST',body:JSON.stringify({accion:'sin_foto',motivo:motivo.trim()})});toast('Marcado ✓');abrirReferente();}
+  catch(e){toast(e.message);}
+}
+function refAdjArchivo(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    if(f.type==='application/pdf'){
+      refAdjunto={data:String(r.result).split(',')[1],tipo:'application/pdf'};
+      const ok=document.getElementById('rn-adj-ok');if(ok)ok.textContent='✓ PDF listo';return;
+    }
+    const img=new Image();
+    img.onload=()=>{
+      const esc=Math.min(1,1400/Math.max(img.width,img.height));
+      const cv=document.createElement('canvas');
+      cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      refAdjunto={data:cv.toDataURL('image/jpeg',0.85).split(',')[1],tipo:'image/jpeg'};
+      const ok=document.getElementById('rn-adj-ok');if(ok)ok.textContent='✓ adjunto listo';
+    };
+    img.src=String(r.result);
+  };
+  r.readAsDataURL(f);
+}
+async function refGuardarNota(id){
+  const v=k=>((document.getElementById('rn-'+k+'-'+id)||{}).value||'').trim();
+  const proveedor=v('prov'),precio=v('precio'),plazo=v('plazo');
+  if(!proveedor||!precio||!plazo){toast('Completá proveedor, precio y plazo');return;}
+  try{
+    await api('/api/app/referente/repuestos/'+id,{method:'POST',body:JSON.stringify({
+      accion:'nota',proveedor,precio,plazo,
+      adjuntoData:refAdjunto?refAdjunto.data:undefined,adjuntoTipo:refAdjunto?refAdjunto.tipo:undefined})});
+    refNotaDe=null;refAdjunto=null;
+    toast('Nota guardada → COTIZADO ✓ Espera la aprobación de José');
+    abrirReferente();
+  }catch(e){toast(e.message||'No pude guardar la nota');}
+}
+async function refVerFoto(id){
+  try{const r=await api('/api/app/referente/archivo/'+id);window.open(r.url,'_blank');}
+  catch(e){toast('No pude abrir la foto');}
+}
+
 /* ── Pedido de repuestos desde la reparación ── */
 function rpFilaHTML(x){
   x=x||{};
@@ -1045,11 +1184,36 @@ async function rpGuardar(id){
   })).filter(x=>x.descripcion);
   if(!items.length){toast('Cargá al menos un repuesto');return;}
   const nota=document.getElementById('rp-nota-'+id).value.trim();
+  const marca=(document.getElementById('rp-marca-'+id)||{}).value||'';
+  const yaTieneFoto=(datos.find(x=>String(x.id)===String(id))||{}).repuestos_taller?.some?.(r=>r.estado!=='entregado'&&r.foto_ruta);
+  if(!rpFotos[id]&&!yaTieneFoto){
+    if(!confirm('Falta la FOTO del repuesto. Sin foto, el Referente no puede avanzar el pedido.\n\n¿Guardar igual como incompleto?'))return;
+  }
   try{
-    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota})});
-    toast('Pedido enviado a compras ✓');
+    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:marca,fotoData:rpFotos[id]||undefined})});
+    delete rpFotos[id];
+    toast('Pedido enviado al Referente ✓');
     abierta=id;cargar();
   }catch(e){toast('Error: '+e.message);}
+}
+// Foto del repuesto: se achica en el navegador (máx 1400px) antes de mandarla
+let rpFotos={};
+function rpFoto(id,input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      const esc=Math.min(1,1400/Math.max(img.width,img.height));
+      const cv=document.createElement('canvas');
+      cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      rpFotos[id]=cv.toDataURL('image/jpeg',0.85).split(',')[1];
+      const ok=document.getElementById('rp-foto-ok-'+id);if(ok)ok.textContent='✓ foto lista';
+    };
+    img.src=String(r.result);
+  };
+  r.readAsDataURL(f);
 }
 async function comentar(id){
   const t=$('obs-'+id);const texto=(t.value||'').trim();
