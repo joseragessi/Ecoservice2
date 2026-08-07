@@ -186,5 +186,60 @@ async function chequearControl() {
   }
 }
 
+// ── Alerta 48hs del circuito de repuestos ────────────────────────────────
+// Pedidos que llevan más de 48hs HÁBILES (lun–vie) sin cambio de estado en
+// las etapas del Referente (pedido / en_cotizacion / cotizado) → un WhatsApp
+// resumen al Referente y a José. Se marca alerta_48_enviada para no repetir
+// hasta el próximo cambio de estado. Teléfonos en la env
+// ALERTA_REPUESTOS_TELEFONOS (coma-separados); sin ella solo loguea.
+function horasHabilesDesde(iso) {
+  let desde = new Date(iso).getTime();
+  const ahora = Date.now();
+  if (!(desde > 0) || desde >= ahora) return 0;
+  let horas = 0;
+  const paso = 60 * 60 * 1000;
+  for (let t = desde; t < ahora; t += paso) {
+    const dia = new Date(t).getUTCDay();          // aprox UTC: alcanza para un umbral de 48hs
+    if (dia !== 0 && dia !== 6) horas++;
+  }
+  return horas;
+}
+async function chequearRepuestos48() {
+  try {
+    const supabase = require('./supabase');
+    const { data: pends } = await supabase.from('repuestos_taller')
+      .select('id, estado, estado_desde, created_at, alerta_48_enviada, items, incidencias(numero_unidad, tipo_equipo)')
+      .in('estado', ['pedido', 'en_cotizacion', 'cotizado']);
+    const vencidos = (pends || []).filter(p => {
+      const desde = p.estado_desde || p.created_at;
+      if (!desde || horasHabilesDesde(desde) < 48) return false;
+      // Ya avisada para ESTE estado (la alerta es posterior al último cambio)
+      return !(p.alerta_48_enviada && new Date(p.alerta_48_enviada) >= new Date(desde));
+    });
+    if (!vencidos.length) return;
+    const lineas = vencidos.slice(0, 8).map(p => {
+      const inc = p.incidencias || {};
+      const it = (p.items || [])[0] || {};
+      return `• ${it.descripcion || 'Repuesto'} — ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} · ${p.estado.replace('_', ' ')}`;
+    }).join('\n');
+    const texto = `⏰ *Repuestos sin movimiento (48hs hábiles)*\n${lineas}${vencidos.length > 8 ? `\n…y ${vencidos.length - 8} más` : ''}\n\nRevisá la cola en la app / panel.`;
+    const tels = String(process.env.ALERTA_REPUESTOS_TELEFONOS || '').split(',').map(t => t.trim()).filter(Boolean);
+    if (tels.length) {
+      const { notificarCapataz } = require('./notificar');
+      for (const t of tels) await notificarCapataz(t, texto);
+    } else {
+      console.log('[repuestos48] ' + vencidos.length + ' pedidos vencidos (sin ALERTA_REPUESTOS_TELEFONOS, solo log)');
+    }
+    const ahora = new Date().toISOString();
+    for (const p of vencidos) {
+      await supabase.from('repuestos_taller').update({ alerta_48_enviada: ahora }).eq('id', p.id);
+    }
+  } catch (e) {
+    console.error('[repuestos48] error:', e.message || e);
+  }
+}
+setTimeout(chequearRepuestos48, 90 * 1000);            // al arrancar (con margen)
+setInterval(chequearRepuestos48, 60 * 60 * 1000);      // cada hora
+
 chequearControl();                          // al arrancar
 setInterval(chequearControl, 6 * 60 * 60 * 1000);  // cada 6 horas
