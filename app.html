@@ -200,10 +200,6 @@ async function cargar(){
   $('lista').innerHTML='<div class="vacio">Cargando…</div>';
   try{
     datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias');
-    // ¿Este usuario es Referente de repuestos? (flag en su ficha — un solo GET)
-    if(rol==='mecanico'||rol==='panol'){
-      try{refCola=await api('/api/app/referente/cola');}catch(e){refCola=null;}
-    }
     render();
   }catch(e){$('lista').innerHTML=`<div class="vacio">${e.message}</div>`;}
 }
@@ -229,7 +225,7 @@ function render(){
     +`<div class="tab ${tab==='service'?'on':''}" onclick="tab='service';render()">🔧 Service</div>`
     +`<div class="tab ${tab==='nueva'?'on':''}" onclick="tab='nueva';render()">➕ Nueva</div>`
     +`<div class="tab" onclick="abrirCombustible()">⛽</div>`
-    +(refCola&&refCola.es_referente?`<div class="tab ${tab==='referente'?'on':''}" onclick="tab='referente';abrirReferente()">🔧 Referente${(refCola.pedidos||[]).filter(p=>p.estado!=='cotizado').length?' ('+(refCola.pedidos||[]).filter(p=>p.estado!=='cotizado').length+')':''}</div>`:'');
+;   // (el circuito de repuestos se gestiona desde el panel — decisión 7-ago)
   if(tab==='nueva')return renderNueva();
   const lista=tab==='finalizadas'?fin:act;
   $('lista').innerHTML=lista.length?lista.map(cardIncidencia).join('')
@@ -959,8 +955,7 @@ function renderPanol(){
     <div class="kpi green"><div class="v">${ent.length}</div><div class="l">Entregados</div></div>`;
   $('tabs').innerHTML=[['pendientes','Pendientes',pend.length],['entregados','Entregados',ent.length]]
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
-    +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`
-    +(refCola&&refCola.es_referente?`<div class="tab ${tab==='referente'?'on':''}" onclick="tab='referente';abrirReferente()">🔧 Referente</div>`:'');
+    +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`;
   const lista=tab==='entregados'?ent:pend;
   $('lista').innerHTML=lista.length?lista.map(cardPedido).join('')
     :'<div class="vacio">No hay pedidos acá.</div>';
