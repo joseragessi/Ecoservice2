@@ -1656,12 +1656,28 @@ async function vRepPerf(view){
     return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,cumple:M.total>=PERF_OBJETIVO&&habilitado};
   }).sort((a,b)=>b.M.total-a.M.total);
 
-  const maxPts=Math.max(1,...filas.map(x=>x.M.total));
   const cardPerf=(f,i)=>{
     const ini=f.n.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
     const abierto=perfOpen===f.n;
-    const calidad=f.pctR==null?'<span class="sub">reincidencia 90d: sin base de cálculo aún</span>'
-      :`reincidencia 90d: <b>${f.pctR}%</b> (${f.nReb} de ${f.nBase})${f.pocaMuestra?' <span class="sub" title="Con menos de 8 reparaciones en 90 días el % salta mucho con un solo caso">⚠ muestra chica</span>':''}`;
+    const estado=f.cumple?'<span class="badge b-green">✓ cobra el bono</span>'
+      :!f.habilitado?'<span class="badge" style="background:#FCEBED;color:#A32D2D">✕ no cobra: calidad</span>'
+      :`<span class="badge b-gray">faltan ${Math.max(0,PERF_OBJETIVO-f.M.total)} pts</span>`;
+    // Franja de MOTIVO: el veredicto explicado sin tener que expandir
+    const faltan=Math.max(0,PERF_OBJETIVO-f.M.total);
+    const rebs=(rebotes[f.n]||[]);
+    let motivo;
+    if(f.cumple){
+      motivo=`<div style="margin-top:8px;background:var(--brote-soft);border-radius:8px;padding:8px 12px;font-size:12.5px;color:var(--brote-2)"><b>Cumplió las dos condiciones:</b> llegó a los puntos (${f.M.total} de ${PERF_OBJETIVO} ✓) y su calidad está dentro del límite (reincidencia ${f.pctR==null?'—':f.pctR+'%'}, tope ${PERF_REINC_MAX}% ✓).</div>`;
+    }else if(!f.habilitado){
+      motivo=`<div style="margin-top:8px;background:#FCEBED;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#7C2222"><b>Motivo — calidad:</b> ${f.nReb} de sus ${f.nBase} reparaciones volvieron al taller (${f.pctR}%, el tope es ${PERF_REINC_MAX}%). ${f.M.total>=PERF_OBJETIVO?'Llegó a los puntos, pero la calidad bloquea el bono.':'Además le faltaron '+faltan+' pts.'}${f.pocaMuestra?' ⚠ Muestra chica: con pocas reparaciones un solo rebote pesa mucho.':''}
+        ${rebs.length?`<div style="margin-top:5px;font-size:11.5px">${rebs.map(x=>'↩ '+x.eq+' '+x.uni+' volvió a los '+x.dias+' d').join(' · ')}</div>`:''}</div>`;
+    }else{
+      motivo=`<div style="margin-top:8px;background:var(--diesel-soft);border-radius:8px;padding:8px 12px;font-size:12.5px;color:#6B4A0E"><b>Motivo — puntos:</b> le faltaron ${faltan} pts para el objetivo (${f.M.total} de ${PERF_OBJETIVO}). Su calidad está bien (${f.pctR==null?'sin base aún':f.pctR+'% ✓'}${f.pocaMuestra&&f.pctR!=null?' · ⚠ muestra chica':''}).</div>`;
+    }
+    const barra=Math.min(100,Math.max(2,Math.round(f.M.total*100/PERF_OBJETIVO)));
+    const colBarra=f.cumple?'var(--brote)':!f.habilitado?'#B4B2A9':'var(--diesel)';
+    const calidad=f.pctR==null?'<span class="sub">sin base de cálculo aún</span>'
+      :`reincidencia 90d: <b style="color:${f.habilitado?'var(--brote-2)':'#A32D2D'}">${f.pctR}%</b> (${f.nReb} de ${f.nBase})${f.pocaMuestra?' <span class="sub" title="Con menos de 8 reparaciones en 90 días el % salta mucho con un solo caso">⚠ muestra chica</span>':''} — límite ${PERF_REINC_MAX}%`;
     const detalle=!abierto?'':`
       <div style="border-top:1px solid var(--linea);margin-top:10px;padding-top:10px">
         <div class="field-l" style="margin-bottom:6px">Por qué ${f.M.total} puntos</div>
@@ -1670,9 +1686,9 @@ async function vRepPerf(view){
           <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}</b></div>`).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
         ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
           ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0">↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d</div>`).join('')}`:''}
-        <div class="sub" style="font-size:11px;margin-top:8px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La reincidencia es informativa: no suma ni resta.</div>
+        <div class="sub" style="font-size:11px;margin-top:8px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
       </div>`;
-    return `<div class="panel" style="cursor:pointer;margin-bottom:10px" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
+    return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
         <div style="display:flex;align-items:center;gap:10px;min-width:0">
           <span class="sub mono">${i+1}</span>
@@ -1681,23 +1697,34 @@ async function vRepPerf(view){
             <div class="sub" style="font-size:11px">${f.M.nFin} finalizada${f.M.nFin===1?'':'s'}${f.M.nPrev?' · '+f.M.nPrev+' preventivo'+(f.M.nPrev===1?'':'s'):''} · ${abierto?'▲ cerrar detalle':'▼ ver por qué'}</div></div>
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div class="mono" style="font-weight:700;font-size:20px">${f.M.total} pts</div></div>
+          <div class="mono" style="font-weight:700;font-size:20px">${f.M.total} pts</div>${estado}</div>
       </div>
-      <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${Math.min(100,Math.max(2,Math.round(f.M.total*100/maxPts)))}%;background:var(--brote);border-radius:3px"></div></div>
+      <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${barra}%;background:${colBarra};border-radius:3px"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-2);flex-wrap:wrap;gap:4px">
         <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}</span>
         <span>${calidad}</span>
-      </div>${detalle}</div>`;};
-  const cards=filas.map((f,i)=>cardPerf(f,i)).join('');
+      </div>${motivo}${detalle}</div>`;};
+  const cobran=filas.filter(f=>f.cumple), noCobran=filas.filter(f=>!f.cumple);
+  const cards=`
+  <div style="display:flex;gap:10px;margin-bottom:14px">
+    <div style="flex:1;background:var(--brote-soft);border-radius:10px;padding:10px 14px;text-align:center">
+      <div class="mono" style="font-size:22px;font-weight:700;color:var(--brote-2)">${cobran.length}</div>
+      <div class="sub" style="font-size:11.5px">cobra${cobran.length===1?'':'n'} el bono</div></div>
+    <div style="flex:1;background:#FCEBED;border-radius:10px;padding:10px 14px;text-align:center">
+      <div class="mono" style="font-size:22px;font-weight:700;color:#A32D2D">${noCobran.length}</div>
+      <div class="sub" style="font-size:11.5px">no cobra${noCobran.length===1?'':'n'} este mes</div></div>
+  </div>
+  ${cobran.length?`<div class="field-l" style="margin-bottom:8px;color:var(--brote-2)">✓ Cobran el bono</div>${cobran.map((f,i)=>cardPerf(f,i)).join('')}`:''}
+  ${noCobran.length?`<div class="field-l" style="margin:${cobran.length?'14px':'0'} 0 8px;color:#A32D2D">✕ No cobran este mes</div>${noCobran.map((f,i)=>cardPerf(f,cobran.length+i)).join('')}`:''}`;
 
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Reparaciones · Performance</div>
-    <div class="view-desc">Puntaje de cada mecánico · solo administradores · click en cada uno para ver el cálculo completo</div></div>
+    <div class="view-desc">Ranking para el bono · solo administradores · click en cada mecánico para ver el porqué</div></div>
     <select class="busca" style="width:auto" onchange="perfPer=this.value;perfOpen=null;go('reparaciones')">
       ${meses.map(m=>`<option value="${m}" ${m===perfPer?'selected':''}>${mesStk(m)}</option>`).join('')}
     </select></div>
   ${tabsRep()}
-  <div class="sub" style="margin-bottom:12px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · abierta &gt;${PERF_DORMIDA_DIAS} d sin esperar repuestos −2. La reincidencia (misma unidad vuelve en 30 días, sobre 90 días) se muestra como dato aparte: no suma ni resta puntos.</div>
+  <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> (provisorio — se ajusta con 2-3 meses de datos) · para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
   ${cards||'<div class="empty" style="height:200px"><div>Sin reparaciones finalizadas en el período.</div></div>'}`;
 }
 
