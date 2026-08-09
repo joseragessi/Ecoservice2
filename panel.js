@@ -1739,7 +1739,7 @@ async function vRepRepuestos(view){
     const tope=!urg&&['pedido','en_cotizacion'].includes(p.estado)&&d>3;
     const sub=p.estado==='cotizado'?'esperando aprobación'
       :p.pieza_en_proveedor?'🏪 pieza en el proveedor desde el '+p.pieza_en_proveedor.slice(8,10)+'/'+p.pieza_en_proveedor.slice(5,7)
-      :p.estado==='pedido'?'esperando al Referente'
+      :p.estado==='pedido'?'esperando cotización'
       :tope?'⚠ pasó el tope de 3 días hábiles':'';
     const aprob=p.aprobado_at?`<div style="margin-top:3px"><span class="badge b-green">✓ APROBADO</span> <span class="sub" style="font-size:10.5px">por ${p.aprobado_por||'—'} · ${fechaAR(p.aprobado_at)}</span></div>`:'';
     return `<tr>
@@ -1748,13 +1748,13 @@ async function vRepRepuestos(view){
         ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div></td>
       <td><span class="uni-num">${i.numero_unidad||'—'}</span> ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||''}
         ${i.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px">⛔ parada</span>':''}
-        <div class="sub" style="font-size:11px">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'')}${i.id?' · rep. #'+String(i.id).slice(0,6):''}</div></td>
+        <div class="sub" style="font-size:11px">${i.id?'rep. #'+String(i.id).slice(0,6):''}</div></td>
+      <td style="font-size:12.5px;font-weight:500">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</td>
       <td><span class="badge" style="background:${bg};color:${col}">${etq}</span>
         ${aprob}
         ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope?'color:#854F0B':''}">${sub}</div>`:''}
         ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">📝 ${p.nota_proveedor} · <b class="mono">${money(p.nota_precio||0)}</b> · ${p.nota_plazo||''}${p.cotizado_por?' · cotizó '+p.cotizado_por:''}</div>`:''}</td>
       <td class="num mono" style="${d>3?'color:#A32D2D;font-weight:600':''}">${d!=null?d+' d':'—'}</td>
-      <td style="font-size:12px">${p.referente_nombre||'—'}</td>
       <td class="num" style="white-space:nowrap">
         ${p.estado==='pedido'?`<button class="mini-btn" onclick="circAccion('${p.id}','tomar')">▶ Tomar</button>`:''}
         ${['en_cotizacion','cotizado'].includes(p.estado)?`<button class="mini-btn" onclick="circNota('${p.id}')">📝 ${p.nota_proveedor?'Corregir nota':'Nota'}</button>`:''}
@@ -1781,7 +1781,7 @@ async function vRepRepuestos(view){
   <div class="panel">
     <div class="panel-title">Circuito en curso <span class="sub" style="font-weight:400;font-size:11px">· ordenado por etapa y urgencia</span></div>
     ${visibles.length?`<table style="font-size:12.5px">
-      <thead><tr><th>Repuesto</th><th>Máquina / pidió</th><th>Estado</th><th class="num">Días en estado</th><th>Referente</th><th></th></tr></thead>
+      <thead><tr><th>Repuesto</th><th>Máquina</th><th>Mecánico</th><th>Estado</th><th class="num">Días en estado</th><th></th></tr></thead>
       <tbody>${filas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay repuestos en el circuito.</div>'}
   </div>`;
 }
@@ -3544,17 +3544,25 @@ function renderRtAprobacion(){
     <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length})</div>
     ${cots.map(p=>{
       const i=p.incidencias||{};
-      const it=(p.items||[])[0]||{};
       const dCot=p.cotizado_at?Math.ceil((new Date(p.cotizado_at)-new Date(p.created_at))/86400000):null;
-      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:11px 13px;margin-bottom:9px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
-          <div>
-            <div style="font-weight:600;font-size:13.5px">${it.descripcion||'Repuesto'}${(p.items||[]).length>1?' +'+(p.items.length-1):''}
-              ${i.equipo_parado?`<span class="badge" style="background:#FCEBED;color:#A32D2D">⛔ ${i.tipo_equipo||''} ${i.numero_unidad||''} parada</span>`:''}</div>
-            <div class="sub" style="font-size:11.5px;margin-top:2px">Nota: <b>${p.nota_proveedor||'—'}</b> · <b class="mono">${money(p.nota_precio||0)}</b> · entrega <b>${p.nota_plazo||'—'}</b> · cotizó ${p.cotizado_por||p.referente_nombre||'—'}${p.nota_adjunto?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','adjunto')" style="color:var(--azul)">📎 adjunto</a>`:' · sin adjunto (de palabra)'}</div>
-            <div class="sub" style="font-size:11px;margin-top:2px">${i.tipo_equipo||''} ${i.numero_unidad?'· '+i.numero_unidad:''} · pidió ${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}${dCot!=null?' · pedido→cotizado: '+dCot+' d':''}${p.foto_ruta?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">📷 foto</a>`:''}</div>
+      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--hueso)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:260px">
+            <div style="font-weight:700;font-size:14px">🧾 Orden de compra — ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo'} <span class="uni-num">${i.numero_unidad||'—'}</span>
+              ${i.equipo_parado?`<span class="badge" style="background:#FCEBED;color:#A32D2D">⛔ parada</span>`:''}</div>
+            <div class="sub" style="font-size:11.5px;margin:2px 0 8px">Solicita: <b>${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</b> · rep. #${String(i.id||'').slice(0,6)}${p.marca_modelo?' · '+p.marca_modelo:''}${dCot!=null?' · pedido→cotizado: '+dCot+' d':''}${p.foto_ruta?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">📷 foto</a>`:''}</div>
+            <div style="background:#fff;border:1px solid var(--linea);border-radius:9px;padding:8px 11px;margin-bottom:8px">
+              ${(p.items||[]).map(x=>`<div style="font-size:12.5px;padding:2px 0">x${x.cantidad||1} ${x.descripcion}${x.codigo?' <span class="sub">· '+x.codigo+'</span>':''}</div>`).join('')||'<div class="sub">Sin ítems</div>'}
+              ${p.nota?`<div class="sub" style="font-size:11.5px;border-top:1px dashed var(--linea);margin-top:5px;padding-top:5px">📝 ${p.nota}</div>`:''}
+            </div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px">
+              <span>Proveedor: <b>${p.nota_proveedor||'—'}</b></span>
+              <span>Precio: <b class="mono">${money(p.nota_precio||0)}</b></span>
+              <span>Entrega: <b>${p.nota_plazo||'—'}</b></span>
+              <span class="sub">cotizó ${p.cotizado_por||'—'}${p.cotizado_at?' · '+fechaAR(p.cotizado_at):''}${p.nota_adjunto?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','adjunto')" style="color:var(--azul)">📎 adjunto</a>`:''}</span>
+            </div>
           </div>
-          <div style="display:flex;gap:7px;flex-shrink:0">
+          <div style="display:flex;flex-direction:column;gap:7px;flex-shrink:0">
             <button class="btn" onclick="rtAprobar('${p.id}')">✓ Aprobar → a comprar</button>
             <button class="btn-salir" onclick="rtObservar('${p.id}')">Observar ↩</button>
           </div>
