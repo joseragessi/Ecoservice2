@@ -418,7 +418,7 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
     }
     // Si ya hay un pedido sin entregar para esta reparación, se actualiza
     const { data: prev } = await supabase.from('repuestos_taller')
-      .select('id, items').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+      .select('id, items, estado').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
     // Si se edita un pedido existente, conservar los tildes de "comprado" que
     // ya haya puesto compras (match por descripción)
     if (prev && Array.isArray(prev.items)) {
@@ -431,6 +431,18 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
     // OPCIONAL (decisión 7-ago): suma para identificar la pieza, pero un
     // pedido sin foto avanza igual por el circuito.
     if ((req.body || {}).marca_modelo !== undefined) fila.marca_modelo = String(req.body.marca_modelo || '').trim() || null;
+    // ORDEN DE COMPRA del propio mecánico: si cotizó (proveedor+precio+plazo),
+    // el pedido queda COTIZADO directo, listo para la aprobación en Compras.
+    const bb = req.body || {};
+    const provOC = String(bb.proveedor || '').trim();
+    const precioOC = Number(String(bb.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+    const plazoOC = String(bb.plazo || '').trim();
+    const cotizaOC = !!(provOC && precioOC && plazoOC);
+    if (cotizaOC) {
+      fila.nota_proveedor = provOC; fila.nota_precio = precioOC; fila.nota_plazo = plazoOC;
+      fila.cotizado_at = new Date().toISOString(); fila.cotizado_por = req.app_user.nombre;
+      fila.observacion = null;
+    }
     if ((req.body || {}).fotoData) {
       try {
         const ruta = 'pedidos/' + req.params.id + '_' + Date.now() + '.jpg';
@@ -440,9 +452,15 @@ router.post('/api/app/incidencia/:id/repuestos', authApp('mecanico'), async (req
         else console.error('repuestos foto:', eFoto.message);
       } catch (e) { console.error('repuestos foto:', e.message); }
     }
+    // Estado resultante: si cotizó → cotizado; si no → pedido (solo se pisa
+    // el estado de pedidos que todavía están en la etapa del circuito previo
+    // a la aprobación — un a_comprar/comprado no se retrocede).
+    if (cotizaOC && (!prev || ['pedido', 'en_cotizacion', 'cotizado'].includes(prev.estado))) {
+      fila.estado = 'cotizado'; fila.estado_desde = new Date().toISOString();
+    }
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
-    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: 'pedido', estado_desde: new Date().toISOString() }).select().single();
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: fila.estado || 'pedido', estado_desde: fila.estado_desde || new Date().toISOString() }).select().single();
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
