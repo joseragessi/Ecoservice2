@@ -999,8 +999,11 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
       prev.items.forEach(i => { if (i.comprado) marcados[String(i.descripcion || '').toLowerCase()] = true; });
       items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
     }
-    const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: 'Panel · ' + (req.usuario || 'admin') };
     const bb = req.body || {};
+    // Quién lo solicita: el mecánico elegido en el modal; si no eligieron,
+    // queda el usuario del panel como antes.
+    const solicitante = String(bb.solicitante || '').trim();
+    const fila = { items, nota: String(bb.nota || '').trim() || null, pedido_por: solicitante || ('Panel · ' + (req.usuario || 'admin')) };
     if (bb.marca_modelo !== undefined) fila.marca_modelo = String(bb.marca_modelo || '').trim() || null;
     // ORDEN DE COMPRA cargada junto con el pedido: si vienen proveedor+precio+
     // plazo, el pedido queda COTIZADO directo, esperando la aprobación.
