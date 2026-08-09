@@ -991,7 +991,7 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
       .filter(i => i.descripcion);
     if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
     const { data: prev } = await supabase.from('repuestos_taller')
-      .select('id, items').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
+      .select('id, items, estado').eq('incidencia_id', req.params.id).neq('estado', 'entregado').maybeSingle();
     // Si se edita un pedido existente, conservar los tildes de "comprado" que
     // ya haya puesto compras (match por descripción)
     if (prev && Array.isArray(prev.items)) {
@@ -1000,11 +1000,27 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
       items.forEach(i => { if (marcados[i.descripcion.toLowerCase()]) i.comprado = true; });
     }
     const fila = { items, nota: String((req.body || {}).nota || '').trim() || null, pedido_por: 'Panel · ' + (req.usuario || 'admin') };
+    const bb = req.body || {};
+    if (bb.marca_modelo !== undefined) fila.marca_modelo = String(bb.marca_modelo || '').trim() || null;
+    // ORDEN DE COMPRA cargada junto con el pedido: si vienen proveedor+precio+
+    // plazo, el pedido queda COTIZADO directo, esperando la aprobación.
+    const provOC = String(bb.proveedor || '').trim();
+    const precioOC = Number(String(bb.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+    const plazoOC = String(bb.plazo || '').trim();
+    if (provOC && precioOC && plazoOC) {
+      fila.nota_proveedor = provOC; fila.nota_precio = precioOC; fila.nota_plazo = plazoOC;
+      fila.cotizado_at = new Date().toISOString(); fila.cotizado_por = req.usuario || 'panel';
+      fila.observacion = null;
+      // Solo avanza a cotizado si estaba antes de la aprobación (nunca retrocede)
+      if (!prev || ['pedido', 'en_cotizacion', 'cotizado'].includes(prev.estado)) {
+        fila.estado = 'cotizado'; fila.estado_desde = new Date().toISOString();
+      }
+    }
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
-    // También los pedidos cargados desde el panel entran al circuito del
-    // Referente: nacen en 'pedido', no directo en a_comprar.
-    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: 'pedido', estado_desde: new Date().toISOString() }).select().single();
+    // También los pedidos cargados desde el panel entran al circuito:
+    // nacen en 'pedido' (o directo en 'cotizado' si vino la orden de compra).
+    else q = supabase.from('repuestos_taller').insert({ ...fila, incidencia_id: req.params.id, estado: fila.estado || 'pedido', estado_desde: fila.estado_desde || new Date().toISOString() }).select().single();
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
