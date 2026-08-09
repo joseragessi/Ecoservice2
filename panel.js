@@ -2386,18 +2386,7 @@ function selRep(ix){
       return `<div style="margin-bottom:6px"><span class="badge ${est[1]}">${est[0]}</span></div>`+
         (rp.items||[]).map(i=>`<div class="sub" style="font-size:12px;padding:2px 0">x${i.cantidad||1} <b>${i.descripcion}</b>${i.codigo?' · <span class="mono">'+i.codigo+'</span>':''}</div>`).join('')+
         (rp.nota?`<div class="sub" style="font-size:11.5px;font-style:italic;margin-top:4px">💬 ${rp.nota}</div>`:'');})()}
-    <div id="rep-rep-form" style="display:none;margin-top:8px">
-      <div id="rep-rep-hint" class="sub" style="display:none;font-size:11.5px;color:var(--brote-2);margin-bottom:5px"></div>
-      <div id="rep-rep-filas"></div>
-      <div style="display:flex;gap:6px;margin-top:4px">
-        <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepAddFila()">＋ otra fila</button>
-        <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepSugerir('${r.id}')">✨ Sugerir de nuevo</button>
-        <button class="btn ghost" style="flex:0 0 auto;justify-content:center;font-size:12px" onclick="document.getElementById('rep-rep-filas').innerHTML=repRepFila()">🗑</button>
-      </div>
-      <textarea id="rep-rep-nota" placeholder="Nota para quien compra (opcional)" style="width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12px;min-height:44px"></textarea>
-      <button class="btn" style="width:100%;justify-content:center;margin-top:6px" onclick="repRepGuardar('${r.id}',${ix})">Guardar pedido de repuestos</button>
-    </div>
-    <button class="btn ghost" id="rep-rep-toggle" style="width:100%;justify-content:center;margin-top:6px" onclick="repRepAbrir(${ix})">🛒 ${(r.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Cargar'} pedido de repuestos</button>
+    <button class="btn" style="width:100%;justify-content:center;margin-top:6px" onclick="repRepAbrir(${ix})">🛒 ${(r.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Cargar'} pedido de repuestos</button>
     <div class="divider"></div>
     <div class="field-l" style="margin-bottom:8px">Observaciones del mecánico</div>${comHTML}
     <textarea id="rep-obs-nueva" placeholder="Agregar una observación… (viaja en el próximo aviso al capataz)" style="width:100%;box-sizing:border-box;margin-top:8px;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12.5px;min-height:56px;resize:vertical"></textarea>
@@ -2415,14 +2404,43 @@ function repRepFila(i){
   </div>`;
 }
 function repRepAddFila(){document.getElementById('rep-rep-filas').insertAdjacentHTML('beforeend',repRepFila());}
+// El pedido se carga en un MODAL GRANDE (el form en el drawer quedaba cortado)
+// e incluye la ORDEN DE COMPRA: el mecánico cotiza sus propios repuestos
+// (proveedor + precio + plazo) y el pedido queda directo esperando aprobación.
 function repRepAbrir(ix){
   const r=window._repFiltrada[ix];
   const rp=(r.repuestos_taller||[]).find(x=>x.estado!=='entregado');
-  const cont=document.getElementById('rep-rep-filas');
-  cont.innerHTML=(rp&&rp.items&&rp.items.length?rp.items:[{},{}]).map(repRepFila).join('');
-  document.getElementById('rep-rep-nota').value=rp&&rp.nota||'';
-  document.getElementById('rep-rep-form').style.display='';
-  document.getElementById('rep-rep-toggle').style.display='none';
+  const eq=(r.equipos?r.equipos.nombre:(r.tipo_equipo||'Equipo'))+(r.numero_unidad?' · N° '+r.numero_unidad:'');
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='rep-rep-modal';bg.style.zIndex=210;
+  bg.innerHTML=`<div class="modal" style="max-width:620px;width:94vw;max-height:92vh;overflow-y:auto">
+    <div class="modal-tit" style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+      <span>🛒 Pedido de repuestos</span><span class="sub" style="font-weight:400;font-size:12px">${eq}${r.mecanicos?' · '+r.mecanicos.nombre:''}</span></div>
+    <div id="rep-rep-hint" class="sub" style="display:none;font-size:11.5px;color:var(--brote-2);margin:6px 0"></div>
+    <div class="field-l" style="margin:10px 0 6px">Repuestos</div>
+    <div id="rep-rep-filas"></div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepAddFila()">＋ otra fila</button>
+      <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepSugerir('${r.id}')">✨ Sugerir de nuevo</button>
+      <button class="btn ghost" style="flex:0 0 auto;justify-content:center;font-size:12px" onclick="document.getElementById('rep-rep-filas').innerHTML=repRepFila()">🗑</button>
+    </div>
+    <div class="mm-field" style="margin-top:10px"><label>Marca / modelo del equipo</label>
+      <input id="rep-rep-marca" type="text" placeholder="ej: Husqvarna 545" value="${String(rp&&rp.marca_modelo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+
+    <div class="field-l" style="margin:14px 0 4px">🧾 Orden de compra · cotización</div>
+    <div class="sub" style="font-size:11.5px;margin-bottom:8px">Si ya se averiguó dónde y cuánto, cargalo: el pedido queda directo <b>esperando aprobación</b> en Compras. Si no, dejalo vacío y se cotiza después desde el circuito.</div>
+    <div class="mm-field"><label>Proveedor</label><input id="rep-rep-prov" type="text" placeholder="ej: Sumiagro" value="${String(rp&&rp.nota_proveedor||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+    <div style="display:flex;gap:8px">
+      <div class="mm-field" style="flex:1"><label>Precio final $</label><input id="rep-rep-precio" type="text" inputmode="decimal" value="${rp&&rp.nota_precio!=null?String(rp.nota_precio).replace('.',','):''}" style="width:100%"></div>
+      <div class="mm-field" style="flex:1"><label>Plazo de entrega</label><input id="rep-rep-plazo" type="text" placeholder="ej: 48 hs" value="${String(rp&&rp.nota_plazo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+    </div>
+    <textarea id="rep-rep-nota" placeholder="Nota para quien compra (opcional)" style="width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12.5px;min-height:48px">${rp&&rp.nota||''}</textarea>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="document.getElementById('rep-rep-modal').remove()">Cancelar</button>
+      <button class="btn" onclick="repRepGuardar('${r.id}',${ix})">Guardar pedido</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  document.getElementById('rep-rep-filas').innerHTML=((rp&&rp.items&&rp.items.length)?rp.items:[{},{}]).map(repRepFila).join('');
   if(!rp)repRepSugerir(r.id);   // sin pedido previo → la IA propone (editable)
 }
 async function repRepSugerir(id){
@@ -2442,13 +2460,19 @@ async function repRepGuardar(id,ix){
   })).filter(i=>i.descripcion);
   if(!items.length){alert('Cargá al menos un repuesto.');return;}
   const nota=document.getElementById('rep-rep-nota').value.trim();
+  const v=k=>((document.getElementById('rep-rep-'+k)||{}).value||'').trim();
+  const proveedor=v('prov'),precio=v('precio'),plazo=v('plazo');
+  const cotiza=proveedor&&precio&&plazo;
+  if((proveedor||precio||plazo)&&!cotiza){toast('Para cotizar completá proveedor, precio y plazo (o dejá los tres vacíos)','error');return;}
   try{
-    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota})});
+    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:v('marca'),proveedor,precio,plazo})});
+    const m=document.getElementById('rep-rep-modal');if(m)m.remove();
     const r=window._repFiltrada[ix];
     r.repuestos_taller=(r.repuestos_taller||[]).filter(x=>x.id!==nuevo.id&&x.estado==='entregado');
     r.repuestos_taller.push(nuevo);
     selRep(ix);
-  }catch(e){alert('No pude guardar: '+e.message);}
+    toast(cotiza?'Pedido cotizado ✓ — esperando aprobación en Compras':'Pedido guardado ✓');
+  }catch(e){toast('No pude guardar: '+e.message,'error');}
 }
 async function agregarObsRep(id,ix){
   const ta=document.getElementById('rep-obs-nueva');
