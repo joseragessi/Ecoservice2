@@ -922,23 +922,6 @@ function cardIncidencia(i){
         return `<div class="desc" style="color:${est[1]};font-weight:600;font-size:12.5px">${est[0]}</div>`+
           its.map(x=>`<div class="desc" style="font-size:12px">${rp.estado!=='entregado'?(x.comprado?'✅ ':'⬜ '):''}x${x.cantidad||1} ${x.descripcion}${x.codigo?' · '+x.codigo:''}</div>`).join('');})()}
       ${fin?'':`
-        <div id="rp-form-${i.id}" style="display:none;margin-top:6px">
-          <div id="rp-hint-${i.id}" class="desc" style="display:none;font-size:12px;color:#1E8449;margin-bottom:5px"></div>
-          <div id="rp-filas-${i.id}"></div>
-          <div style="display:flex;gap:6px;margin-top:4px">
-            <button class="btn sec" style="flex:1;margin:0" onclick="rpAddFila('${i.id}')">＋ otra fila</button>
-            <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${i.id}')">✨ Sugerir de nuevo</button>
-            <button class="btn sec" style="flex:0 0 auto;margin:0" onclick="rpVaciar('${i.id}')">🗑 Vaciar</button>
-          </div>
-          <input id="rp-marca-${i.id}" type="text" placeholder="Marca / modelo del equipo (ej: Husqvarna 545)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:7px;font-size:13px;margin-top:5px">
-          <div style="display:flex;gap:6px;align-items:center;margin-top:5px">
-            <label class="btn sec" style="flex:1;margin:0;text-align:center;cursor:pointer">📷 Foto del repuesto (opcional)
-              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="rpFoto('${i.id}',this)"></label>
-            <span id="rp-foto-ok-${i.id}" class="desc" style="font-size:12px;flex:0 0 auto"></span>
-          </div>
-          <textarea id="rp-nota-${i.id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)"></textarea>
-          <button class="btn" onclick="rpGuardar('${i.id}')">Guardar pedido de repuestos</button>
-        </div>
         <button class="btn sec" id="rp-toggle-${i.id}" onclick="rpAbrir('${i.id}')">🛒 ${(i.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Pedir'} repuestos</button>
         <textarea id="obs-${i.id}" placeholder="Agregá una observación…"></textarea>
         <button class="btn sec" onclick="comentar('${i.id}')">Guardar observación</button>
@@ -1144,13 +1127,50 @@ function rpFilaHTML(x){
   </div>`;
 }
 function rpAddFila(id){document.getElementById('rp-filas-'+id).insertAdjacentHTML('beforeend',rpFilaHTML());}
+// El pedido se carga en un MODAL a pantalla completa (el form inline quedaba
+// cortado en el celular). Incluye la ORDEN DE COMPRA: el mecánico cotiza sus
+// propios repuestos (proveedor + precio + plazo) y el pedido queda listo para
+// que Compras lo apruebe.
 function rpAbrir(id){
-  const i=datos.find(x=>String(x.id)===String(id));
-  const rp=i&&(i.repuestos_taller||[]).find(x=>x.estado!=='entregado');
-  document.getElementById('rp-filas-'+id).innerHTML=(rp&&rp.items&&rp.items.length?rp.items:[{},{}]).map(rpFilaHTML).join('');
-  document.getElementById('rp-nota-'+id).value=rp&&rp.nota||'';
-  document.getElementById('rp-form-'+id).style.display='';
-  document.getElementById('rp-toggle-'+id).style.display='none';
+  const i=datos.find(x=>String(x.id)===String(id));if(!i)return;
+  const rp=(i.repuestos_taller||[]).find(x=>x.estado!=='entregado');
+  const eq=(i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo')+(i.numero_unidad?' · N° '+i.numero_unidad:'');
+  const bg=document.createElement('div');bg.id='rp-modal';
+  bg.style.cssText='position:fixed;inset:0;background:#F4F6F2;z-index:300;overflow-y:auto;-webkit-overflow-scrolling:touch';
+  bg.innerHTML=`
+  <div style="position:sticky;top:0;background:#159B51;color:#fff;padding:13px 15px;display:flex;justify-content:space-between;align-items:center;z-index:2">
+    <div><b style="font-size:15px">🛒 Pedido de repuestos</b><div style="font-size:11.5px;opacity:.85">${eq}</div></div>
+    <button onclick="document.getElementById('rp-modal').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:9px;padding:8px 13px;font-size:14px;font-family:inherit">✕ Cerrar</button>
+  </div>
+  <div style="padding:14px 15px 40px;max-width:560px;margin:0 auto">
+    <div id="rp-hint-${id}" class="desc" style="display:none;font-size:12.5px;color:#1E8449;margin-bottom:8px"></div>
+    <div class="dl" style="margin-top:0">REPUESTOS</div>
+    <div id="rp-filas-${id}"></div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn sec" style="flex:1;margin:0" onclick="rpAddFila('${id}')">＋ otra fila</button>
+      <button class="btn sec" style="flex:1;margin:0" onclick="rpSugerir('${id}')">✨ Sugerir</button>
+      <button class="btn sec" style="flex:0 0 auto;margin:0" onclick="rpVaciar('${id}')">🗑</button>
+    </div>
+    <input id="rp-marca-${id}" type="text" placeholder="Marca / modelo del equipo (ej: Husqvarna 545)" value="${String(rp&&rp.marca_modelo||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-top:8px">
+    <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+      <label class="btn sec" style="flex:1;margin:0;text-align:center;cursor:pointer">📷 Foto del repuesto (opcional)
+        <input type="file" accept="image/*" capture="environment" style="display:none" onchange="rpFoto('${id}',this)"></label>
+      <span id="rp-foto-ok-${id}" class="desc" style="font-size:12px;flex:0 0 auto">${rp&&rp.foto_ruta?'✓ ya tiene foto':''}</span>
+    </div>
+
+    <div class="dl" style="margin-top:16px">ORDEN DE COMPRA · COTIZACIÓN</div>
+    <div class="desc" style="font-size:12px;margin-bottom:7px">Si ya averiguaste dónde y cuánto, cargalo acá: el pedido queda listo para que lo aprueben. Si no, dejalo vacío y se cotiza después.</div>
+    <input id="rp-prov-${id}" type="text" placeholder="Proveedor (ej: Sumiagro)" value="${String(rp&&rp.nota_proveedor||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;margin-bottom:6px">
+    <div style="display:flex;gap:6px">
+      <input id="rp-precio-${id}" type="text" inputmode="decimal" placeholder="Precio final $" value="${rp&&rp.nota_precio!=null?String(rp.nota_precio).replace('.',','):''}" style="flex:1;min-width:0;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px">
+      <input id="rp-plazo-${id}" type="text" placeholder="Plazo (ej: 48 hs)" value="${String(rp&&rp.nota_plazo||'').replace(/"/g,'&quot;')}" style="flex:1;min-width:0;box-sizing:border-box;padding:11px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px">
+    </div>
+
+    <textarea id="rp-nota-${id}" placeholder="Nota para quien compra (ej: si no hay TRW sirven Ferodo)" style="margin-top:8px">${rp&&rp.nota||''}</textarea>
+    <button class="btn" style="margin-top:10px" onclick="rpGuardar('${id}')">Guardar pedido</button>
+  </div>`;
+  document.body.appendChild(bg);
+  document.getElementById('rp-filas-'+id).innerHTML=((rp&&rp.items&&rp.items.length)?rp.items:[{},{}]).map(rpFilaHTML).join('');
   // Sin pedido previo → la IA analiza la falla y propone la lista (editable)
   if(!rp)rpSugerir(id);
 }
@@ -1179,10 +1199,17 @@ async function rpGuardar(id){
   if(!items.length){toast('Cargá al menos un repuesto');return;}
   const nota=document.getElementById('rp-nota-'+id).value.trim();
   const marca=(document.getElementById('rp-marca-'+id)||{}).value||'';
+  const v=k=>((document.getElementById('rp-'+k+'-'+id)||{}).value||'').trim();
+  const proveedor=v('prov'),precio=v('precio'),plazo=v('plazo');
+  const cotiza=proveedor&&precio&&plazo;
+  if((proveedor||precio||plazo)&&!cotiza){
+    toast('Para cotizar completá proveedor, precio y plazo (o dejá los tres vacíos)');return;
+  }
   try{
-    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:marca,fotoData:rpFotos[id]||undefined})});
+    await api('/api/app/incidencia/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:marca,fotoData:rpFotos[id]||undefined,proveedor,precio,plazo})});
     delete rpFotos[id];
-    toast('Pedido enviado al Referente ✓');
+    const m=document.getElementById('rp-modal');if(m)m.remove();
+    toast(cotiza?'Pedido cotizado ✓ — queda esperando aprobación':'Pedido enviado ✓');
     abierta=id;cargar();
   }catch(e){toast('Error: '+e.message);}
 }
