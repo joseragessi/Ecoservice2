@@ -1767,16 +1767,19 @@ async function vRepRepuestos(view){
       :p.estado==='pedido'?'esperando cotización'
       :tope?'⚠ pasó el tope de 3 días hábiles':'';
     const aprob=p.aprobado_at?`<div style="margin-top:3px"><span class="badge b-green">✓ APROBADO</span> <span class="sub" style="font-size:10.5px">por ${p.aprobado_por||'—'} · ${fechaAR(p.aprobado_at)}</span></div>`:'';
-    return `<tr>
+    const txtBusca=[(p.items||[]).map(x=>(x.descripcion||'')+' '+(x.codigo||'')).join(' '),p.marca_modelo,i.numero_unidad,i.tipo_equipo,(i.equipos&&i.equipos.nombre),(i.mecanicos&&i.mecanicos.nombre),p.pedido_por,p.nota_proveedor,p.cotizado_por,p.estado,p.nota,p.observacion].filter(Boolean).join(' ').toLowerCase();
+    return `<tr class="circ-fila" data-busca="${txtBusca.replace(/"/g,'&quot;')}">
       <td style="${urg?'border-left:4px solid var(--rojo);padding-left:10px':tope?'border-left:4px solid #E8B96A;padding-left:10px':''}"><b>${it.descripcion||'—'}</b>${(p.items||[]).length>1?` <span class="sub">+${p.items.length-1}</span>`:''}
         <div class="sub" style="font-size:11px">${p.marca_modelo?p.marca_modelo+' · ':''}${p.foto_ruta?'📷 ✓':p.sin_foto_motivo?'identificado sin foto':''}${it.codigo?' · '+it.codigo:''}
-        ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div></td>
+        ${p.foto_ruta?` <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">ver foto</a>`:''}</div>
+        ${p.nota?`<div class="sub" style="font-size:11px;font-style:italic;margin-top:2px">💬 ${p.nota}</div>`:''}</td>
       <td><span class="uni-num">${i.numero_unidad||'—'}</span> ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||''}
         ${i.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px">⛔ parada</span>':''}
         <div class="sub" style="font-size:11px">${i.id?'rep. #'+String(i.id).slice(0,6):''}</div></td>
       <td style="font-size:12.5px;font-weight:500">${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</td>
       <td><span class="badge" style="background:${bg};color:${col}">${etq}</span>
         ${aprob}
+        ${p.observacion&&['pedido','en_cotizacion'].includes(p.estado)?`<div class="sub" style="font-size:10.5px;margin-top:2px;color:#854F0B">↩ Observado: ${p.observacion}</div>`:''}
         ${sub?`<div class="sub" style="font-size:10.5px;margin-top:2px;${tope?'color:#854F0B':''}">${sub}</div>`:''}
         ${p.nota_proveedor?`<div class="sub" style="font-size:10.5px;margin-top:2px">📝 ${p.nota_proveedor} · <b class="mono">${money(p.nota_precio||0)}</b> · ${p.nota_plazo||''}${p.cotizado_por?' · cotizó '+p.cotizado_por:''}</div>`:''}</td>
       <td class="num mono" style="${d>3?'color:#A32D2D;font-weight:600':''}">${d!=null?d+' d':'—'}</td>
@@ -1786,7 +1789,6 @@ async function vRepRepuestos(view){
         ${p.estado==='en_cotizacion'?`<button class="mini-btn" title="${p.pieza_en_proveedor?'Quitar la marca':'La pieza quedó en el proveedor'}" onclick="circAccion('${p.id}','pieza_proveedor'${p.pieza_en_proveedor?",true":""})">🏪</button>`:''}
         ${p.estado!=='entregado'?`<button class="mini-btn" title="Editar repuestos" onclick="circEditar('${p.id}')">✏️</button>
           <button class="mini-btn" title="Eliminar pedido" style="color:var(--rojo)" onclick="circEliminar('${p.id}')">🗑</button>`:''}
-        ${p.observacion?`<div class="sub" style="font-size:10.5px;color:#854F0B;white-space:normal;max-width:150px">↩ ${p.observacion}</div>`:''}
       </td>
     </tr>`;}).join('');
   view.innerHTML=`
@@ -1803,12 +1805,35 @@ async function vRepRepuestos(view){
     </div>
     <div class="sub" style="font-size:11.5px;margin-top:8px">⏱ pedido→cotizado prom.: <b class="mono">${cotProm!=null?cotProm+' d':'—'}</b> · máquinas paradas esperando repuesto: <b class="mono" style="${paradas?'color:#A32D2D':''}">${paradas}</b></div>
   </div>
+  ${(()=>{  // 💰 Presupuesto: lo aprobado (con su mes) para dimensionar el gasto futuro
+    const conPrecio=all.filter(p=>p.nota_precio&&p.aprobado_at);
+    if(!conPrecio.length)return '';
+    const porMes={};
+    conPrecio.forEach(p=>{const m=String(p.aprobado_at).slice(0,7);porMes[m]=porMes[m]||{n:0,total:0};porMes[m].n++;porMes[m].total+=Number(p.nota_precio)||0;});
+    const meses=Object.entries(porMes).sort((a,b)=>b[0].localeCompare(a[0]));
+    const cotSin=all.filter(p=>p.estado==='cotizado'&&p.nota_precio).reduce((s,p)=>s+(Number(p.nota_precio)||0),0);
+    return `<div class="panel" style="margin-bottom:14px">
+      <div class="panel-title">💰 Gasto en repuestos por mes <span class="sub" style="font-weight:400;font-size:11px">· órdenes aprobadas por mes de aprobación · base para el presupuesto</span></div>
+      <table style="font-size:12.5px;max-width:520px"><thead><tr><th>Mes</th><th class="num">Órdenes</th><th class="num">Total aprobado</th></tr></thead>
+      <tbody>${meses.map(([m,v])=>`<tr><td>${mesStk(m)}</td><td class="num mono">${v.n}</td><td class="num mono" style="font-weight:600">${money(v.total)}</td></tr>`).join('')}</tbody></table>
+      ${cotSin?`<div class="sub" style="font-size:11.5px;margin-top:7px">Además hay <b class="mono">${money(cotSin)}</b> cotizados esperando tu aprobación (no suman hasta que apruebes).</div>`:''}
+    </div>`;})()}
   <div class="panel">
-    <div class="panel-title">Circuito en curso <span class="sub" style="font-weight:400;font-size:11px">· ordenado por etapa y urgencia</span></div>
+    <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Circuito en curso <span class="sub" style="font-weight:400;font-size:11px">· ordenado por etapa y urgencia</span></span>
+      <input class="busca" type="text" placeholder="Buscar repuesto, unidad, mecánico, proveedor…" style="width:290px;font-size:12.5px" oninput="circBuscar(this.value)">
+    </div>
     ${visibles.length?`<table style="font-size:12.5px">
       <thead><tr><th>Repuesto</th><th>Máquina</th><th>Mecánico</th><th>Estado</th><th class="num">Días en estado</th><th></th></tr></thead>
       <tbody>${filas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay repuestos en el circuito.</div>'}
   </div>`;
+}
+// Buscador del circuito: filtra las filas ya renderizadas (no pierde el foco)
+function circBuscar(q){
+  q=String(q||'').toLowerCase().trim();
+  document.querySelectorAll('.circ-fila').forEach(tr=>{
+    tr.style.display=!q||tr.dataset.busca.includes(q)?'':'none';
+  });
 }
 // Acciones del Referente desde el panel: tomar → en cotización; nota → cotizado
 async function circAccion(id,accion,quitar){
@@ -2448,8 +2473,15 @@ function repRepAbrir(ix){
       <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepSugerir('${r.id}')">✨ Sugerir de nuevo</button>
       <button class="btn ghost" style="flex:0 0 auto;justify-content:center;font-size:12px" onclick="document.getElementById('rep-rep-filas').innerHTML=repRepFila()">🗑</button>
     </div>
-    <div class="mm-field" style="margin-top:10px"><label>Marca / modelo del equipo</label>
-      <input id="rep-rep-marca" type="text" placeholder="ej: Husqvarna 545" value="${String(rp&&rp.marca_modelo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+    <div style="display:flex;gap:8px">
+      <div class="mm-field" style="flex:1;margin-top:10px"><label>Marca / modelo del equipo</label>
+        <input id="rep-rep-marca" type="text" placeholder="ej: Husqvarna 545" value="${String(rp&&rp.marca_modelo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
+      <div class="mm-field" style="flex:1;margin-top:10px"><label>Mecánico que solicita</label>
+        <select id="rep-rep-solicita" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12.5px">
+          <option value="">— elegir —</option>
+          ${mecanicos.map(m=>`<option value="${m.nombre.replace(/"/g,'&quot;')}" ${(r.mecanicos&&r.mecanicos.nombre===m.nombre)?'selected':''}>${m.nombre}</option>`).join('')}
+        </select></div>
+    </div>
 
     <div class="field-l" style="margin:14px 0 4px">🧾 Orden de compra · cotización</div>
     <div class="sub" style="font-size:11.5px;margin-bottom:8px">Si ya se averiguó dónde y cuánto, cargalo: el pedido queda directo <b>esperando aprobación</b> en Compras. Si no, dejalo vacío y se cotiza después desde el circuito.</div>
@@ -2490,7 +2522,8 @@ async function repRepGuardar(id,ix){
   const cotiza=proveedor&&precio&&plazo;
   if((proveedor||precio||plazo)&&!cotiza){toast('Para cotizar completá proveedor, precio y plazo (o dejá los tres vacíos)','error');return;}
   try{
-    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:v('marca'),proveedor,precio,plazo})});
+    const solicita=((document.getElementById('rep-rep-solicita')||{}).value||'').trim();
+    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:v('marca'),proveedor,precio,plazo,solicitante:solicita})});
     const m=document.getElementById('rep-rep-modal');if(m)m.remove();
     const r=window._repFiltrada[ix];
     r.repuestos_taller=(r.repuestos_taller||[]).filter(x=>x.id!==nuevo.id&&x.estado==='entregado');
