@@ -175,8 +175,32 @@ async function refrescarContadores(){
 /* ===== Navegación ===== */
 const CRUMB={dashboard:'Dashboard',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
 let _autoRefreshTimer=null, _vistaActual=null;
-const AUTO_REFRESH_MS=10*60*1000; // 10 minutos
+const AUTO_REFRESH_MS=5*60*1000; // 5 minutos
 const MODULOS_AUTOREFRESH=['reparaciones','compras','insumos'];
+// Watcher de novedades en Reparaciones: cada 90s compara una firma liviana
+// (estado de cada incidencia + estado de cada pedido de repuestos + cantidad
+// de comentarios). Si algo cambió —nueva incidencia, respuesta de compras,
+// avance de estado— refresca al toque sin esperar los 5 minutos.
+let _repFirma=null;
+setInterval(async function(){
+  if(_vistaActual!=='reparaciones')return;
+  try{
+    const reps=await api('/api/reparaciones');
+    const firma=reps.map(r=>r.id+':'+r.estado
+      +':'+((r.repuestos_taller||[]).map(x=>x.id+'-'+x.estado).join('|'))
+      +':'+((r.comentarios_incidencias||[]).length)).sort().join(';');
+    if(_repFirma===null){_repFirma=firma;return;}
+    if(firma===_repFirma)return;
+    _repFirma=firma;
+    const hayModal=document.querySelector('.modal-bg.abierto');
+    if(_vistaActual==='reparaciones'&&!hayModal&&!repDetalleAbierto){
+      go('reparaciones');
+      toast('Hay novedades en reparaciones — actualizado','info');
+    }else{
+      toast('Hay novedades en reparaciones (se actualiza al cerrar lo que estás viendo)','info');
+    }
+  }catch(e){}
+},90*1000);
 function programarAutoRefresh(v){
   clearTimeout(_autoRefreshTimer);
   if(!MODULOS_AUTOREFRESH.includes(v))return;
@@ -186,6 +210,7 @@ function programarAutoRefresh(v){
     const hayModal=document.querySelector('.modal-bg.abierto');
     const hayDetalle=(v==='reparaciones'&&repDetalleAbierto)||(v==='compras'&&(comprasVer!=null||comprasMode==='carga'||comprasMode==='detalle'));
     if(_vistaActual===v&&!hayModal&&!hayDetalle){
+      _repFirma=null;              // el watcher rearma su firma tras el refresh
       go(v);                       // recarga el módulo
       toast('Datos actualizados','info');
     }else{
