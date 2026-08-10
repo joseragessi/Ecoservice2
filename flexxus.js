@@ -1061,16 +1061,23 @@ const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentasconta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
 let _planCache = null;   // { t, valor } — el plan de cuentas casi no cambia
-async function listarPlanCuentas() {
-  if (_planCache && Date.now() - _planCache.t < 30 * 60 * 1000) return _planCache.valor;
+async function listarPlanCuentas(forzar = false) {
+  if (!forzar && _planCache && Date.now() - _planCache.t < 30 * 60 * 1000) return _planCache.valor;
   const r = await _listarPlanCuentas();
   if (r && (r.cuentas || []).length) _planCache = { t: Date.now(), valor: r };
   return r;
 }
 async function _listarPlanCuentas() {
-  // El API PAGINA (igual que /centrodecosto: devolvía solo las primeras 50,
-  // todas del activo 121…, y faltaban las de gasto: energía, gas, fletes…).
-  // Por eso se recorren variantes de paginación y se unifican por código.
+  // El API PAGINA (igual que /centrodecosto) y NO lo avisa: /cuentascontables
+  // devuelve solo las primeras 50 y quedan afuera las cuentas de gasto que se
+  // necesitan para Servicios/Otros (energía eléctrica, Ecogas, fletes…).
+  //
+  // OJO — bug corregido el 10-ago: antes solo se sondeaba si la primera
+  // respuesta traía menos de 3 grupos distintos mirando el PRIMER dígito del
+  // código. Esa primera página trae 111/112/113/115/121/211/220/427, o sea
+  // los dígitos 1, 2 y 4 → 3 grupos → el sondeo NUNCA se disparaba y el plan
+  // quedaba cortado en 50. Ahora se sondea SIEMPRE, en rondas, y se corta
+  // cuando una ronda entera no aporta ninguna cuenta nueva.
   const mapear = (l) => (Array.isArray(l) ? l : []).map(x => ({
     codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
     descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
@@ -1087,40 +1094,55 @@ async function _listarPlanCuentas() {
     if (!base.length) continue;
 
     const porCodigo = new Map(base.map(c => [c.codigo, c]));
-    // Si la primera respuesta ya trae cuentas de varios grupos (activo, pasivo,
-    // resultados…), el plan vino completo y no hace falta sondear nada más.
-    const grupos = new Set(base.map(c => c.codigo.slice(0, 1)));
-    if (grupos.size < 3) {
-      // Vino cortado: se sondean las variantes de paginación EN PARALELO
-      // (en serie tardaba ~24s y el modal quedaba colgado).
-      const sufijos = ['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
-        '?page=2', '?page=3', '?pagina=2', '?pagina=3',
-        '?offset=50', '?offset=100', '?offset=150', '?offset=200'];
+    const sondeo = [];                       // qué trajo cada variante (diagnóstico)
+    const paso = base.length || 50;          // tamaño real de la página
+
+    // Dispara un lote de variantes EN PARALELO (en serie tardaba ~24s) y
+    // devuelve cuántas cuentas NUEVAS aportó el lote.
+    const probar = async (sufijos) => {
       const res = await Promise.all(sufijos.map(sf =>
-        flx(ruta + sf).then(d => mapear(d.data || d || [])).catch(() => [])));
-      res.forEach(arr => arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); }));
+        flx(ruta + sf)
+          .then(d => ({ sf, arr: mapear(d.data || d || []) }))
+          .catch(e => ({ sf, arr: [], error: String(e && e.message || e).slice(0, 80) }))));
+      let total = 0;
+      for (const r of res) {
+        let nuevas = 0;
+        for (const c of r.arr) if (!porCodigo.has(c.codigo)) { porCodigo.set(c.codigo, c); nuevas++; }
+        total += nuevas;
+        sondeo.push({ variante: r.sf, trajo: r.arr.length, nuevas, error: r.error });
+      }
+      return total;
+    };
+
+    // 1) variantes "traeme todo de una"
+    await probar(['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
+      '?rows=1000', '?take=1000', '?limite=1000']);
+    // 2) paginado por página y por offset, en rondas de 4 páginas, hasta que
+    //    una ronda entera no traiga nada nuevo (si el API ignora el parámetro
+    //    devuelve siempre la misma página → 0 nuevas → corta en la 1ª ronda).
+    for (let ronda = 0; ronda < 8; ronda++) {
+      const suf = [];
+      for (let k = 1; k <= 4; k++) {
+        const n = ronda * 4 + k;             // 1 = segunda página
+        suf.push('?page=' + (n + 1), '?pagina=' + (n + 1),
+          '?offset=' + (paso * n), '?desde=' + (paso * n));
+      }
+      if (!await probar(suf)) break;
     }
+
     const cuentas = [...porCodigo.values()].sort((a, b) => a.codigo.localeCompare(b.codigo));
-    return { cuentas, ruta, base: base.length };
+    return { cuentas, ruta, base: base.length, sondeo };
   }
-  return { cuentas: [], ruta: null, base: 0 };
+  return { cuentas: [], ruta: null, base: 0, sondeo: [] };
 }
 
 async function listarRubrosBienesUso() {
-  for (const ruta of RUTAS_PLAN) {
-    try {
-      const d = await flx(ruta);
-      const l = d.data || d || [];
-      if (!Array.isArray(l) || !l.length) continue;
-      const filas = l.map(x => ({
-        codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
-        descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
-      })).filter(x => x.codigo);
-      const rubros = filas.filter(x => x.codigo.startsWith('121'));
-      if (rubros.length) return rubros;
-    } catch (e) { /* siguiente ruta */ }
-  }
-  return [];
+  // Los rubros de BIENES DE USO son las subcuentas 121… del plan. Se toman del
+  // plan COMPLETO (cacheado): leyendo solo la primera página se corría el
+  // riesgo de perder alguna si Flexxus reordena las cuentas.
+  const { cuentas } = await listarPlanCuentas();
+  return (cuentas || []).filter(x => x.codigo.startsWith('121'))
+    .map(x => ({ codigo: x.codigo, descripcion: x.descripcion }));
 }
 
 async function listarClasesProveedor() {
