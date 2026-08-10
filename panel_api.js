@@ -2019,6 +2019,27 @@ function expandirFactura(d) {
   };
 }
 
+// Plan de cuentas completo para sub-seleccionar la cuenta en CUALQUIER clase
+// de comprobante (Bienes de uso ya usa /rubros-bienes-uso con el prefijo 121;
+// Servicios/Otros/Locaciones/Nacionalizaciones necesitan el resto del plan).
+router.get('/api/compras/plan-cuentas', auth, async (req, res) => {
+  try {
+    const { listarPlanCuentas } = require('./flexxus');
+    const { cuentas, ruta } = await listarPlanCuentas();
+    const pref = String(req.query.prefijo || '').trim();
+    const filtradas = pref ? cuentas.filter(c => c.codigo.startsWith(pref)) : cuentas;
+    // Las cuentas de movimiento son las hojas: si el API no marca "imputable",
+    // se toman las que no son prefijo de ninguna otra (no tienen hijas).
+    const conMarca = filtradas.some(c => c.imputable !== null);
+    const hojas = conMarca ? filtradas.filter(c => c.imputable)
+      : filtradas.filter(c => !filtradas.some(o => o.codigo !== c.codigo && o.codigo.startsWith(c.codigo)));
+    res.json({ ruta, total: cuentas.length, cuentas: hojas.length ? hojas : filtradas });
+  } catch (err) {
+    console.error('plan-cuentas:', err.message);
+    res.status(500).json({ error: 'No pude leer el plan de cuentas' });
+  }
+});
+
 // TODOS los centros de costo de Flexxus (el GET plano suele traer solo los
 // activos: por eso LA DESEADA, PROVINCIA y otros aparecen "sin número").
 // Cruza contra la tabla centros_costo del panel y dice qué falta de cada lado.
