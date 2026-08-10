@@ -4196,19 +4196,29 @@ function ncTotal(inv){
 // Muestra la clase contable del proveedor y permite fijarla antes de imputar.
 // La clase deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes de
 // Uso; INSUMOS/COMBUSTIBLES → gasto). Queda guardada como fija por proveedor.
+// Muestra u oculta la sub-selección de cuenta según la clase elegida y ajusta
+// la etiqueta: Bienes de uso habla de "rubro", el resto de "cuenta contable".
+function cpCambioClase(v){
+  const w=document.getElementById('cp-rubro-wrap'), l=document.getElementById('cp-rubro-lbl');
+  if(!w)return;
+  w.style.display=(Number(v)>=1)?'block':'none';
+  if(l)l.textContent=(v==='1')?'RUBRO DE BIENES DE USO (define la cuenta 121…)':'CUENTA CONTABLE (sub-selección)';
+}
 async function elegirClaseProveedor(prev,prog){
   // La ficha COMPLETA del proveedor (el preview trae uno resumido sin
   // clasecomprobante): de acá salen la CLASE DE COMPROBANTE y el RUBRO, que
   // son los que definen a qué cuenta contable va el asiento en Flexxus.
   let pf=prev.proveedor||{};
-  let rubros=[];
+  let rubros=[],planCuentas=[];
   try{
-    const [fi,ru]=await Promise.all([
+    const [fi,ru,pl]=await Promise.all([
       api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm)),
       api('/api/compras/rubros-bienes-uso'),
+      api('/api/compras/plan-cuentas').catch(()=>null),
     ]);
     if(fi&&fi.existe&&fi.lista)pf=fi.lista;
     if(Array.isArray(ru))rubros=ru;
+    if(pl&&Array.isArray(pl.cuentas))planCuentas=pl.cuentas;
   }catch(e){}
   if(prog)prog.cerrar();
   return new Promise(resolve=>{
@@ -4230,6 +4240,8 @@ async function elegirClaseProveedor(prev,prog){
         const esBU=claseNum===1;
         const rubroActual=String(pf.cuenta||'');
         // Respaldo si el plan de cuentas no responde (mismos rubros que Flexxus)
+        // Cuentas fuera de los rubros 121 (para Servicios/Otros/Locaciones/etc.)
+        const OTRAS=planCuentas.filter(c=>!String(c.codigo).startsWith('121'));
         const RUB=rubros.length?rubros:[
           {codigo:'12101001',descripcion:'HARDWARE Y SOFTWARE'},{codigo:'12101002',descripcion:'INMUEBLES'},
           {codigo:'12101003',descripcion:'INSTALACIONES'},{codigo:'12101005',descripcion:'MAQUINAS Y HERRAMIENTAS'},
@@ -4238,17 +4250,19 @@ async function elegirClaseProveedor(prev,prog){
         return `
         <div style="background:var(--hueso);border:1px solid var(--linea);border-radius:9px;padding:11px 13px;margin-bottom:10px">
           <div style="font-size:11px;color:var(--tinta-3);margin-bottom:3px">CLASE DE COMP.</div>
-          <select id="cp-comp" onchange="document.getElementById('cp-rubro-wrap').style.display=this.value==='1'?'block':'none'"
+          <select id="cp-comp" onchange="cpCambioClase(this.value)"
             style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
             ${CLASES.map(([v,t])=>`<option value="${v}"${claseNum===v?' selected':''}>${t}</option>`).join('')}
           </select>
-          <div id="cp-rubro-wrap" style="display:${esBU?'block':'none'};margin-top:9px">
-            <div style="font-size:11px;color:var(--tinta-3);margin-bottom:3px">RUBRO DE BIENES DE USO (define la cuenta 121…)</div>
-            <select id="cp-rubro" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
-              <option value="">— Elegir rubro —</option>
-              ${RUB.map(r=>`<option value="${r.codigo}"${rubroActual===r.codigo?' selected':''}>${r.descripcion} (${r.codigo})</option>`).join('')}
-            </select>
-            ${!rubros.length?'<div class="sub" style="font-size:10.5px;margin-top:3px">(lista de respaldo: el plan de cuentas de Flexxus no respondió)</div>':''}
+          <div id="cp-rubro-wrap" style="display:${claseNum>=1?'block':'none'};margin-top:9px">
+            <div id="cp-rubro-lbl" style="font-size:11px;color:var(--tinta-3);margin-bottom:3px">${esBU?'RUBRO DE BIENES DE USO (define la cuenta 121…)':'CUENTA CONTABLE (sub-selección)'}</div>
+            <input list="cp-cuenta-list" id="cp-rubro" placeholder="Escribí para buscar…" value="${rubroActual&&rubroActual!=='0'?rubroActual:''}"
+              style="width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
+            <datalist id="cp-cuenta-list">
+              ${RUB.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
+              ${OTRAS.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
+            </datalist>
+            <div class="sub" style="font-size:10.5px;margin-top:3px">Bienes de uso usa las cuentas 121…; para Servicios, Otros, Locaciones y Nacionalizaciones elegí la cuenta del plan que corresponda${planCuentas.length?' ('+planCuentas.length+' cuentas disponibles)':' — el plan de cuentas no respondió, escribí el código a mano'}.</div>
           </div>
           <div class="sub" style="font-size:11px;margin-top:8px">
             ${leida?`Hoy en la ficha: <b>${(CLASES.find(c=>c[0]===claseNum)||[0,'—'])[1]}</b>${esBU?' · rubro '+(rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (toma Hardware y software)'):''}`
@@ -4272,12 +4286,12 @@ async function elegirClaseProveedor(prev,prog){
       const rubroAntes=(bg.querySelector('#cp-rubro-actual')||{}).value||'';
       // Se manda a Flexxus solo si el usuario CAMBIÓ algo respecto de la ficha
       const cambioClase=claseComp!==''&&claseComp!==claseAntes;
-      const cambioRubro=claseComp==='1'&&rubro&&rubro!==rubroAntes;
+      const cambioRubro=Number(claseComp)>=1&&rubro&&rubro!==rubroAntes;
       if(!cambioClase&&!cambioRubro){bg.remove();resolve('seguir');return;}
       const car=flxCargando('Cargando información en Flexxus…','Colocando la clase de comprobante y el rubro en la ficha del proveedor.',230);
       try{
         const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({
-          cuit:prev.cuit_norm,clase:Number(claseComp!==''?claseComp:claseAntes||0),cuenta:(claseComp==='1')?(rubro||null):null})});
+          cuit:prev.cuit_norm,clase:Number(claseComp!==''?claseComp:claseAntes||0),cuenta:(Number(claseComp)>=1)?(rubro||null):null})});
         car.cerrar();
         if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
         else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
