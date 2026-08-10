@@ -4209,7 +4209,7 @@ async function elegirClaseProveedor(prev,prog){
   // clasecomprobante): de acá salen la CLASE DE COMPROBANTE y el RUBRO, que
   // son los que definen a qué cuenta contable va el asiento en Flexxus.
   let pf=prev.proveedor||{};
-  let rubros=[],planCuentas=[];
+  let rubros=[],planCuentas=[],planInfo=null;
   try{
     const [fi,ru,pl]=await Promise.all([
       api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm)),
@@ -4218,7 +4218,7 @@ async function elegirClaseProveedor(prev,prog){
     ]);
     if(fi&&fi.existe&&fi.lista)pf=fi.lista;
     if(Array.isArray(ru))rubros=ru;
-    if(pl&&Array.isArray(pl.cuentas))planCuentas=pl.cuentas;
+    if(pl&&Array.isArray(pl.cuentas)){planCuentas=pl.cuentas;planInfo=pl;}
   }catch(e){}
   if(prog)prog.cerrar();
   return new Promise(resolve=>{
@@ -4262,7 +4262,7 @@ async function elegirClaseProveedor(prev,prog){
               ${RUB.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
               ${OTRAS.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
             </datalist>
-            <div class="sub" style="font-size:10.5px;margin-top:3px">Bienes de uso usa las cuentas 121…; para Servicios, Otros, Locaciones y Nacionalizaciones elegí la cuenta del plan que corresponda${planCuentas.length?' ('+planCuentas.length+' cuentas disponibles)':' — el plan de cuentas no respondió, escribí el código a mano'}.</div>
+            <div class="sub" style="font-size:10.5px;margin-top:3px">${planCuentas.length?('Plan de cuentas: '+planCuentas.length+' cuentas'+(planInfo&&planInfo.por_grupo?' ('+Object.entries(planInfo.por_grupo).map(([g,n])=>g+'…: '+n).join(' · ')+')':'')+'. Si no aparecen las de gasto (energía, gas, fletes…), avisá: el API está devolviendo el plan cortado.'):'El plan de cuentas no respondió: escribí el código de la cuenta a mano.'}</div>
           </div>
           <div class="sub" style="font-size:11px;margin-top:8px">
             ${leida?`Hoy en la ficha: <b>${(CLASES.find(c=>c[0]===claseNum)||[0,'—'])[1]}</b>${esBU?' · rubro '+(rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (toma Hardware y software)'):''}`
@@ -4271,7 +4271,6 @@ async function elegirClaseProveedor(prev,prog){
         </div>
         <input type="hidden" id="cp-clase-actual" value="${claseNum==null?'':claseNum}">
         <input type="hidden" id="cp-rubro-actual" value="${rubroActual}">`;
-      })()}
       })()}
       <div class="modal-acciones">
         <button class="btn-salir" id="cp-cancel">Cancelar</button>
