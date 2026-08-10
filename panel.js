@@ -4220,32 +4220,44 @@ async function elegirClaseProveedor(prev,prog){
       <div class="sub" style="margin-bottom:12px;font-size:12px">La clase de comprobante define a qué cuenta contable va la factura en Flexxus. <b>Bienes de uso</b> + rubro → cuenta 121…; <b>Bienes de cambio</b> → Mercaderías.</div>
       ${actual?`<div class="sub" style="font-size:11.5px;margin-bottom:10px">Clase del proveedor en Flexxus: <b>${actual.codigo_clase} · ${actual.clase_descripcion||''}</b></div>`:''}
       ${(()=>{
-        const enBlanco=Number(pf.clasecomprobante)===0||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE CAMBIO';
-        const esBU=Number(pf.clasecomprobante)===1||String(pf.tipocomprobante||'').toUpperCase()==='BIENES DE USO';
-        if(!('clasecomprobante' in pf)&&!pf.tipocomprobante)return '<div class="sub" style="font-size:11px;margin-bottom:10px">No pude leer la clase de comprobante de la ficha (¿proveedor nuevo? se crea al imputar).</div>';
+        // Los dos desplegables COMO EN FLEXXUS, siempre editables: "Clase de
+        // Comp." y, cuando es Bienes de uso, el rubro que define la cuenta.
+        // Vienen preseleccionados con lo que hoy tiene la ficha del proveedor.
+        const CLASES=[[0,'BIENES DE CAMBIO'],[1,'BIENES DE USO'],[2,'SERVICIOS'],[3,'OTROS'],[4,'LOCACIONES'],[5,'NACIONALIZACIONES']];
+        const claseNum=('clasecomprobante' in pf)?Number(pf.clasecomprobante):
+          (CLASES.find(c=>c[1]===String(pf.tipocomprobante||'').toUpperCase())||[null])[0];
+        const leida=claseNum!=null;
+        const esBU=claseNum===1;
         const rubroActual=String(pf.cuenta||'');
-        const rubroOpts=rubros.map(r=>`<option value="${r.codigo}"${rubroActual===r.codigo?' selected':''}>${r.descripcion} (${r.codigo})</option>`).join('');
-        const selRubro=rubros.length?`
-          <div id="cp-rubro-wrap" style="display:${(esBU)?'block':'none'};margin-top:7px">
-            <div style="font-size:11px;color:#586B60;margin-bottom:3px">Rubro de bienes de uso (define la cuenta exacta):</div>
+        // Respaldo si el plan de cuentas no responde (mismos rubros que Flexxus)
+        const RUB=rubros.length?rubros:[
+          {codigo:'12101001',descripcion:'HARDWARE Y SOFTWARE'},{codigo:'12101002',descripcion:'INMUEBLES'},
+          {codigo:'12101003',descripcion:'INSTALACIONES'},{codigo:'12101005',descripcion:'MAQUINAS Y HERRAMIENTAS'},
+          {codigo:'12101006',descripcion:'MARCAS Y PATENTES'},{codigo:'12101004',descripcion:'MUEBLES Y UTILES'},
+          {codigo:'12101007',descripcion:'RODADOS'}];
+        return `
+        <div style="background:var(--hueso);border:1px solid var(--linea);border-radius:9px;padding:11px 13px;margin-bottom:10px">
+          <div style="font-size:11px;color:var(--tinta-3);margin-bottom:3px">CLASE DE COMP.</div>
+          <select id="cp-comp" onchange="document.getElementById('cp-rubro-wrap').style.display=this.value==='1'?'block':'none'"
+            style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
+            ${CLASES.map(([v,t])=>`<option value="${v}"${claseNum===v?' selected':''}>${t}</option>`).join('')}
+          </select>
+          <div id="cp-rubro-wrap" style="display:${esBU?'block':'none'};margin-top:9px">
+            <div style="font-size:11px;color:var(--tinta-3);margin-bottom:3px">RUBRO DE BIENES DE USO (define la cuenta 121…)</div>
             <select id="cp-rubro" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
-              <option value="">— Elegir rubro —</option>${rubroOpts}</select></div>`:'';
-        if(!enBlanco&&!esBU)return `<div style="background:var(--brote-soft);color:var(--brote-2);border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:10px">Clase de comprobante en Flexxus: <b>${pf.tipocomprobante}</b> ✓ (define la cuenta contable)</div>`;
-        if(esBU)return `<div style="background:var(--brote-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
-          <div style="font-size:12.5px;color:var(--brote-2);font-weight:600">Clase de comprobante: BIENES DE USO ✓</div>
-          <div style="font-size:11.5px;color:#586B60;margin-top:3px">Rubro actual: <b>${rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (usa el primero: Hardware y software)'}</b> — corregilo si no corresponde:</div>
-          ${selRubro}</div>`;
-        return `<div style="background:var(--diesel-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px">
-          <div style="font-size:12.5px;color:#854F0B;font-weight:600;margin-bottom:6px">⚠ Clase de comprobante EN BLANCO (Bienes de cambio → Mercaderías)</div>
-          <div style="font-size:11.5px;color:#854F0B;margin-bottom:7px">Si este proveedor no vende mercadería, colocale la clase correcta — define a qué cuenta van sus facturas:</div>
-          <select id="cp-comp" onchange="const w=document.getElementById('cp-rubro-wrap');if(w)w.style.display=this.value==='1'?'block':'none'" style="width:100%;padding:9px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:12.5px;background:#fff">
-            <option value="">— Dejar como está (Bienes de cambio · Mercaderías) —</option>
-            <option value="1">BIENES DE USO (máquinas, equipos, rodados…)</option>
-            <option value="2">SERVICIOS</option>
-            <option value="3">OTROS</option>
-            <option value="4">LOCACIONES</option>
-            <option value="5">NACIONALIZACIONES</option>
-          </select>${selRubro}</div>`;
+              <option value="">— Elegir rubro —</option>
+              ${RUB.map(r=>`<option value="${r.codigo}"${rubroActual===r.codigo?' selected':''}>${r.descripcion} (${r.codigo})</option>`).join('')}
+            </select>
+            ${!rubros.length?'<div class="sub" style="font-size:10.5px;margin-top:3px">(lista de respaldo: el plan de cuentas de Flexxus no respondió)</div>':''}
+          </div>
+          <div class="sub" style="font-size:11px;margin-top:8px">
+            ${leida?`Hoy en la ficha: <b>${(CLASES.find(c=>c[0]===claseNum)||[0,'—'])[1]}</b>${esBU?' · rubro '+(rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (toma Hardware y software)'):''}`
+                   :'No pude leer la clase de la ficha (¿proveedor nuevo? se crea al imputar). Elegí la que corresponda.'}
+          </div>
+        </div>
+        <input type="hidden" id="cp-clase-actual" value="${claseNum==null?'':claseNum}">
+        <input type="hidden" id="cp-rubro-actual" value="${rubroActual}">`;
+      })()}
       })()}
       <div class="modal-acciones">
         <button class="btn-salir" id="cp-cancel">Cancelar</button>
@@ -4254,18 +4266,18 @@ async function elegirClaseProveedor(prev,prog){
     document.body.appendChild(bg);
     bg.querySelector('#cp-cancel').onclick=()=>{bg.remove();resolve('cancelar');};
     bg.querySelector('#cp-ok').onclick=async()=>{
-      const compSel=bg.querySelector('#cp-comp');
-      const rubroSel=bg.querySelector('#cp-rubro');
-      const claseComp=compSel?compSel.value:'';
-      const rubro=rubroSel?rubroSel.value:'';
-      // Caso A: clase en blanco y eligió una → colocar clase (+rubro si eligió)
-      // Caso B: ya es Bienes de uso y eligió/cambió rubro → corregir el rubro
-      const yaBU=!compSel&&rubroSel;  // sin selector de clase = ya era Bienes de uso
-      if(!claseComp&&!(yaBU&&rubro)){bg.remove();resolve('seguir');return;}
+      const claseComp=(bg.querySelector('#cp-comp')||{}).value||'';
+      const rubro=(bg.querySelector('#cp-rubro')||{}).value||'';
+      const claseAntes=(bg.querySelector('#cp-clase-actual')||{}).value||'';
+      const rubroAntes=(bg.querySelector('#cp-rubro-actual')||{}).value||'';
+      // Se manda a Flexxus solo si el usuario CAMBIÓ algo respecto de la ficha
+      const cambioClase=claseComp!==''&&claseComp!==claseAntes;
+      const cambioRubro=claseComp==='1'&&rubro&&rubro!==rubroAntes;
+      if(!cambioClase&&!cambioRubro){bg.remove();resolve('seguir');return;}
       const car=flxCargando('Cargando información en Flexxus…','Colocando la clase de comprobante y el rubro en la ficha del proveedor.',230);
       try{
         const rc=await api('/api/compras/proveedor-clase-comprobante',{method:'POST',body:JSON.stringify({
-          cuit:prev.cuit_norm,clase:claseComp?Number(claseComp):1,cuenta:(claseComp==='1'||yaBU)?(rubro||null):null})});
+          cuit:prev.cuit_norm,clase:Number(claseComp!==''?claseComp:claseAntes||0),cuenta:(claseComp==='1')?(rubro||null):null})});
         car.cerrar();
         if(rc&&rc.ok)toast(rc.motivo||'Clase de comprobante colocada ✓');
         else toast('Clase de comprobante: '+(rc&&rc.motivo||'no se pudo colocar'),'error');
@@ -5027,6 +5039,17 @@ function comprasCaptura(){
 }
 function comprasSetMode(m){comprasCaptura();comprasAssignMode=m;go('compras');}
 
+// Aviso de fecha futura: Flexxus rechaza comprobantes posteriores a hoy y el
+// OCR a veces invierte día y mes (08/10 → 8 de octubre).
+function cfAvisoFecha(){
+  const inp=document.getElementById('cf-fecha'), av=document.getElementById('cf-fecha-aviso');
+  if(!inp||!av)return;
+  const hoy=new Date().toISOString().slice(0,10);
+  if(inp.value&&inp.value>hoy){
+    const [a,m,d]=inp.value.split('-');
+    av.textContent='⚠ Fecha futura: Flexxus la va a rechazar. ¿No será '+m+'/'+d+'/'+a+' (día y mes invertidos)?';
+  }else av.textContent='';
+}
 async function comprasGuardar(){
   comprasCaptura();
   const d=comprasExtracted||{};
@@ -5151,7 +5174,8 @@ function vComprasCarga(view){
         <div class="mm-label">Datos extraídos</div>
         <div class="panel" style="margin-bottom:14px">
           <div class="grid g-2">
-            <div class="mm-field"><label>Fecha</label><input id="cf-fecha" type="date" value="${d.fecha_factura||''}"></div>
+            <div class="mm-field"><label>Fecha</label><input id="cf-fecha" type="date" max="${new Date().toISOString().slice(0,10)}" value="${d.fecha_factura||''}" oninput="cfAvisoFecha()">
+              <div id="cf-fecha-aviso" class="sub" style="font-size:11px;color:#A32D2D"></div></div>
             <div class="mm-field"><label>N° Factura</label><input id="cf-num" value="${(d.numero_factura||'').replace(/"/g,'&quot;')}"></div>
             <div class="mm-field"><label>Letra ${d.letra?'<span style="color:var(--brote-2);font-weight:400">· leída ✓</span>':'<span style="color:var(--diesel);font-weight:400">· revisá</span>'}</label>
               <select id="cf-letra"><option value="">—</option>${['A','B','C'].map(x=>`<option value="${x}" ${(d.letra||'')===x?'selected':''}>${x}</option>`).join('')}</select></div>
