@@ -2019,6 +2019,75 @@ function expandirFactura(d) {
   };
 }
 
+// TODOS los centros de costo de Flexxus (el GET plano suele traer solo los
+// activos: por eso LA DESEADA, PROVINCIA y otros aparecen "sin número").
+// Cruza contra la tabla centros_costo del panel y dice qué falta de cada lado.
+router.get('/api/compras/centroscosto-flexxus', auth, async (req, res) => {
+  try {
+    const norm = (t) => String(t || '').toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    const { listarCentrosCostoTodos } = require('./flexxus');
+    const { centros, intentos } = await listarCentrosCostoTodos();
+    const { data: locales } = await supabase.from('centros_costo').select('nombre, codigo_flexxus, activo');
+    const porNombre = new Map((locales || []).map(l => [norm(l.nombre), l]));
+    const enFlexxus = centros.map(c => {
+      const loc = porNombre.get(norm(c.descripcion));
+      return {
+        codigo: c.codigo,
+        descripcion: c.descripcion,
+        activo: c.activo,
+        en_panel: !!loc,
+        codigo_en_panel: loc ? (loc.codigo_flexxus ?? null) : null,
+        coincide: !!(loc && Number(loc.codigo_flexxus) === Number(c.codigo)),
+      };
+    });
+    const nombresFlexxus = new Set(centros.map(c => norm(c.descripcion)));
+    const soloEnPanel = (locales || [])
+      .filter(l => !nombresFlexxus.has(norm(l.nombre)))
+      .map(l => ({ nombre: l.nombre, codigo_flexxus: l.codigo_flexxus ?? null, activo: l.activo }));
+    res.json({
+      total_flexxus: centros.length,
+      intentos,
+      centros: enFlexxus,
+      sin_codigo_en_panel: enFlexxus.filter(c => c.en_panel && c.codigo_en_panel == null),
+      desajustados: enFlexxus.filter(c => c.en_panel && c.codigo_en_panel != null && !c.coincide),
+      solo_en_panel: soloEnPanel,
+    });
+  } catch (err) {
+    console.error('centroscosto-flexxus:', err.message);
+    res.status(500).json({ error: err.message || 'No pude leer los centros de costo' });
+  }
+});
+
+// Escribe en la tabla del panel los códigos que faltan (match exacto por
+// nombre normalizado). No pisa códigos ya cargados salvo forzar=true.
+router.post('/api/compras/centroscosto-sincronizar', auth, async (req, res) => {
+  try {
+    const forzar = !!(req.body || {}).forzar;
+    const norm = (t) => String(t || '').toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    const { listarCentrosCostoTodos } = require('./flexxus');
+    const { centros } = await listarCentrosCostoTodos();
+    const porNombre = new Map(centros.map(c => [norm(c.descripcion), c.codigo]));
+    const { data: locales } = await supabase.from('centros_costo').select('id, nombre, codigo_flexxus');
+    const cambios = [];
+    for (const l of (locales || [])) {
+      const cod = porNombre.get(norm(l.nombre));
+      if (cod == null) continue;
+      if (l.codigo_flexxus != null && !forzar && Number(l.codigo_flexxus) === Number(cod)) continue;
+      if (l.codigo_flexxus != null && !forzar) continue;
+      const { error } = await supabase.from('centros_costo').update({ codigo_flexxus: cod }).eq('id', l.id);
+      if (!error) cambios.push({ nombre: l.nombre, codigo: cod });
+    }
+    res.json({ actualizados: cambios.length, cambios });
+  } catch (err) {
+    console.error('centroscosto-sincronizar:', err.message);
+    res.status(500).json({ error: err.message || 'No pude sincronizar' });
+  }
+});
+
 // Diagnóstico de la API de IA: prueba la key REAL que usa el server (la de
 // Railway) con una llamada mínima y muestra sus últimos caracteres, para poder
 // compararla con la del console de Anthropic cuando el saldo "está pero no anda"
