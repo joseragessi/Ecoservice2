@@ -2071,6 +2071,9 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     console.log(`[factura] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
       `(${MODEL_FACTURAS}, ${Math.round(String(fileData).length * 0.75 / 1024)} KB de archivo, ` +
       `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out tokens)`);
+    // Diagnóstico: si la API devolvió error o cortó la respuesta, que quede en el log
+    if (data.error) console.error('[factura] error de API:', JSON.stringify(data.error).slice(0, 300));
+    if (data.stop_reason && data.stop_reason !== 'end_turn') console.error('[factura] stop_reason:', data.stop_reason);
     try {
       const parsed = expandirFactura(JSON.parse(txt.replace(/```json|```/g, '').trim()));
       // ── Defensas duras post-extracción (independientes del prompt) ──
@@ -2100,7 +2103,14 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       if (avisos.length) parsed.__avisos = avisos;
       res.json(parsed);
     } catch (e) {
-      res.json({ __error: 'No se pudo extraer automáticamente. Completá los campos a mano.' });
+      // El modelo respondió algo que no es el JSON esperado. El texto crudo va
+      // al log (recortado) — sin esto el motivo real queda invisible.
+      console.error('[factura] respuesta no parseable (' + (e.message || e) + '). Texto del modelo: ' +
+        JSON.stringify(String(txt).slice(0, 400)));
+      const pista = !txt ? 'La API no devolvió texto.'
+        : /no puedo|lo siento|i cannot|i can.t|unable/i.test(txt) ? 'El modelo no pudo leer este documento.'
+        : 'La respuesta del modelo no vino en el formato esperado.';
+      res.json({ __error: 'No se pudo extraer automáticamente (' + pista + ') Probá de nuevo o completá a mano.' });
     }
   } catch (err) {
     console.error('compras extract:', err);
