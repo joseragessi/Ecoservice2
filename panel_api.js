@@ -2588,12 +2588,14 @@ router.get('/api/compras/facturas/:id/centrocosto-preview', auth, async (req, re
       .select('*').eq('id', req.params.id).single();
     if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
     const f = fila.data || {};
-    const { repartoCentroCosto, listarCentrosCosto } = require('./flexxus');
+    const { repartoCentroCosto, listarCentrosCostoTodos } = require('./flexxus');
     const { data: objs } = await supabase.from('centros_costo').select('nombre, codigo_flexxus');
     const r = repartoCentroCosto(f, objs || []);
     // Contraste contra Flexxus: que el código exista y con qué nombre figura allá
     let centrosFlx = null, motivoFlx = null;
-    try { centrosFlx = await listarCentrosCosto(); }
+    // Lista COMPLETA: el GET plano pagina en 42 y marcaba como inexistentes
+    // códigos válidos (LA DESEADA 57, PROVINCIA 62) — falso positivo.
+    try { centrosFlx = (await listarCentrosCostoTodos()).centros; }
     catch (e) { motivoFlx = e.message; }
     const total = (Number(f.total_sin_iva) || 0);
     const pesoTot = (r.reparto || []).reduce((s, x) => s + (Number(x.peso) || 0), 0) || 1;
