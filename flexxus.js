@@ -50,6 +50,7 @@ async function token() {
 }
 
 // Traduce mensajes crudos del API de Flexxus a algo que se entienda en el panel.
+const RX_FECHA_FUTURA = /FECHA DEL COMPROBANTE Y\/O LA FECHA IMPUTABLE NO PUEDE SER MAYOR/i;
 function traducirErrorFlexxus(msg) {
   const M = (msg || '').toUpperCase();
   if (M.includes('NO HAY NINGUN EJERCICIO ACTIVO') || M.includes('EJERCICIO ACTIVO PARA LA FECHA'))
@@ -57,6 +58,9 @@ function traducirErrorFlexxus(msg) {
            'Revisá la fecha de la factura: tiene que caer dentro de un ejercicio contable activo en Flexxus.';
   if (M.includes('NO HAY EJERCICIO'))
     return 'Flexxus no tiene un ejercicio contable abierto para esa fecha. Verificá la fecha de la factura.';
+  if (RX_FECHA_FUTURA.test(M))
+    return 'La fecha de la factura (o la fecha imputable) es posterior a hoy y Flexxus no acepta comprobantes futuros. ' +
+           'Corregí la fecha en el panel: fijate que el día y el mes no estén invertidos.';
   if (M.includes('SUMATORIA DE LOS PORCENTAJES'))
     return 'Los porcentajes del centro de costo no suman 100. (El sistema debería corregirlo solo — avisame si persiste.)';
   if (M.includes('PROVEEDOR') && (M.includes('NO EXISTE') || M.includes('NO ENCONTRAD')))
@@ -371,6 +375,17 @@ async function imputarFactura(f, letra, opts = {}) {
   }));
 
   const fecha = f.fecha_factura || new Date().toISOString().slice(0, 10);
+  // Flexxus rechaza comprobantes con fecha futura ("LA FECHA DEL COMPROBANTE
+  // Y/O LA FECHA IMPUTABLE NO PUEDE SER MAYOR A LA FECHA ACTUAL"). Se corta
+  // acá con un mensaje entendible: casi siempre es el OCR que invirtió día y
+  // mes (08/10 leído como 8 de octubre).
+  const hoyISO = new Date().toISOString().slice(0, 10);
+  if (String(fecha) > hoyISO) {
+    const [a, m, d] = String(fecha).split('-');
+    const err = new Error('La fecha de la factura (' + d + '/' + m + '/' + a + ') es posterior a hoy y Flexxus no acepta comprobantes futuros. ' +
+      'Corregí la fecha en el panel antes de imputar — si el día y el mes están invertidos, sería ' + m + '/' + d + '/' + a + '.');
+    err.status = 422; throw err;
+  }
   const venc = f.fecha_vencimiento ||
     new Date(new Date(fecha).getTime() + 30 * 86400000).toISOString().slice(0, 10);
 
@@ -1042,6 +1057,27 @@ const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentasconta
   '/contabilidad/cuentas', '/contabilidad/plancuentas', '/contabilidad/plandecuentas',
   '/cuentasimputables', '/cuentascontable', '/contabilidad/cuenta', '/cuenta',
   '/planctas', '/ctacontable', '/contabilidad/ctas', '/rubroscontables'];
+// Plan de cuentas COMPLETO (imputables). Sirve para sub-seleccionar la cuenta
+// en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
+// Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
+async function listarPlanCuentas() {
+  for (const ruta of RUTAS_PLAN) {
+    try {
+      const d = await flx(ruta);
+      const l = d.data || d || [];
+      if (!Array.isArray(l) || !l.length) continue;
+      const filas = l.map(x => ({
+        codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
+        descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
+        imputable: (x.imputable === undefined && x.esimputable === undefined) ? null
+          : (x.imputable === true || Number(x.imputable) === 1 || x.esimputable === true || Number(x.esimputable) === 1),
+      })).filter(x => x.codigo);
+      if (filas.length) return { cuentas: filas, ruta };
+    } catch (e) { /* siguiente ruta */ }
+  }
+  return { cuentas: [], ruta: null };
+}
+
 async function listarRubrosBienesUso() {
   for (const ruta of RUTAS_PLAN) {
     try {
@@ -1113,4 +1149,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
