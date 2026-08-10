@@ -456,6 +456,7 @@ async function imputarFactura(f, letra, opts = {}) {
 // lo que se muestra es exactamente lo que se va a mandar.
 function repartoCentroCosto(f, objetivos) {
   const pesos = {};
+  const pesosAlias = {};   // nombre principal → "A + B" cuando comparten código
   if (f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length) {
     const items = f.items || [];
     for (const [ix, a] of Object.entries(f.assignments)) {
@@ -466,7 +467,7 @@ function repartoCentroCosto(f, objetivos) {
   } else if (f.totalAssign && f.totalAssign.objetivo) {
     pesos[f.totalAssign.objetivo] = 1;
   }
-  const nombres = Object.keys(pesos);
+  let nombres = Object.keys(pesos);
   if (!nombres.length) return { ok: false, motivo: 'La factura no tiene imputación por objetivo en el panel.', reparto: [] };
   const norm = s => String(s || '').trim().toLowerCase();
   const mapa = {};
@@ -474,6 +475,23 @@ function repartoCentroCosto(f, objetivos) {
     if (o.codigo_flexxus) mapa[norm(o.nombre)] = String(o.codigo_flexxus).trim().replace(/^0+(?=\d)/, '');
   });
   const sinCodigo = nombres.filter(n => !mapa[norm(n)]);
+  // Dos centros del panel pueden apuntar al MISMO código de Flexxus (ej.
+  // "BIOCÓRDOBA" y "ENTE MUNICIPAL BIOCORDOBA" = 40). Si se mandaran dos
+  // líneas con el mismo codigocentrocosto, Flexxus rechaza o pisa una: se
+  // funden los pesos en un solo destino, conservando los nombres para mostrar.
+  const porCodigo = {};
+  nombres.forEach(n => {
+    const cod = mapa[norm(n)];
+    if (!cod) return;
+    (porCodigo[cod] = porCodigo[cod] || []).push(n);
+  });
+  Object.values(porCodigo).forEach(grupo => {
+    if (grupo.length < 2) return;
+    const principal = grupo[0];
+    grupo.slice(1).forEach(n => { pesos[principal] += pesos[n]; delete pesos[n]; });
+    pesosAlias[principal] = grupo.join(' + ');
+  });
+  nombres = Object.keys(pesos);
   // Porcentajes proporcionales al neto, cerrando EXACTO en 100.00: método de
   // mayor resto sobre centésimas enteras (Flexxus exige suma === 100).
   const total = nombres.reduce((s, n) => s + pesos[n], 0) || 1;
@@ -486,7 +504,7 @@ function repartoCentroCosto(f, objetivos) {
   cent.sort((a, b) => b.resto - a.resto);
   for (let i = 0; i < cent.length && sobran > 0; i++, sobran--) cent[i].base++;
   const reparto = cent.map(c => ({
-    objetivo: c.objetivo, codigocentrocosto: c.codigocentrocosto,
+    objetivo: pesosAlias[c.objetivo] || c.objetivo, codigocentrocosto: c.codigocentrocosto,
     peso: c.peso, porcentaje: c.base / 100,
   }));
   if (sinCodigo.length) {
@@ -507,18 +525,44 @@ async function listarCentrosCosto() {
   })).filter(x => !isNaN(x.codigo));
 }
 
-// Trae TODOS los centros de costo, no solo los que devuelve el GET plano
-// (que suele traer únicamente los activos). Sondea variantes de parámetros y
-// unifica por código; informa qué ruta funcionó para cada uno.
+// Catálogo de respaldo: "Listado de Centros de Costo" de Flexxus del 10/08/2026
+// (72 códigos). El GET /centrodecosto PAGINA y devuelve solo los códigos 1-42,
+// así que sin esto los centros 43+ (LA DESEADA 57, PROVINCIA 62…) se reportan
+// como inexistentes y la validación previa a imputar da un falso positivo.
+const CENTROS_COSTO_LISTADO = {
+  1: 'OFICINA', 2: '4 HOJAS', 3: 'FADEA', 4: 'CAÑUELAS', 5: 'JOCKEY', 6: 'AYRES',
+  8: 'LA SERENA', 9: 'CAMINOS DE LAS SIERRAS', 10: 'OTROS', 11: 'CLIENTES CHICOS',
+  12: 'EPEC', 13: 'OSDE', 14: 'PAOLINI', 16: 'CAMION', 17: 'UCOMA',
+  18: 'BELA VISTA', 19: 'PRITTY', 20: 'TEMPLO', 21: 'PROMEDON', 22: 'TORREON',
+  23: 'ARSA', 24: 'MUNI PODA', 25: 'GREEN PARK', 26: 'MUNICIPALIDAD DE CORDOBA',
+  27: 'LA CUESTA', 28: 'BOB CAT', 29: 'FLORALES', 30: 'UCC', 31: 'FACEF',
+  32: 'GENERAL ALL C.C', 33: 'ZOO', 34: 'O-TEK', 35: 'VULCANO SA',
+  36: 'PLAZA LAS AMERICAS', 37: 'CASA MISIÓN', 38: 'AUTOCITY', 39: 'FRONDA',
+  40: 'BIOCÓRDOBA', 41: 'RADIO MITRE', 42: 'UR', 43: 'CANAL 10',
+  44: 'CASONAS DEL SUR', 45: 'ICOR', 46: 'LA CALANDRIA', 47: 'BARRIOS',
+  48: 'INSTITUCIONAL', 49: 'PÚBLICOS', 50: 'EXTRAS', 51: 'CHACRAS DE LA VILLA',
+  52: 'TEJAS III', 53: 'LA TABLADA', 54: 'SAINT JORDI', 55: 'JORGE', 56: 'PABLO',
+  57: 'LA DESEADA', 58: 'PARQUE AZUL', 59: 'RIVERSIDE', 60: 'RIVERSIDE',
+  61: 'TECHOS VERDES', 62: 'PROVINCIA', 63: 'BUEN PASTOR', 64: 'TGN',
+  65: 'FINCAS DEL SUR', 66: 'CAÑITAS SOHO', 67: 'PANAL', 68: 'BIO4',
+  69: 'DENAT', 70: 'PROVINCIA - PLAZAS', 71: 'VIARAVA', 72: 'OBRA/FARO',
+};
+
+// Trae TODOS los centros de costo. El GET plano pagina (solo 1-42), así que se
+// sondean variantes de paginación/filtro y, lo que el API no devuelva, se
+// completa con el catálogo del listado impreso (marcado origen 'listado').
 async function listarCentrosCostoTodos() {
   const variantes = [
     '/centrodecosto',
+    '/centrodecosto?limit=500',
+    '/centrodecosto?pagesize=500',
+    '/centrodecosto?cantidad=500',
+    '/centrodecosto?page=2',
+    '/centrodecosto?pagina=2',
+    '/centrodecosto?offset=40',
     '/centrodecosto?activo=false',
-    '/centrodecosto?activos=false',
     '/centrodecosto?incluirinactivos=true',
     '/centrodecosto?todos=true',
-    '/centrodecosto?estado=todos',
-    '/centrodecosto/todos',
   ];
   const porCodigo = new Map();
   const intentos = [];
@@ -537,9 +581,18 @@ async function listarCentrosCostoTodos() {
       intentos.push({ ruta, ok: false, error: String(e.message || e).slice(0, 120) });
     }
   }
+  const delApi = porCodigo.size;
+  // Completar con el listado impreso lo que el API no haya devuelto
+  for (const [cod, desc] of Object.entries(CENTROS_COSTO_LISTADO)) {
+    const n = Number(cod);
+    if (!porCodigo.has(n)) porCodigo.set(n, { codigo: n, descripcion: desc, activo: null, origen: 'listado' });
+    else porCodigo.get(n).origen = 'api';
+  }
   return {
     centros: [...porCodigo.values()].sort((a, b) => a.codigo - b.codigo),
     intentos,
+    del_api: delApi,
+    del_listado: porCodigo.size - delApi,
   };
 }
 
