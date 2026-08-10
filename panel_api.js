@@ -2019,6 +2019,42 @@ function expandirFactura(d) {
   };
 }
 
+// Diagnóstico de la API de IA: prueba la key REAL que usa el server (la de
+// Railway) con una llamada mínima y muestra sus últimos caracteres, para poder
+// compararla con la del console de Anthropic cuando el saldo "está pero no anda"
+// (suele ser otra organización o un workspace con límite de gasto en 0).
+router.get('/api/compras/diag-ia', auth, async (req, res) => {
+  const key = String(process.env.ANTHROPIC_API_KEY || '');
+  const out = {
+    key_presente: !!key,
+    key_termina_en: key ? '…' + key.slice(-6) : null,
+    key_largo: key.length,
+    modelo_rapido: MODEL_FACTURAS_RAPIDO,
+    modelo_respaldo: MODEL_FACTURAS,
+    pruebas: [],
+  };
+  for (const modelo of [MODEL_FACTURAS_RAPIDO, MODEL_FACTURAS]) {
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: modelo, max_tokens: 5, messages: [{ role: 'user', content: 'ok' }] }),
+      });
+      const d = await r.json();
+      out.pruebas.push({
+        modelo,
+        http: r.status,
+        ok: !d.error,
+        error: d.error ? (d.error.type + ': ' + String(d.error.message || '').slice(0, 160)) : null,
+      });
+    } catch (e) {
+      out.pruebas.push({ modelo, ok: false, error: 'fallo de red: ' + e.message });
+    }
+  }
+  console.log('[diag-ia]', JSON.stringify(out));
+  res.json(out);
+});
+
 router.post('/api/compras/extract', auth, async (req, res) => {
   const t0 = Date.now();
   try {
