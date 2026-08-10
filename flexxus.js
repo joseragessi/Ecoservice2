@@ -1060,7 +1060,14 @@ const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentasconta
 // Plan de cuentas COMPLETO (imputables). Sirve para sub-seleccionar la cuenta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
+let _planCache = null;   // { t, valor } — el plan de cuentas casi no cambia
 async function listarPlanCuentas() {
+  if (_planCache && Date.now() - _planCache.t < 30 * 60 * 1000) return _planCache.valor;
+  const r = await _listarPlanCuentas();
+  if (r && (r.cuentas || []).length) _planCache = { t: Date.now(), valor: r };
+  return r;
+}
+async function _listarPlanCuentas() {
   // El API PAGINA (igual que /centrodecosto: devolvía solo las primeras 50,
   // todas del activo 121…, y faltaban las de gasto: energía, gas, fletes…).
   // Por eso se recorren variantes de paginación y se unifican por código.
@@ -1080,15 +1087,18 @@ async function listarPlanCuentas() {
     if (!base.length) continue;
 
     const porCodigo = new Map(base.map(c => [c.codigo, c]));
-    const sufijos = ['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
-      '?page=2', '?page=3', '?page=4', '?pagina=2', '?pagina=3', '?pagina=4',
-      '?offset=50', '?offset=100', '?offset=150', '?offset=200',
-      '?desde=50', '?desde=100'];
-    for (const sf of sufijos) {
-      try {
-        const d = await flx(ruta + sf);
-        mapear(d.data || d || []).forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
-      } catch (e) { /* variante no soportada */ }
+    // Si la primera respuesta ya trae cuentas de varios grupos (activo, pasivo,
+    // resultados…), el plan vino completo y no hace falta sondear nada más.
+    const grupos = new Set(base.map(c => c.codigo.slice(0, 1)));
+    if (grupos.size < 3) {
+      // Vino cortado: se sondean las variantes de paginación EN PARALELO
+      // (en serie tardaba ~24s y el modal quedaba colgado).
+      const sufijos = ['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
+        '?page=2', '?page=3', '?pagina=2', '?pagina=3',
+        '?offset=50', '?offset=100', '?offset=150', '?offset=200'];
+      const res = await Promise.all(sufijos.map(sf =>
+        flx(ruta + sf).then(d => mapear(d.data || d || [])).catch(() => [])));
+      res.forEach(arr => arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); }));
     }
     const cuentas = [...porCodigo.values()].sort((a, b) => a.codigo.localeCompare(b.codigo));
     return { cuentas, ruta, base: base.length };
