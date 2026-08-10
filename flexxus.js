@@ -507,6 +507,42 @@ async function listarCentrosCosto() {
   })).filter(x => !isNaN(x.codigo));
 }
 
+// Trae TODOS los centros de costo, no solo los que devuelve el GET plano
+// (que suele traer únicamente los activos). Sondea variantes de parámetros y
+// unifica por código; informa qué ruta funcionó para cada uno.
+async function listarCentrosCostoTodos() {
+  const variantes = [
+    '/centrodecosto',
+    '/centrodecosto?activo=false',
+    '/centrodecosto?activos=false',
+    '/centrodecosto?incluirinactivos=true',
+    '/centrodecosto?todos=true',
+    '/centrodecosto?estado=todos',
+    '/centrodecosto/todos',
+  ];
+  const porCodigo = new Map();
+  const intentos = [];
+  for (const ruta of variantes) {
+    try {
+      const d = await flx(ruta);
+      const l = d.data || d || [];
+      const arr = (Array.isArray(l) ? l : []).map(x => ({
+        codigo: Number(x.codigocentrocosto),
+        descripcion: String(x.descripcion || x.centro || ''),
+        activo: x.activo !== undefined ? x.activo : (x.estado !== undefined ? x.estado : null),
+      })).filter(x => !isNaN(x.codigo));
+      intentos.push({ ruta, ok: true, n: arr.length });
+      arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
+    } catch (e) {
+      intentos.push({ ruta, ok: false, error: String(e.message || e).slice(0, 120) });
+    }
+  }
+  return {
+    centros: [...porCodigo.values()].sort((a, b) => a.codigo - b.codigo),
+    intentos,
+  };
+}
+
 async function apropiarCentroCosto(f, resPost, objetivos) {
   // 1) Reparto por objetivo desde lo ya imputado
   const pesos = {};
@@ -1024,4 +1060,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
