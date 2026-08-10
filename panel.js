@@ -4930,7 +4930,7 @@ let comprasMsg='';
 function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
 function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');}
 
-// Las fotos de factura se ACHICAN antes de subirlas (máx 1600px, JPEG 0.85):
+// Las fotos de factura se ACHICAN antes de subirlas (máx 1300px, JPEG 0.82):
 // una foto de celular de 4000px no se lee mejor y hace que la extracción tarde
 // mucho más. Los PDF viajan tal cual.
 function comprasPickFile(input){
@@ -4943,11 +4943,11 @@ function comprasPickFile(input){
     }
     const img=new Image();
     img.onload=()=>{
-      const esc=Math.min(1,1600/Math.max(img.width,img.height));
+      const esc=Math.min(1,1300/Math.max(img.width,img.height));
       const cv=document.createElement('canvas');
       cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
       cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-      comprasFile={data:cv.toDataURL('image/jpeg',0.85).split(',')[1],type:'image/jpeg',name:f.name};
+      comprasFile={data:cv.toDataURL('image/jpeg',0.82).split(',')[1],type:'image/jpeg',name:f.name};
       go('compras');
     };
     img.onerror=()=>{comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};go('compras');};
