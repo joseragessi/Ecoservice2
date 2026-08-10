@@ -4357,7 +4357,10 @@ async function imputarFlexxus(id){
     if(prev.numero==null){busca.cerrar();toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
     // Paso de CLASE DE COMPROBANTE + RUBRO: es lo que define la cuenta contable
     // del asiento (Bienes de uso + rubro → 121…; en blanco → Mercaderías).
-    if(prev.proveedor&&prev.cuit_norm){
+    if(prev.proveedor){
+      // Sin cuit_norm el paso se salteaba y la factura se iba con la clase por
+      // defecto (Bienes de cambio → Mercaderías): se cae al CUIT de la ficha.
+      if(!prev.cuit_norm&&prev.proveedor.cuit)prev.cuit_norm=String(prev.proveedor.cuit).replace(/\D/g,'');
       busca.paso('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.');
       const sigue=await elegirClaseProveedor(prev,busca);  // cierra la ventana de espera
       if(sigue==='cancelar')return;
@@ -4735,6 +4738,19 @@ async function pintarRepartoCC(inv){
 // Destino contable: a qué cuenta de Flexxus va (o fue) esta factura. Antes de
 // imputar sale de la ficha del proveedor (clase de comprobante + rubro);
 // después de imputar se muestran las cuentas REALES releídas del asiento.
+// Abre el modal de clase/rubro desde la card del detalle (sin imputar).
+// Usa el mismo preview que la imputación para tener la ficha del proveedor.
+async function abrirClaseDesdeDetalle(id){
+  const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer:null;
+  const L=String((inv&&inv.letra)||'A').trim().toUpperCase();
+  const car=flxCargando('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.',200);
+  let prev=null;
+  try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
+  if(!prev||!prev.proveedor){car.cerrar();toast('No encontré el proveedor en Flexxus: revisá el CUIT en el editor','error');return;}
+  if(!prev.cuit_norm&&prev.proveedor.cuit)prev.cuit_norm=String(prev.proveedor.cuit).replace(/\D/g,'');
+  await elegirClaseProveedor(prev,car);
+  cargarDestinoContable(id);   // refresca la card con lo que quedó
+}
 async function cargarDestinoContable(id){
   const pinta=html=>{const c=document.getElementById('imp-destino');if(c)c.innerHTML=html;};
   try{
@@ -4745,9 +4761,12 @@ async function cargarDestinoContable(id){
       const esBU=/BIENES DE USO/i.test(d.clase);
       h+=fila('Clase de comprobante',d.clase,esBU?'var(--brote-2)':'');
       if(esBU)h+=fila('Rubro',d.rubro?((d.rubro_desc?d.rubro_desc+' · ':'')+d.rubro):'⚠ sin definir (cae en Hardware y software)',d.rubro?'':'#854F0B');
-      else if(/BIENES DE CAMBIO/i.test(d.clase))h+=`<div class="sub" style="font-size:11.5px;margin-top:2px">Va a <b>MERCADERIAS</b>. Si no es mercadería, cambiale la clase al imputar.</div>`;
+      else if(/BIENES DE CAMBIO/i.test(d.clase))h+=`<div class="sub" style="font-size:11.5px;margin-top:2px">Va a <b>MERCADERIAS</b>. Si no es mercadería, cambiale la clase acá abajo.</div>`;
+      // Desplegables de clase/rubro a mano, sin tener que entrar a imputar
+      if(!d.imputada)h+=`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;font-size:12px" onclick="abrirClaseDesdeDetalle('${id}')">✏️ Cambiar clase de comprobante / rubro</button>`;
     }else{
       h+=`<div class="sub" style="font-size:11.5px">No pude leer la clase de comprobante del proveedor${d.motivo_ficha?' ('+d.motivo_ficha+')':''}.</div>`;
+      if(!d.imputada)h+=`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;font-size:12px" onclick="abrirClaseDesdeDetalle('${id}')">✏️ Elegir clase de comprobante / rubro</button>`;
     }
     if(d.imputada){
       h+=`<div class="divider" style="margin:8px 0"></div>`;
