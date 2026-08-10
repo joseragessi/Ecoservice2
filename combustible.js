@@ -358,7 +358,37 @@ function resumenFinal(sesion, nombre) {
 
 // ── Entrada 1: llega la FOTO ──────────────────────────────────
 
+// Fecha de la carga saneada: si el OCR no leyó fecha, o leyó una futura o de
+// hace más de 90 días (tickets viejos / lecturas 2024), va la de hoy.
+function fechaCargaValida(f) {
+  const hoy = new Date();
+  try {
+    const d = new Date(String(f || ''));
+    if (!isNaN(d)) {
+      const dif = (hoy - d) / 86400000;
+      if (dif >= -1 && dif <= 90) return String(f).slice(0, 10);
+    }
+  } catch (e) {}
+  return hoy.toISOString().slice(0, 10);
+}
+
+// Una foto a la vez por teléfono: si el capataz manda dos seguidas (pasa),
+// la segunda no pisa la sesión de la primera a mitad de lectura.
+const _fotoEnProceso = new Set();
+
 async function procesarComprobante(telefono, mediaUrl, mediaType) {
+  if (_fotoEnProceso.has(telefono)) {
+    return '📸 Estoy leyendo la foto anterior — esperá mi respuesta antes de mandar otra.';
+  }
+  _fotoEnProceso.add(telefono);
+  try {
+    return await _procesarComprobante(telefono, mediaUrl, mediaType);
+  } finally {
+    _fotoEnProceso.delete(telefono);
+  }
+}
+
+async function _procesarComprobante(telefono, mediaUrl, mediaType) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
 
   const { data: capataz } = await supabase
@@ -394,6 +424,18 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
     return '⚠️ Recibí la foto pero no pude leer bien los datos. ¿Podés sacarla más nítida y mandarla de nuevo?';
   }
   console.log('[COMBUSTIBLE] extraído:', JSON.stringify(datos));
+
+  // Foto ilegible: si no se pudo leer ni el proveedor/número ni ningún litro,
+  // no hay nada que cargar — se pide otra foto en vez de seguir con nulls
+  // (caso real 10-ago: extracción toda null → insert rechazado por fecha null).
+  const algoLegible = datos && (datos.proveedor || datos.numero)
+    && (datos.items || []).some(i => Number(i.litros) > 0);
+  if (!algoLegible) {
+    return `⚠️ No pude leer el comprobante, *${nombre}*. Sacale la foto de nuevo: ` +
+           `más de cerca, derecha y con buena luz (que se vean proveedor, número y litros).`;
+  }
+  // Fecha ausente o disparatada (OCR leyó 2024, o nada): se usa la de hoy.
+  datos.fecha = fechaCargaValida(datos.fecha);
 
   const resUni = await resolverUnidadAprox(datos.patente);
   const unidad = resUni ? resUni.unidad : null;
