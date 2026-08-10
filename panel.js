@@ -2790,6 +2790,35 @@ async function pvGuardarCfg(){
 const HABILIDADES=[['motor_2t','Motor 2T'],['motor_4t','Motor 4T'],['hidraulica','Hidráulica'],['electrico','Eléctrico'],['soldadura','Soldadura'],['neumatico','Neumático'],['giro_cero','Giro cero'],['unidades','Unidades'],['tractores','Tractores'],['cortadora','Cortadora de pasto'],['general','General']];
 const SINGULAR={mecanicos:'mecánico',objetivos:'objetivo',capataces:'capataz',centros_costo:'centro de costo',unidades:'unidad'};
 let ccFiltro='todos';  // filtro activos/inactivos en Centros de costo
+// Códigos de centro de costo de Flexxus: el GET plano trae solo los activos,
+// por eso algunos (LA DESEADA, PROVINCIA…) figuran sin número. Esto sondea
+// todas las variantes del API y cruza con la tabla del panel.
+async function ccVerFlexxus(){
+  const box=document.getElementById('cc-flexxus');if(!box)return;
+  box.innerHTML='<div class="panel" style="margin-bottom:12px"><div class="sub">Consultando Flexxus…</div></div>';
+  try{
+    const d=await api('/api/compras/centroscosto-flexxus');
+    const filas=(d.centros||[]).map(c=>`<tr>
+      <td class="mono">${c.codigo}</td>
+      <td>${c.descripcion}</td>
+      <td>${c.en_panel?(c.codigo_en_panel==null?'<span class="badge" style="background:var(--diesel-soft);color:#854F0B">falta cargar</span>':(c.coincide?'<span class="badge b-green">✓ ok</span>':`<span class="badge" style="background:#FCEBED;color:#A32D2D">panel: ${c.codigo_en_panel}</span>`)):'<span class="sub">no está en el panel</span>'}</td>
+    </tr>`).join('');
+    box.innerHTML=`<div class="panel" style="margin-bottom:12px">
+      <div class="panel-title">Centros de costo en Flexxus (${d.total_flexxus})</div>
+      <div class="sub" style="font-size:11.5px;margin-bottom:8px">Rutas que respondieron: ${(d.intentos||[]).filter(i=>i.ok).map(i=>i.ruta+' ('+i.n+')').join(' · ')||'ninguna'}</div>
+      <table style="font-size:12.5px"><thead><tr><th>Código</th><th>Descripción en Flexxus</th><th>Estado en el panel</th></tr></thead><tbody>${filas}</tbody></table>
+      ${(d.solo_en_panel||[]).length?`<div class="sub" style="margin-top:10px;font-size:11.5px"><b>Están en el panel pero no en esta respuesta de Flexxus (${d.solo_en_panel.length}):</b> ${d.solo_en_panel.map(x=>x.nombre+(x.codigo_flexxus!=null?' ('+x.codigo_flexxus+')':' — sin código')).join(' · ')}</div>`:''}
+    </div>`;
+  }catch(e){box.innerHTML=`<div class="panel" style="margin-bottom:12px"><div class="sub">No pude consultar: ${e.message}</div></div>`;}
+}
+async function ccSincronizar(){
+  if(!await uiConfirm('Completa el código de Flexxus en los centros del panel que no lo tengan, matcheando por nombre. No pisa los que ya tienen código.','↻ Traer códigos faltantes'))return;
+  try{
+    const r=await api('/api/compras/centroscosto-sincronizar',{method:'POST',body:'{}'});
+    toast(r.actualizados?('Actualizados '+r.actualizados+' centros ✓'):'No había códigos nuevos para traer','info');
+    cargarMaestros();ccVerFlexxus();
+  }catch(e){toast(e.message||'No pude sincronizar','error');}
+}
 let ccBusca='';
 // Las unidades no tienen columna `nombre`: su título es el código o la patente.
 const tituloMaestro=m=>maestroTab==='unidades'?(m.codigo||m.patente||'sin código'):(m.nombre||'—');
@@ -2812,7 +2841,11 @@ async function vMaestros(view){
           ${[['todos','Todos'],['activos','Activos'],['inactivos','Inactivos'],['sin_codigo','Sin código Flexxus']].map(([v,l])=>`<div class="subtab ${ccFiltro===v?'on':''}" onclick="ccFiltro='${v}';renderMaestros()">${l}</div>`).join('')}
         </div>
         <input class="busca" style="width:200px" placeholder="Buscar…" value="${(ccBusca||'').replace(/"/g,'&quot;')}" oninput="ccBusca=this.value;renderMaestros()">
-      </div>`:''}
+        <div class="spacer"></div>
+        <button class="btn ghost" onclick="ccVerFlexxus()">🔍 Ver códigos en Flexxus</button>
+        <button class="btn ghost" onclick="ccSincronizar()">↻ Traer códigos faltantes</button>
+      </div>
+      <div id="cc-flexxus"></div>`:''}
     ${maestroTab==='unidades'?'<div class="sub" style="margin-bottom:12px">La flota. Se usan en Compras (imputación) y en Combustible (el bot las resuelve por patente).</div>':''}
     <div id="mm-lista"><div class="cargando-v">Cargando…</div></div>`;
   cargarMaestros();
