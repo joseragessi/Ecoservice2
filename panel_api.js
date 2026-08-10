@@ -2057,6 +2057,29 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
       '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
       'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
+    // Parseo a prueba de balas: el modelo puede devolver el JSON tal cual, o
+    // repetir la llave del prefill ("{{…}"), o envolverlo en backticks, o
+    // dejar texto colgado. Se prueban todas las variantes antes de rendirse.
+    function parseJsonFactura(bruto) {
+      const base = String(bruto || '').replace(/```json|```/g, '').trim();
+      const candidatos = [];
+      const empuja = (t) => {
+        t = String(t || '').trim();
+        if (!t) return;
+        candidatos.push(t);
+        const i = t.indexOf('{'), f = t.lastIndexOf('}');
+        if (i >= 0 && f > i) candidatos.push(t.slice(i, f + 1));
+      };
+      empuja(base);                                    // ya viene completo
+      empuja('{' + base);                              // faltaba la llave del prefill
+      empuja(base.replace(/^\{+/, '{'));               // llegó duplicada: {{…}
+      empuja('{' + base.replace(/^\{+/, ''));
+      for (const c of candidatos) {
+        try { const o = JSON.parse(c); if (o && typeof o === 'object') return o; } catch (e) {}
+      }
+      return null;
+    }
+
     // Un intento contra un modelo. PREFILL '{': el modelo arranca obligado
     // dentro del JSON, así no puede contestar en prosa ("No puedo leer…"),
     // que era la causa real de "No se pudo extraer" (respuestas de ~125 tokens).
@@ -2080,24 +2103,35 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         }),
       });
       const data = await resp.json();
-      let txt = '{' + (data.content || []).map(c => c.text || '').join('');
+      const crudo = (data.content || []).map(c => c.text || '').join('');
       console.log(`[factura] ${modelo} en ${((Date.now() - t1) / 1000).toFixed(1)}s ` +
         `(${Math.round(String(fileData).length * 0.75 / 1024)} KB, ` +
         `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out)`);
-      if (data.error) console.error('[factura] error de API:', JSON.stringify(data.error).slice(0, 300));
-      if (data.stop_reason && data.stop_reason !== 'end_turn') console.error('[factura] stop_reason:', data.stop_reason);
-      // Parseo tolerante: recorta desde la primera llave hasta la última
-      let obj = null;
-      try {
-        const limpio = txt.replace(/```json|```/g, '');
-        const ini = limpio.indexOf('{'), fin = limpio.lastIndexOf('}');
-        obj = JSON.parse(ini >= 0 && fin > ini ? limpio.slice(ini, fin + 1) : limpio);
-      } catch (e) {
-        console.error('[factura] respuesta no parseable con ' + modelo + ': ' + JSON.stringify(String(txt).slice(0, 300)));
+      if (data.error) {
+        const det = (data.error.message || JSON.stringify(data.error)).slice(0, 160);
+        console.error('[factura] error de API con ' + modelo + ': ' + det);
+        ultimoMotivo = modelo + ': ' + det;
         return null;
       }
-      return expandirFactura(obj);
+      if (data.stop_reason && data.stop_reason !== 'end_turn') {
+        console.error('[factura] stop_reason con ' + modelo + ': ' + data.stop_reason);
+        if (data.stop_reason === 'max_tokens') ultimoMotivo = 'la respuesta se cortó por largo';
+      }
+      const obj = parseJsonFactura(crudo);
+      if (!obj) {
+        console.error('[factura] respuesta no parseable con ' + modelo + ': ' + JSON.stringify(String(crudo).slice(0, 400)));
+        ultimoMotivo = 'respuesta no interpretable: ' + String(crudo).replace(/\s+/g, ' ').slice(0, 120);
+        return null;
+      }
+      try {
+        return expandirFactura(obj);
+      } catch (e) {
+        console.error('[factura] expandirFactura falló:', e.message);
+        ultimoMotivo = 'estructura inesperada en la respuesta';
+        return null;
+      }
     }
+    let ultimoMotivo = '';
     // ¿La lectura sirve? Sin proveedor y sin números no hay nada que guardar.
     const sirve = (p) => !!(p && (p.proveedor || p.cuit) &&
       (p.numero_factura || Number(p.total_sin_iva) > 0 || (p.items || []).length));
@@ -2110,9 +2144,10 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     }
     console.log(`[factura] total ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     if (!sirve(parsed)) {
-      return res.json({ __error: parsed
+      return res.json({ __error: (parsed
         ? 'No pude leer los datos de esta factura (¿foto borrosa o cortada?). Cargala a mano o probá con una imagen más nítida.'
-        : 'La lectura automática falló. Probá de nuevo o completá los campos a mano.' });
+        : 'La lectura automática falló. Completá los campos a mano.')
+        + (ultimoMotivo ? ' [' + ultimoMotivo + ']' : '') });
     }
     {
       // ── Defensas duras post-extracción (independientes del prompt) ──
