@@ -1986,6 +1986,10 @@ const MODEL_EXTRACT = process.env.ANTHROPIC_MODEL_EXTRACT || 'claude-haiku-4-5-2
 // Las facturas de compras son pocas por día y valen plata: usan un modelo más
 // capaz salvo que se fuerce otro con ANTHROPIC_MODEL_FACTURAS.
 const MODEL_FACTURAS = process.env.ANTHROPIC_MODEL_FACTURAS || 'claude-sonnet-4-6';
+// Modelo rápido para el primer intento: resuelve la mayoría de las facturas en
+// 3-6s en vez de 12-22s. Si la lectura sale vacía o incompleta, el endpoint
+// reintenta solo con MODEL_FACTURAS (sonnet), así no se pierde precisión.
+const MODEL_FACTURAS_RAPIDO = process.env.ANTHROPIC_MODEL_FACTURAS_RAPIDO || 'claude-haiku-4-5-20251001';
 
 // Extraer datos de una factura con IA (proxy a Claude, key server-side)
 // Pasa el JSON compacto del extractor (claves cortas, ítems como arrays) al
@@ -2053,29 +2057,64 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
       '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
       'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key':         process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type':      'application/json',
-      },
-      body: JSON.stringify({
-        model:      MODEL_FACTURAS,
-        max_tokens: 2500,   // con el formato compacto sobra para 30+ ítems
-        messages:   [{ role: 'user', content: [part, { type: 'text', text: prompt }] }],
-      }),
-    });
-    const data = await resp.json();
-    const txt = (data.content || []).map(c => c.text || '').join('');
-    console.log(`[factura] extraída en ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
-      `(${MODEL_FACTURAS}, ${Math.round(String(fileData).length * 0.75 / 1024)} KB de archivo, ` +
-      `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out tokens)`);
-    // Diagnóstico: si la API devolvió error o cortó la respuesta, que quede en el log
-    if (data.error) console.error('[factura] error de API:', JSON.stringify(data.error).slice(0, 300));
-    if (data.stop_reason && data.stop_reason !== 'end_turn') console.error('[factura] stop_reason:', data.stop_reason);
-    try {
-      const parsed = expandirFactura(JSON.parse(txt.replace(/```json|```/g, '').trim()));
+    // Un intento contra un modelo. PREFILL '{': el modelo arranca obligado
+    // dentro del JSON, así no puede contestar en prosa ("No puedo leer…"),
+    // que era la causa real de "No se pudo extraer" (respuestas de ~125 tokens).
+    async function intentoExtraccion(modelo) {
+      const t1 = Date.now();
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key':         process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type':      'application/json',
+        },
+        body: JSON.stringify({
+          model:      modelo,
+          max_tokens: 2500,   // con el formato compacto sobra para 30+ ítems
+          temperature: 0,
+          messages: [
+            { role: 'user',      content: [part, { type: 'text', text: prompt }] },
+            { role: 'assistant', content: '{' },
+          ],
+        }),
+      });
+      const data = await resp.json();
+      let txt = '{' + (data.content || []).map(c => c.text || '').join('');
+      console.log(`[factura] ${modelo} en ${((Date.now() - t1) / 1000).toFixed(1)}s ` +
+        `(${Math.round(String(fileData).length * 0.75 / 1024)} KB, ` +
+        `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out)`);
+      if (data.error) console.error('[factura] error de API:', JSON.stringify(data.error).slice(0, 300));
+      if (data.stop_reason && data.stop_reason !== 'end_turn') console.error('[factura] stop_reason:', data.stop_reason);
+      // Parseo tolerante: recorta desde la primera llave hasta la última
+      let obj = null;
+      try {
+        const limpio = txt.replace(/```json|```/g, '');
+        const ini = limpio.indexOf('{'), fin = limpio.lastIndexOf('}');
+        obj = JSON.parse(ini >= 0 && fin > ini ? limpio.slice(ini, fin + 1) : limpio);
+      } catch (e) {
+        console.error('[factura] respuesta no parseable con ' + modelo + ': ' + JSON.stringify(String(txt).slice(0, 300)));
+        return null;
+      }
+      return expandirFactura(obj);
+    }
+    // ¿La lectura sirve? Sin proveedor y sin números no hay nada que guardar.
+    const sirve = (p) => !!(p && (p.proveedor || p.cuit) &&
+      (p.numero_factura || Number(p.total_sin_iva) > 0 || (p.items || []).length));
+
+    let parsed = await intentoExtraccion(MODEL_FACTURAS_RAPIDO);
+    if (!sirve(parsed)) {
+      console.log('[factura] primer intento insuficiente → reintento con ' + MODEL_FACTURAS);
+      const segundo = await intentoExtraccion(MODEL_FACTURAS);
+      if (sirve(segundo) || !parsed) parsed = segundo;
+    }
+    console.log(`[factura] total ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    if (!sirve(parsed)) {
+      return res.json({ __error: parsed
+        ? 'No pude leer los datos de esta factura (¿foto borrosa o cortada?). Cargala a mano o probá con una imagen más nítida.'
+        : 'La lectura automática falló. Probá de nuevo o completá los campos a mano.' });
+    }
+    {
       // ── Defensas duras post-extracción (independientes del prompt) ──
       const avisos = [];
       const RX_TOTAL = /^(sub\s*-?\s*totales?|totales?\b|importe\s+total|total\s+a\s+pagar|neto(\s+gravado)?$|iva(\s*21.*)?$|importe\s+otros\s+tributos|saldo|son\s+pesos)/i;
@@ -2102,15 +2141,6 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       }
       if (avisos.length) parsed.__avisos = avisos;
       res.json(parsed);
-    } catch (e) {
-      // El modelo respondió algo que no es el JSON esperado. El texto crudo va
-      // al log (recortado) — sin esto el motivo real queda invisible.
-      console.error('[factura] respuesta no parseable (' + (e.message || e) + '). Texto del modelo: ' +
-        JSON.stringify(String(txt).slice(0, 400)));
-      const pista = !txt ? 'La API no devolvió texto.'
-        : /no puedo|lo siento|i cannot|i can.t|unable/i.test(txt) ? 'El modelo no pudo leer este documento.'
-        : 'La respuesta del modelo no vino en el formato esperado.';
-      res.json({ __error: 'No se pudo extraer automáticamente (' + pista + ') Probá de nuevo o completá a mano.' });
     }
   } catch (err) {
     console.error('compras extract:', err);
