@@ -1061,21 +1061,39 @@ const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentasconta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
 async function listarPlanCuentas() {
+  // El API PAGINA (igual que /centrodecosto: devolvía solo las primeras 50,
+  // todas del activo 121…, y faltaban las de gasto: energía, gas, fletes…).
+  // Por eso se recorren variantes de paginación y se unifican por código.
+  const mapear = (l) => (Array.isArray(l) ? l : []).map(x => ({
+    codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
+    descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
+    imputable: (x.imputable === undefined && x.esimputable === undefined) ? null
+      : (x.imputable === true || Number(x.imputable) === 1 || x.esimputable === true || Number(x.esimputable) === 1),
+  })).filter(x => x.codigo);
+
   for (const ruta of RUTAS_PLAN) {
+    let base = [];
     try {
       const d = await flx(ruta);
-      const l = d.data || d || [];
-      if (!Array.isArray(l) || !l.length) continue;
-      const filas = l.map(x => ({
-        codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
-        descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
-        imputable: (x.imputable === undefined && x.esimputable === undefined) ? null
-          : (x.imputable === true || Number(x.imputable) === 1 || x.esimputable === true || Number(x.esimputable) === 1),
-      })).filter(x => x.codigo);
-      if (filas.length) return { cuentas: filas, ruta };
-    } catch (e) { /* siguiente ruta */ }
+      base = mapear(d.data || d || []);
+    } catch (e) { continue; }
+    if (!base.length) continue;
+
+    const porCodigo = new Map(base.map(c => [c.codigo, c]));
+    const sufijos = ['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
+      '?page=2', '?page=3', '?page=4', '?pagina=2', '?pagina=3', '?pagina=4',
+      '?offset=50', '?offset=100', '?offset=150', '?offset=200',
+      '?desde=50', '?desde=100'];
+    for (const sf of sufijos) {
+      try {
+        const d = await flx(ruta + sf);
+        mapear(d.data || d || []).forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
+      } catch (e) { /* variante no soportada */ }
+    }
+    const cuentas = [...porCodigo.values()].sort((a, b) => a.codigo.localeCompare(b.codigo));
+    return { cuentas, ruta, base: base.length };
   }
-  return { cuentas: [], ruta: null };
+  return { cuentas: [], ruta: null, base: 0 };
 }
 
 async function listarRubrosBienesUso() {
