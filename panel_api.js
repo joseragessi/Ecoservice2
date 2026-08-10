@@ -2025,7 +2025,10 @@ function expandirFactura(d) {
 router.get('/api/compras/plan-cuentas', auth, async (req, res) => {
   try {
     const { listarPlanCuentas } = require('./flexxus');
-    const { cuentas, ruta } = await listarPlanCuentas();
+    // ?refrescar=1 saltea la caché de 30 min (útil después de tocar el sondeo:
+    // si no, la respuesta cortada seguía viva media hora).
+    const forzar = ['1', 'true', 'si'].includes(String(req.query.refrescar || '').toLowerCase());
+    const { cuentas, ruta, base, sondeo } = await listarPlanCuentas(forzar);
     const pref = String(req.query.prefijo || '').trim();
     const filtradas = pref ? cuentas.filter(c => c.codigo.startsWith(pref)) : cuentas;
     // Las cuentas de movimiento son las hojas: si el API no marca "imputable",
@@ -2033,7 +2036,15 @@ router.get('/api/compras/plan-cuentas', auth, async (req, res) => {
     const conMarca = filtradas.some(c => c.imputable !== null);
     const hojas = conMarca ? filtradas.filter(c => c.imputable)
       : filtradas.filter(c => !filtradas.some(o => o.codigo !== c.codigo && o.codigo.startsWith(c.codigo)));
-    res.json({ ruta, total: cuentas.length, cuentas: hojas.length ? hojas : filtradas });
+    // Diagnóstico: cuántas cuentas por grupo y qué aportó cada variante del
+    // sondeo. Sirve para ver de una si el plan vino completo o cortado.
+    const por_grupo = {};
+    for (const c of cuentas) { const g = c.codigo.slice(0, 3); por_grupo[g] = (por_grupo[g] || 0) + 1; }
+    res.json({
+      ruta, total: cuentas.length, primera_pagina: base, por_grupo,
+      sondeo: (sondeo || []).filter(s => s.nuevas > 0 || s.error),
+      cuentas: hojas.length ? hojas : filtradas,
+    });
   } catch (err) {
     console.error('plan-cuentas:', err.message);
     res.status(500).json({ error: 'No pude leer el plan de cuentas' });
