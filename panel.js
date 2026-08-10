@@ -4211,14 +4211,23 @@ async function elegirClaseProveedor(prev,prog){
   let pf=prev.proveedor||{};
   let rubros=[],planCuentas=[],planInfo=null;
   try{
-    const [fi,ru,pl]=await Promise.all([
+    const [fi,ru]=await Promise.all([
       api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm)),
       api('/api/compras/rubros-bienes-uso'),
-      api('/api/compras/plan-cuentas').catch(()=>null),
     ]);
     if(fi&&fi.existe&&fi.lista)pf=fi.lista;
     if(Array.isArray(ru))rubros=ru;
-    if(pl&&Array.isArray(pl.cuentas)){planCuentas=pl.cuentas;planInfo=pl;}
+    // El plan de cuentas completo se pide APARTE y no bloquea la apertura del
+    // modal (tardaba ~24s la primera vez): llega solo y rellena el buscador.
+    api('/api/compras/plan-cuentas').then(pl=>{
+      if(!pl||!Array.isArray(pl.cuentas))return;
+      const dl=document.getElementById('cp-cuenta-list');if(!dl)return;
+      const ya=new Set([...dl.options].map(o=>o.value));
+      dl.insertAdjacentHTML('beforeend',pl.cuentas.filter(c=>!ya.has(c.codigo))
+        .map(c=>`<option value="${c.codigo}">${c.descripcion} (${c.codigo})</option>`).join(''));
+      const nota=document.getElementById('cp-plan-nota');
+      if(nota)nota.textContent='Plan de cuentas: '+pl.cuentas.length+' cuentas'+(pl.por_grupo?' ('+Object.entries(pl.por_grupo).map(([g,n])=>g+'…: '+n).join(' · ')+')':'');
+    }).catch(()=>{});
   }catch(e){}
   if(prog)prog.cerrar();
   return new Promise(resolve=>{
@@ -4262,7 +4271,7 @@ async function elegirClaseProveedor(prev,prog){
               ${RUB.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
               ${OTRAS.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
             </datalist>
-            <div class="sub" style="font-size:10.5px;margin-top:3px">${planCuentas.length?('Plan de cuentas: '+planCuentas.length+' cuentas'+(planInfo&&planInfo.por_grupo?' ('+Object.entries(planInfo.por_grupo).map(([g,n])=>g+'…: '+n).join(' · ')+')':'')+'. Si no aparecen las de gasto (energía, gas, fletes…), avisá: el API está devolviendo el plan cortado.'):'El plan de cuentas no respondió: escribí el código de la cuenta a mano.'}</div>
+            <div id="cp-plan-nota" class="sub" style="font-size:10.5px;margin-top:3px">Cargando el plan de cuentas de Flexxus… (mientras tanto podés escribir el código a mano)</div>
           </div>
           <div class="sub" style="font-size:11px;margin-top:8px">
             ${leida?`Hoy en la ficha: <b>${(CLASES.find(c=>c[0]===claseNum)||[0,'—'])[1]}</b>${esBU?' · rubro '+(rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (toma Hardware y software)'):''}`
