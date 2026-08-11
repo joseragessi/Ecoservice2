@@ -299,6 +299,7 @@ const SUP_EST={pendiente:'Pendiente',diagnostico:'Diagnóstico',esperando_repues
 function renderSupervisor(){
   if(supVista==='combustible')return renderCombustibleSup();
   if(supVista==='insumos')return renderInsumosSup();
+  if(supVista==='maquinaria')return renderMaquinaria();
   const objetivos=(datos&&datos.objetivos)||[];
   if(datos&&datos.sin_asignar){
     $('kpis').innerHTML='';$('tabs').innerHTML='';
@@ -312,9 +313,10 @@ function renderSupervisor(){
     <div class="kpi amber"><div class="v">${totAbiertas}</div><div class="l">Abiertas</div></div>
     <div class="kpi ${totCriticas?'amber':''}"><div class="v">${totCriticas}</div><div class="l">Críticas</div></div>
     <div class="kpi"><div class="v">${totReclam}</div><div class="l">Reclamadas</div></div>`;
-  $('tabs').innerHTML=`<div style="display:flex;gap:8px">
-    <button class="tab-cta" onclick="abrirCombustible()" style="flex:1;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">⛽ Combustible</button>
-    <button class="tab-cta" onclick="abrirInsumosSup()" style="flex:1;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">📦 Insumos</button>
+  $('tabs').innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="tab-cta" onclick="abrirCombustible()" style="flex:1;min-width:130px;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">⛽ Combustible</button>
+    <button class="tab-cta" onclick="abrirInsumosSup()" style="flex:1;min-width:130px;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">📦 Insumos</button>
+    <button class="tab-cta" onclick="abrirMaquinaria()" style="flex:1;min-width:130px;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">🚜 Maquinaria</button>
   </div>`;
   if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
   // Vista lista de objetivos (cantidad) → click abre incidencias
@@ -335,6 +337,186 @@ function renderSupervisor(){
       ${ab?`<div style="border-top:1px solid #eef1ee;padding:8px 12px 12px">${o.incidencias.map(supCardInc).join('')}</div>`:''}
     </div>`;}).join('');
 }
+// ══ TRAZABILIDAD DE MAQUINARIA ═══════════════════════════════
+// El supervisor marca cuándo una máquina SALE de su objetivo (egreso) y
+// cuándo LLEGA (ingreso). Cada viaje es una fila: sale → "en viaje" → llega.
+// Con eso el panel sabe dónde está cada máquina y cuáles salieron y nunca
+// llegaron. Solo se pide ESTADO (anda / con falla) y observaciones.
+let maqData=null, maqForm=null;   // maqForm = {accion, unidad_id, rotulo, ...}
+async function abrirMaquinaria(){
+  supVista='maquinaria';maqData=null;maqForm=null;render();
+  try{maqData=await api('/api/app/supervisor/maquinaria');}catch(e){maqData={error:e.message};}
+  render();
+}
+function maqVolver(){supVista='incidencias';maqData=null;maqForm=null;render();}
+function maqAbrirForm(accion,unidadId,rotulo){
+  const d=maqData||{};
+  const todas=[...(d.aca||[]),...(d.en_camino||[]),...(d.otras||[])];
+  const it=todas.find(x=>String(x.unidad_id)===String(unidadId))||{};
+  maqForm={accion,unidad_id:unidadId,rotulo,estado:'anda',obs:'',
+    destino_tipo:'objetivo',destino_objetivo_id:'',retira:'',
+    donde:it.donde||null,hacia:it.hacia||null};
+  render();
+}
+function maqSet(k,v){if(maqForm)maqForm[k]=v;}
+async function maqGuardar(){
+  if(!maqForm)return;
+  const f=maqForm, btn=$('maq-guardar');
+  // Leer los campos del DOM (no re-renderizamos en cada tecla)
+  f.obs=$('maq-obs')?.value.trim()||'';
+  f.estado=$('maq-estado')?.value||'anda';
+  if($('maq-dest'))f.destino_objetivo_id=$('maq-dest').value;
+  if($('maq-dtipo'))f.destino_tipo=$('maq-dtipo').value;
+  if($('maq-retira'))f.retira=$('maq-retira').value.trim();
+  if(f.accion==='egreso'&&f.destino_tipo==='objetivo'&&!f.destino_objetivo_id){
+    alert('Elegí a qué objetivo va la máquina.');return;
+  }
+  if(f.accion!=='egreso'&&f.accion==='suelta'&&f.destino_tipo==='objetivo'&&!f.destino_objetivo_id){
+    alert('Elegí en qué objetivo está la máquina.');return;
+  }
+  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  const ruta=f.accion==='egreso'?'/api/app/supervisor/maquinaria/egreso'
+    :f.accion==='suelta'?'/api/app/supervisor/maquinaria/recibir-suelta'
+    :'/api/app/supervisor/maquinaria/ingreso';
+  try{
+    await api(ruta,{method:'POST',body:JSON.stringify({
+      unidad_id:f.unidad_id,estado:f.estado,observaciones:f.obs,
+      destino_tipo:f.destino_tipo,destino_objetivo_id:f.destino_objetivo_id||null,
+      retira:f.retira||null})});
+    maqForm=null;
+    await abrirMaquinaria();
+  }catch(e){
+    alert(e.message||'No pude guardar');
+    if(btn){btn.disabled=false;btn.textContent='✓ Guardar';}
+  }
+}
+function maqFila(it,acciones){
+  const badge=it.situacion==='en_transito'
+    ?`<span style="font-size:11px;color:#B9770E;background:#FCF3DE;padding:2px 7px;border-radius:20px">🚚 en viaje → ${it.hacia||'?'}</span>`
+    :it.situacion==='sin_registrar'
+      ?'<span style="font-size:11px;color:#7a827a;background:#f1f3f1;padding:2px 7px;border-radius:20px">sin registrar</span>'
+      :`<span style="font-size:11px;color:#1E8449;background:#E8F6EE;padding:2px 7px;border-radius:20px">📍 ${it.donde||'—'}</span>`;
+  const falla=it.estado_maquina==='con_falla'
+    ?'<span style="font-size:11px;color:#C0392B;margin-left:6px">⚠ con falla</span>':'';
+  return `<div style="border:1px solid #e4e7e4;border-radius:10px;padding:10px;margin-bottom:7px">
+    <div style="font-weight:600;font-size:13.5px;margin-bottom:3px">${it.rotulo}</div>
+    <div style="margin-bottom:7px">${badge}${falla}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${acciones}</div>
+  </div>`;
+}
+function renderMaquinaria(){
+  $('kpis').innerHTML='';
+  $('tabs').innerHTML=`<button class="tab-cta" onclick="maqVolver()" style="width:100%;padding:11px;border:1px solid #dfe4df;border-radius:12px;background:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">← Volver</button>`;
+  if(maqForm)return renderMaqForm();
+  if(!maqData){$('lista').innerHTML='<div class="vacio">Cargando maquinaria…</div>';return;}
+  if(maqData.error){$('lista').innerHTML=`<div class="vacio">${maqData.error}</div>`;return;}
+  const bt=(txt,fn,primario)=>`<button onclick="${fn}" style="flex:1;min-width:110px;padding:9px;border:1px solid #159B51;border-radius:9px;background:${primario?'#159B51':'#fff'};color:${primario?'#fff':'#159B51'};font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">${txt}</button>`;
+  const esc=s=>String(s||'').replace(/'/g,"\\'");
+  let h='';
+  if((maqData.en_camino||[]).length){
+    h+='<div class="dl" style="margin:4px 0 7px">🚚 Vienen para acá</div>';
+    h+=maqData.en_camino.map(it=>maqFila(it,
+      bt('✓ Llegó',`maqAbrirForm('ingreso','${it.unidad_id}','${esc(it.rotulo)}')`,true))).join('');
+  }
+  h+='<div class="dl" style="margin:12px 0 7px">📍 En tus objetivos</div>';
+  h+=(maqData.aca||[]).length
+    ? maqData.aca.map(it=>maqFila(it,
+        bt('🚚 Se la llevan',`maqAbrirForm('egreso','${it.unidad_id}','${esc(it.rotulo)}')`,true))).join('')
+    : '<div class="desc" style="margin-bottom:10px">Todavía no hay máquinas registradas en tus objetivos. Usá "Registrar máquina que ya está acá" abajo.</div>';
+  h+=`<button onclick="maqAbrirForm('suelta','','')" style="width:100%;padding:11px;border:1px dashed #159B51;border-radius:10px;background:#fff;color:#159B51;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;margin-bottom:14px">＋ Registrar máquina que ya está acá</button>`;
+  const otras=(maqData.otras||[]).filter(o=>o.situacion!=='sin_registrar');
+  if(otras.length){
+    h+='<div class="dl" style="margin:6px 0 7px">Resto de la flota</div>';
+    h+=otras.slice(0,60).map(it=>maqFila(it,
+      it.situacion==='en_transito'
+        ? bt('✓ Llegó acá',`maqAbrirForm('ingreso','${it.unidad_id}','${esc(it.rotulo)}')`)
+        : bt('🚚 Se la llevan',`maqAbrirForm('egreso','${it.unidad_id}','${esc(it.rotulo)}')`))).join('');
+  }
+  const hist=maqData.historial||[];
+  if(hist.length){
+    h+='<div class="dl" style="margin:14px 0 7px">Últimos movimientos</div>';
+    h+=hist.slice(0,15).map(m=>{
+      const f=m.llegada_at||m.salida_at;
+      const fecha=f?new Date(f).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'';
+      const est=m.estado==='en_transito'?'🚚 en viaje':'✓';
+      return `<div class="desc" style="font-size:12px;padding:5px 0;border-bottom:1px solid #eef1ee">
+        <b>${m.unidad}</b> · ${m.desde} → ${m.hasta} ${est}
+        <div style="color:#7a827a">${fecha} · sacó ${m.salida_por||'—'}${m.llegada_por?' · recibió '+m.llegada_por:''}${m.retira?' · lleva '+m.retira:''}${m.obs?' · '+m.obs:''}</div>
+      </div>`;
+    }).join('');
+  }
+  $('lista').innerHTML=h;
+}
+function renderMaqForm(){
+  const f=maqForm, d=maqData||{};
+  const objs=(d.objetivos||[]);
+  const todas=[...(d.aca||[]),...(d.en_camino||[]),...(d.otras||[])];
+  const inp='width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;font-family:inherit';
+  const titulo=f.accion==='egreso'?'🚚 Sale una máquina'
+    :f.accion==='suelta'?'📍 Registrar dónde está'
+    :'✓ Llegó la máquina';
+  let h=`<div class="card" style="padding:16px">
+    <h3 style="margin:0 0 4px">${titulo}</h3>`;
+  if(f.unidad_id){
+    h+=`<div class="desc" style="margin-bottom:12px">${f.rotulo}${f.donde?' · hoy en '+f.donde:''}</div>`;
+  }else{
+    // Alta suelta: hay que elegir la máquina
+    h+=`<div class="dl" style="margin:8px 0 5px">Máquina</div>
+      <select id="maq-unidad" style="${inp}" onchange="maqForm.unidad_id=this.value">
+        <option value="">Elegí la máquina…</option>
+        ${todas.map(u=>`<option value="${u.unidad_id}">${u.rotulo}</option>`).join('')}
+      </select>`;
+  }
+  if(f.accion==='egreso'){
+    h+=`<div class="dl" style="margin:12px 0 5px">¿A dónde va?</div>
+      <select id="maq-dtipo" style="${inp};margin-bottom:7px" onchange="document.getElementById('maq-dest-wrap').style.display=this.value==='taller'?'none':'block'">
+        <option value="objetivo">A otro objetivo</option>
+        <option value="taller">Al taller</option>
+      </select>
+      <div id="maq-dest-wrap">
+        <select id="maq-dest" style="${inp}">
+          <option value="">Elegí el objetivo…</option>
+          ${objs.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
+        </select>
+      </div>
+      <div class="dl" style="margin:12px 0 5px">¿Quién la lleva?</div>
+      <input type="text" id="maq-retira" placeholder="Nombre (supervisor, auxiliar logístico…)" style="${inp}">`;
+  }
+  if(f.accion==='suelta'){
+    h+=`<div class="dl" style="margin:12px 0 5px">¿Dónde está?</div>
+      <select id="maq-dtipo" style="${inp};margin-bottom:7px" onchange="document.getElementById('maq-dest-wrap').style.display=this.value==='taller'?'none':'block'">
+        <option value="objetivo">En un objetivo</option>
+        <option value="taller">En el taller</option>
+      </select>
+      <div id="maq-dest-wrap">
+        <select id="maq-dest" style="${inp}">
+          <option value="">Elegí el objetivo…</option>
+          ${objs.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
+        </select>
+      </div>`;
+  }
+  h+=`<div class="dl" style="margin:12px 0 5px">¿Cómo está la máquina?</div>
+    <select id="maq-estado" style="${inp}">
+      <option value="anda">Anda bien</option>
+      <option value="con_falla">Con falla</option>
+    </select>
+    <div class="dl" style="margin:12px 0 5px">Observaciones</div>
+    <textarea id="maq-obs" rows="3" placeholder="Lo que haga falta aclarar" style="${inp};resize:vertical"></textarea>
+    <button class="btn" id="maq-guardar" style="margin-top:14px" onclick="maqGuardarValidando()">✓ Guardar</button>
+    <button class="btn sec" style="margin-top:8px" onclick="maqForm=null;render()">Cancelar</button>
+  </div>`;
+  $('lista').innerHTML=h;
+}
+// Wrapper: para el alta suelta hay que tener elegida la máquina
+function maqGuardarValidando(){
+  if(!maqForm.unidad_id){
+    const sel=$('maq-unidad');
+    if(sel&&sel.value)maqForm.unidad_id=sel.value;
+  }
+  if(!maqForm.unidad_id){alert('Elegí la máquina.');return;}
+  maqGuardar();
+}
+
 // Insumos de los objetivos del supervisor: qué está pedido y qué hay listo
 // para retirar del depósito y llevar. Solo lectura (la entrega la hace el pañol).
 let supInsumos=null, supInsAbierto=null;
@@ -407,7 +589,7 @@ let supBusca='', supEstado='', supAbierto=null;
 
 /* ── Combustible CAPATAZ: como supervisor pero a SU unidad y SU objetivo ── */
 let capData=null, capPaso='foto', capUnidad={gasoil:[],super:[]};
-let capObjNombre='', capPatente='';
+let capObjNombre='', capPatente='', capPatenteManual='';
 
 function abrirCombustibleCapataz(){capPaso='foto';capData=null;render();}
 function renderCombustibleCapataz(){
@@ -440,7 +622,7 @@ function capFoto(input){
     try{
       const d=await api('/api/app/capataz/combustible/leer',{method:'POST',body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
       if(d.__error){$('cap-msg').textContent=d.__error;return;}
-      capData=d;capObjNombre=d.objetivo_nombre||'tu objetivo';capPatente=d.patente||'tu unidad';
+      capData=d;capObjNombre=d.objetivo_nombre||'tu objetivo';capPatente=d.patente||'';
       capUnidad={gasoil:d.litros.gasoil>0?[{litros:'',destino:'unidad'}]:[],super:d.litros.super>0?[{litros:'',destino:'unidad'}]:[]};
       capPaso='repartir';render();
     }catch(e){$('cap-msg').textContent='Error: '+e.message;}
@@ -463,7 +645,12 @@ function renderCapRepartir(){
         <input type="number" value="${r.litros}" placeholder="0" onchange="capSet('${tipo}',${i},this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
         <span style="color:#8C9B92">→</span>
         ${r.destino==='unidad'
-          ?`<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600">🚛 ${capPatente} <span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tu unidad</span></div>`
+          ?(capPatente
+            ?`<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600">🚛 ${capPatente} <span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tu unidad</span></div>`
+            // Sin camión fijo en la ficha (la mayoría de los capataces de
+            // objetivo): que escriba la patente o el número de máquina.
+            :`<input type="text" value="${capPatenteManual.replace(/"/g,'&quot;')}" placeholder="Patente o N° de máquina"
+                oninput="capPatenteManual=this.value" style="flex:1;min-width:0;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box">`)
           :`<div style="flex:1;font-size:12.5px;color:#7C5CBF;font-weight:600">🛢 Bidones → ${capObjNombre}</div>`}
         <button onclick="capDest('${tipo}',${i})" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
         <button onclick="capQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
@@ -478,7 +665,7 @@ function renderCapRepartir(){
   const cuadra=(capData.litros.gasoil>0?capCuadra('gasoil'):true)&&(capData.litros.super>0?capCuadra('super'):true);
   $('lista').innerHTML=`
     <button onclick="capPaso='foto';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:6px;cursor:pointer">← Volver</button>
-    <div style="font-size:12px;color:#586B60;margin-bottom:12px">Los bidones van a <b>${capObjNombre}</b> · la unidad es <b>${capPatente}</b></div>
+    <div style="font-size:12px;color:#586B60;margin-bottom:12px">Los bidones van a <b>${capObjNombre}</b>${capPatente?` · la unidad es <b>${capPatente}</b>`:' · para la máquina, escribí la patente en el renglón'}</div>
     ${bloque('gasoil','Gasoil','🛢','#D98A1F')}
     ${bloque('super','Super','⛽','#3B7DC4')}
     <button onclick="capGuardar()" ${cuadra?'':'disabled'} style="width:100%;padding:15px;border:none;border-radius:12px;background:${cuadra?'var(--brote)':'#d8dcd8'};color:${cuadra?'#fff':'#8C9B92'};font-size:15px;font-weight:700;font-family:inherit;cursor:${cuadra?'pointer':'default'}">Confirmar carga</button>
@@ -490,8 +677,12 @@ function capQuitar(t,i){capUnidad[t].splice(i,1);render();}
 function capDest(t,i){const r=capUnidad[t][i];r.destino=r.destino==='unidad'?'bidon':'unidad';render();}
 async function capGuardar(){
   const repartos=[];
-  ['gasoil','super'].forEach(t=>capUnidad[t].forEach(r=>{const l=Number(r.litros)||0;if(l>0)repartos.push({tipo:t,litros:l,destino:r.destino});}));
+  ['gasoil','super'].forEach(t=>capUnidad[t].forEach(r=>{const l=Number(r.litros)||0;
+    if(l>0)repartos.push({tipo:t,litros:l,destino:r.destino,
+      patente:r.destino==='unidad'?(capPatente||capPatenteManual.trim()||null):null});}));
   if(!repartos.length){toast('No hay litros para cargar');return;}
+  if(!capPatente&&repartos.some(r=>r.destino==='unidad'&&!r.patente)){
+    toast('Escribí la patente o el número de la máquina');return;}
   try{
     const d=await api('/api/app/capataz/combustible',{method:'POST',body:JSON.stringify({proveedor:capData.proveedor,numero:capData.numero,fecha:capData.fecha,tipo_doc:capData.tipo_doc||'remito',repartos,datos_ia:capData.items_raw?{items:capData.items_raw}:null})});
     if(d&&d.ok){cbResumenGuardado(repartos.map(r=>({...r,objetivo_nombre:r.destino==='bidon'?capObjNombre:null})));capPaso='foto';capData=null;}
