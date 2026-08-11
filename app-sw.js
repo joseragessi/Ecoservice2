@@ -2,7 +2,7 @@
 // Estrategia: el shell (la app) se cachea para que abra sin señal; las llamadas
 // a la API SIEMPRE van a la red (nunca servimos datos viejos de reparaciones ni
 // pedidos, que cambian todo el tiempo).
-const CACHE = 'eco-ecoservice-v7';
+const CACHE = 'eco-ecoservice-v8';   // v8: fila de repuestos del service en dos lineas (codigo visible)
 const SHELL = ['/app', '/app/manifest.json'];
 
 self.addEventListener('install', e => {
