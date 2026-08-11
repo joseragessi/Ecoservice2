@@ -1699,15 +1699,18 @@ router.post('/api/compras/proveedores-clase', auth, async (req, res) => {
   }
 });
 
-router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
+// NÚCLEO de la imputación (extraído del POST para poder correrlo también en
+// segundo plano desde /flexxus-encolar). Devuelve { status, body } con el mismo
+// shape que siempre respondió el endpoint — el panel no nota la diferencia.
+async function procesarImputacion(id, letraIn, permitirAlta, force, usuario) {
   try {
-    const letra = ['A', 'B', 'C'].includes((req.body || {}).letra) ? req.body.letra : 'A';
+    const letra = ['A', 'B', 'C'].includes(letraIn) ? letraIn : 'A';
     const { data: fila, error: e0 } = await supabaseCompras.from('facturas')
-      .select('*').eq('id', req.params.id).single();
-    if (e0 || !fila) return res.status(404).json({ error: 'Factura inexistente' });
+      .select('*').eq('id', id).single();
+    if (e0 || !fila) return { status: 404, body: { error: 'Factura inexistente' } };
     const f = fila.data || {};
-    if (f.flexxus && f.flexxus.ok && !(req.body || {}).force) {
-      return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
+    if (f.flexxus && f.flexxus.ok && !force) {
+      return { status: 409, body: { error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') } };
     }
     const { imputarFactura } = require('./flexxus');
     // Clase contable fija del proveedor (si se le asignó una): deriva la cuenta
@@ -1721,10 +1724,10 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
     }
     let r;
     try {
-      r = await imputarFactura(f, letra, { permitirAlta: !!(req.body || {}).permitir_alta, claseProveedor });
+      r = await imputarFactura(f, letra, { permitirAlta: !!permitirAlta, claseProveedor });
     } catch (e) {
-      if (e.code === 'PROV_NO_EXISTE') return res.status(422).json({ error: e.message, code: 'PROV_NO_EXISTE' });
-      if (e.code === 'NUMERO_INVALIDO') return res.status(422).json({ error: e.message, code: 'NUMERO_INVALIDO' });
+      if (e.code === 'PROV_NO_EXISTE') return { status: 422, body: { error: e.message, code: 'PROV_NO_EXISTE' } };
+      if (e.code === 'NUMERO_INVALIDO') return { status: 422, body: { error: e.message, code: 'NUMERO_INVALIDO' } };
       // Si Flexxus dice que el comprobante YA existe, es que ya está imputado:
       // lo marcamos como tal en vez de mostrar el error técnico.
       if (/ya existe/i.test(e.message || '')) {
@@ -1732,11 +1735,11 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
           ok: true, fecha: new Date().toISOString(), ya_existia: true,
           tipocomprobante: 'F' + letra,
           numerocomprobante: Number(String(f.numero_factura || '').replace(/\D/g, '')) || null,
-          por: req.usuario || 'panel',
+          por: usuario || 'panel',
         };
         await supabaseCompras.from('facturas')
-          .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
-        return res.json({ ok: true, flexxus, ya_existia: true });
+          .update({ data: { ...f, flexxus } }).eq('id', id);
+        return { status: 200, body: { ok: true, flexxus, ya_existia: true } };
       }
       throw e;
     }
@@ -1755,7 +1758,7 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       tipocomprobante: r.tipocomprobante, numerocomprobante: r.numerocomprobante,
       numerocomprobante_fmt: 'F' + String(r.tipocomprobante||'').slice(-1) + ' ' + require('./flexxus').formatearNumeroFlexxus(r.numerocomprobante),
       proveedor_creado: r.proveedor_creado, proveedor_codigo: r.proveedor_codigo,
-      proveedor_nombre: r.proveedor_nombre, por: req.usuario || 'panel',
+      proveedor_nombre: r.proveedor_nombre, por: usuario || 'panel',
       centro_costo: centroCosto,
     };
     // VERIFICACIÓN DE CUENTA: no podemos elegir la cuenta por API, pero sí
@@ -1777,11 +1780,88 @@ router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
       }
     } catch (e) { /* la advertencia es best-effort, no frena la imputación */ }
     await supabaseCompras.from('facturas')
-      .update({ data: { ...f, flexxus } }).eq('id', req.params.id);
-    res.json({ ok: true, flexxus });
+      .update({ data: { ...f, flexxus } }).eq('id', id);
+    return { status: 200, body: { ok: true, flexxus } };
   } catch (err) {
     console.error('flexxus imputar:', err.message);
-    res.status(500).json({ error: err.message || 'Error imputando en Flexxus' });
+    return { status: 500, body: { error: err.message || 'Error imputando en Flexxus' } };
+  }
+}
+
+// Endpoint clásico (sincrónico): sigue existiendo tal cual para no romper nada.
+router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
+  const b = req.body || {};
+  const r = await procesarImputacion(req.params.id, b.letra, b.permitir_alta, b.force, req.usuario);
+  res.status(r.status).json(r.body);
+});
+
+// ── MOTOR DE IMPUTACIÓN EN SEGUNDO PLANO (10-ago) ────────────────────────────
+// El POST + la apropiación + la verificación son de Flexxus y tardan lo que
+// tardan. Lo que SÍ se puede hacer es no hacer esperar al usuario: este endpoint
+// deja la imputación corriendo en el server y responde AL INSTANTE. El estado
+// vive en data.flexxus_job de la factura, así que sobrevive a que el usuario
+// cierre la pestaña (Railway procesa igual) y el panel lo consulta por polling.
+async function marcarJob(id, job) {
+  // Read-modify-write del jsonb: siempre sobre la versión fresca de data,
+  // para no pisar el flexxus que el núcleo pudo haber escrito mientras tanto.
+  const { data: fila } = await supabaseCompras.from('facturas')
+    .select('data').eq('id', id).single();
+  if (!fila) return;
+  await supabaseCompras.from('facturas')
+    .update({ data: { ...(fila.data || {}), flexxus_job: job } }).eq('id', id);
+}
+router.post('/api/compras/facturas/:id/flexxus-encolar', auth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const b = req.body || {};
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    if (f.flexxus && f.flexxus.ok && !b.force)
+      return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
+    const j = f.flexxus_job;
+    // Candado anti doble imputación: si ya hay un job corriendo (y no quedó
+    // colgado de hace más de 5 min), no se encola otro.
+    if (j && j.estado === 'en_proceso' && Date.now() - new Date(j.iniciado).getTime() < 5 * 60 * 1000)
+      return res.status(409).json({ error: 'Esta factura ya se está imputando (la arrancó ' + (j.por || 'alguien') + ' hace un momento). Esperá que termine.' });
+    const job = { estado: 'en_proceso', iniciado: new Date().toISOString(), por: req.usuario || 'panel', letra: b.letra || 'A' };
+    await supabaseCompras.from('facturas').update({ data: { ...f, flexxus_job: job } }).eq('id', id);
+    // Respuesta INSTANTÁNEA: el trabajo pesado sigue en segundo plano.
+    res.json({ ok: true, encolada: true, job });
+    // Segundo plano (después de responder). setImmediate para soltar el request.
+    setImmediate(async () => {
+      const t0 = Date.now();
+      let r;
+      try { r = await procesarImputacion(id, b.letra, b.permitir_alta, b.force, req.usuario); }
+      catch (e) { r = { status: 500, body: { error: e.message || 'Error imputando' } }; }
+      const fin = {
+        estado: r.status === 200 ? 'ok' : 'error',
+        iniciado: job.iniciado, fin: new Date().toISOString(), ms: Date.now() - t0,
+        por: job.por, letra: job.letra,
+        resultado: r.status === 200 ? r.body : null,
+        error: r.status === 200 ? null : (r.body && r.body.error) || 'Error imputando',
+        code: (r.body && r.body.code) || null,
+      };
+      try { await marcarJob(id, fin); }
+      catch (e) { console.error('flexxus-encolar/marcarJob:', e.message); }
+      console.log('[flexxus-job]', id, fin.estado, fin.ms + 'ms', fin.error || '');
+    });
+  } catch (err) {
+    console.error('flexxus-encolar:', err.message);
+    res.status(500).json({ error: err.message || 'No pude encolar la imputación' });
+  }
+});
+// Polling liviano del panel: cómo viene el job de esta factura.
+router.get('/api/compras/facturas/:id/flexxus-estado', auth, async (req, res) => {
+  try {
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('data').eq('id', req.params.id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    res.json({ job: f.flexxus_job || null, flexxus: f.flexxus || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Error consultando el estado' });
   }
 });
 
@@ -2060,7 +2140,9 @@ router.get('/api/compras/centroscosto-flexxus', auth, async (req, res) => {
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
     const { listarCentrosCostoTodos } = require('./flexxus');
-    const { centros, intentos } = await listarCentrosCostoTodos();
+    // forzar: este endpoint es el botón "🔍 Ver códigos en Flexxus" de Maestros,
+    // ahí sí se quiere relectura fresca (el resto usa la caché de 6 h).
+    const { centros, intentos } = await listarCentrosCostoTodos(true);
     const { data: locales } = await supabase.from('centros_costo').select('nombre, codigo_flexxus, activo');
     const porNombre = new Map((locales || []).map(l => [norm(l.nombre), l]));
     const enFlexxus = centros.map(c => {
@@ -2101,7 +2183,7 @@ router.post('/api/compras/centroscosto-sincronizar', auth, async (req, res) => {
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
     const { listarCentrosCostoTodos } = require('./flexxus');
-    const { centros } = await listarCentrosCostoTodos();
+    const { centros } = await listarCentrosCostoTodos(true);
     const porNombre = new Map(centros.map(c => [norm(c.descripcion), c.codigo]));
     const { data: locales } = await supabase.from('centros_costo').select('id, nombre, codigo_flexxus');
     const cambios = [];
@@ -2651,6 +2733,81 @@ router.get('/api/compras/facturas/:id/centrocosto-preview', auth, async (req, re
     });
   } catch (err) {
     res.status(500).json({ error: err.message || 'No pude armar la vista previa del centro de costo' });
+  }
+});
+
+// TODO EL PREVIO DE UNA (10-ago): el panel hacía 4 viajes EN SERIE antes de
+// imputar — flexxus-preview → proveedor-ficha → rubros-bienes-uso →
+// centrocosto-preview — y cada uno vuelve a hablar con Flexxus. Acá se resuelven
+// EN PARALELO en el server (que está al lado de Flexxus) y viajan juntos al
+// navegador. El panel lo dispara APENAS abre el detalle de la factura, así que
+// cuando se aprieta "Imputar" la data ya está y el modal abre al instante.
+router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { data: fila } = await supabaseCompras.from('facturas')
+      .select('*').eq('id', req.params.id).single();
+    if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
+    const f = fila.data || {};
+    const letra = String(req.query.letra || f.letra || 'A').toUpperCase();
+    const flx = require('./flexxus');
+    const cuitP = String(f.cuit || '').replace(/\D/g, '');
+
+    // Todo junto: nada de esto depende de lo otro.
+    const [prev, claseAsig, ficha, rubros, plan, objs, ccFlx] = await Promise.all([
+      flx.verificarImputacion(f, letra).catch(e => ({ __error: e.message, __code: e.code || null })),
+      cuitP ? supabaseCompras.from('proveedores_clase').select('codigo_clase, clase_descripcion')
+        .eq('cuit', cuitP).maybeSingle().then(r => r.data || null).catch(() => null) : null,
+      cuitP ? flx.fichaProveedorPorCuit(cuitP).catch(() => null) : null,
+      flx.listarRubrosBienesUso().catch(() => []),
+      flx.listarPlanCuentas().catch(() => ({ cuentas: [] })),
+      supabase.from('centros_costo').select('nombre, codigo_flexxus').then(r => r.data || []).catch(() => []),
+      flx.listarCentrosCostoTodos().then(r => r.centros).catch(() => null),
+    ]);
+
+    // Preview (mismo shape que /flexxus-preview, para que el panel no cambie)
+    const preview = (prev && prev.__error) ? null : { ...prev, clase_asignada: claseAsig, cuit_norm: cuitP || null };
+
+    // Centro de costo: mismo cálculo que /centrocosto-preview
+    const r = flx.repartoCentroCosto(f, objs);
+    const total = Number(f.total_sin_iva) || 0;
+    const pesoTot = (r.reparto || []).reduce((s, x) => s + (Number(x.peso) || 0), 0) || 1;
+    const filas = (r.reparto || []).map(x => {
+      const enFlx = ccFlx ? ccFlx.find(c => c.codigo === Number(x.codigocentrocosto)) : null;
+      return {
+        objetivo: x.objetivo, codigo: x.codigocentrocosto, porcentaje: x.porcentaje,
+        monto: Math.round(total * (Number(x.peso) || 0) / pesoTot * 100) / 100,
+        nombre_flexxus: enFlx ? enFlx.descripcion : null,
+        existe: ccFlx ? !!enFlx : null,
+      };
+    });
+
+    // Plan de cuentas: solo las cuentas de movimiento (mismas reglas que /plan-cuentas)
+    const cuentas = (plan && plan.cuentas) || [];
+    const conMarca = cuentas.some(c => c.imputable !== null);
+    const hojas = conMarca ? cuentas.filter(c => c.imputable)
+      : cuentas.filter(c => !cuentas.some(o => o.codigo !== c.codigo && o.codigo.startsWith(c.codigo)));
+
+    res.json({
+      letra,
+      preview,
+      preview_error: prev && prev.__error ? prev.__error : null,
+      preview_code: prev && prev.__code ? prev.__code : null,
+      ficha: ficha && ficha.existe && ficha.lista ? ficha.lista : null,
+      rubros: Array.isArray(rubros) ? rubros : [],
+      plan: { total: cuentas.length, cuentas: hojas.length ? hojas : cuentas },
+      centrocosto: {
+        ok: r.ok, motivo: r.motivo || null, sin_codigo: r.sin_codigo || [],
+        modo: f.assignmentMode === 'per-item' ? 'per-item' : 'total',
+        reparto: filas,
+        suma: Math.round(filas.reduce((s, x) => s + (Number(x.porcentaje) || 0), 0) * 100) / 100,
+        flexxus_leido: !!ccFlx,
+      },
+      ms: Date.now() - t0,
+    });
+  } catch (err) {
+    console.error('flexxus-previo:', err.message);
+    res.status(500).json({ error: err.message || 'No pude preparar la imputación' });
   }
 });
 
@@ -3454,11 +3611,42 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
 });
 
 // ── Servir el panel (HTML + JS extraído en Fase 3) ────────────
+// AUTO-ACTUALIZACIÓN (10-ago): el navegador cacheaba panel.js y había que
+// hacer Ctrl+Shift+R en cada máquina después de cada subida. Dos piezas:
+//  1) no-cache en /panel y /panel.js → un F5 común ya trae la versión nueva;
+//  2) /api/panel-version devuelve la "huella" del build (mtime de panel.html
+//     y panel.js congelado al arrancar) → el panel la consulta cada 60 s y,
+//     si cambió (hubo redeploy), se recarga SOLO en cuanto no molesta.
+//     Restart sin cambio de archivos = misma huella = nadie se recarga.
+const PANEL_VERSION = (() => {
+  try {
+    const fs = require('fs');
+    const a = fs.statSync(path.join(__dirname, 'panel.html')).mtimeMs;
+    const b = fs.statSync(path.join(__dirname, 'panel.js')).mtimeMs;
+    return String(Math.round(a)) + '-' + String(Math.round(b));
+  } catch (e) { return 'v-' + Date.now(); }
+})();
+const sinCache = (res) => res.set({
+  'Cache-Control': 'no-cache, must-revalidate',
+  'Pragma': 'no-cache',
+});
 router.get('/panel', (req, res) => {
+  sinCache(res);
   res.sendFile(path.join(__dirname, 'panel.html'));
 });
 router.get('/panel.js', (req, res) => {
+  sinCache(res);
   res.sendFile(path.join(__dirname, 'panel.js'));
 });
+router.get('/api/panel-version', (req, res) => {
+  res.json({ version: PANEL_VERSION });
+});
+
+// Al arrancar, calentar las cachés pesadas de Flexxus (plan de cuentas y
+// centros de costo) en segundo plano: así el primer "Imputar" después de un
+// redeploy no paga los sondeos. Best-effort: si Flexxus no responde, no pasa nada.
+setTimeout(() => {
+  try { require('./flexxus').precalentarFlexxus().catch(() => {}); } catch (e) { /* ignorar */ }
+}, 4000).unref?.();
 
 module.exports = router;
