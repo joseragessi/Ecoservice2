@@ -206,14 +206,18 @@ async function refrescarContadores(){
 }
 
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock'};
+const CRUMB={dashboard:'Dashboard',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock',movimientos:'Movimientos'};
 let _autoRefreshTimer=null, _vistaActual=null;
-const AUTO_REFRESH_MS=5*60*1000; // 5 minutos
-const MODULOS_AUTOREFRESH=['reparaciones','compras','insumos'];
-// Watcher de novedades en Reparaciones: cada 90s compara una firma liviana
+// AJUSTE 11-ago (pedido de José): la pantalla se recargaba sola cada 5 minutos
+// y era molesto. Ahora cada 4 horas — alcanza de sobra, y si querés datos
+// frescos ya, cambiás de módulo o apretás F5.
+const AUTO_REFRESH_MS=4*60*60*1000; // 4 horas
+const MODULOS_AUTOREFRESH=['reparaciones','compras','insumos','movimientos'];
+// Watcher de novedades en Reparaciones: cada 5 min compara una firma liviana
 // (estado de cada incidencia + estado de cada pedido de repuestos + cantidad
-// de comentarios). Si algo cambió —nueva incidencia, respuesta de compras,
-// avance de estado— refresca al toque sin esperar los 5 minutos.
+// de comentarios). Solo repinta si algo CAMBIÓ de verdad —nueva incidencia,
+// respuesta de compras, avance de estado—; si no cambió nada, no toca la
+// pantalla. Antes chequeaba cada 90s: bajaba el ruido pero pegaba seguido.
 let _repFirma=null;
 setInterval(async function(){
   if(_vistaActual!=='reparaciones')return;
@@ -233,7 +237,7 @@ setInterval(async function(){
       toast('Hay novedades en reparaciones (se actualiza al cerrar lo que estás viendo)','info');
     }
   }catch(e){}
-},90*1000);
+},5*60*1000);
 function programarAutoRefresh(v){
   clearTimeout(_autoRefreshTimer);
   if(!MODULOS_AUTOREFRESH.includes(v))return;
@@ -247,7 +251,7 @@ function programarAutoRefresh(v){
       go(v);                       // recarga el módulo
       toast('Datos actualizados','info');
     }else{
-      _autoRefreshTimer=setTimeout(tick,60*1000); // ocupado: reintenta en 1 min
+      _autoRefreshTimer=setTimeout(tick,10*60*1000); // ocupado: reintenta en 10 min
     }
   },AUTO_REFRESH_MS);
 }
@@ -266,6 +270,7 @@ function go(v){
   if(v==='maestros')vMaestros(view);
   if(v==='compras')vCompras(view);
   if(v==='stock')vStock(view);
+  if(v==='movimientos')vMovimientos(view);
   programarAutoRefresh(v);
 }
 
@@ -2588,7 +2593,203 @@ async function reasignarRep(id){
 }
 
 /* ===== Usuarios del panel (solo admin) ===== */
-const MODS_PANEL=[['dashboard','Dashboard'],['insumos','Insumos'],['combustible','Combustible'],['compras','Compras'],['reparaciones','Reparaciones'],['stock','Stock'],['maestros','Maestros']];
+
+/* ═══════════════ MOVIMIENTOS DE MAQUINARIA (trazabilidad) ═══════════════
+   Los supervisores marcan egreso/ingreso desde la app; acá se ve dónde está
+   cada máquina, qué salió y nadie recibió, el hilo de cada una y el cruce por
+   objetivo. Lo accionable (viajes sin cerrar) va arriba de todo. */
+let movTab='flota', movData=null, movBusca='', movFiltroObj='', movFiltroEst='', movFicha=null, movDias=30;
+function tabsMov(){return `<div class="toggle-imp" style="margin-bottom:16px">
+  <button class="${movTab==='flota'?'on':''}" onclick="movTab='flota';renderMov()">Dónde está cada una</button>
+  <button class="${movTab==='movs'?'on':''}" onclick="movTab='movs';renderMov()">Movimientos</button>
+  <button class="${movTab==='objetivo'?'on':''}" onclick="movTab='objetivo';renderMov()">Por objetivo</button>
+</div>`;}
+async function vMovimientos(view){
+  view.innerHTML=tabsMov()+'<div class="cargando-v">Cargando maquinaria…</div>';
+  try{movData=await api('/api/movimientos?dias='+movDias);}
+  catch(e){view.innerHTML=tabsMov()+`<div class="card" style="padding:20px">${e.message}</div>`;return;}
+  renderMov();
+}
+const movFecha=iso=>iso?new Date(iso).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'—';
+const movFechaH=iso=>iso?new Date(iso).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+function movBadgeUbic(f){
+  if(f.situacion==='en_transito')return `<span class="badge b-amber">🚚 en viaje → ${f.hacia||'?'}</span>`;
+  if(f.situacion==='sin_registrar')return '<span class="badge b-gray">sin registrar</span>';
+  return `<span class="badge ${f.donde_tipo==='taller'?'b-blue':'b-green'}">${f.donde_tipo==='taller'?'🔧':'📍'} ${f.donde||'—'}</span>`;
+}
+const movBadgeEst=e=>e==='con_falla'?'<span class="badge b-red">⚠ con falla</span>'
+  :e==='anda'?'<span class="badge b-green">anda</span>':'<span class="sub">—</span>';
+function renderMov(){
+  const view=document.getElementById('view');
+  if(!movData){view.innerHTML=tabsMov()+'<div class="cargando-v">Cargando…</div>';return;}
+  const r=movData.resumen||{};
+  const kpis=`<div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="kpi"><div class="kpi-label">Ubicadas</div><div class="kpi-val green">${r.ubicadas||0}</div><div class="kpi-sub">con ingreso confirmado</div></div>
+    <div class="kpi amber"><div class="kpi-label">En viaje</div><div class="kpi-val" style="color:var(--diesel)">${r.en_viaje||0}</div><div class="kpi-sub">salieron, todavía no llegaron</div></div>
+    <div class="kpi ${r.demoradas?'':'plain'}"><div class="kpi-label">Sin recibir hace +2 días</div><div class="kpi-val" style="color:${r.demoradas?'var(--rojo)':'var(--tinta-3)'}">${r.demoradas||0}</div><div class="kpi-sub">hay que preguntar dónde están</div></div>
+    <div class="kpi plain"><div class="kpi-label">Sin registrar</div><div class="kpi-val" style="color:var(--tinta-3)">${r.sin_registrar||0}</div><div class="kpi-sub">nadie las cargó todavía</div></div>
+  </div>`;
+  // Lo accionable primero: salió y nadie marcó la llegada
+  const sr=movData.sin_recibir||[];
+  const alerta=sr.length?`<div class="card" style="padding:14px 16px;margin-bottom:14px;border-left:3px solid var(--rojo);background:var(--rojo-soft)">
+    <div style="font-weight:600;color:#A62F3E;margin-bottom:2px">Salieron y nadie marcó la llegada</div>
+    <div class="sub" style="color:#A62F3E;opacity:.85;margin-bottom:9px">Puede ser que el supervisor no la marcó al recibirla, o que la máquina no esté donde se cree.</div>
+    ${sr.map(f=>`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid rgba(220,74,91,.16)">
+      <div style="flex:1;min-width:230px"><b>${f.rotulo}</b> <span class="sub">${f.detalle||''}</span><br>
+        <span class="sub">${f.donde||'—'} → ${f.hacia||'—'}</span></div>
+      <span class="mono" style="color:${f.dias>2?'var(--rojo)':'var(--diesel)'}"><b>${f.dias||0} d</b> en viaje</span>
+      <span class="sub">sacó ${f.quien||'—'}${f.retira?' · lleva '+f.retira:''}</span>
+      <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick="movRecibir('${f.unidad_id}')">Marcar llegada</button>
+    </div>`).join('')}
+  </div>`:'';
+  let cuerpo='';
+  if(movTab==='flota')cuerpo=movVistaFlota();
+  if(movTab==='movs')cuerpo=movVistaMovs();
+  if(movTab==='objetivo')cuerpo=movVistaObjetivo();
+  view.innerHTML=tabsMov()+kpis+alerta+cuerpo;
+}
+function movVistaFlota(){
+  const objs=[...new Set((movData.flota||[]).map(f=>f.donde).filter(Boolean))].sort();
+  const q=movBusca.toLowerCase().split(/\s+/).filter(Boolean);
+  const filas=(movData.flota||[]).filter(f=>{
+    if(movFiltroObj&&f.donde!==movFiltroObj)return false;
+    if(movFiltroEst==='falla'&&f.estado_maquina!=='con_falla')return false;
+    if(movFiltroEst==='viaje'&&f.situacion!=='en_transito')return false;
+    if(movFiltroEst==='sin'&&f.situacion!=='sin_registrar')return false;
+    if(!q.length)return true;
+    const blob=[f.rotulo,f.detalle,f.donde,f.hacia,f.quien,f.obs].join(' ').toLowerCase();
+    return q.every(w=>blob.includes(w));
+  });
+  return `<div class="card" style="padding:16px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <input id="mov-q" placeholder="Buscar máquina, patente, objetivo…" value="${movBusca.replace(/"/g,'&quot;')}"
+        oninput="movBusca=this.value;renderMov();setTimeout(()=>{const i=document.getElementById('mov-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}},0)"
+        style="flex:1;min-width:220px;padding:8px 11px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
+      <select onchange="movFiltroObj=this.value;renderMov()" style="padding:8px 11px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
+        <option value="">Todos los lugares</option>
+        ${objs.map(o=>`<option ${movFiltroObj===o?'selected':''}>${o}</option>`).join('')}
+      </select>
+      <select onchange="movFiltroEst=this.value;renderMov()" style="padding:8px 11px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
+        <option value="">Todos los estados</option>
+        <option value="falla" ${movFiltroEst==='falla'?'selected':''}>Solo con falla</option>
+        <option value="viaje" ${movFiltroEst==='viaje'?'selected':''}>Solo en viaje</option>
+        <option value="sin" ${movFiltroEst==='sin'?'selected':''}>Sin registrar</option>
+      </select>
+    </div>
+    <table><thead><tr><th>Máquina</th><th>Dónde está</th><th>Desde</th><th>Estado</th><th>Último movimiento</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr style="cursor:pointer" onclick="movVerFicha('${f.unidad_id}')">
+      <td><b>${f.rotulo}</b>${f.detalle?`<div class="sub" style="font-size:11px">${f.detalle}</div>`:''}</td>
+      <td>${movBadgeUbic(f)}</td>
+      <td class="mono" style="${f.situacion==='en_transito'&&f.dias>2?'color:var(--rojo)':''}">${f.dias!=null?f.dias+' d':'—'}</td>
+      <td>${movBadgeEst(f.estado_maquina)}</td>
+      <td class="sub">${f.situacion==='sin_registrar'?'Nadie la cargó todavía'
+        :`${f.situacion==='en_transito'?'sacó':'recibió'} ${f.quien||'—'}<div class="mono" style="font-size:10.5px;color:var(--tinta-3)">${movFecha(f.desde_at)}${f.obs?' · '+f.obs.slice(0,40):''}</div>`}</td>
+    </tr>`).join('')||'<tr><td colspan="5" class="sub" style="padding:18px;text-align:center">Nada con ese filtro.</td></tr>'}
+    </tbody></table>
+    <div class="sub" style="font-size:11.5px;margin-top:9px">${filas.length} de ${(movData.flota||[]).length} máquinas · las “sin registrar” aparecen hasta que un supervisor las dé de alta desde la app.</div>
+  </div>`;
+}
+function movVistaMovs(){
+  const ms=movData.movimientos||[];
+  return `<div class="card" style="padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:600">Movimientos de los últimos ${movData.dias} días</div>
+      <select onchange="movDias=Number(this.value);go('movimientos')" style="padding:7px 10px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
+        ${[7,30,90,365].map(d=>`<option value="${d}" ${movDias===d?'selected':''}>${d===365?'Último año':'Últimos '+d+' días'}</option>`).join('')}
+      </select>
+    </div>
+    <table><thead><tr><th>Máquina</th><th>Recorrido</th><th>Salida</th><th>Llegada</th><th>Estado</th><th>Observaciones</th></tr></thead><tbody>
+    ${ms.map(m=>`<tr style="cursor:pointer" onclick="movVerFicha('${m.unidad_id}')">
+      <td><b>${m.unidad}</b></td>
+      <td>${m.desde} → ${m.hasta}</td>
+      <td class="sub"><span class="mono">${movFecha(m.salida_at)}</span><div style="font-size:11px">${m.salida_por||'—'}${m.retira?' · lleva '+m.retira:''}</div></td>
+      <td class="sub">${m.estado==='en_transito'?'<span class="badge b-amber">en viaje</span>'
+        :`<span class="mono">${movFecha(m.llegada_at)}</span><div style="font-size:11px">${m.llegada_por||'—'}</div>`}</td>
+      <td>${movBadgeEst(m.llegada_estado||m.salida_estado)}</td>
+      <td class="sub" style="font-size:11.5px">${[m.salida_obs,m.llegada_obs].filter(Boolean).join(' · ')||'—'}</td>
+    </tr>`).join('')||'<tr><td colspan="6" class="sub" style="padding:18px;text-align:center">Todavía no hay movimientos registrados.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+function movVistaObjetivo(){
+  const fs=movData.por_objetivo||[];
+  return `<div class="card" style="padding:16px">
+    <div style="font-weight:600;margin-bottom:3px">Por objetivo · últimos ${movData.dias} días</div>
+    <div class="sub" style="margin-bottom:11px">“Llegaron con falla” sale del estado que marca el supervisor al recibirla: si un objetivo devuelve todo roto, aparece acá sin que nadie lo cuente aparte.</div>
+    <table><thead><tr><th>Objetivo</th><th>Máquinas hoy</th><th>Entraron</th><th>Salieron</th><th>Llegaron con falla</th></tr></thead><tbody>
+    ${fs.map(o=>{
+      const pct=o.entraron?o.llegaron_falla/o.entraron:0;
+      const cls=!o.entraron?'b-gray':pct>=.6?'b-red':pct>0?'b-amber':'b-green';
+      return `<tr><td><b>${o.objetivo}</b></td><td class="mono">${o.hoy}</td><td class="mono">${o.entraron}</td><td class="mono">${o.salieron}</td>
+        <td><span class="badge ${cls}">${o.entraron?o.llegaron_falla+' de '+o.entraron:'—'}</span></td></tr>`;
+    }).join('')||'<tr><td colspan="5" class="sub" style="padding:18px;text-align:center">Sin movimientos en el período.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+// Ficha de una máquina: el hilo completo de viajes
+async function movVerFicha(unidadId){
+  movFicha={cargando:true};
+  movModal();
+  try{movFicha=await api('/api/movimientos/unidad/'+unidadId);}
+  catch(e){movFicha={error:e.message};}
+  movModal();
+}
+function movModal(){
+  let ovl=document.getElementById('mov-modal');
+  if(!ovl){
+    ovl=document.createElement('div');ovl.id='mov-modal';
+    ovl.style.cssText='position:fixed;inset:0;background:rgba(22,34,28,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:200';
+    ovl.onclick=e=>{if(e.target===ovl)movCerrarFicha();};
+    document.body.appendChild(ovl);
+  }
+  const f=movFicha||{};
+  if(f.cargando){ovl.innerHTML='<div class="card" style="padding:22px">Cargando historial…</div>';return;}
+  if(f.error){ovl.innerHTML=`<div class="card" style="padding:22px;max-width:420px">${f.error}<div style="margin-top:12px"><button class="btn-salir" onclick="movCerrarFicha()">Cerrar</button></div></div>`;return;}
+  const t=f.totales||{}, h=f.historial||[];
+  ovl.innerHTML=`<div class="card" style="padding:20px;max-width:560px;width:100%;max-height:86vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div><div style="font-size:16px;font-weight:600">${f.unidad.rotulo}</div>
+        <div class="sub">${f.unidad.detalle||''}</div></div>
+      <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick="movCerrarFicha()">✕</button>
+    </div>
+    <div class="sub" style="margin:12px 0 16px;padding:9px 11px;background:var(--hueso);border:1px solid var(--linea);border-radius:var(--r-s)">
+      ${t.movimientos} movimiento${t.movimientos===1?'':'s'} · ${t.objetivos} objetivo${t.objetivos===1?'':'s'} distinto${t.objetivos===1?'':'s'} · <b>${t.dias_taller} días</b> en taller
+    </div>
+    <div class="dl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--tinta-3);font-weight:600;margin-bottom:10px">Historial</div>
+    <div style="position:relative;padding-left:20px;border-left:2px solid var(--linea-2);margin-left:5px">
+    ${h.map(m=>{
+      const enViaje=m.estado==='en_transito';
+      const col=enViaje?'var(--diesel)':'var(--brote)';
+      const dias=enViaje?Math.ceil((Date.now()-new Date(m.salida_at).getTime())/864e5):null;
+      return `<div style="position:relative;padding-bottom:15px">
+        <div style="position:absolute;left:-27px;top:4px;width:10px;height:10px;border-radius:50%;background:${col};border:2px solid #fff;box-shadow:0 0 0 1.5px ${col}"></div>
+        <div style="font-size:13px;font-weight:600">${m.desde} → ${m.hasta}</div>
+        <div class="sub" style="font-size:11.5px">${enViaje?'Salió':'Recibió'} ${enViaje?(m.salida_por||'—'):(m.llegada_por||'—')}${m.retira?' · lleva '+m.retira:''} · ${(m.llegada_estado||m.salida_estado)==='con_falla'?'<b style="color:var(--rojo)">con falla</b>':'anda bien'}</div>
+        ${[m.salida_obs,m.llegada_obs].filter(Boolean).length?`<div class="sub" style="font-size:11.5px">“${[m.salida_obs,m.llegada_obs].filter(Boolean).join(' · ')}”</div>`:''}
+        ${enViaje?`<div class="sub" style="font-size:11.5px;color:var(--rojo)">Sin llegada hace ${dias} día${dias===1?'':'s'}</div>`:''}
+        <div class="mono" style="font-size:10.5px;color:var(--tinta-3)">${movFechaH(m.llegada_at||m.salida_at)}</div>
+      </div>`;
+    }).join('')||'<div class="sub">Sin movimientos registrados.</div>'}
+    </div>
+    <div class="sub" style="font-size:11.5px;margin-top:6px">Cada renglón es un viaje: quién la sacó, quién la recibió y cómo estaba en cada punta.</div>
+  </div>`;
+}
+function movCerrarFicha(){const o=document.getElementById('mov-modal');if(o)o.remove();movFicha=null;}
+// Cerrar un viaje desde el panel (cuando el supervisor no marcó la llegada)
+async function movRecibir(unidadId){
+  const f=(movData.sin_recibir||[]).find(x=>String(x.unidad_id)===String(unidadId));
+  if(!f)return;
+  const det=await api('/api/movimientos/unidad/'+unidadId).catch(()=>null);
+  const abierto=det&&(det.historial||[]).find(m=>m.estado==='en_transito');
+  if(!abierto){alert('Ese viaje ya está cerrado. Recargá la vista.');return;}
+  if(!confirm('¿Marcar que '+f.rotulo+' llegó a '+(f.hacia||'destino')+'?\n\nQueda registrado como cerrado desde el panel, no por el supervisor.'))return;
+  try{
+    await api('/api/movimientos/'+abierto.id+'/recibir',{method:'POST',body:JSON.stringify({estado:'anda',observaciones:'Llegada marcada desde el panel'})});
+    go('movimientos');
+  }catch(e){alert(e.message||'No pude marcar la llegada');}
+}
+
+const MODS_PANEL=[['dashboard','Dashboard'],['insumos','Insumos'],['combustible','Combustible'],['compras','Compras'],['reparaciones','Reparaciones'],['stock','Stock'],['movimientos','Movimientos'],['maestros','Maestros']];
 let uPanelData=[], uPanelEdit=null;   // null=lista · {}=nuevo · {id,...}=edición
 async function vUsuariosPanel(view,tabs){
   view.innerHTML=`
@@ -2943,7 +3144,18 @@ function cardMaestro(m,ix){
   }
   if(maestroTab==='capataces'){
     sub=m.objetivos?m.objetivos.nombre:'sin objetivo';
-    extra=`<div class="mcard-row"><span>Teléfono</span><b>${m.telefono||'—'}</b></div>${m.rol?`<div class="mcard-row"><span>Rol</span><b>${m.rol}</b></div>`:''}`;
+    // Estado de acceso a la app de un vistazo: qué le falta a cada uno para
+    // poder cargar combustible desde el celular.
+    // El camión NO es requisito: la mayoría son capataces de objetivo y no
+    // tienen uno fijo (la app les pide la patente escrita). Sí hacen falta
+    // usuario, clave y objetivo — la carga se cuelga del objetivo.
+    const listo=!!(m.usuario&&m.tiene_clave&&m.objetivo_id);
+    const falta=!m.usuario?'falta usuario':!m.tiene_clave?'falta clave'
+      :!m.objetivo_id?'falta objetivo':'';
+    extra=`<div class="mcard-row"><span>Teléfono</span><b>${m.telefono||'—'}</b></div>${m.rol?`<div class="mcard-row"><span>Rol</span><b>${m.rol}</b></div>`:''}
+      <div class="mcard-row"><span>App</span>${listo
+        ?`<span class="badge b-green" style="font-size:10px">✓ ${m.usuario}</span>`
+        :`<span class="badge b-amber" style="font-size:10px">${falta}</span>`}</div>`;
   }
   return `<div class="mcard" style="${m.activo?'':'opacity:.55'}">
     <div class="mcard-h"><div class="mcard-ini">${ini}</div>
@@ -3005,6 +3217,15 @@ function abrirModalMaestro(m){
     campos+=`<div class="divider"></div>
       <label class="mm-hab" style="margin-bottom:8px"><input type="checkbox" id="mm-eschofer" ${m.es_chofer?'checked':''}> Es chofer de roll off (carga viajes/bateas por el bot)</label>
       <div class="mm-field"><label>Camión asignado (opcional)</label><select id="mm-unidad"><option value="">— sin camión fijo —</option>${(unidadesData||[]).map(u=>`<option value="${u.id}" ${String(m.unidad_id)===String(u.id)?'selected':''}>${u.patente||u.codigo||'unidad'} ${u.marca_modelo?'· '+u.marca_modelo:''}</option>`).join('')}</select></div>`;
+    // Acceso a la app (11-ago): cada capataz entra con su usuario y carga el
+    // combustible desde el celular. La carga sale con SU objetivo y SU unidad,
+    // así que las dos cosas de arriba tienen que estar completas.
+    campos+=`<div class="divider"></div>
+      <div class="dl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--tinta-3);font-weight:600;margin-bottom:8px">Acceso a la app</div>
+      <div class="mm-field"><label>Usuario</label><input id="mm-usuario" value="${(m.usuario||'').replace(/"/g,'&quot;')}" placeholder="ej: claudio" autocapitalize="none"></div>
+      <div class="mm-field"><label>Clave</label><input id="mm-clave" type="text" placeholder="${m.tiene_clave?'dejar vacío para no cambiarla':'clave para entrar a la app'}"></div>
+      <div class="sub">La clave se guarda encriptada. Con usuario y clave, el capataz entra a ${location.origin}/app y carga el combustible con la foto del remito.</div>
+      ${!m.objetivo_id?'<div class="sub" style="color:var(--diesel);margin-top:6px">⚠ Sin objetivo asignado acá arriba, la carga queda sin objetivo en el panel. El camión sí es opcional: si no tiene uno fijo, la app le pide la patente.</div>':''}`;
   }
   if(maestroTab==='centros_costo'){
     campos+=`<div class="mm-field"><label>Código de centro de costo en Flexxus <span style="font-weight:400;color:var(--tinta-3)">(columna centros de costo del diagnóstico ⚙, ej: EPEC = 12)</span></label><input id="mm-cflexxus" value="${(m.codigo_flexxus||'').replace(/"/g,'&quot;')}" placeholder="ej: 12"></div>`;
@@ -3061,6 +3282,10 @@ async function guardarMaestro(){
     body.objetivo_id=document.getElementById('mm-objetivo').value||null;
     const ch=document.getElementById('mm-eschofer');if(ch)body.es_chofer=ch.checked;
     const un=document.getElementById('mm-unidad');if(un)body.unidad_id=un.value||null;
+    const us=document.getElementById('mm-usuario');
+    if(us)body.usuario=us.value.trim().toLowerCase()||null;
+    const cl=document.getElementById('mm-clave');
+    if(cl&&cl.value.trim())body.clave=cl.value.trim();   // vacío = no cambiar
   }
   if(maestroTab==='centros_costo'){
     body.codigo_flexxus=document.getElementById('mm-cflexxus').value.trim()||null;
