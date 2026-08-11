@@ -93,7 +93,7 @@ router.post('/api/app/login', async (req, res) => {
     // Se dan de alta desde el panel (Maestros → Mecánicos).
     const { data: u } = await supabase
       .from('mecanicos').select('id, nombre, clave_hash, activo, rol_app')
-      .eq('usuario', usuario).maybeSingle();
+      .ilike('usuario', usuario).maybeSingle();
     if (u && u.activo && verificarClave(clave, u.clave_hash)) {
       seg.loginOk(req, usuario);
       const rol = u.rol_app === 'panol' ? 'panol' : u.rol_app === 'supervisor' ? 'supervisor' : 'mecanico';
@@ -108,7 +108,9 @@ router.post('/api/app/login', async (req, res) => {
     // para que entren a la app y carguen combustible a su unidad/objetivo.
     const { data: cap } = await supabase
       .from('capataces').select('id, nombre, clave_hash, activo, usuario, objetivo_id, objetivos(nombre), unidad_id, unidades(id, patente)')
-      .eq('usuario', usuario).maybeSingle();
+      // ilike y no eq: en el celular el teclado suele mandar la primera letra
+      // en mayúscula y el capataz no tiene por qué pelearse con eso.
+      .ilike('usuario', usuario).maybeSingle();
     if (cap && cap.activo && cap.clave_hash && verificarClave(clave, cap.clave_hash)) {
       seg.loginOk(req, usuario);
       return res.json({
@@ -765,12 +767,46 @@ router.post('/api/app/supervisor/combustible', authApp(['supervisor', 'panol', '
     // El supervisor suele existir TAMBIÉN como capataz (mismo nombre). Lo
     // buscamos para poner capataz_id y, sobre todo, para usar SU objetivo
     // (ej. "Supervisores") como objetivo de la carga — igual que el bot.
-    let capatazId = null, objetivoCapataz = null;
+    //
+    // FIX 11-ago (caso Alexis Barraza, supervisor nuevo): esto dependía de que
+    // el supervisor ESTUVIERA en la tabla `capataces` con el nombre escrito
+    // igual. Un supervisor nuevo no está, así que la carga quedaba sin objetivo
+    // (y si la columna no lo admite, se caía entera). Ahora hay cascada de
+    // respaldo y nada de esto puede frenar la carga.
+    let capatazId = null, objetivoCapataz = null, comoResolvio = 'sin objetivo';
     const nombreSup = (req.app_user.nombre || '').trim();
     if (nombreSup) {
+      // 1) match exacto por nombre
       const { data: cap } = await supabase.from('capataces')
         .select('id, objetivo_id').ilike('nombre', nombreSup).eq('activo', true).limit(1).maybeSingle();
-      if (cap) { capatazId = cap.id; objetivoCapataz = cap.objetivo_id || null; }
+      if (cap) { capatazId = cap.id; objetivoCapataz = cap.objetivo_id || null; comoResolvio = 'capataz exacto'; }
+      // 2) match flexible: "Alexis Barraza" contra "BARRAZA, ALEXIS" o "Alexis B."
+      if (!cap) {
+        const { data: caps } = await supabase.from('capataces')
+          .select('id, nombre, objetivo_id').eq('activo', true);
+        const norm = t => String(t || '').toUpperCase().normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+        const mio = norm(nombreSup);
+        const hit = (caps || []).find(c => {
+          const suyo = norm(c.nombre);
+          return mio.length && suyo.length && mio.every(p => suyo.includes(p));
+        });
+        if (hit) { capatazId = hit.id; objetivoCapataz = hit.objetivo_id || null; comoResolvio = 'capataz por nombre parecido'; }
+      }
+    }
+    // 3) Sin capataz: el primer objetivo que el supervisor tenga a cargo
+    if (!objetivoCapataz && req.app_user.mid) {
+      const { data: me } = await supabase.from('mecanicos')
+        .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+      const aCargo = (me && Array.isArray(me.objetivos_cargo)) ? me.objetivos_cargo : [];
+      if (aCargo.length) { objetivoCapataz = aCargo[0]; comoResolvio = 'objetivo a cargo'; }
+    }
+    // 4) Último recurso: el objetivo "SUPERVISORES", donde caen todas las
+    // cargas de supervisor en el panel
+    if (!objetivoCapataz) {
+      const { data: os } = await supabase.from('objetivos')
+        .select('id').ilike('nombre', '%supervisor%').limit(1).maybeSingle();
+      if (os) { objetivoCapataz = os.id; comoResolvio = 'objetivo SUPERVISORES'; }
     }
 
     const litrosTotal = repartos.reduce((s, r) => s + Number(r.litros), 0);
@@ -802,6 +838,11 @@ router.post('/api/app/supervisor/combustible', authApp(['supervisor', 'panol', '
       respuesta_capataz: `Cargado por ${({supervisor:'supervisor',panol:'pañol',mecanico:'mecánico'})[req.app_user.rol] || 'app'}: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
     }).select('id').single();
     if (error || !carga) throw (error || new Error('no se creó la carga'));
+    // Log para poder rastrear una carga que "no aparece" en el panel
+    console.log('[combustible app] carga ' + carga.id + ' · ' + (req.app_user.rol || '?') + ' ' +
+      (req.app_user.nombre || '?') + ' · fecha ' + fechaValida(d.fecha) + ' · objetivo ' +
+      (objetivoCapataz || 'NINGUNO') + ' (' + comoResolvio + ') · capataz ' + (capatazId || 'sin match') +
+      ' · ' + litrosTotal + ' lt');
 
     const items = repartos.map(r => {
       const oid = r.objetivo_id || (r.destino === 'bidon' && r.objetivo_nombre ? mapaObj[r.objetivo_nombre.trim().toUpperCase()] : null) || null;
@@ -853,6 +894,200 @@ router.get('/api/app/supervisor/objetivos', authApp(['supervisor', 'panol', 'mec
     res.json(data || []);
   } catch (err) {
     res.json([]);
+  }
+});
+
+// ══ TRAZABILIDAD DE MAQUINARIA ═══════════════════════════════
+// Los supervisores (los autorizados a mover máquinas entre objetivos y del
+// taller a un objetivo) marcan EGRESO e INGRESO desde la app. Una fila por
+// VIAJE en movimientos_unidades: el egreso la abre 'en_transito', el ingreso
+// la cierra 'recibida'. La ubicación de cada máquina se deriva del último
+// viaje cerrado, y las que salieron y no llegaron quedan visibles.
+// Mecánicos y pañol también pueden marcar (el auxiliar logístico suele ser
+// el que va a buscar las máquinas), por eso los tres roles.
+const ROLES_MOV = ['supervisor', 'panol', 'mecanico'];
+const rotuloUnidad = u => [u.codigo, u.patente, u.marca_modelo].filter(Boolean).join(' · ') || ('Unidad ' + u.id);
+
+// Qué ve el supervisor al entrar: lo que tiene en sus objetivos (para dar
+// EGRESO), lo que viene en camino (para dar INGRESO) y el historial reciente.
+router.get('/api/app/supervisor/maquinaria', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const { data: sup } = await supabase.from('mecanicos')
+      .select('objetivos_cargo').eq('id', req.app_user.mid).maybeSingle();
+    const aCargo = (sup && Array.isArray(sup.objetivos_cargo)) ? sup.objetivos_cargo.map(String) : [];
+
+    const [unidadesR, movsR, objetivosR] = await Promise.all([
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, tipo_activo').order('codigo'),
+      supabase.from('movimientos_unidades')
+        .select('*, unidades(id, codigo, patente, marca_modelo)')
+        .neq('estado', 'anulado').order('salida_at', { ascending: false }).limit(400),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre'),
+    ]);
+    if (movsR.error) throw movsR.error;
+    const unidades = unidadesR.data || [];
+    const movs = movsR.data || [];
+    const objetivos = objetivosR.data || [];
+    // IDs SIEMPRE como string: en esta base unidades.id y objetivos.id son
+    // uuid, así que cualquier Number() los volvía NaN.
+    const nombreObj = new Map(objetivos.map(o => [String(o.id), o.nombre]));
+    const lugar = (tipo, oid) => tipo === 'taller' ? 'Taller' : (nombreObj.get(String(oid)) || 'Objetivo');
+
+    // Último movimiento por unidad → ubicación actual
+    const ultimo = new Map();
+    for (const m of movs) if (!ultimo.has(m.unidad_id)) ultimo.set(m.unidad_id, m);
+
+    const aca = [], enCamino = [], otras = [];
+    for (const u of unidades) {
+      const m = ultimo.get(u.id) || null;
+      const item = {
+        unidad_id: u.id, rotulo: rotuloUnidad(u), tipo_activo: u.tipo_activo || null,
+        movimiento_id: m ? m.id : null,
+        situacion: !m ? 'sin_registrar' : (m.estado === 'en_transito' ? 'en_transito' : 'ubicada'),
+        donde: m ? (m.estado === 'en_transito' ? lugar(m.origen_tipo, m.origen_objetivo_id) : lugar(m.destino_tipo, m.destino_objetivo_id)) : null,
+        hacia: m && m.estado === 'en_transito' ? lugar(m.destino_tipo, m.destino_objetivo_id) : null,
+        destino_objetivo_id: m ? m.destino_objetivo_id : null,
+        destino_tipo: m ? m.destino_tipo : null,
+        estado_maquina: m ? (m.llegada_estado || m.salida_estado) : null,
+        retira: m ? m.retira : null,
+        salida_at: m ? m.salida_at : null,
+        desde: m ? (m.llegada_at || m.salida_at) : null,
+      };
+      const destinoMio = m && m.destino_tipo === 'objetivo' && aCargo.includes(String(m.destino_objetivo_id));
+      if (item.situacion === 'en_transito' && destinoMio) enCamino.push(item);
+      else if (item.situacion === 'ubicada' && destinoMio) aca.push(item);
+      else otras.push(item);
+    }
+    // Las que están en tránsito hacia cualquier lado también se pueden recibir
+    // (si la máquina va a un objetivo que no es el mío, igual la veo en "otras").
+    res.json({
+      a_cargo: aCargo.length ? aCargo : null,
+      aca, en_camino: enCamino, otras,
+      objetivos,
+      historial: movs.slice(0, 40).map(m => ({
+        id: m.id, unidad: m.unidades ? rotuloUnidad(m.unidades) : ('Unidad ' + m.unidad_id),
+        desde: lugar(m.origen_tipo, m.origen_objetivo_id), hasta: lugar(m.destino_tipo, m.destino_objetivo_id),
+        salida_at: m.salida_at, salida_por: m.salida_por, llegada_at: m.llegada_at, llegada_por: m.llegada_por,
+        estado: m.estado, retira: m.retira,
+        estado_maquina: m.llegada_estado || m.salida_estado,
+        obs: [m.salida_obs, m.llegada_obs].filter(Boolean).join(' · ') || null,
+      })),
+    });
+  } catch (err) {
+    console.error('app maquinaria:', err.message);
+    res.status(500).json({ error: (/movimientos_unidades/.test(err.message || '')
+      ? 'Falta correr movimientos_maquinaria.sql en Supabase.' : 'Error cargando la maquinaria') });
+  }
+});
+
+// EGRESO: la máquina sale de donde está hacia un destino. Abre el viaje.
+router.post('/api/app/supervisor/maquinaria/egreso', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const unidadId = String(b.unidad_id || '').trim() || null;
+    if (!unidadId) return res.status(400).json({ error: 'Elegí la máquina.' });
+    const destinoTipo = b.destino_tipo === 'taller' ? 'taller' : 'objetivo';
+    const destinoObj = destinoTipo === 'objetivo' ? (String(b.destino_objetivo_id || '').trim() || null) : null;
+    if (destinoTipo === 'objetivo' && !destinoObj) return res.status(400).json({ error: 'Elegí a qué objetivo va.' });
+
+    // ¿Ya está en viaje? (el índice único lo impide igual, pero el mensaje
+    // claro vale más que un error de Postgres)
+    const { data: abierto } = await supabase.from('movimientos_unidades')
+      .select('id, salida_at, salida_por').eq('unidad_id', unidadId).eq('estado', 'en_transito').maybeSingle();
+    if (abierto) return res.status(409).json({
+      error: 'Esa máquina ya figura en viaje (la sacó ' + (abierto.salida_por || 'alguien') +
+        '). Primero marcá el ingreso donde llegó.' });
+
+    // De dónde sale: el destino del último viaje cerrado
+    const { data: prev } = await supabase.from('movimientos_unidades')
+      .select('destino_tipo, destino_objetivo_id').eq('unidad_id', unidadId).eq('estado', 'recibida')
+      .order('salida_at', { ascending: false }).limit(1).maybeSingle();
+    const origenTipo = b.origen_tipo === 'taller' ? 'taller' : (prev ? prev.destino_tipo : (b.origen_objetivo_id ? 'objetivo' : 'taller'));
+    const origenObj = origenTipo === 'objetivo'
+      ? ((String(b.origen_objetivo_id || '').trim() || null) || (prev ? prev.destino_objetivo_id : null)) : null;
+
+    const { data, error } = await supabase.from('movimientos_unidades').insert({
+      unidad_id: unidadId,
+      origen_tipo: origenTipo, origen_objetivo_id: origenObj,
+      destino_tipo: destinoTipo, destino_objetivo_id: destinoObj,
+      retira: String(b.retira || '').trim() || null,
+      salida_por: req.app_user.nombre, salida_rol: req.app_user.rol,
+      salida_estado: b.estado === 'con_falla' ? 'con_falla' : 'anda',
+      salida_obs: String(b.observaciones || '').trim() || null,
+      estado: 'en_transito',
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('app maquinaria egreso:', err.message);
+    res.status(500).json({ error: (/movimientos_unidades/.test(err.message || '')
+      ? 'Falta correr movimientos_maquinaria.sql en Supabase.' : (err.message || 'No pude registrar la salida')) });
+  }
+});
+
+// INGRESO: la máquina llegó. Cierra el viaje abierto.
+router.post('/api/app/supervisor/maquinaria/ingreso', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const unidadId = String(b.unidad_id || '').trim() || null;
+    if (!unidadId) return res.status(400).json({ error: 'Elegí la máquina.' });
+    const { data: abierto } = await supabase.from('movimientos_unidades')
+      .select('id').eq('unidad_id', unidadId).eq('estado', 'en_transito').maybeSingle();
+    if (!abierto) return res.status(409).json({
+      error: 'Esa máquina no figura en viaje. Si llegó sin que nadie marcara la salida, registrala con "Recibir sin salida".' });
+    const { error } = await supabase.from('movimientos_unidades').update({
+      llegada_at: new Date().toISOString(),
+      llegada_por: req.app_user.nombre, llegada_rol: req.app_user.rol,
+      llegada_estado: b.estado === 'con_falla' ? 'con_falla' : 'anda',
+      llegada_obs: String(b.observaciones || '').trim() || null,
+      estado: 'recibida',
+    }).eq('id', abierto.id);
+    if (error) throw error;
+    res.json({ ok: true, id: abierto.id });
+  } catch (err) {
+    console.error('app maquinaria ingreso:', err.message);
+    res.status(500).json({ error: err.message || 'No pude registrar la llegada' });
+  }
+});
+
+// RECIBIR SIN SALIDA: la máquina apareció en el objetivo y nadie marcó el
+// egreso. Se crea el viaje ya cerrado, para que la ubicación no quede vieja.
+router.post('/api/app/supervisor/maquinaria/recibir-suelta', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const unidadId = String(b.unidad_id || '').trim() || null;
+    const destinoObj = String(b.destino_objetivo_id || '').trim() || null;
+    if (!unidadId) return res.status(400).json({ error: 'Elegí la máquina.' });
+    const destinoTipo = b.destino_tipo === 'taller' ? 'taller' : 'objetivo';
+    if (destinoTipo === 'objetivo' && !destinoObj) return res.status(400).json({ error: 'Elegí en qué objetivo está.' });
+    // Si tenía un viaje abierto, este ingreso lo cierra en vez de duplicar
+    const { data: abierto } = await supabase.from('movimientos_unidades')
+      .select('id').eq('unidad_id', unidadId).eq('estado', 'en_transito').maybeSingle();
+    const ahora = new Date().toISOString();
+    const llegada = {
+      llegada_at: ahora, llegada_por: req.app_user.nombre, llegada_rol: req.app_user.rol,
+      llegada_estado: b.estado === 'con_falla' ? 'con_falla' : 'anda',
+      llegada_obs: String(b.observaciones || '').trim() || null,
+      estado: 'recibida',
+    };
+    if (abierto) {
+      const { error } = await supabase.from('movimientos_unidades').update(llegada).eq('id', abierto.id);
+      if (error) throw error;
+      return res.json({ ok: true, id: abierto.id, cerro_viaje: true });
+    }
+    const { data, error } = await supabase.from('movimientos_unidades').insert({
+      unidad_id: unidadId,
+      origen_tipo: 'objetivo', origen_objetivo_id: null,
+      destino_tipo: destinoTipo, destino_objetivo_id: destinoObj,
+      salida_at: ahora, salida_por: req.app_user.nombre, salida_rol: req.app_user.rol,
+      salida_estado: llegada.llegada_estado,
+      salida_obs: 'Alta de ubicación sin egreso previo',
+      ...llegada,
+    }).select('id').single();
+    if (error) throw error;
+    res.json({ ok: true, id: data.id, alta: true });
+  } catch (err) {
+    console.error('app maquinaria suelta:', err.message);
+    res.status(500).json({ error: err.message || 'No pude registrar la ubicación' });
   }
 });
 
@@ -926,12 +1161,17 @@ router.post('/api/app/capataz/combustible', authApp('capataz'), async (req, res)
       proveedor_id: proveedorId,
       fecha: fechaValida(d.fecha),
       numero_remito: d.numero || null,
-      patente_raw: req.app_user.patente || null,
+      // La patente sale de la ficha; si el capataz no tiene camión fijo, de lo
+      // que escribió en el renglón de la máquina.
+      patente_raw: req.app_user.patente || repartos.find(r => r.patente)?.patente || null,
       litros_total: litrosTotal,
       datos_ia: d.datos_ia || null,
       respuesta_capataz: `Cargado por capataz: ${req.app_user.nombre || '—'} · ${resumenTxt}`,
     }).select('id').single();
     if (error || !carga) throw (error || new Error('no se creó la carga'));
+    console.log('[combustible app] carga ' + carga.id + ' · capataz ' + (req.app_user.nombre || '?') +
+      ' · fecha ' + fechaValida(d.fecha) + ' · objetivo ' + (objetivoId || 'NINGUNO') +
+      ' · unidad ' + (unidadId || 'ninguna') + ' · ' + litrosTotal + ' lt');
 
     const items = repartos.map(r => ({
       carga_id: carga.id,
