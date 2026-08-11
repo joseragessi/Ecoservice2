@@ -121,24 +121,47 @@ function razonNorm(s) {
     .replace(/[^a-z0-9ñ]/g, '');
 }
 
-async function buscarProveedorPorCuit(cuit, razonSocial) {
+// CACHÉ DE PROVEEDORES (10-ago): el previo de imputación buscaba el mismo
+// proveedor VARIAS veces (preview + ficha, y de nuevo al imputar), y cada
+// búsqueda son 2-3 requests al sandbox de Flexxus, que es lento. Ahora el
+// resultado por CUIT queda 10 min en memoria y las búsquedas concurrentes
+// comparten UNA sola ida (single-flight). Después de cualquier escritura de la
+// ficha (PUT de clase, alta) se invalida con _provBust(cuit).
+const _provCache = new Map();   // clave cuit|razon → { t, p:Promise }
+const PROV_TTL = 10 * 60 * 1000;
+function _provBust(cuit) {
   const c = cuitLimpio(cuit);
-  // 1) Por CUIT: probamos sin guiones y con el formato AR con guiones, porque
-  // Flexxus puede tenerlo guardado de cualquiera de las dos formas.
+  for (const k of [..._provCache.keys()]) if (k.startsWith(c + '|')) _provCache.delete(k);
+}
+async function buscarProveedorPorCuit(cuit, razonSocial, opciones) {
+  const c = cuitLimpio(cuit);
+  const clave = c + '|' + razonNorm(razonSocial || '');
+  const fresco = !!(opciones && opciones.fresco);
+  const ya = _provCache.get(clave);
+  if (!fresco && ya && Date.now() - ya.t < PROV_TTL) return ya.p;
+  const p = _buscarProveedorPorCuit(c, razonSocial);
+  _provCache.set(clave, { t: Date.now(), p });
+  p.catch(() => _provCache.delete(clave));   // un error no queda cacheado
+  return p;
+}
+async function _buscarProveedorPorCuit(c, razonSocial) {
+  // 1) Por CUIT: sin guiones y con el formato AR con guiones, EN PARALELO
+  // (antes iban en serie y sumaban latencia del sandbox al pedo).
   const variantes = [];
   if (c) {
     variantes.push(c);
     if (c.length === 11) variantes.push(c.slice(0, 2) + '-' + c.slice(2, 10) + '-' + c.slice(10));
   }
-  for (const v of variantes) {
-    try {
-      const d = await flx('/proveedores?cuit=' + encodeURIComponent(v));
-      const lista = d.data || d || [];
-      if (Array.isArray(lista) && lista.length) {
-        const match = lista.find(p => cuitLimpio(p.cuit) === c) || lista[0];
-        if (match) return match;
-      }
-    } catch (e) { /* probamos la siguiente variante */ }
+  if (variantes.length) {
+    const res = await Promise.all(variantes.map(v =>
+      flx('/proveedores?cuit=' + encodeURIComponent(v))
+        .then(d => (Array.isArray(d.data || d) ? (d.data || d) : []))
+        .catch(() => [])));
+    for (const lista of res) {
+      if (!lista.length) continue;
+      const match = lista.find(p => cuitLimpio(p.cuit) === c) || lista[0];
+      if (match) return match;
+    }
   }
   // 2) Respaldo por razón social NORMALIZADA (sin S.A./S.A.S./SRL ni puntuación),
   // útil si el CUIT vino mal leído del comprobante y el nombre se corrigió a mano.
@@ -159,12 +182,12 @@ async function buscarProveedorPorCuit(cuit, razonSocial) {
 // y con qué número de comprobante — sin crear ni imputar nada.
 async function verificarImputacion(f, letra) {
   const provExistente = await buscarProveedorPorCuit(f.cuit, f.proveedor);
-  if (!provExistente && !opts.permitirAlta) {
-    const e = new Error('No existe en Flexxus un proveedor con CUIT ' + (f.cuit || 's/d') +
-      " ni razón social parecida a '" + (f.proveedor || 's/d') + "'.");
-    e.code = 'PROV_NO_EXISTE';
-    throw e;
-  }
+  // BUG corregido (10-ago): acá había `if (!provExistente && !opts.permitirAlta)`
+  // y `opts` no existe en esta función → cuando el proveedor NO estaba en
+  // Flexxus tiraba ReferenceError, el preview devolvía 500 y el panel caía al
+  // aviso genérico "no pude verificar" en vez de ofrecer el alta. Esto es solo
+  // una VISTA PREVIA: no crea nada, así que devuelve proveedor:null y el panel
+  // decide (ya tiene el camino del alta con confirmación).
   const num = numeroFlexxus(f.numero_factura);
   return {
     tipocomprobante: 'F' + (letra || 'A'),
@@ -439,6 +462,7 @@ async function imputarFactura(f, letra, opts = {}) {
     }));
   }
 
+  if (!provExistente) _provBust(f.cuit);   // si el POST lo crea, que la próxima búsqueda lo vea
   const resp = await flx('/comprobantescompras', { method: 'POST', body: JSON.stringify(body) }).catch(e => {
     // Adjuntamos qué proveedor se mandó, para diagnosticar rechazos del alta
     e.message = e.message + '\n\n[proveedor enviado: ' + JSON.stringify(proveedor) + ']' +
@@ -566,7 +590,19 @@ const CENTROS_COSTO_LISTADO = {
 // Trae TODOS los centros de costo. El GET plano pagina (solo 1-42), así que se
 // sondean variantes de paginación/filtro y, lo que el API no devuelva, se
 // completa con el catálogo del listado impreso (marcado origen 'listado').
-async function listarCentrosCostoTodos() {
+let _ccCache = null;   // { t, valor } — el listado de centros casi no cambia
+let _ccVuelo = null;   // single-flight: llamadas concurrentes comparten UNA ida
+async function listarCentrosCostoTodos(forzar = false) {
+  if (!forzar && _ccCache && Date.now() - _ccCache.t < 6 * 60 * 60 * 1000) return _ccCache.valor;
+  if (!forzar && _ccVuelo) return _ccVuelo;
+  _ccVuelo = _listarCentrosCostoTodosInner(forzar).finally(() => { _ccVuelo = null; });
+  return _ccVuelo;
+}
+async function _listarCentrosCostoTodosInner(forzar = false) {
+  // CACHÉ (10-ago): antes esto disparaba 10 requests A FLEXXUS EN SERIE en cada
+  // click de "Imputar" (el preview de centro de costo lo llama siempre). Ahora
+  // las 10 variantes van EN PARALELO, el resultado queda cacheado 6 horas y las
+  // llamadas concurrentes comparten una sola ida (el chequeo vive en el wrapper).
   const variantes = [
     '/centrodecosto',
     '/centrodecosto?limit=500',
@@ -581,20 +617,21 @@ async function listarCentrosCostoTodos() {
   ];
   const porCodigo = new Map();
   const intentos = [];
-  for (const ruta of variantes) {
-    try {
-      const d = await flx(ruta);
-      const l = d.data || d || [];
-      const arr = (Array.isArray(l) ? l : []).map(x => ({
-        codigo: Number(x.codigocentrocosto),
-        descripcion: String(x.descripcion || x.centro || ''),
-        activo: x.activo !== undefined ? x.activo : (x.estado !== undefined ? x.estado : null),
-      })).filter(x => !isNaN(x.codigo));
-      intentos.push({ ruta, ok: true, n: arr.length });
-      arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
-    } catch (e) {
-      intentos.push({ ruta, ok: false, error: String(e.message || e).slice(0, 120) });
+  const res = await Promise.all(variantes.map(ruta =>
+    flx(ruta).then(d => ({ ruta, d })).catch(e => ({ ruta, error: e }))));
+  for (const r of res) {
+    if (r.error) {
+      intentos.push({ ruta: r.ruta, ok: false, error: String(r.error.message || r.error).slice(0, 120) });
+      continue;
     }
+    const l = r.d.data || r.d || [];
+    const arr = (Array.isArray(l) ? l : []).map(x => ({
+      codigo: Number(x.codigocentrocosto),
+      descripcion: String(x.descripcion || x.centro || ''),
+      activo: x.activo !== undefined ? x.activo : (x.estado !== undefined ? x.estado : null),
+    })).filter(x => !isNaN(x.codigo));
+    intentos.push({ ruta: r.ruta, ok: true, n: arr.length });
+    arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
   }
   const delApi = porCodigo.size;
   // Completar con el listado impreso lo que el API no haya devuelto
@@ -603,12 +640,33 @@ async function listarCentrosCostoTodos() {
     if (!porCodigo.has(n)) porCodigo.set(n, { codigo: n, descripcion: desc, activo: null, origen: 'listado' });
     else porCodigo.get(n).origen = 'api';
   }
-  return {
+  const valor = {
     centros: [...porCodigo.values()].sort((a, b) => a.codigo - b.codigo),
     intentos,
     del_api: delApi,
     del_listado: porCodigo.size - delApi,
   };
+  if (valor.centros.length) _ccCache = { t: Date.now(), valor };
+  return valor;
+}
+
+// Calienta las cachés pesadas (plan de cuentas y centros de costo) para que el
+// primer "Imputar" después de un redeploy no pague el sondeo completo. Se llama
+// sola al arrancar el server; best-effort, nunca rompe nada.
+async function precalentarFlexxus() {
+  if (!process.env.FLEXXUS_URL) return { ok: false, motivo: 'sin FLEXXUS_URL' };
+  const t0 = Date.now();
+  const [plan, cc] = await Promise.all([
+    listarPlanCuentas().catch(e => ({ error: String(e.message || e) })),
+    listarCentrosCostoTodos().catch(e => ({ error: String(e.message || e) })),
+  ]);
+  const r = {
+    ok: true, ms: Date.now() - t0,
+    cuentas: (plan && plan.cuentas || []).length,
+    centros: (cc && cc.centros || []).length,
+  };
+  console.log('[flexxus] precalentado:', JSON.stringify(r));
+  return r;
 }
 
 async function apropiarCentroCosto(f, resPost, objetivos) {
@@ -998,7 +1056,8 @@ const CLASES_COMPROBANTE = { 1: 'BIENES DE USO', 2: 'SERVICIOS', 3: 'OTROS', 4: 
 async function colocarClaseComprobante(cuit, claseNum, cuentaRubro) {
   const esperado = CLASES_COMPROBANTE[Number(claseNum)];
   if (!esperado) return { ok: false, motivo: 'Clase de comprobante inválida.' };
-  const p = await buscarProveedorPorCuit(cuit);
+  // Lectura FRESCA (sin caché): estamos por decidir un PUT según la ficha actual.
+  const p = await buscarProveedorPorCuit(cuit, null, { fresco: true });
   if (!p) return { ok: false, motivo: 'El proveedor no existe en Flexxus.' };
   const actualNum = Number(p.clasecomprobante) || 0;
   const actualTxt = String(p.tipocomprobante || '').toUpperCase();
@@ -1032,7 +1091,8 @@ async function colocarClaseComprobante(cuit, claseNum, cuentaRubro) {
   for (const [ruta, metodo] of rutas) {
     try {
       await flx(ruta, { method: metodo, body: JSON.stringify(cuerpo) });
-      const p2 = await buscarProveedorPorCuit(cuit).catch(() => null);
+      _provBust(cuit);   // la ficha cambió: que nadie lea la versión cacheada
+      const p2 = await buscarProveedorPorCuit(cuit, null, { fresco: true }).catch(() => null);
       const txt2 = p2 ? String(p2.tipocomprobante || '').toUpperCase() : '';
       const claseOk = txt2 === esperado || (p2 && Number(p2.clasecomprobante) === Number(claseNum));
       const rubroOk = !cuentaRubro || (p2 && String(p2.cuenta || '') === String(cuentaRubro));
@@ -1060,9 +1120,15 @@ const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentasconta
 // Plan de cuentas COMPLETO (imputables). Sirve para sub-seleccionar la cuenta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
-let _planCache = null;   // { t, valor } — el plan de cuentas casi no cambia
+let _planCache = null;   // { t, valor } — el plan de cuentas casi no cambia (caché 6 h)
+let _planVuelo = null;   // single-flight: rubros + plan del previo comparten UNA ida
 async function listarPlanCuentas(forzar = false) {
-  if (!forzar && _planCache && Date.now() - _planCache.t < 30 * 60 * 1000) return _planCache.valor;
+  if (!forzar && _planCache && Date.now() - _planCache.t < 6 * 60 * 60 * 1000) return _planCache.valor;
+  if (!forzar && _planVuelo) return _planVuelo;
+  _planVuelo = _listarPlanCuentasCacheado().finally(() => { _planVuelo = null; });
+  return _planVuelo;
+}
+async function _listarPlanCuentasCacheado() {
   const r = await _listarPlanCuentas();
   if (r && (r.cuentas || []).length) _planCache = { t: Date.now(), valor: r };
   return r;
@@ -1160,7 +1226,7 @@ async function listarClasesProveedor() {
 // así que es best-effort: se prueban las rutas típicas; si ninguna existe,
 // se devuelve ok:false y la clase igual se aplica en cada imputación nuestra.
 async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
-  const p = await buscarProveedorPorCuit(cuit);
+  const p = await buscarProveedorPorCuit(cuit, null, { fresco: true });
   if (!p) return { ok: false, motivo: 'El proveedor no existe en Flexxus todavía (se creará con la clase al imputar).' };
   if (String(p.codigoclaseproveedor || '') === String(codigoClase)) {
     return { ok: true, motivo: 'La ficha en Flexxus ya tiene esa clase.', sin_cambios: true };
@@ -1186,8 +1252,9 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   for (const [ruta, metodo] of rutas) {
     try {
       await flx(ruta, { method: metodo, body: JSON.stringify(cuerpo) });
+      _provBust(cuit);   // la ficha cambió: que nadie lea la versión cacheada
       // Verificar releyendo la ficha
-      const p2 = await buscarProveedorPorCuit(cuit).catch(() => null);
+      const p2 = await buscarProveedorPorCuit(cuit, null, { fresco: true }).catch(() => null);
       if (p2 && String(p2.codigoclaseproveedor || '') === String(codigoClase)) {
         return { ok: true, motivo: 'Ficha del proveedor actualizada en Flexxus (' + metodo + ' ' + ruta + ').' };
       }
@@ -1199,4 +1266,4 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = { precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
