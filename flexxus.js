@@ -796,10 +796,20 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     //   C) el array COMPLETO de centros de la línea, con 0 en los no usados
     const putResps = [];
     const enteros = (() => {
-      const c = reparto.map(r => ({ cod: r.codigocentrocosto, base: Math.floor(r.porcentaje), resto: r.porcentaje - Math.floor(r.porcentaje) }));
-      let sobran = 100 - c.reduce((s, x) => s + x.base, 0);
+      // CASO PAPA 3 CENTROS (10-ago): Flexxus rechazó porcentaje 0.53 con
+      // "Los porcentajes deben ser mayor a cero" — parsea el porcentaje como
+      // ENTERO, así que 0.53 se vuelve 0. La variante entera garantiza MÍNIMO
+      // 1 por centro (un centro chico queda en 1% en vez de perderse) y suma
+      // exacta 100 sacándole al más grande si hace falta.
+      const c = reparto.map(r => ({ cod: r.codigocentrocosto, base: Math.max(1, Math.floor(r.porcentaje)), resto: r.porcentaje - Math.floor(r.porcentaje) }));
+      let suma = c.reduce((s, x) => s + x.base, 0);
       c.sort((a, b) => b.resto - a.resto);
-      for (let i = 0; i < c.length && sobran > 0; i++, sobran--) c[i].base++;
+      for (let i = 0; i < c.length && suma < 100; i++, suma++) c[i].base++;
+      while (suma > 100) {                       // muchos centros chicos elevados a 1
+        const mayor = c.reduce((m, x) => (x.base > m.base ? x : m), c[0]);
+        if (mayor.base <= 1) break;
+        mayor.base--; suma--;
+      }
       return c.map(x => ({ codigocentrocosto: x.cod, porcentaje: x.base }));
     })();
     for (const l of apropiables) {
@@ -830,9 +840,10 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
         } catch (ePut) {
           const msg = String(ePut.message || ePut).slice(0, 300);
           putResps.push({ linea: l.linea, ca: Number(ca), variante: nombreVar, enviado: val, error: msg });
-          // Si el rechazo NO es por la suma, reintentar con otra forma del
-          // mismo reparto no aporta: se corta acá.
-          if (!/suman? 100|sumatoria/i.test(msg)) break;
+          // Reintentar con la siguiente variante solo si el rechazo es por la
+          // FORMA de los porcentajes (suma, decimales, "mayor a cero"); ante
+          // cualquier otro error, insistir no aporta.
+          if (!/suman? 100|sumatoria|porcentaje|mayor a cero/i.test(msg)) break;
         }
       }
     }
