@@ -1,4 +1,37 @@
 const PANEL_BUILD = 'fase3';  // JS del panel extraído de panel.html (Fase 3)
+
+// ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
+// Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
+// máquina. Ahora el panel le pregunta al server cada 60 s qué versión está
+// sirviendo (/api/panel-version, la huella cambia con cada redeploy) y, si hay
+// una nueva, se recarga SOLO — pero nunca en mal momento: si hay una edición
+// abierta, un modal en pantalla o una imputación vigilada en curso, espera y
+// reintenta. El server además sirve /panel y /panel.js sin caché, así que la
+// recarga trae la versión nueva de verdad (sin hard-refresh).
+let _panelVer=null,_verNueva=false;
+function panelOcupado(){
+  try{
+    if(typeof comprasEdit!=='undefined'&&comprasEdit)return true;              // editando una factura
+    if(document.querySelector('.modal-bg.abierto'))return true;               // cualquier modal abierto
+    if(typeof flxVigias!=='undefined'&&Object.keys(flxVigias).length)return true; // imputación en curso
+  }catch(e){}
+  return false;
+}
+async function chequearVersionPanel(){
+  try{
+    const d=await api('/api/panel-version');
+    if(!d||!d.version)return;
+    if(_panelVer===null){_panelVer=d.version;return;}   // primera vez: solo anotar
+    if(d.version!==_panelVer)_verNueva=true;
+  }catch(e){}
+  if(_verNueva&&!panelOcupado()){
+    try{toast('Actualizando el panel a la versión nueva…');}catch(e){}
+    setTimeout(()=>location.reload(),900);
+  }
+}
+setInterval(chequearVersionPanel,60*1000);
+setTimeout(chequearVersionPanel,5000);
+
 // Todo el código del panel vive acá. panel.html quedó solo con markup y CSS.
 
 /* ===== UI: toast + diálogos propios (reemplazan alert/confirm/prompt) ===== */
@@ -4164,7 +4197,9 @@ function renderComprasBody(){
         ${nc?`<div class="badge b-amber" style="font-size:9.5px;margin-top:2px">NC −${money(nc)}</div>`:''}</td>
       <td>${a.obj?a.obj:'<span class="sub">sin asignar</span>'}${a.uni?`<div class="sub">${a.uni}</div>`:''}</td>
       <td>${inv.pagada?'<span class="badge b-green">✓ pagada</span>':'<span class="badge b-gray">pendiente</span>'}
-        ${(()=>{const fx=inv.flexxus;if(!fx||!fx.ok)return '<div class="badge b-gray" style="font-size:9.5px;margin-top:3px">sin imputar a Flexxus</div>';
+        ${(()=>{const fx=inv.flexxus;
+          if((!fx||!fx.ok)&&inv.flexxus_job&&inv.flexxus_job.estado==='en_proceso')return '<div class="badge b-gray" style="font-size:9.5px;margin-top:3px;color:#7B3FA0;border-color:#C9A6E0">⚡ imputando…</div>';
+          if(!fx||!fx.ok)return '<div class="badge b-gray" style="font-size:9.5px;margin-top:3px">sin imputar a Flexxus</div>';
           const cc=fx.centro_costo;
           if(cc&&cc.ok)return '<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ Flexxus + centro de costo</div>';
           if(cc&&!cc.ok)return '<div class="badge b-green" style="font-size:9.5px;margin-top:3px">✓ imputada Flexxus</div><div class="badge b-amber" style="font-size:9.5px;margin-top:2px" title="'+String(cc.motivo||'').replace(/"/g,'&quot;')+'">⚠ centro de costo pendiente</div>';
@@ -4193,6 +4228,29 @@ function ncTotal(inv){
   return (inv.notas_credito||[]).reduce((s,n)=>s+(Number(n.total_sin_iva)||0)+(Number(n.total_iva)||0),0);
 }
 /* ── Flexxus ── */
+// PRECARGA (10-ago): todo lo que hay que preguntarle a Flexxus antes de imputar
+// (proveedor, ficha contable, rubros, plan de cuentas y centro de costo) se pide
+// EN UN SOLO VIAJE apenas se abre el detalle de la factura. Cuando el usuario
+// aprieta "Imputar", la respuesta ya está en memoria y el modal abre al toque.
+let flxPre={};                     // id → { t, p:Promise }
+const FLX_PRE_TTL=3*60*1000;       // 3 min: después se vuelve a pedir
+function precargarFlexxus(id,letra){
+  if(!id)return null;
+  const k=String(id), ya=flxPre[k];
+  if(ya&&Date.now()-ya.t<FLX_PRE_TTL)return ya.p;
+  const p=api('/api/compras/facturas/'+id+'/flexxus-previo'+(letra?'?letra='+letra:'')).catch(()=>null);
+  flxPre[k]={t:Date.now(),p};
+  return p;
+}
+// La precarga se hace con la letra del OCR; si el usuario termina imputando con
+// otra letra hay que rehacerla (el número de comprobante depende de la letra).
+function flxPreDe(id,letra){
+  const k=String(id), ya=flxPre[k];
+  if(!ya||Date.now()-ya.t>=FLX_PRE_TTL){delete flxPre[k];return precargarFlexxus(id,letra);}
+  return ya.p;
+}
+function flxOlvidarPre(id){delete flxPre[String(id)];}
+
 // Muestra la clase contable del proveedor y permite fijarla antes de imputar.
 // La clase deriva la cuenta contable en Flexxus (MAQUINAS/EQUIPOS → Bienes de
 // Uso; INSUMOS/COMBUSTIBLES → gasto). Queda guardada como fija por proveedor.
@@ -4204,14 +4262,20 @@ function cpCambioClase(v){
   w.style.display=(Number(v)>=1)?'block':'none';
   if(l)l.textContent=(v==='1')?'RUBRO DE BIENES DE USO (define la cuenta 121…)':'CUENTA CONTABLE (sub-selección)';
 }
-async function elegirClaseProveedor(prev,prog){
+async function elegirClaseProveedor(prev,prog,pre){
   // La ficha COMPLETA del proveedor (el preview trae uno resumido sin
   // clasecomprobante): de acá salen la CLASE DE COMPROBANTE y el RUBRO, que
   // son los que definen a qué cuenta contable va el asiento en Flexxus.
   let pf=prev.proveedor||{};
   let rubros=[],planCuentas=[],planInfo=null;
+  // Si viene de la precarga (flexxus-previo) ya está todo: cero espera.
+  if(pre){
+    if(pre.ficha)pf=pre.ficha;
+    if(Array.isArray(pre.rubros))rubros=pre.rubros;
+    if(pre.plan&&Array.isArray(pre.plan.cuentas))planCuentas=pre.plan.cuentas;
+  }
   try{
-    const [fi,ru]=await Promise.all([
+    const [fi,ru]=pre?[null,null]:await Promise.all([
       api('/api/compras/proveedor-ficha?cuit='+encodeURIComponent(prev.cuit_norm)),
       api('/api/compras/rubros-bienes-uso'),
     ]);
@@ -4219,7 +4283,7 @@ async function elegirClaseProveedor(prev,prog){
     if(Array.isArray(ru))rubros=ru;
     // El plan de cuentas completo se pide APARTE y no bloquea la apertura del
     // modal (tardaba ~24s la primera vez): llega solo y rellena el buscador.
-    api('/api/compras/plan-cuentas').then(pl=>{
+    if(!pre)api('/api/compras/plan-cuentas').then(pl=>{
       if(!pl||!Array.isArray(pl.cuentas))return;
       const dl=document.getElementById('cp-cuenta-list');if(!dl)return;
       const ya=new Set([...dl.options].map(o=>o.value));
@@ -4271,7 +4335,7 @@ async function elegirClaseProveedor(prev,prog){
               ${RUB.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
               ${OTRAS.map(r=>`<option value="${r.codigo}">${r.descripcion} (${r.codigo})</option>`).join('')}
             </datalist>
-            <div id="cp-plan-nota" class="sub" style="font-size:10.5px;margin-top:3px">Cargando el plan de cuentas de Flexxus… (mientras tanto podés escribir el código a mano)</div>
+            <div id="cp-plan-nota" class="sub" style="font-size:10.5px;margin-top:3px">${planCuentas.length?('Plan de cuentas: '+(RUB.length+OTRAS.length)+' cuentas de Flexxus'):'Cargando el plan de cuentas de Flexxus… (mientras tanto podés escribir el código a mano)'}</div>
           </div>
           <div class="sub" style="font-size:11px;margin-top:8px">
             ${leida?`Hoy en la ficha: <b>${(CLASES.find(c=>c[0]===claseNum)||[0,'—'])[1]}</b>${esBU?' · rubro '+(rubroActual&&rubroActual!=='0'?rubroActual:'sin definir (toma Hardware y software)'):''}`
@@ -4311,11 +4375,15 @@ async function elegirClaseProveedor(prev,prog){
 // PASO DE REVISIÓN del centro de costo, antes de imputar. Una vez imputada la
 // factura no se puede editar, así que acá se ve el reparto exacto que se va a
 // mandar y si cada objetivo tiene su código y existe en Flexxus.
-async function revisarCentroCosto(id){
+async function revisarCentroCosto(id,pre){
   let d=null;
-  const esp=flxCargando('Revisando el centro de costo…','Contrastando los códigos de Maestros contra Flexxus.',210);
-  try{d=await api('/api/compras/facturas/'+id+'/centrocosto-preview');}catch(e){d={error:e.message};}
-  esp.cerrar();
+  // Si vino en la precarga no se pide de nuevo: el modal abre sin espera.
+  if(pre&&pre.centrocosto)d=pre.centrocosto;
+  else{
+    const esp=flxCargando('Revisando el centro de costo…','Contrastando los códigos de Maestros contra Flexxus.',210);
+    try{d=await api('/api/compras/facturas/'+id+'/centrocosto-preview');}catch(e){d={error:e.message};}
+    esp.cerrar();
+  }
   return new Promise(resolve=>{
     const problema=!d||d.error||!d.ok||Math.abs((d.suma||0)-100)>0.001||(d.reparto||[]).some(x=>x.existe===false);
     const filas=(d&&d.reparto||[]).map(x=>{
@@ -4371,25 +4439,33 @@ async function imputarFlexxus(id){
     L=String(letra).trim().toUpperCase()||'A';
     if(!['A','B','C'].includes(L)){toast('Letra inválida: usá A, B o C','error');return;}
   }
-  // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus
-  const busca=flxCargando('Buscando datos en Flexxus…','Traigo el proveedor, su ficha contable y el número de comprobante.',200);
-  let prev=null;
-  try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
+  // Verificación previa: a qué proveedor va y con qué número, ANTES de tocar Flexxus.
+  // Normalmente ya está precargado desde que se abrió el detalle → sale al toque.
+  let pre=null;
+  try{pre=await Promise.race([flxPreDe(id,L),new Promise(r=>setTimeout(()=>r(undefined),80))]);}catch(e){}
+  const busca=pre?null:flxCargando('Buscando datos en Flexxus…','Traigo el proveedor, su ficha contable y el número de comprobante.',200);
+  if(pre===undefined){                       // la precarga sigue en vuelo: esperarla con cartel
+    try{pre=await flxPreDe(id,L);}catch(e){pre=null;}
+  }
+  // La letra manda: si el usuario imputó con otra distinta a la precargada, se rehace.
+  if(pre&&pre.letra&&pre.letra!==L){flxOlvidarPre(id);pre=null;try{pre=await precargarFlexxus(id,L);}catch(e){}}
+  let prev=pre?pre.preview:null;
+  if(!prev){try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}}
   if(prev){
-    if(prev.numero==null){busca.cerrar();toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
+    if(prev.numero==null){if(busca)busca.cerrar();toast('La factura no tiene un número válido (PV-NUMERO). Corregilo en el editor.','error');return;}
     // Paso de CLASE DE COMPROBANTE + RUBRO: es lo que define la cuenta contable
     // del asiento (Bienes de uso + rubro → 121…; en blanco → Mercaderías).
     if(prev.proveedor){
       // Sin cuit_norm el paso se salteaba y la factura se iba con la clase por
       // defecto (Bienes de cambio → Mercaderías): se cae al CUIT de la ficha.
       if(!prev.cuit_norm&&prev.proveedor.cuit)prev.cuit_norm=String(prev.proveedor.cuit).replace(/\D/g,'');
-      busca.paso('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.');
-      const sigue=await elegirClaseProveedor(prev,busca);  // cierra la ventana de espera
-      if(sigue==='cancelar')return;
+      if(busca)busca.paso('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.');
+      const sigue=await elegirClaseProveedor(prev,busca,pre);  // cierra la ventana de espera
+      if(sigue==='cancelar'){flxOlvidarPre(id);return;}
     }
-    busca.cerrar();
+    if(busca)busca.cerrar();
     // Antes de tocar Flexxus: revisar el centro de costo (después no se edita)
-    if(await revisarCentroCosto(id)==='cancelar')return;
+    if(await revisarCentroCosto(id,pre)==='cancelar')return;
     if(prev.proveedor){
       if(!await uiConfirm(
         'Proveedor en Flexxus: '+prev.proveedor.razonsocial+' (cód. '+prev.proveedor.codigo+')'+
@@ -4408,7 +4484,7 @@ async function imputarFlexxus(id){
     await ejecutarImputacion(id,L,true);return;
   }
   // Sin preview (Flexxus caído u otro error): flujo clásico con aviso genérico
-  busca.cerrar();
+  if(busca)busca.cerrar();
   if(!await uiConfirm('No pude verificar contra Flexxus. Se va a intentar crear el comprobante F'+L+' con los datos de esta factura.','¿Continuar igual?',{ok:'Imputar'}))return;
   await ejecutarImputacion(id,L,false);
 }
@@ -4472,21 +4548,54 @@ function flxResultadoModal(r){
   bg.querySelector('#flx-ok').onclick=()=>{bg.remove();go('compras');};
   bg.addEventListener('click',e=>{if(e.target===bg){bg.remove();go('compras');}});
 }
+// MOTOR EN SEGUNDO PLANO (10-ago): la confirmación del usuario dispara
+// /flexxus-encolar, que responde AL INSTANTE y deja el POST + la apropiación +
+// la verificación corriendo en el server. El usuario recupera la pantalla al
+// toque y sigue trabajando; un vigía consulta el estado cada 2,5 s y, cuando el
+// server termina, muestra EL MISMO modal de resultado de siempre (con el
+// ✓✓ VERIFICADO real: la verificación no se sacrifica, solo deja de bloquear).
+let flxVigias={};   // id → true (para no duplicar vigías de la misma factura)
 async function ejecutarImputacion(id,L,permitirAlta){
-  const prog=flxProgreso();
+  flxOlvidarPre(id);   // la factura queda imputada: la precarga ya no sirve
   try{
-    const r=await api('/api/compras/facturas/'+id+'/flexxus',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
-    prog.cerrar();
-    flxResultadoModal(r);
-  }catch(e){
-    prog.cerrar();
-    if(/PROV_NO_EXISTE/.test(e.message)||/No existe en Flexxus/.test(e.message)){
-      if(await uiConfirm(e.message+'\n\n¿Crear proveedor nuevo e imputar?','Proveedor inexistente',{ok:'Crear e imputar',danger:true}))
-        return ejecutarImputacion(id,L,true);
-      return;
+    await api('/api/compras/facturas/'+id+'/flexxus-encolar',{method:'POST',body:JSON.stringify({letra:L,permitir_alta:permitirAlta})});
+  }catch(e){toast(e.message,'error');return;}
+  toast('⚡ Imputación en marcha en Flexxus. Podés seguir trabajando: te aviso acá cuando esté verificada.');
+  if(comprasVer&&String(comprasVer.id)===String(id)){comprasVer.flexxus_job={estado:'en_proceso'};go('compras');}
+  flxVigilar(id,L);
+}
+async function flxVigilar(id,L){
+  if(flxVigias[id])return;
+  flxVigias[id]=true;
+  const t0=Date.now();
+  try{
+    while(Date.now()-t0<3*60*1000){                 // techo 3 min de vigilancia
+      await new Promise(r=>setTimeout(r,2500));
+      let est=null;
+      try{est=await api('/api/compras/facturas/'+id+'/flexxus-estado');}catch(e){continue;}
+      const j=est&&est.job;
+      if(!j||j.estado==='en_proceso')continue;
+      if(j.estado==='ok'&&j.resultado){
+        // Mismo modal de siempre, con el resultado real (asiento, ✓✓, reparto)
+        flxResultadoModal(j.resultado);
+        if(comprasVer&&String(comprasVer.id)===String(id)){comprasVer.flexxus=j.resultado.flexxus;delete comprasVer.flexxus_job;go('compras');}
+        else go('compras');
+        return;
+      }
+      if(j.estado==='error'){
+        if(j.code==='PROV_NO_EXISTE'||/No existe en Flexxus/.test(j.error||'')){
+          delete flxVigias[id];
+          if(await uiConfirm((j.error||'')+'\n\n¿Crear proveedor nuevo e imputar?','Proveedor inexistente',{ok:'Crear e imputar',danger:true}))
+            return ejecutarImputacion(id,L,true);
+        }else{
+          uiAlert((j.error||'Error imputando')+'\n\nLa factura NO quedó imputada. Podés reintentar desde el detalle.','No se pudo imputar');
+          if(comprasVer&&String(comprasVer.id)===String(id)){delete comprasVer.flexxus_job;go('compras');}
+        }
+        return;
+      }
     }
-    toast(e.message,'error');
-  }
+    toast('La imputación sigue en proceso en el server. Refrescá la factura en un rato para ver el resultado.','info');
+  }finally{delete flxVigias[id];}
 }
 async function probarFlexxus(){
   toast('Probando conexión con Flexxus…','info');
@@ -4572,10 +4681,13 @@ function vComprasDetalle(view){
           <button class="btn-salir" onclick="comprasEdit=true;go('compras')">✎ Editar</button>
           ${inv.flexxus&&inv.flexxus.ok
             ?''
-            :`<button class="btn-salir" style="color:#7B3FA0;border-color:#C9A6E0" onclick="imputarFlexxus('${inv.id}')">⇪ Imputar a Flexxus</button>`}
+            :inv.flexxus_job&&inv.flexxus_job.estado==='en_proceso'
+              ?`<button class="btn-salir" style="color:#7B3FA0;border-color:#C9A6E0;opacity:.6" disabled>⚡ Imputando…</button>`
+              :`<button class="btn-salir" style="color:#7B3FA0;border-color:#C9A6E0" onclick="imputarFlexxus('${inv.id}')">⇪ Imputar a Flexxus</button>`}
           <button class="btn" onclick="abrirNC()">＋ Nota de crédito</button>
           <button class="btn-salir" style="color:var(--rojo)" onclick="borrarCompra('${inv.id}')">Eliminar</button>`}
     </div></div>
+    ${!ed&&!(inv.flexxus&&inv.flexxus.ok)&&inv.flexxus_job&&inv.flexxus_job.estado==='en_proceso'?(flxVigilar(inv.id,String(inv.letra||'A').toUpperCase()),`<div class="hint" style="margin-bottom:12px;border-color:#C9A6E0"><svg viewBox="0 0 24 24" fill="none" stroke="#7B3FA0" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><div>⚡ Imputación en marcha en Flexxus. Te aviso acá cuando esté verificada — mientras podés seguir trabajando.</div></div>`):''}
     ${!ed&&inv.flexxus&&inv.flexxus.ok?`<div class="hint" style="margin-bottom:12px;border-color:#C9A6E0"><svg viewBox="0 0 24 24" fill="none" stroke="#7B3FA0" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg><div>Imputada en Flexxus · ${inv.flexxus.tipocomprobante||''} ${inv.flexxus.numerocomprobante||''} · ${fechaAR(inv.flexxus.fecha)} por ${inv.flexxus.por||''}${inv.flexxus.proveedor_creado?' · proveedor creado en Flexxus':''}</div></div>`:''}
     ${!ed&&inv.pagada?'<div class="hint" style="margin-bottom:18px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg><div>Factura pagada'+(inv.pagada_at?' · '+fechaAR(inv.pagada_at):'')+'</div></div>':''}
 
@@ -4699,7 +4811,9 @@ function vComprasDetalle(view){
     })()}
   </div>`;
   if(inv.comprobante&&inv.comprobante.ruta)cargarVisorComprobante(inv.id);
-  if(!comprasEdit){cargarDestinoContable(inv.id);pintarRepartoCC(inv);}
+  if(!comprasEdit){cargarDestinoContable(inv.id);pintarRepartoCC(inv);
+    // Adelanta el trabajo pesado de Flexxus mientras el usuario mira la factura
+    if(!(inv.flexxus&&inv.flexxus.ok))precargarFlexxus(inv.id,String(inv.letra||'').toUpperCase()||null);}
 }
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
 // lo que el usuario venía editando para no perderlo.
@@ -4765,12 +4879,17 @@ async function pintarRepartoCC(inv){
 async function abrirClaseDesdeDetalle(id){
   const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer:null;
   const L=String((inv&&inv.letra)||'A').trim().toUpperCase();
-  const car=flxCargando('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.',200);
-  let prev=null;
-  try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}
-  if(!prev||!prev.proveedor){car.cerrar();toast('No encontré el proveedor en Flexxus: revisá el CUIT en el editor','error');return;}
+  // Misma precarga que la imputación: si ya está, el modal abre sin espera.
+  let pre=null;
+  try{pre=await Promise.race([flxPreDe(id,L),new Promise(r=>setTimeout(()=>r(undefined),80))]);}catch(e){}
+  const car=pre?null:flxCargando('Leyendo la ficha del proveedor…','Clase de comprobante y rubro contable.',200);
+  if(pre===undefined){try{pre=await flxPreDe(id,L);}catch(e){pre=null;}}
+  let prev=pre?pre.preview:null;
+  if(!prev){try{prev=await api('/api/compras/facturas/'+id+'/flexxus-preview?letra='+L);}catch(e){}}
+  if(!prev||!prev.proveedor){if(car)car.cerrar();toast('No encontré el proveedor en Flexxus: revisá el CUIT en el editor','error');return;}
   if(!prev.cuit_norm&&prev.proveedor.cuit)prev.cuit_norm=String(prev.proveedor.cuit).replace(/\D/g,'');
-  await elegirClaseProveedor(prev,car);
+  await elegirClaseProveedor(prev,car,pre);
+  flxOlvidarPre(id);           // la ficha cambió: la próxima se relee
   cargarDestinoContable(id);   // refresca la card con lo que quedó
 }
 async function cargarDestinoContable(id){
