@@ -2735,43 +2735,46 @@ async function movVerFicha(unidadId){
   movModal();
 }
 function movModal(){
+  // Usa las clases del panel (.modal-bg/.modal): la primera versión usaba
+  // class="card", que en el panel NO existe — quedaba una caja transparente
+  // encima de la tabla, ilegible.
   let ovl=document.getElementById('mov-modal');
   if(!ovl){
-    ovl=document.createElement('div');ovl.id='mov-modal';
-    ovl.style.cssText='position:fixed;inset:0;background:rgba(22,34,28,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:200';
+    ovl=document.createElement('div');
+    ovl.id='mov-modal';ovl.className='modal-bg abierto';
     ovl.onclick=e=>{if(e.target===ovl)movCerrarFicha();};
     document.body.appendChild(ovl);
   }
   const f=movFicha||{};
-  if(f.cargando){ovl.innerHTML='<div class="card" style="padding:22px">Cargando historial…</div>';return;}
-  if(f.error){ovl.innerHTML=`<div class="card" style="padding:22px;max-width:420px">${f.error}<div style="margin-top:12px"><button class="btn-salir" onclick="movCerrarFicha()">Cerrar</button></div></div>`;return;}
+  if(f.cargando){ovl.innerHTML='<div class="modal" style="max-width:420px">Cargando historial…</div>';return;}
+  if(f.error){ovl.innerHTML=`<div class="modal" style="max-width:420px"><h3>No pude abrir la ficha</h3><div class="sub">${f.error}</div>
+    <div style="margin-top:16px;text-align:right"><button class="btn-salir" onclick="movCerrarFicha()">Cerrar</button></div></div>`;return;}
   const t=f.totales||{}, h=f.historial||[];
-  ovl.innerHTML=`<div class="card" style="padding:20px;max-width:560px;width:100%;max-height:86vh;overflow:auto">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-      <div><div style="font-size:16px;font-weight:600">${f.unidad.rotulo}</div>
+  ovl.innerHTML=`<div class="modal" style="max-width:540px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:4px">
+      <div><div style="font-size:17px;font-weight:600">${f.unidad.rotulo}</div>
         <div class="sub">${f.unidad.detalle||''}</div></div>
       <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick="movCerrarFicha()">✕</button>
     </div>
-    <div class="sub" style="margin:12px 0 16px;padding:9px 11px;background:var(--hueso);border:1px solid var(--linea);border-radius:var(--r-s)">
-      ${t.movimientos} movimiento${t.movimientos===1?'':'s'} · ${t.objetivos} objetivo${t.objetivos===1?'':'s'} distinto${t.objetivos===1?'':'s'} · <b>${t.dias_taller} días</b> en taller
+    <div class="sub" style="margin:14px 0 18px;padding:10px 12px;background:var(--papel);border:1px solid var(--linea);border-radius:var(--r-s)">
+      ${t.movimientos} movimiento${t.movimientos===1?'':'s'} · ${t.objetivos} lugar${t.objetivos===1?'':'es'} distinto${t.objetivos===1?'':'s'} · <b>${t.dias_taller} día${t.dias_taller===1?'':'s'}</b> en taller
     </div>
-    <div class="dl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--tinta-3);font-weight:600;margin-bottom:10px">Historial</div>
-    <div style="position:relative;padding-left:20px;border-left:2px solid var(--linea-2);margin-left:5px">
+    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin-bottom:12px">Historial</div>
+    ${h.length?`<div style="position:relative;padding-left:22px;border-left:2px solid var(--linea-2);margin-left:5px">
     ${h.map(m=>{
       const enViaje=m.estado==='en_transito';
       const col=enViaje?'var(--diesel)':'var(--brote)';
       const dias=enViaje?Math.ceil((Date.now()-new Date(m.salida_at).getTime())/864e5):null;
-      return `<div style="position:relative;padding-bottom:15px">
-        <div style="position:absolute;left:-27px;top:4px;width:10px;height:10px;border-radius:50%;background:${col};border:2px solid #fff;box-shadow:0 0 0 1.5px ${col}"></div>
-        <div style="font-size:13px;font-weight:600">${m.desde} → ${m.hasta}</div>
-        <div class="sub" style="font-size:11.5px">${enViaje?'Salió':'Recibió'} ${enViaje?(m.salida_por||'—'):(m.llegada_por||'—')}${m.retira?' · lleva '+m.retira:''} · ${(m.llegada_estado||m.salida_estado)==='con_falla'?'<b style="color:var(--rojo)">con falla</b>':'anda bien'}</div>
-        ${[m.salida_obs,m.llegada_obs].filter(Boolean).length?`<div class="sub" style="font-size:11.5px">“${[m.salida_obs,m.llegada_obs].filter(Boolean).join(' · ')}”</div>`:''}
-        ${enViaje?`<div class="sub" style="font-size:11.5px;color:var(--rojo)">Sin llegada hace ${dias} día${dias===1?'':'s'}</div>`:''}
-        <div class="mono" style="font-size:10.5px;color:var(--tinta-3)">${movFechaH(m.llegada_at||m.salida_at)}</div>
+      return `<div style="position:relative;padding-bottom:18px">
+        <div style="position:absolute;left:-29px;top:3px;width:10px;height:10px;border-radius:50%;background:${col};border:2px solid var(--blanco);box-shadow:0 0 0 1.5px ${col}"></div>
+        <div style="font-size:13.5px;font-weight:600">${m.desde} → ${m.hasta}</div>
+        <div class="sub" style="font-size:12px">${enViaje?'Salió':'Recibió'} ${enViaje?(m.salida_por||'—'):(m.llegada_por||'—')}${m.retira?' · lleva '+m.retira:''} · ${(m.llegada_estado||m.salida_estado)==='con_falla'?'<b style="color:var(--rojo)">con falla</b>':'anda bien'}</div>
+        ${[m.salida_obs,m.llegada_obs].filter(Boolean).length?`<div class="sub" style="font-size:12px;font-style:italic">“${[m.salida_obs,m.llegada_obs].filter(Boolean).join(' · ')}”</div>`:''}
+        ${enViaje?`<div class="sub" style="font-size:12px;color:var(--rojo)">Sin llegada hace ${dias} día${dias===1?'':'s'}</div>`:''}
+        <div class="mono" style="font-size:10.5px;color:var(--tinta-3);margin-top:2px">${movFechaH(m.llegada_at||m.salida_at)}</div>
       </div>`;
-    }).join('')||'<div class="sub">Sin movimientos registrados.</div>'}
-    </div>
-    <div class="sub" style="font-size:11.5px;margin-top:6px">Cada renglón es un viaje: quién la sacó, quién la recibió y cómo estaba en cada punta.</div>
+    }).join('')}
+    </div>`:'<div class="sub">Todavía no hay movimientos registrados de esta máquina.</div>'}
   </div>`;
 }
 function movCerrarFicha(){const o=document.getElementById('mov-modal');if(o)o.remove();movFicha=null;}
