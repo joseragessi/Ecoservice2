@@ -2753,16 +2753,19 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
     const flx = require('./flexxus');
     const cuitP = String(f.cuit || '').replace(/\D/g, '');
 
-    // Todo junto: nada de esto depende de lo otro.
+    // Todo junto: nada de esto depende de lo otro. Cada parte se cronometra
+    // (partes_ms en la respuesta) para ver de una dónde se va el tiempo.
+    const partes_ms = {};
+    const medir = (nombre, p) => { const t = Date.now(); return p.finally(() => { partes_ms[nombre] = Date.now() - t; }); };
     const [prev, claseAsig, ficha, rubros, plan, objs, ccFlx] = await Promise.all([
-      flx.verificarImputacion(f, letra).catch(e => ({ __error: e.message, __code: e.code || null })),
+      medir('preview', flx.verificarImputacion(f, letra).catch(e => ({ __error: e.message, __code: e.code || null }))),
       cuitP ? supabaseCompras.from('proveedores_clase').select('codigo_clase, clase_descripcion')
         .eq('cuit', cuitP).maybeSingle().then(r => r.data || null).catch(() => null) : null,
-      cuitP ? flx.fichaProveedorPorCuit(cuitP).catch(() => null) : null,
-      flx.listarRubrosBienesUso().catch(() => []),
-      flx.listarPlanCuentas().catch(() => ({ cuentas: [] })),
+      cuitP ? medir('ficha', flx.fichaProveedorPorCuit(cuitP).catch(() => null)) : null,
+      medir('rubros', flx.listarRubrosBienesUso().catch(() => [])),
+      medir('plan', flx.listarPlanCuentas().catch(() => ({ cuentas: [] }))),
       supabase.from('centros_costo').select('nombre, codigo_flexxus').then(r => r.data || []).catch(() => []),
-      flx.listarCentrosCostoTodos().then(r => r.centros).catch(() => null),
+      medir('centros', flx.listarCentrosCostoTodos().then(r => r.centros).catch(() => null)),
     ]);
 
     // Preview (mismo shape que /flexxus-preview, para que el panel no cambie)
@@ -2804,7 +2807,9 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
         flexxus_leido: !!ccFlx,
       },
       ms: Date.now() - t0,
+      partes_ms,
     });
+    console.log('[flexxus-previo]', req.params.id, (Date.now() - t0) + 'ms', JSON.stringify(partes_ms));
   } catch (err) {
     console.error('flexxus-previo:', err.message);
     res.status(500).json({ error: err.message || 'No pude preparar la imputación' });
@@ -3647,6 +3652,6 @@ router.get('/api/panel-version', (req, res) => {
 // redeploy no paga los sondeos. Best-effort: si Flexxus no responde, no pasa nada.
 setTimeout(() => {
   try { require('./flexxus').precalentarFlexxus().catch(() => {}); } catch (e) { /* ignorar */ }
-}, 4000).unref?.();
+}, 1000).unref?.();
 
 module.exports = router;
