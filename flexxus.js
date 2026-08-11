@@ -759,13 +759,32 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
     : (asiento && (asiento.apropiacion || asiento.lineas || asiento.detalle)) || null;
 
   let varianteUsada = null;
+  let forzadas = false, lineasForzadas = [];
   if (Array.isArray(lineasAsiento) && lineasAsiento.length) {
     // Solo se apropian las líneas que usan centro de costo (la del gasto;
     // proveedores/IVA vienen con utilizacentrocosto=false).
-    const apropiables = lineasAsiento.filter(l => l && l.utilizacentrocosto === true);
+    let apropiables = lineasAsiento.filter(l => l && l.utilizacentrocosto === true);
     if (!apropiables.length) {
-      return conAsiento({ ok: false, motivo: 'Ninguna línea del asiento admite centro de costo. Líneas: ' +
-        JSON.stringify(lineasAsiento.map(l => ({ linea: l.linea, desc: l.descripcion, usa_cc: l.utilizacentrocosto }))).slice(0, 300) });
+      // CASO UNION CONSTRUCT (10-ago): TODAS las líneas vienen con
+      // utilizacentrocosto=false — incluida la del gasto. Esa marca es
+      // configuración de la CUENTA en el plan de Flexxus ("utiliza centro de
+      // costo"), no algo que dependa de la factura. En vez de rendirse, se
+      // identifica la línea del GASTO (todo lo que no es proveedores / IVA /
+      // percepciones / retenciones) y se INTENTA el PUT igual — con la
+      // verificación releyendo después, que es la que dice la verdad.
+      const esAuxiliar = l => /PROVEEDOR|I\s*\.?\s*V\s*\.?\s*A|PERCEP|RETENC|CREDITO\s+FISCAL|GANANCIAS|INGRESOS\s+BRUTOS|IIBB|SIRCREB/i
+        .test(String(l.descripcion || ''));
+      const candidatas = lineasAsiento.filter(l => l && !esAuxiliar(l));
+      if (candidatas.length) {
+        apropiables = candidatas;
+        forzadas = true;
+        lineasForzadas = candidatas;
+        console.log('[flexxus] apropiacion FORZADA sobre: ' +
+          candidatas.map(l => (l.linea ?? '?') + ':' + (l.descripcion || '')).join(', '));
+      } else {
+        return conAsiento({ ok: false, motivo: 'Ninguna línea del asiento admite centro de costo y no encontré la línea del gasto. Líneas: ' +
+          JSON.stringify(lineasAsiento.map(l => ({ linea: l.linea, desc: l.descripcion, usa_cc: l.utilizacentrocosto }))).slice(0, 300) });
+      }
     }
     // Un PUT por línea apropiable, cada una con SU codigoasiento (viene por línea).
     // Flexxus rechaza con "los porcentajes no suman 100" repartos que SÍ suman
@@ -841,26 +860,30 @@ async function apropiarCentroCosto(f, resPost, objetivos) {
   try {
     const g2 = await flx('/apropiacioncentrocosto/' + numeroasiento + '/' + codigoejercicio);
     const arr2 = Array.isArray(g2.data || g2) ? (g2.data || g2) : [];
-    const apro2 = arr2.filter(l => l && l.utilizacentrocosto === true);
-    if (apro2.length) {
-      // Junto TODOS los centros con % > 0 de TODAS las líneas apropiables
-      // (cada ítem se apropia a su centro; no todos van en todas las líneas).
-      const centrosAplicados = new Set();
-      apro2.forEach(l => (l.centrocosto || []).forEach(c => {
-        if (Number(c.porcentaje) > 0) centrosAplicados.add(Number(c.codigocentrocosto));
-      }));
-      apropiadoReal = [...centrosAplicados];
-      // Verificado = cada centro del reparto aparece aplicado en alguna línea
-      verificado = reparto.every(r => centrosAplicados.has(r.codigocentrocosto));
-    } else {
-      verificado = false;  // releí y NO hay líneas apropiables → algo falló
-    }
+    // Se miran TODAS las líneas, no solo las marcadas con utilizacentrocosto:
+    // una apropiación forzada puede quedar aplicada sin que Flexxus cambie la
+    // marca de la cuenta. Lo que vale es el porcentaje releído, no la marca.
+    const centrosAplicados = new Set();
+    arr2.forEach(l => (l && l.centrocosto || []).forEach(c => {
+      if (Number(c.porcentaje) > 0) centrosAplicados.add(Number(c.codigocentrocosto));
+    }));
+    apropiadoReal = [...centrosAplicados];
+    verificado = apropiadoReal.length
+      ? reparto.every(r => centrosAplicados.has(r.codigocentrocosto))
+      : false;   // releí y no hay ningún centro aplicado → no quedó
   } catch (e) { verificado = null; }  // no pude releer → queda explícitamente sin verificar
   console.log('[flexxus] centro de costo (asiento ' + numeroasiento + '/' + codigoejercicio +
     ', verificado=' + verificado + ', aplicados=' + JSON.stringify(apropiadoReal) + '): ' +
     reparto.map(r => r.objetivo + '=' + r.porcentaje + '%(' + r.codigocentrocosto + ')').join(', '));
   if (verificado === false) {
     const diag = global.__ultimoPutFlexxus ? ' · Respuesta del PUT: ' + JSON.stringify(global.__ultimoPutFlexxus).slice(0, 600) : '';
+    if (forzadas) {
+      const cuentasGasto = lineasForzadas.map(l => (l.descripcion || ('línea ' + l.linea))).join(', ');
+      return conAsiento({ ok: false, motivo: 'La cuenta del gasto (' + cuentasGasto + ') NO tiene habilitado ' +
+        '"utiliza centro de costo" en el plan de cuentas de Flexxus, y el intento de apropiarla igual no quedó aplicado. ' +
+        'Solución: en Flexxus, en la ficha de esa cuenta contable, marcar que usa centro de costo (lo hace Soledad o el contador). ' +
+        'Después apretá ↻ Reintentar acá — la apropiación se rehace sola, SIN reimputar la factura.' + diag });
+    }
     return conAsiento({ ok: false, motivo: 'Flexxus aceptó la apropiación pero al releer el asiento los porcentajes NO quedaron aplicados. ' +
       'Centros esperados: ' + reparto.map(r => r.codigocentrocosto).join(',') + ' · aplicados realmente: ' + (apropiadoReal && apropiadoReal.length ? apropiadoReal.join(',') : 'NINGUNO') + '. ' +
       'Asiento ' + numeroasiento + ', ejercicio ' + codigoejercicio + '.' + diag });
