@@ -33,7 +33,7 @@ function usuarios() {
 // Cada usuario del panel tiene una lista de módulos habilitados. El admin ve
 // todo. Los usuarios de PANEL_USERS (env) son admin siempre — así José nunca
 // puede quedar afuera aunque la tabla se rompa.
-const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','maestros'];
+const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','movimientos','maestros'];
 function moduloDeRuta(p) {
   if (p.startsWith('/api/dashboard'))     return 'dashboard';
   if (p.startsWith('/api/facturas'))      return 'facturas';
@@ -1554,7 +1554,7 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app', 'objetivos_cargo'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus'],
-  capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id'],
+  capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id', 'usuario'],
   centros_costo: ['nombre', 'activo', 'codigo_flexxus'],
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo'],
 };
@@ -1564,7 +1564,10 @@ function filtrarCampos(tipo, body) {
   const out = {};
   for (const k of permitidos) if (body[k] !== undefined) out[k] = body[k] === '' ? null : body[k];
   // La clave de la app nunca se guarda en texto plano. Vacía = no se cambia.
-  if (tipo === 'mecanicos' && body.clave) out.clave_hash = hashClave(String(body.clave));
+  // Vale para mecánicos/pañol/supervisores Y para capataces (11-ago): los
+  // capataces ahora entran a la PWA con usuario propio a cargar combustible.
+  if ((tipo === 'mecanicos' || tipo === 'capataces') && body.clave) out.clave_hash = hashClave(String(body.clave));
+  if (tipo === 'capataces' && out.usuario) out.usuario = String(out.usuario).trim().toLowerCase();
   return out;
 }
 
@@ -1580,7 +1583,13 @@ router.get('/api/maestros/:tipo', auth, async (req, res) => {
     const orden = tipo === 'unidades' ? 'codigo' : 'nombre';
     const { data, error } = await supabase.from(tipo).select(sel).order(orden);
     if (error) throw error;
-    res.json(data || []);
+    // El hash de la clave no sale del server: el panel solo necesita saber SI
+    // tiene clave puesta, no cuál es.
+    res.json((data || []).map(f => {
+      if (!f || f.clave_hash === undefined) return f;
+      const { clave_hash, ...resto } = f;
+      return { ...resto, tiene_clave: !!clave_hash };
+    }));
   } catch (err) {
     console.error('maestros list:', err);
     res.status(500).json({ error: 'Error cargando ' + tipo });
@@ -3612,6 +3621,167 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
   } catch (err) {
     console.error('stock ficha objetivo:', err);
     res.status(500).json({ error: 'Error cargando la ficha del objetivo' });
+  }
+});
+
+// ══ MOVIMIENTOS DE MAQUINARIA (trazabilidad) ═════════════════
+// Los supervisores marcan egreso/ingreso desde la PWA; acá se lee todo junto:
+// dónde está cada máquina, qué salió y no llegó, el historial de cada una y el
+// cruce por objetivo. Una sola llamada: el volumen es chico (una fila por
+// viaje) y así el panel no encadena requests.
+router.get('/api/movimientos', auth, async (req, res) => {
+  try {
+    const dias = Math.min(365, Math.max(7, Number(req.query.dias) || 30));
+    const desde = new Date(Date.now() - dias * 864e5).toISOString();
+    const [unidadesR, movsR, objetivosR] = await Promise.all([
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, tipo_activo').order('codigo'),
+      supabase.from('movimientos_unidades').select('*').neq('estado', 'anulado')
+        .order('salida_at', { ascending: false }).limit(2000),
+      supabase.from('objetivos').select('id, nombre'),
+    ]);
+    if (movsR.error) throw movsR.error;
+    const unidades = unidadesR.data || [];
+    const movs = movsR.data || [];
+    // IDs como STRING: unidades.id y objetivos.id son uuid en esta base.
+    const nombreObj = new Map((objetivosR.data || []).map(o => [String(o.id), o.nombre]));
+    const lugar = (tipo, oid) => tipo === 'taller' ? 'Taller' : (nombreObj.get(String(oid)) || '—');
+    const rotulo = u => [u.codigo, u.patente].filter(Boolean).join(' · ') || ('Unidad ' + u.id);
+    const porUnidad = new Map(unidades.map(u => [u.id, u]));
+    const dias_de = iso => iso ? Math.ceil((Date.now() - new Date(iso).getTime()) / 864e5) : null;
+
+    // Historial por unidad (el más nuevo primero)
+    const hist = new Map();
+    for (const m of movs) {
+      if (!hist.has(m.unidad_id)) hist.set(m.unidad_id, []);
+      hist.get(m.unidad_id).push(m);
+    }
+
+    const flota = unidades.map(u => {
+      const h = hist.get(u.id) || [];
+      const m = h[0] || null;
+      const enViaje = !!(m && m.estado === 'en_transito');
+      return {
+        unidad_id: u.id, rotulo: rotulo(u), detalle: u.marca_modelo || u.tipo_activo || '',
+        situacion: !m ? 'sin_registrar' : (enViaje ? 'en_transito' : 'ubicada'),
+        donde: m ? (enViaje ? lugar(m.origen_tipo, m.origen_objetivo_id) : lugar(m.destino_tipo, m.destino_objetivo_id)) : null,
+        donde_tipo: m ? (enViaje ? m.origen_tipo : m.destino_tipo) : null,
+        hacia: enViaje ? lugar(m.destino_tipo, m.destino_objetivo_id) : null,
+        desde_at: m ? (m.llegada_at || m.salida_at) : null,
+        dias: m ? dias_de(m.llegada_at || m.salida_at) : null,
+        estado_maquina: m ? (m.llegada_estado || m.salida_estado) : null,
+        quien: m ? (enViaje ? m.salida_por : (m.llegada_por || m.salida_por)) : null,
+        retira: m ? m.retira : null,
+        obs: m ? (m.llegada_obs || m.salida_obs) : null,
+        movimientos: h.length,
+      };
+    });
+
+    // Lo accionable: salió y nadie marcó la llegada
+    const sin_recibir = flota.filter(f => f.situacion === 'en_transito')
+      .sort((a, b) => (b.dias || 0) - (a.dias || 0));
+
+    // Cruce por objetivo (ventana de ?dias): qué entró, qué salió y cuántas
+    // de las que llegaron venían con falla — el dato que nadie carga aparte.
+    const recientes = movs.filter(m => (m.llegada_at || m.salida_at) >= desde);
+    const porObj = {};
+    const fila = nombre => porObj[nombre] || (porObj[nombre] = { objetivo: nombre, hoy: 0, entraron: 0, salieron: 0, llegaron_falla: 0 });
+    for (const m of recientes) {
+      if (m.estado === 'recibida') {
+        const f = fila(lugar(m.destino_tipo, m.destino_objetivo_id));
+        f.entraron++;
+        if (m.llegada_estado === 'con_falla') f.llegaron_falla++;
+      }
+      if (m.origen_tipo === 'taller' || m.origen_objetivo_id) fila(lugar(m.origen_tipo, m.origen_objetivo_id)).salieron++;
+    }
+    for (const f of flota) if (f.situacion === 'ubicada' && f.donde) fila(f.donde).hoy++;
+
+    res.json({
+      dias,
+      resumen: {
+        ubicadas: flota.filter(f => f.situacion === 'ubicada').length,
+        en_viaje: sin_recibir.length,
+        demoradas: sin_recibir.filter(f => (f.dias || 0) > 2).length,
+        sin_registrar: flota.filter(f => f.situacion === 'sin_registrar').length,
+        con_falla: flota.filter(f => f.estado_maquina === 'con_falla' && f.situacion !== 'sin_registrar').length,
+      },
+      flota, sin_recibir,
+      por_objetivo: Object.values(porObj).sort((a, b) => b.hoy - a.hoy || b.entraron - a.entraron),
+      movimientos: recientes.map(m => {
+        const u = porUnidad.get(m.unidad_id);
+        return {
+          id: m.id, unidad_id: m.unidad_id, unidad: u ? rotulo(u) : ('Unidad ' + m.unidad_id),
+          desde: lugar(m.origen_tipo, m.origen_objetivo_id), hasta: lugar(m.destino_tipo, m.destino_objetivo_id),
+          salida_at: m.salida_at, salida_por: m.salida_por, salida_estado: m.salida_estado, salida_obs: m.salida_obs,
+          llegada_at: m.llegada_at, llegada_por: m.llegada_por, llegada_estado: m.llegada_estado, llegada_obs: m.llegada_obs,
+          retira: m.retira, estado: m.estado,
+        };
+      }),
+    });
+  } catch (err) {
+    console.error('movimientos:', err.message);
+    res.status(500).json({ error: /movimientos_unidades/.test(err.message || '')
+      ? 'Falta correr movimientos_maquinaria.sql en Supabase (base del bot).'
+      : (err.message || 'Error cargando movimientos') });
+  }
+});
+
+// Historial completo de UNA máquina (la ficha con la línea de tiempo)
+router.get('/api/movimientos/unidad/:id', auth, async (req, res) => {
+  try {
+    const [uR, mR, oR] = await Promise.all([
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, tipo_activo').eq('id', req.params.id).single(),
+      supabase.from('movimientos_unidades').select('*').eq('unidad_id', req.params.id)
+        .neq('estado', 'anulado').order('salida_at', { ascending: false }).limit(100),
+      supabase.from('objetivos').select('id, nombre'),
+    ]);
+    if (!uR.data) return res.status(404).json({ error: 'Unidad inexistente' });
+    const nombreObj = new Map((oR.data || []).map(o => [String(o.id), o.nombre]));
+    const lugar = (t, oid) => t === 'taller' ? 'Taller' : (nombreObj.get(String(oid)) || '—');
+    const movs = mR.data || [];
+    // Días en taller dentro de los viajes cerrados que TERMINARON en el taller
+    let diasTaller = 0, objetivos = new Set();
+    movs.forEach((m, i) => {
+      if (m.destino_tipo === 'objetivo' && m.destino_objetivo_id) objetivos.add(String(m.destino_objetivo_id));
+      if (m.destino_tipo === 'taller' && m.llegada_at) {
+        const sig = movs[i - 1];   // el viaje siguiente (la lista viene al revés) es la salida del taller
+        const fin = sig ? new Date(sig.salida_at).getTime() : Date.now();
+        diasTaller += Math.max(0, Math.ceil((fin - new Date(m.llegada_at).getTime()) / 864e5));
+      }
+    });
+    res.json({
+      unidad: { id: uR.data.id, rotulo: [uR.data.codigo, uR.data.patente].filter(Boolean).join(' · '), detalle: uR.data.marca_modelo || uR.data.tipo_activo || '' },
+      totales: { movimientos: movs.length, objetivos: objetivos.size, dias_taller: diasTaller },
+      historial: movs.map(m => ({
+        id: m.id, desde: lugar(m.origen_tipo, m.origen_objetivo_id), hasta: lugar(m.destino_tipo, m.destino_objetivo_id),
+        salida_at: m.salida_at, salida_por: m.salida_por, salida_estado: m.salida_estado, salida_obs: m.salida_obs,
+        llegada_at: m.llegada_at, llegada_por: m.llegada_por, llegada_estado: m.llegada_estado, llegada_obs: m.llegada_obs,
+        retira: m.retira, estado: m.estado,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Error cargando el historial' });
+  }
+});
+
+// Marcar la llegada desde el PANEL (para cuando el supervisor no la marcó)
+router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const { data: m } = await supabase.from('movimientos_unidades')
+      .select('id, estado').eq('id', req.params.id).maybeSingle();
+    if (!m) return res.status(404).json({ error: 'Movimiento inexistente' });
+    if (m.estado !== 'en_transito') return res.status(409).json({ error: 'Ese viaje ya está cerrado.' });
+    const { error } = await supabase.from('movimientos_unidades').update({
+      llegada_at: new Date().toISOString(),
+      llegada_por: (req.usuario || 'panel') + ' (panel)', llegada_rol: 'panel',
+      llegada_estado: b.estado === 'con_falla' ? 'con_falla' : 'anda',
+      llegada_obs: String(b.observaciones || '').trim() || null,
+      estado: 'recibida',
+    }).eq('id', m.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'No pude marcar la llegada' });
   }
 });
 
