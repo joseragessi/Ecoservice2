@@ -828,16 +828,24 @@ function svTareaRow(t,i){
     </div></div>`;
 }
 function svRepRow(r,i){
-  return `<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">
-    <input type="text" id="sv-r-n-${i}" value="${String(r.repuesto||'').replace(/"/g,'&quot;')}" placeholder="Repuesto"
-      style="flex:2;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-m-${i}" value="${String(r.marca||'').replace(/"/g,'&quot;')}" placeholder="Marca"
-      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-c-${i}" value="${r.cantidad!=null?r.cantidad:''}" placeholder="Cant" inputmode="numeric"
-      style="width:44px;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <input type="text" id="sv-r-k-${i}" value="${String(r.codigo||'').replace(/"/g,'&quot;')}" placeholder="Código"
-      style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
-    <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.repuestos_entregados.splice(${i},1);svLeer();render()">✕</button>
+  // Dos líneas por repuesto (10-ago): en el celular los 4 campos en una sola
+  // fila aplastaban el CÓDIGO (quedaba cortado o afuera de la pantalla).
+  // Línea 1: repuesto + ✕. Línea 2: marca / cantidad / código, cada uno con
+  // lugar de verdad. Mismos ids de siempre: svLeer() no cambia.
+  return `<div style="border:1px solid #e4e7e4;border-radius:8px;padding:8px;margin-bottom:6px">
+    <div style="display:flex;gap:5px;align-items:center;margin-bottom:5px">
+      <input type="text" id="sv-r-n-${i}" value="${String(r.repuesto||'').replace(/"/g,'&quot;')}" placeholder="Repuesto"
+        style="flex:1;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+      <button class="btn sec" style="padding:4px 9px;margin:0" onclick="svData.repuestos_entregados.splice(${i},1);svLeer();render()">✕</button>
+    </div>
+    <div style="display:flex;gap:5px">
+      <input type="text" id="sv-r-m-${i}" value="${String(r.marca||'').replace(/"/g,'&quot;')}" placeholder="Marca"
+        style="flex:1;min-width:0;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+      <input type="text" id="sv-r-c-${i}" value="${r.cantidad!=null?r.cantidad:''}" placeholder="Cant" inputmode="numeric"
+        style="width:52px;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+      <input type="text" id="sv-r-k-${i}" value="${String(r.codigo||'').replace(/"/g,'&quot;')}" placeholder="Código"
+        style="flex:1.4;min-width:0;box-sizing:border-box;padding:7px;border:1px solid #d8dcd8;border-radius:6px;font-size:13px">
+    </div>
   </div>`;
 }
 // Vuelca lo que hay en los inputs a svData (antes de borrar filas o guardar)
