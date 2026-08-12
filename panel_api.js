@@ -2090,8 +2090,8 @@ function expandirFactura(d) {
   const TIPO = { p: 'percepcion', i: 'impuesto', x: 'otro' };
   const num = v => (v == null || v === '' ? null : Number(v));
   const item = x => Array.isArray(x)
-    ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0 }
-    : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0 };
+    ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0, cantidad: num(x[2]) || 1 }
+    : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0, cantidad: num(x && (x.cantidad ?? x.q)) || 1 };
   const otro = x => Array.isArray(x)
     ? { concepto: x[0] ?? null, monto: num(x[1]) || 0, tipo: TIPO[x[2]] || x[2] || 'otro' }
     : { concepto: (x && (x.concepto ?? x.c)) ?? null, monto: num(x && (x.monto ?? x.m)) || 0, tipo: TIPO[x && x.tipo] || (x && x.tipo) || 'otro' };
@@ -2262,10 +2262,10 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     // acá abajo al formato de siempre, así el resto del sistema no cambia.
     const prompt = 'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
       '{"f":"YYYY-MM-DD","n":"numero","l":"A|B|C","p":"razon social emisor","c":"cuit emisor",' +
-      '"tn":neto_sin_iva,"ti":iva_total,"i":[["descripcion",monto_sin_iva]],' +
+      '"tn":neto_sin_iva,"ti":iva_total,"i":[["descripcion",monto_sin_iva,cantidad]],' +
       '"o":[["concepto",monto,"p|i|x"]]}\n' +
       'Reglas:\n' +
-      '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n' +
+      '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n- cantidad = la CANTIDAD facturada del ítem (columna Cant./Un.). Si no figura o es ilegible: 1. El monto_sin_iva sigue siendo el TOTAL del renglón, NO el precio unitario.\n' +
       '- "p": razón social del EMISOR transcripta EXACTA carácter por carácter (si dice COCCONI es ' +
       'COCCONI, no corrijas apellidos). Nunca el nombre de fantasía/logo si figura la razón social. ' +
       'ECOSERVICE (CUIT 30-70793029-9) es el CLIENTE: jamás va como emisor ni su CUIT en "c".\n' +
@@ -2325,7 +2325,10 @@ router.post('/api/compras/extract', auth, async (req, res) => {
           max_tokens: 2500,   // con el formato compacto sobra para 30+ ítems
           temperature: 0,
           messages: [
-            { role: 'user',      content: [part, { type: 'text', text: prompt }] },
+            // Texto ANTES que la imagen y con cache_control: las reglas son
+            // estáticas, así que de la 2ª factura de la tanda en adelante el
+            // modelo las toma de caché en vez de reprocesarlas (ventana ~5 min).
+            { role: 'user',      content: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }, part] },
             { role: 'assistant', content: '{' },
           ],
         }),
@@ -2334,7 +2337,8 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       const crudo = (data.content || []).map(c => c.text || '').join('');
       console.log(`[factura] ${modelo} en ${((Date.now() - t1) / 1000).toFixed(1)}s ` +
         `(${Math.round(String(fileData).length * 0.75 / 1024)} KB, ` +
-        `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out)`);
+        `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out` +
+        ((data.usage && data.usage.cache_read_input_tokens) ? `, ${data.usage.cache_read_input_tokens} de caché` : '') + ')');
       if (data.error) {
         const det = (data.error.message || JSON.stringify(data.error)).slice(0, 160);
         console.error('[factura] error de API con ' + modelo + ': ' + det);
