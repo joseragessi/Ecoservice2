@@ -5024,14 +5024,18 @@ function vComprasDetalle(view){
       const selUni=ix=>`<select id="ei-uni-${ix}" style="width:100%;font-size:11.5px;padding:5px 7px;margin-top:4px">
         <option value="">— sin unidad —</option>
         ${COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}" ${u===asgDe(ix).unidad?'selected':''}>${u}</option>`).join('')}</select>`;
-      return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th>${perItem?'<th style="width:260px">Imputación</th>':''}</tr></thead>
+      return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Cant.</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th>${perItem?'<th style="width:260px">Imputación</th>':''}</tr></thead>
       <tbody>${items.map((i,ix)=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
+        const cant=Number(i.cantidad)||1;
         return `<tr><td>${i.descripcion||'—'}</td>
+        <td class="num">${ed
+          ?`<input id="ei-cant-${ix}" type="number" min="1" step="1" value="${cant}" style="width:58px;font-size:12px;padding:4px 6px;text-align:right">`
+          :`<span class="mono">${cant}</span>`}</td>
         <td class="num money">${money(n)}</td>
         <td class="num money sub">${money(v)}</td>
         <td class="num money">${money(n+v)}</td>
         ${perItem?`<td>${selObj(ix)}${selUni(ix)}</td>`:''}</tr>`;}).join('')}
-      <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td>
+      <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td><td></td>
         <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
         <td class="num money"><b>${money(ivaFact)}</b></td>
         <td class="num money"><b>${money(bruto)}</b></td>${perItem?'<td></td>':''}</tr></tbody></table>
@@ -5215,6 +5219,13 @@ async function guardarEdicionCompra(){
     total_iva:Number(g('ec-iva').value)||0,
     assignmentMode:comprasEditMode,
   };
+  // Cantidades por ítem (la cantidad va a Flexxus junto al total del renglón)
+  if((inv.items||[]).length){
+    body.items=(inv.items||[]).map((it,ix)=>{
+      const c=g('ei-cant-'+ix);
+      return {...it,cantidad:c?Math.max(1,Math.round(Number(c.value)||1)):(Number(it.cantidad)||1)};
+    });
+  }
   if(comprasEditMode==='per-item'){
     const asg={};
     (inv.items||[]).forEach((_,ix)=>{
@@ -5361,7 +5372,7 @@ let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentar
 let comprasMsg='';
 
 function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
-function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');}
+function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasExtracted=null;comprasOCRVuelo=null;go('compras');}
 
 // Las fotos de factura se ACHICAN antes de subirlas (máx 1300px, JPEG 0.82):
 // una foto de celular de 4000px no se lee mejor y hace que la extracción tarde
@@ -5372,7 +5383,7 @@ function comprasPickFile(input){
   r.onload=()=>{
     const dataUrl=String(r.result);
     if(!(f.type||'').startsWith('image/')){
-      comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};go('compras');return;
+      comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};comprasPrefetchOCR();go('compras');return;
     }
     const img=new Image();
     img.onload=()=>{
@@ -5381,23 +5392,38 @@ function comprasPickFile(input){
       cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
       cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
       comprasFile={data:cv.toDataURL('image/jpeg',0.82).split(',')[1],type:'image/jpeg',name:f.name};
-      go('compras');
+      comprasPrefetchOCR();go('compras');
     };
-    img.onerror=()=>{comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};go('compras');};
+    img.onerror=()=>{comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};comprasPrefetchOCR();go('compras');};
     img.src=dataUrl;
   };
   r.readAsDataURL(f);
 }
 
+// PREFETCH DEL OCR (11-ago): la lectura arranca EN EL MOMENTO en que se elige
+// el archivo, en segundo plano, mientras el usuario todavía mira la vista
+// previa. Cuando aprieta "Extraer con IA", la respuesta ya viene en camino (o
+// ya llegó) — el tiempo de la IA corre en paralelo con el tiempo humano.
+let comprasOCRVuelo=null;   // { clave, p:Promise }
+function comprasPrefetchOCR(){
+  if(!comprasFile||!comprasFile.data)return;
+  const clave=comprasFile.data.slice(0,80)+'|'+comprasFile.data.length;
+  if(comprasOCRVuelo&&comprasOCRVuelo.clave===clave)return;
+  comprasOCRVuelo={clave,
+    p:api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:comprasFile.data,fileType:comprasFile.type})})
+      .catch(e=>({__error:e.message||'No se pudo extraer. Completá a mano.'}))};
+}
 async function comprasExtraer(){
   if(!comprasFile)return;
   comprasStep='extract';go('compras');
   try{
-    const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:comprasFile.data,fileType:comprasFile.type})});
+    comprasPrefetchOCR();   // por si el prefetch no corrió (archivo raro)
+    const d=await comprasOCRVuelo.p;
     if(d.__error){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg=d.__error;}
     else{comprasExtracted=d;comprasMsg='';
       (d.__avisos||[]).forEach(a=>toast('⚠ '+a,'error'));}
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
+  comprasOCRVuelo=null;
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
   comprasStep='assign';go('compras');
 }
@@ -5532,7 +5558,7 @@ function vComprasCarga(view){
   const ooSel=val=>COMPRAS_OBJ.map(o=>`<option value="${o.replace(/"/g,'&quot;')}"${optSel(o,val)}>${o}</option>`).join('');
   const uoSel=val=>COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}"${optSel(u,val)}>${u}</option>`).join('');
   // Tabla de ítems
-  const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="money tr">${money(it.monto_sin_iva)}</td><td class="money tr">${money(it.iva)}</td></tr>`).join('');
+  const filasItems=items.map(it=>`<tr><td>${it.descripcion||'—'}</td><td class="tr mono">${Number(it.cantidad)||1}</td><td class="money tr">${money(it.monto_sin_iva)}</td><td class="money tr">${money(it.iva)}</td></tr>`).join('');
   // Imputación (la clase contable se revisa al imputar a Flexxus, no acá)
   let imput;
   if(comprasAssignMode==='total'){
@@ -5577,8 +5603,8 @@ function vComprasCarga(view){
         </div>
         <div class="mm-label">Ítems</div>
         <div class="tabla-wrap">
-          <table><thead><tr><th>Descripción</th><th class="tr">Neto</th><th class="tr">IVA</th></tr></thead>
-          <tbody>${filasItems}<tr class="tot-row"><td><b>Total</b></td><td class="money tr"><b>${money(d.total_sin_iva)}</b></td><td class="money tr"><b>${money(d.total_iva)}</b></td></tr></tbody></table>
+          <table><thead><tr><th>Descripción</th><th class="tr">Cant.</th><th class="tr">Neto</th><th class="tr">IVA</th></tr></thead>
+          <tbody>${filasItems}<tr class="tot-row"><td><b>Total</b></td><td></td><td class="money tr"><b>${money(d.total_sin_iva)}</b></td><td class="money tr"><b>${money(d.total_iva)}</b></td></tr></tbody></table>
         </div>
         ${(d.otros_conceptos||[]).length?`<div class="mm-label" style="margin-top:14px">Percepciones e impuestos</div>
         <div class="tabla-wrap"><table><thead><tr><th>Concepto</th><th>Tipo</th><th class="tr">Monto</th></tr></thead>
