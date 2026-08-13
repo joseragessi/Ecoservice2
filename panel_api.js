@@ -680,12 +680,32 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       o.bateas += Number(v.total_bateas) || 0; o.jornadas++;
     });
 
-    // Bateas por objetivo (suma de todas las paradas)
+    // Bateas por objetivo. La clave es el objetivo_id cuando la parada
+    // matcheó; si no, el nombre NORMALIZADO — así "ucc" y "Ucc" caen en la
+    // misma fila aunque todavía no estén corregidas.
     const porObjetivo = {};
     viajes.forEach(v => (v.paradas || []).forEach(p => {
-      const k = p.objetivo_nombre || 'Sin objetivo';
-      porObjetivo[k] = (porObjetivo[k] || 0) + (Number(p.bateas) || 0);
+      const nombre = p.objetivo_nombre || 'Sin objetivo';
+      const k = p.objetivo_id ? 'id:' + p.objetivo_id : 'txt:' + normObjetivo(nombre);
+      const o = porObjetivo[k] || (porObjetivo[k] = { nombre, bateas: 0, sin_objetivo: !p.objetivo_id });
+      o.bateas += Number(p.bateas) || 0;
     }));
+
+    // Paradas que no matchearon ningún objetivo: van al panel de pendientes
+    // para asignarlas a mano (y de paso aprender el alias).
+    const sinObjetivo = [];
+    viajes.forEach(v => (v.paradas || []).forEach((p, idx) => {
+      if (p.objetivo_id) return;
+      sinObjetivo.push({
+        viaje_id: v.id,
+        idx,
+        fecha: v.fecha,
+        chofer: v.capataces ? v.capataces.nombre : null,
+        texto: p.texto_original || p.objetivo_nombre || '',
+        bateas: Number(p.bateas) || 0,
+      });
+    }));
+    sinObjetivo.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 
     const prom = (bat, jor) => jor ? Math.round((bat / jor) * 10) / 10 : 0;
 
@@ -706,12 +726,113 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       por_unidad: Object.values(porUnidad).map(o => ({
         ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
       })).sort((a, b) => b.prom_jornada - a.prom_jornada),
-      por_objetivo: Object.entries(porObjetivo).map(([nombre, bateas]) => ({ nombre, bateas, m3: bateas * M3_POR_BATEA }))
+      por_objetivo: Object.values(porObjetivo)
+        .map(o => ({ nombre: o.nombre, bateas: o.bateas, m3: o.bateas * M3_POR_BATEA, sin_objetivo: o.sin_objetivo }))
         .sort((a, b) => b.bateas - a.bateas),
+      sin_objetivo: sinObjetivo,
     });
   } catch (err) {
     console.error('viajes indicadores:', err);
     res.status(500).json({ error: 'Error calculando indicadores' });
+  }
+});
+
+// Normaliza un nombre de objetivo para comparar y para guardar alias.
+// Tiene que dar EXACTAMENTE lo mismo que normObjetivo() en viajes.js.
+function normObjetivo(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// ── Corregir el objetivo de una parada de bateas ──────────────
+// El chofer escribe libre por WhatsApp; acá se reasigna contra la lista real.
+// Con recordar=true el texto queda como alias y la próxima matchea solo.
+router.post('/api/viajes/:id/parada', auth, async (req, res) => {
+  try {
+    const { idx, objetivo_id, recordar } = req.body || {};
+    const i = Number(idx);
+    if (!Number.isInteger(i) || i < 0) return res.status(422).json({ error: 'Índice de parada inválido' });
+    if (!objetivo_id) return res.status(422).json({ error: 'Falta el objetivo' });
+
+    const { data: obj, error: eObj } = await supabase
+      .from('objetivos').select('id, nombre').eq('id', objetivo_id).maybeSingle();
+    if (eObj) throw eObj;
+    if (!obj) return res.status(422).json({ error: 'Ese objetivo no existe' });
+
+    const { data: viaje, error: eV } = await supabase
+      .from('viajes_bateas').select('id, paradas').eq('id', req.params.id).maybeSingle();
+    if (eV) throw eV;
+    if (!viaje) return res.status(404).json({ error: 'No encontré esa jornada' });
+
+    const paradas = Array.isArray(viaje.paradas) ? viaje.paradas.slice() : [];
+    if (!paradas[i]) return res.status(422).json({ error: 'Esa parada ya no existe' });
+
+    const previa = paradas[i];
+    // El texto que escribió el chofer: si es la primera corrección lo tomamos
+    // del nombre guardado, porque texto_original recién existe desde hoy.
+    const textoOriginal = previa.texto_original || previa.objetivo_nombre || '';
+
+    paradas[i] = Object.assign({}, previa, {
+      objetivo_id: obj.id,
+      objetivo_nombre: obj.nombre,
+      texto_original: textoOriginal,
+      reconocido: true,
+      corregido_por: req.usuario || null,
+      corregido_at: new Date().toISOString(),
+    });
+
+    const { error: eU } = await supabase
+      .from('viajes_bateas').update({ paradas }).eq('id', viaje.id);
+    if (eU) throw eU;
+
+    // Aprender el alias. Si falla (tabla sin crear, alias ya tomado por otro
+    // objetivo) la corrección de la parada NO se pierde: se avisa y listo.
+    let alias = null, alias_error = null;
+    const aliasNorm = normObjetivo(textoOriginal);
+    if (recordar && aliasNorm && aliasNorm !== normObjetivo(obj.nombre)) {
+      const { error: eA } = await supabase.from('objetivos_alias')
+        .upsert({
+          alias: aliasNorm,
+          alias_original: textoOriginal,
+          objetivo_id: obj.id,
+          creado_por: req.usuario || null,
+        }, { onConflict: 'alias' });
+      if (eA) alias_error = eA.message; else alias = aliasNorm;
+    }
+
+    console.log(`[bateas] parada corregida · viaje ${viaje.id} #${i} · "${textoOriginal}" → ${obj.nombre}` +
+      (alias ? ` · alias "${alias}"` : ''));
+    res.json({ ok: true, objetivo: obj, alias, alias_error });
+  } catch (err) {
+    console.error('corregir parada:', err);
+    res.status(500).json({ error: 'No pude corregir la parada' });
+  }
+});
+
+// ── Alias de objetivos ────────────────────────────────────────
+// Van bajo /api/viajes a propósito: moduloDeRuta() mandaría /api/objetivos*
+// al permiso 'maestros', y esto lo maneja quien usa Bateas.
+router.get('/api/viajes/alias', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('objetivos_alias').select('id, alias, alias_original, objetivo_id, creado_por, objetivos(nombre)')
+      .order('alias');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: 'No pude cargar los alias (¿corriste objetivos_alias.sql?)' });
+  }
+});
+
+router.delete('/api/viajes/alias/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('objetivos_alias').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude borrar el alias' });
   }
 });
 
