@@ -38,13 +38,25 @@ function listado(items) {
   }).join('\n');
 }
 
+function totalEquipos(items) {
+  return (items || []).reduce((s, i) => s + (Number(i.cantidad) || 0), 0);
+}
+
 function resumenCenso(sesion) {
   const obj = sesion.capataz.objetivo_nombre || 'sin especificar';
-  return `📍 Objetivo: ${obj}\n📋 Stock:\n${listado(sesion.items)}`;
+  const tot = totalEquipos(sesion.items);
+  const tipos = new Set((sesion.items || []).map(i => i.tipo)).size;
+  return `📍 Objetivo: ${obj}\n📋 Stock:\n${listado(sesion.items)}\n` +
+         `\n*Total: ${tot} equipo${tot === 1 ? '' : 's'} · ${tipos} tipo${tipos === 1 ? '' : 's'}*`;
 }
 
 function pedirConfirmacion(sesion) {
-  return `${resumenCenso(sesion)}\n\n` +
+  // Los avisos del intérprete (cantidades que no cerraban) se muestran acá:
+  // el capataz confirma con el número corregido a la vista, no a ciegas.
+  const av = (sesion.avisos && sesion.avisos.length)
+    ? `\n\n⚠️ ${sesion.avisos.join('\n⚠️ ')}` : '';
+  return `${resumenCenso(sesion)}${av}\n\n` +
+         `Revisá que estén *todos los tipos* de máquina que mandaste.\n` +
          `¿Confirmás? Respondé *sí* para guardar, o decime qué *agregar* o *corregir*.`;
 }
 
@@ -97,6 +109,9 @@ async function guardarCenso(sesion) {
     }));
     const { error } = await supabase.from('censos_stock_items').insert(items);
     if (error) { console.error('Error insertando items del censo:', error); return null; }
+    console.log(`[stock] censo ${censo.id} · ${sesion.capataz.nombre} · ` +
+      `${items.length} tipos, ${totalEquipos(sesion.items)} equipos: ` +
+      items.map(i => `${i.tipo_equipo} x${i.cantidad}`).join(' · '));
     await sembrarInventario(objetivoId, sesion.items);
   }
   return censo;
@@ -185,6 +200,7 @@ async function procesarListadoTexto(tel, capataz, texto) {
     paso: 'confirmando',
     capataz,
     items: interpretado.items,
+    avisos: interpretado.avisos || [],
     textoOriginal: texto,
   };
 
@@ -232,6 +248,7 @@ async function continuarStock(telefono, mensaje) {
       return '⚠️ No entendí el cambio. Probá de nuevo, o respondé *sí* para guardar como está.';
     }
     sesion.items = actualizado.items;
+    sesion.avisos = actualizado.avisos || [];
 
     return `Actualicé el listado:\n\n${pedirConfirmacion(sesion)}`;
   }
