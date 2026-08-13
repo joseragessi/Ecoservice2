@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · rebotes con detalle + IA';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · rebotes IA v2';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1950,17 +1950,23 @@ function toggleRebote(idBase,idVuelta){
 /* La IA compara lo hecho con el motivo de la vuelta y SUGIERE si se atribuye.
    La decisión sigue siendo del usuario: el dictamen trae el botón para aplicar. */
 async function analizarRebote(btn,idBase,idVuelta){
-  const out=document.getElementById('reb-ia-'+idVuelta);if(!out)return;
+  const out=()=>document.getElementById('reb-ia-'+idVuelta);
+  if(!out())return;
   btn.disabled=true;const txt=btn.textContent;btn.textContent='Analizando…';
   try{
     const r=await api('/api/reparaciones/rebote-analisis',{method:'POST',body:JSON.stringify({base_id:idBase,vuelta_id:idVuelta})});
     const col=r.atribuible==='no'?'var(--brote-2)':r.atribuible==='si'?'#A32D2D':'#8a6d1a';
     const label=r.atribuible==='no'?'NO se atribuye':r.atribuible==='si'?'SÍ se atribuye':'Dudoso';
-    out.innerHTML=`<div style="margin:4px 0 6px;padding:7px 10px;border-radius:8px;background:var(--papel);font-size:11.5px">
+    const html=`<div style="margin:4px 0 6px;padding:7px 10px;border-radius:8px;background:var(--papel);font-size:11.5px">
       🤖 <b style="color:${col}">${label}</b> <span class="sub">(confianza ${r.confianza})</span> — ${String(r.motivo||'').replace(/</g,'&lt;')}
       ${r.atribuible==='no'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px;margin-left:8px" onclick="descartarReboteConMotivo('${idVuelta}',this)" data-motivo="${String(r.motivo||'').replace(/"/g,'&quot;')}">Aplicar: no atribuir</button>`:''}
     </div>`;
-  }catch(e){out.innerHTML=`<div class="sub" style="font-size:11px;color:var(--rojo);margin:3px 0">${e.message||'No pude analizar'}</div>`;}
+    const o=out();if(o)o.innerHTML=html;else toast(`🤖 ${label} — ${r.motivo||''}`);
+  }catch(e){
+    const o=out();const msg=e.message||'No pude analizar';
+    if(o)o.innerHTML=`<div class="sub" style="font-size:11px;color:var(--rojo);margin:3px 0">${String(msg).replace(/</g,'&lt;')}</div>`;
+    else toast(msg,'error');
+  }
   btn.disabled=false;btn.textContent=txt;
 }
 async function descartarReboteConMotivo(id,btn){
@@ -2140,7 +2146,7 @@ async function vRepPerf(view){
           <div><b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span></div>
           <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}</b></div>`).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
         ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
-          ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0">
+          ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0" onclick="event.stopPropagation()">
             <div style="display:flex;gap:8px;align-items:center">
               <span style="flex:1;cursor:pointer" onclick="toggleRebote('${x.idBase}','${x.idVuelta}')" title="Tocá para ver qué se hizo">▸ ↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d${x.fallaBase?` · ${x.fallaBase} → ${x.fallaVuelta||'s/falla'}`:''}</span>
               <button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="analizarRebote(this,'${x.idBase}','${x.idVuelta}')" title="La IA compara lo que se hizo con el motivo de la vuelta">🤖 Analizar</button>
@@ -2150,7 +2156,7 @@ async function vRepPerf(view){
             <div id="reb-ia-${x.idVuelta}"></div>
           </div>`).join('')}`:''}
         ${(descartes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Vueltas que NO cuentan</div>
-          ${descartes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center;opacity:.75">
+          ${descartes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center;opacity:.75" onclick="event.stopPropagation()">
             <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
             ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
           </div>`).join('')}`:''}
