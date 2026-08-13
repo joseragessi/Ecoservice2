@@ -1385,6 +1385,89 @@ router.get('/api/services', auth, async (req, res) => {
 // exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
 // del código y de la DB). Sin la env seteada, alcanza con ser admin (fail-open
 // avisado). Rate limit reusado del login para que no se pueda adivinar.
+// Análisis IA de un rebote: ¿la vuelta es atribuible al arreglo anterior?
+// Devuelve una SUGERENCIA con motivo — la decisión final la toma el usuario
+// con el botón "No atribuir". Sin temperature: los modelos de la familia 5
+// no lo aceptan y acá tampoco hace falta.
+router.post('/api/reparaciones/rebote-analisis', auth, async (req, res) => {
+  try {
+    const { base_id, vuelta_id } = req.body || {};
+    if (!base_id || !vuelta_id) return res.status(422).json({ error: 'Faltan las incidencias' });
+
+    const traer = async id => {
+      const { data, error } = await supabase.from('incidencias')
+        .select('id, tipo_equipo, numero_unidad, tipo_falla, descripcion, created_at, fecha_finalizado, equipo_parado, comentarios_incidencias(mecanico_nombre,texto,created_at), repuestos_taller(items,estado), mecanicos(nombre)')
+        .eq('id', id).maybeSingle();
+      if (error) throw error;
+      return data;
+    };
+    const [base, vuelta] = await Promise.all([traer(base_id), traer(vuelta_id)]);
+    if (!base || !vuelta) return res.status(404).json({ error: 'No encontré alguna de las incidencias' });
+
+    const arm = (inc, rol) => {
+      const coms = (inc.comentarios_incidencias || [])
+        .map(c => `- ${c.mecanico_nombre || '?'}: ${c.texto}`).join('\n') || '(sin comentarios)';
+      const reps = (inc.repuestos_taller || [])
+        .map(r => (Array.isArray(r.items) ? r.items : []).map(i => i.descripcion || i.nombre || '').filter(Boolean).join(', '))
+        .filter(Boolean).join(' · ') || '(sin repuestos registrados)';
+      return `${rol}:
+- Equipo: ${inc.tipo_equipo || '?'} N° ${inc.numero_unidad || '?'}
+- Falla declarada al entrar: ${inc.tipo_falla || 'sin especificar'}
+- Descripción: ${inc.descripcion || '(sin descripción)'}
+- Comentarios del taller (lo que se hizo): ${coms}
+- Repuestos pedidos: ${reps}
+- Mecánico: ${inc.mecanicos ? inc.mecanicos.nombre : 'sin asignar'}`;
+    };
+
+    const dias = Math.round((new Date(vuelta.created_at) - new Date(base.fecha_finalizado)) / 86400000);
+    const prompt = `Sos el jefe de un taller de maquinaria de espacios verdes (motoguadañas,
+motosierras, extensibles, sopladoras, tractores). Una máquina volvió al taller
+${dias} día(s) después de una reparación y hay que decidir si la vuelta es
+ATRIBUIBLE al arreglo anterior (misma causa, arreglo que no duró) o si es un
+problema NUEVO/independiente (otra pieza, rotura de uso, mal uso en obra).
+
+${arm(base, 'REPARACIÓN ANTERIOR (finalizada)')}
+
+${arm(vuelta, 'VUELTA AL TALLER (nueva incidencia)')}
+
+Criterio técnico: pensá si lo que se hizo y los repuestos de la primera
+reparación tienen relación causal con lo que presenta la vuelta. Un carburador
+regulado que vuelve porque no arranca puede ser lo mismo; un trinquete
+cambiado que vuelve con el pistón fundido es otra cosa.
+
+Devolvé SOLO un objeto JSON, sin texto antes ni después:
+{"atribuible":"si"|"no"|"dudoso","confianza":"alta"|"media"|"baja","motivo":"una o dos frases en criollo, concretas"}`;
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL_FACTURAS,
+        max_tokens: 400,
+        messages: [{ role: 'user', content: prompt }, { role: 'assistant', content: '{' }],
+      }),
+    });
+    if (!resp.ok) {
+      const det = await resp.text();
+      throw new Error(`API Claude ${resp.status}: ${det.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    const crudo = '{' + (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    let parsed = null;
+    try { parsed = JSON.parse(crudo); } catch (e) {
+      const a = crudo.indexOf('{'), b = crudo.lastIndexOf('}');
+      if (a >= 0 && b > a) { try { parsed = JSON.parse(crudo.slice(a, b + 1)); } catch (e2) { /* nada */ } }
+    }
+    if (!parsed || !parsed.atribuible) throw new Error('la IA no devolvió un dictamen legible');
+
+    console.log(`[perf] análisis rebote ${base_id}→${vuelta_id}: ${parsed.atribuible} (${parsed.confianza || '?'})`);
+    res.json({ atribuible: parsed.atribuible, confianza: parsed.confianza || 'media', motivo: parsed.motivo || '' });
+  } catch (err) {
+    console.error('rebote-analisis:', err);
+    res.status(500).json({ error: 'No pude analizar: ' + (err.message || err) });
+  }
+});
+
 // Marcar/desmarcar la incidencia de una vuelta como "no atribuible" al
 // arreglo anterior (volvió por otra falla). Afecta solo la calidad del bono.
 router.post('/api/reparaciones/:id/rebote', auth, async (req, res) => {
