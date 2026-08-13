@@ -1385,6 +1385,28 @@ router.get('/api/services', auth, async (req, res) => {
 // exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
 // del código y de la DB). Sin la env seteada, alcanza con ser admin (fail-open
 // avisado). Rate limit reusado del login para que no se pueda adivinar.
+// Marcar/desmarcar la incidencia de una vuelta como "no atribuible" al
+// arreglo anterior (volvió por otra falla). Afecta solo la calidad del bono.
+router.post('/api/reparaciones/:id/rebote', auth, async (req, res) => {
+  try {
+    const descartar = !!(req.body && req.body.descartar);
+    const motivo = String((req.body && req.body.motivo) || '').trim();
+    const patch = descartar
+      ? { rebote_descartado: true, rebote_motivo: motivo || null,
+          rebote_descartado_por: req.usuario || null, rebote_descartado_at: new Date().toISOString() }
+      : { rebote_descartado: false, rebote_motivo: null,
+          rebote_descartado_por: null, rebote_descartado_at: null };
+    const { error } = await supabase.from('incidencias').update(patch).eq('id', req.params.id);
+    if (error) throw error;
+    console.log(`[perf] rebote ${descartar ? 'descartado' : 'restaurado'} · incidencia ${req.params.id} · por ${req.usuario || '?'}` +
+      (motivo ? ` · "${motivo}"` : ''));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('rebote descartar:', err);
+    res.status(500).json({ error: 'No pude guardar (¿corriste rebotes_descarte.sql?)' });
+  }
+});
+
 router.post('/api/reparaciones/performance-pin', auth, async (req, res) => {
   const envPin = String(process.env.PERFORMANCE_PIN || '').trim();
   if (!envPin) return res.json({ ok: true, sin_pin: true });
