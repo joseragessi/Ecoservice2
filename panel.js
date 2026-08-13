@@ -1338,10 +1338,11 @@ async function selObjStock(id){
       <div class="panel-title" style="margin-bottom:10px">Maquinaria</div>
       ${f.filas.length?f.filas.map(x=>`
         <div class="queue-item" style="margin-bottom:8px;${x.huerfano?'background:var(--papel)':''}">
-          <div style="flex:1">
+          <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:12.5px">${x.tipo_equipo}${x.huerfano?' <span class="badge b-blue" style="font-size:9px">nuevo</span>':''}</div>
             <div class="sub mono" style="font-size:11px">${x.huerfano?'no está en el inventario'
-              :'oficial '+x.cantidad+(x.censo!=null?' · informó '+x.censo:'')+((x.numeros||[]).length?' · N° '+x.numeros.join(', '):'')}</div>
+              :'oficial '+x.cantidad+(x.censo!=null?' · informó '+x.censo:'')}</div>
+            ${detalleCenso(x)}
           </div>
           ${x.huerfano
             ?`<button class="btn-salir" style="padding:4px 8px;font-size:11px;color:var(--brote-2)" onclick="incorporarInv('${f.objetivo.id}','${String(x.tipo_equipo).replace(/'/g,"\\'")}',${x.censo})">+ Agregar</button>`
@@ -1362,6 +1363,28 @@ async function selObjStock(id){
     if(box)box.innerHTML='<div class="sub" style="padding:14px">No pude cargar la ficha.</div>';
   }
 }
+// Detalle de lo que informó el capataz para un tipo de equipo, línea por
+// línea (un capataz puede mandar el mismo tipo en varias tandas separadas por
+// marca o modelo). Antes esto no se mostraba en ninguna parte de la ficha:
+// solo se veían los números del inventario oficial, que suele estar vacío.
+function detalleCenso(x){
+  const det=x.censo_detalle||[];
+  const nums=x.censo_numeros||[];
+  if(!det.length&&!nums.length){
+    // Sin números informados: al menos mostramos los del inventario oficial.
+    return (x.numeros||[]).length
+      ?`<div class="sub mono" style="font-size:11px;word-break:break-word">N° ${x.numeros.join(', ')}</div>`:'';
+  }
+  const lineas=det.length?det:[{cantidad:nums.length,numeros:nums,observacion:null}];
+  return `<div style="margin-top:5px;padding-left:8px;border-left:2px solid var(--linea)">
+    ${lineas.map(l=>`<div style="margin-bottom:3px">
+      <div style="font-size:11.5px"><b>${l.cantidad}</b>${l.observacion?' <span class="sub">· '+String(l.observacion).replace(/</g,'&lt;')+'</span>':''}</div>
+      ${(l.numeros||[]).length?`<div class="sub mono" style="font-size:11px;word-break:break-word">N° ${l.numeros.join(', ')}</div>`:''}
+    </div>`).join('')}
+    ${nums.length?`<div class="sub" style="font-size:10.5px;margin-top:2px">${nums.length} máquina${nums.length===1?'':'s'} con número</div>`:''}
+  </div>`;
+}
+
 // Editar una línea del inventario desde la ficha (reusa el modal del inventario)
 function editarInvFicha(id){
   const x=(stockFicha.filas||[]).find(f=>f.id===id);if(!x)return;
