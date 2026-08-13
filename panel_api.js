@@ -3924,6 +3924,37 @@ router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
   }
 });
 
+// Borrar la respuesta de un censo (los equipos informados) y dejarlo
+// pendiente otra vez. Pensado para limpiar pruebas sin tocar la base.
+// No elimina la fila del censo: si se borrara, el objetivo desaparecería
+// del listado del período y no se le podría reenviar el pedido.
+router.delete('/api/stock/censo/:id', auth, async (req, res) => {
+  try {
+    const { data: censo, error: eC } = await supabase
+      .from('censos_stock')
+      .select('id, periodo, estado, objetivo_id, objetivos(nombre)')
+      .eq('id', req.params.id).maybeSingle();
+    if (eC) throw eC;
+    if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
+
+    const { error: eI } = await supabase
+      .from('censos_stock_items').delete().eq('censo_id', censo.id);
+    if (eI) throw eI;
+
+    const { error: eU } = await supabase.from('censos_stock')
+      .update({ estado: 'pendiente', respondido_at: null })
+      .eq('id', censo.id);
+    if (eU) throw eU;
+
+    console.log(`[stock] respuesta borrada · censo ${censo.id} · ` +
+      `${censo.objetivos ? censo.objetivos.nombre : censo.objetivo_id} · ${censo.periodo} · por ${req.usuario || '?'}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('borrar censo:', err);
+    res.status(500).json({ error: 'No pude borrar la respuesta' });
+  }
+});
+
 // ── Servir el panel (HTML + JS extraído en Fase 3) ────────────
 // AUTO-ACTUALIZACIÓN (10-ago): el navegador cacheaba panel.js y había que
 // hacer Ctrl+Shift+R en cada máquina después de cada subida. Dos piezas:
