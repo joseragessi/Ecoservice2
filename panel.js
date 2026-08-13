@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · rebotes IA v2';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · puntaje por horas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1907,14 +1907,53 @@ function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
 const PERF_OBJETIVO=30;            // puntos del mes para cobrar (provisorio)
 const PERF_REINC_MAX=15;           // % de reincidencia (90 días) que bloquea
 const PERF_DORMIDA_DIAS=7;         // abierta sin justificar más de esto descuenta
-const PERF_PESOS_EQUIPO=[          // [regex sobre tipo de equipo, puntos, etiqueta]
-  [/cami[oó]n|tractor(?!.*mini)|hidro/i,5,'pesado'],
-  [/extensible|plana|giro|mini|desmalezadora|camioneta/i,3,'mediano'],
-  [/motoguada|sopladora|motosierra/i,1,'liviano'],
+/* ── Puntaje = horas de taller estimadas (matriz equipo × falla) ──────────
+   Rediseño 13-ago: la escala vieja (pesado 5 / mediano 3 / liviano 1) no medía
+   tiempo — una hidráulica de giro cero (una jornada) valía 3 y una motoguadaña
+   con extras podía valer lo mismo. Además el extensible estaba como "mediano"
+   siendo una 2T de pértiga que se hace en la misma tanda que las motoguadañas.
+   Regla de calibración de José: un día pleno de taller ≈ 5-6 pts con cualquier
+   fierro (5-6 chicas por día, o una hidráulica grande = 8).
+   Importante: mide MANO DE OBRA, no calendario — la espera de repuestos no
+   puntúa (la dormida −2 ya la contempla aparte).
+   Piloto: mirar el primer mes y ajustar la matriz con lo que se vea. */
+const PERF_CAT_EQUIPO=[            // [regex sobre tipo de equipo, categoría, etiqueta]
+  // 'grande' va PRIMERO: "Mini tractor" contiene "tractor" y caería en vehículo
+  [/giro|mini|desmalezadora/i,'grande','grande'],
+  [/cami[oó]n|tractor|hidro *gr|camioneta|toyota|atego/i,'vehiculo','vehículo'],
+  [/hidrolavadora|cortadora|plana/i,'media','media'],
+  [/motoguada|sopladora|motosierra|extensible|bordeadora/i,'chica','2T chica'],
 ];
-function perfPesoEquipo(tipo){
-  for(const [rx,p,et] of PERF_PESOS_EQUIPO)if(rx.test(String(tipo||'')))return {p,et};
-  return {p:2,et:'otro'};
+// Gravedad por tipo_falla (catálogo del bot). Lo que no matchea = 'media'
+// (incluye "Otro" e "Ingreso taller": no se sabe qué fue, se asume promedio).
+const PERF_FALLAS=[                // [regex sobre tipo_falla, gravedad]
+  [/service|mantenimiento/i,'service'],
+  [/pist[oó]n|motor rot|hidr[aá]ulic|p[eé]rdida hidr|transmisi[oó]n|soldadura|estructura/i,'pesada'],
+  [/buj[ií]a|piola|soga|cable|tanza|regulaci[oó]n|correa|bater[ií]a|luces|llanta|cubierta/i,'rapida'],
+];
+// Puntos ≈ horas de mano de obra por (categoría, gravedad).
+const PERF_MATRIZ={
+  chica:    {rapida:1, media:2, pesada:4, service:1},
+  media:    {rapida:1, media:3, pesada:6, service:2},
+  grande:   {rapida:2, media:4, pesada:8, service:3},
+  vehiculo: {rapida:2, media:4, pesada:8, service:2},
+  otro:     {rapida:1, media:2, pesada:4, service:1},   // equipo no clasificado
+};
+function perfCatEquipo(tipo){
+  for(const [rx,cat,et] of PERF_CAT_EQUIPO)if(rx.test(String(tipo||'')))return {cat,et};
+  return {cat:'otro',et:'otro'};
+}
+function perfGravedadFalla(falla){
+  for(const [rx,g] of PERF_FALLAS)if(rx.test(String(falla||'')))return g;
+  return 'media';
+}
+// Compatibilidad: misma firma que antes ({p, et}), ahora con la matriz.
+function perfPesoEquipo(tipo,falla){
+  const {cat,et}=perfCatEquipo(tipo);
+  const g=perfGravedadFalla(falla);
+  const p=(PERF_MATRIZ[cat]||PERF_MATRIZ.otro)[g]||2;
+  const etG=g==='rapida'?'rápida':g==='pesada'?'pesada':g==='service'?'service':'media';
+  return {p,et:et+' · '+etG};
 }
 let perfPer='', perfOpen=null;   // mes filtrado y card expandida
 // Candado extra: los mecánicos también entran al panel, así que además de ser
@@ -2095,7 +2134,7 @@ async function vRepPerf(view){
     M.nFin++;
     if(esPrev(r)){M.prev+=2;M.total+=2;M.nPrev++;
       M.lineas.push({tit:(r.tipo_equipo||'Preventivo')+' '+(r.numero_unidad||''),det:'preventivo realizado',pts:'+2'});return;}
-    const {p,et}=perfPesoEquipo(r.tipo_equipo||(r.equipos?r.equipos.nombre:''));
+    const {p,et}=perfPesoEquipo(r.tipo_equipo||(r.equipos?r.equipos.nombre:''),r.tipo_falla);
     let extra=0;const motivos=[et+' +'+p];
     if(r.prioridad==='critico'){extra+=2;motivos.push('crítica +2');}
     else if(r.prioridad==='alta'){extra+=1;motivos.push('alta +1');}
@@ -2160,7 +2199,7 @@ async function vRepPerf(view){
             <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
             ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
           </div>`).join('')}`:''}
-        <div class="sub" style="font-size:11px;margin-top:8px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
+        <div class="sub" style="font-size:11px;margin-top:8px">Puntos = horas de taller estimadas (equipo × falla): 2T chica 1-4 · media 1-6 · grande 2-8 · vehículo 2-8. Extras: crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
       </div>`;
     return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
