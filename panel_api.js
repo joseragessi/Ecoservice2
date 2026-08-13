@@ -3710,10 +3710,21 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
 
     const respondio = censo && censo.estado === 'respondido';
     const tiposCenso = {};
-    const numsCenso = {};
+    const numsCenso  = {};
+    const obsCenso   = {};
+    const detCenso   = {};
     if (respondio) (censo.censos_stock_items || []).forEach(i => {
-      tiposCenso[i.tipo_equipo] = (tiposCenso[i.tipo_equipo] || 0) + (i.cantidad || 0);
-      numsCenso[i.tipo_equipo] = (i.numeros || []);
+      const t = i.tipo_equipo;
+      tiposCenso[t] = (tiposCenso[t] || 0) + (i.cantidad || 0);
+      // ACUMULAR, no pisar: un mismo tipo puede venir en varios ítems (el
+      // capataz los separa por marca o modelo). Antes cada ítem borraba los
+      // números del anterior y la ficha mostraba solo los del último.
+      numsCenso[t] = (numsCenso[t] || []).concat(i.numeros || []);
+      if (i.observacion) obsCenso[t] = (obsCenso[t] || []).concat(i.observacion);
+      // Detalle línea por línea, tal cual lo informó el capataz.
+      detCenso[t] = (detCenso[t] || []).concat([{
+        cantidad: i.cantidad || 0, numeros: i.numeros || [], observacion: i.observacion || null,
+      }]);
     });
 
     // Filas comparadas: todo lo que está en inventario + lo que informó y no está
@@ -3722,13 +3733,16 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
       numeros: r.numeros || [], observacion: r.observacion, origen: r.origen,
       censo: respondio ? (tiposCenso[r.tipo_equipo] || 0) : null,
       censo_numeros: numsCenso[r.tipo_equipo] || [],
+      censo_obs: obsCenso[r.tipo_equipo] || [],
+      censo_detalle: detCenso[r.tipo_equipo] || [],
       dif: respondio ? (tiposCenso[r.tipo_equipo] || 0) - r.cantidad : null,
     }));
     const enInv = new Set((inv || []).map(r => r.tipo_equipo));
     Object.entries(tiposCenso).forEach(([t, c]) => {
       if (enInv.has(t)) return;
       filas.push({ id: null, tipo_equipo: t, cantidad: 0, numeros: [],
-        censo: c, censo_numeros: numsCenso[t] || [], dif: c, huerfano: true });
+        censo: c, censo_numeros: numsCenso[t] || [], censo_obs: obsCenso[t] || [],
+        censo_detalle: detCenso[t] || [], dif: c, huerfano: true });
     });
     filas.sort((a, b) => a.tipo_equipo.localeCompare(b.tipo_equipo));
 
