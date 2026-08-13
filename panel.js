@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · puntaje por horas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · puntaje analizado + prioridad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -83,6 +83,21 @@ let repFEstado = '', repFPrio = '', repFMec = '';
 const EST_REP = ['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
 const EST_REP_LABEL = ['Pendiente','Diagnóstico','Esp. repuestos','En reparación','Finalizado'];
 const PRIO_BADGE = {critico:'b-red',alta:'b-amber',media:'b-blue',baja:'b-green'};
+// Badge de prioridad con jerarquía visual real: el crítico tiene que saltar a
+// la cara en una lista con 44 "alta". Crítico = rojo pleno + ●, alta = ámbar
+// con borde, media/baja quedan suaves para no competir.
+const PRIO_STYLE={
+  critico:'background:var(--rojo);color:#fff;font-weight:700;box-shadow:0 0 0 3px var(--rojo-soft)',
+  alta:'background:var(--diesel-soft);color:var(--diesel);font-weight:700;border:1.5px solid var(--diesel)',
+  media:'background:var(--azul-soft);color:var(--azul)',
+  baja:'background:var(--brote-soft);color:var(--brote-2)',
+};
+function prioBadge(p){
+  const k=String(p||'').toLowerCase();
+  const st=PRIO_STYLE[k]||'background:var(--papel);color:var(--tinta-2)';
+  const punto=k==='critico'?'● ':k==='alta'?'▲ ':'';
+  return `<span class="badge" style="${st}">${punto}${cap(p||'—')}</span>`;
+}
 const HAB_COLOR = {hidraulica:'b-amber',soldadura:'b-red',giro_cero:'b-green',unidades:'b-amber',tractores:'b-violet',general:'b-gray',electrico:'b-amber',neumatico:'b-red',motor_2t:'b-blue',cortadora:'b-green',motor_4t:'b-blue'};
 function hace(f){if(!f)return'';const d=Math.floor((Date.now()-new Date(f))/86400000);return d<=0?'hoy':d+'d';}
 
@@ -1959,6 +1974,28 @@ let perfPer='', perfOpen=null;   // mes filtrado y card expandida
 // Candado extra: los mecánicos también entran al panel, así que además de ser
 // admin la vista pide el PIN de súper admin (env PERFORMANCE_PIN en Railway).
 // El OK dura lo que dure la pestaña del navegador (sessionStorage).
+/* Corregir a mano el puntaje de una reparación. Manda sobre el de la IA. */
+async function editarPuntaje(id,actual){
+  const v=prompt('Puntos de esta reparación (1 punto ≈ 1 hora de taller).\nDejalo vacío para volver al análisis automático:',actual||'');
+  if(v===null)return;
+  try{
+    await api('/api/reparaciones/'+id+'/puntaje-manual',{method:'POST',body:JSON.stringify({puntos:String(v).trim()===''?null:String(v).trim()})});
+    toast(String(v).trim()===''?'Vuelve al puntaje analizado':'Puntaje corregido');
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude guardar: '+e.message,'error');}
+}
+
+/* Analiza las finalizadas que todavía no tienen puntaje (de a 40 por tanda). */
+async function recalcularPuntajes(){
+  if(!await uiConfirm('Voy a analizar las reparaciones finalizadas que todavía no tienen puntaje. Puede tardar un rato.','Analizar pendientes',{ok:'Analizar'}))return;
+  toast('Analizando… puede tardar');
+  try{
+    const r=await api('/api/reparaciones/puntaje-lote',{method:'POST',body:JSON.stringify({desde:perfPer?perfPer+'-01':''})});
+    toast(`Listo · ${r.analizadas} analizada${r.analizadas===1?'':'s'}${r.fallaron?' · '+r.fallaron+' fallaron':''}`);
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude recalcular: '+e.message,'error');}
+}
+
 /* Qué se hizo vs por qué volvió: los datos ya están en repData (comentarios
    del taller y repuestos de cada incidencia), solo se muestran lado a lado. */
 function fichaRebote(inc,rol,color){
@@ -2134,13 +2171,34 @@ async function vRepPerf(view){
     M.nFin++;
     if(esPrev(r)){M.prev+=2;M.total+=2;M.nPrev++;
       M.lineas.push({tit:(r.tipo_equipo||'Preventivo')+' '+(r.numero_unidad||''),det:'preventivo realizado',pts:'+2'});return;}
-    const {p,et}=perfPesoEquipo(r.tipo_equipo||(r.equipos?r.equipos.nombre:''),r.tipo_falla);
-    let extra=0;const motivos=[et+' +'+p];
-    if(r.prioridad==='critico'){extra+=2;motivos.push('crítica +2');}
-    else if(r.prioridad==='alta'){extra+=1;motivos.push('alta +1');}
-    if(r.equipo_parado){extra+=1;motivos.push('destrabó parada +1');}
+    // Precedencia del puntaje:
+    //   1. puntos_manual  → corrección de José, manda siempre
+    //   2. puntos_ia      → análisis de la reparación (1 pto ≈ 1 hora de taller)
+    //   3. matriz equipo×falla → fallback mientras no se analizó
+    // Los extras fijos por prioridad SOLO se aplican en el fallback: el
+    // análisis ya pondera criticidad y máquina parada, sumarlos otra vez
+    // sería contar dos veces lo mismo.
+    const manual=r.puntos_manual!=null?Number(r.puntos_manual):null;
+    const ia=r.puntos_ia!=null?Number(r.puntos_ia):null;
+    let p,extra=0,origen;const motivos=[];
+    if(manual!=null){
+      p=manual;origen='manual';motivos.push('puntaje corregido a mano');
+    }else if(ia!=null){
+      p=ia;origen='ia';
+      const h=r.puntos_ia_horas!=null?(Math.round(Number(r.puntos_ia_horas)*10)/10):null;
+      motivos.push((h!=null?h+' h de taller':'analizada')+(r.puntos_ia_confianza?' · confianza '+r.puntos_ia_confianza:''));
+    }else{
+      const w=perfPesoEquipo(r.tipo_equipo||(r.equipos?r.equipos.nombre:''),r.tipo_falla);
+      p=w.p;origen='tabla';motivos.push(w.et+' +'+w.p);
+      if(r.prioridad==='critico'){extra+=2;motivos.push('crítica +2');}
+      else if(r.prioridad==='alta'){extra+=1;motivos.push('alta +1');}
+      if(r.equipo_parado){extra+=1;motivos.push('destrabó parada +1');}
+    }
     M.trabajo+=p;M.urgencia+=extra;M.total+=p+extra;
-    M.lineas.push({tit:(r.tipo_equipo||'—')+' '+(r.numero_unidad||''),det:motivos.join(' · '),pts:'+'+(p+extra)});
+    if(origen==='tabla')M.sinAnalizar=(M.sinAnalizar||0)+1;
+    if(origen==='ia'&&r.puntos_ia_confianza==='baja')M.flojas=(M.flojas||0)+1;
+    M.lineas.push({tit:(r.tipo_equipo||'—')+' '+(r.numero_unidad||''),det:motivos.join(' · '),
+      pts:'+'+(p+extra),origen,motivoIA:r.puntos_ia_motivo||'',conf:r.puntos_ia_confianza||'',id:r.id});
   });
   // Descuento por dormidas (presente, no del mes)
   Object.entries(dormidas).forEach(([m,ds])=>{
@@ -2181,9 +2239,12 @@ async function vRepPerf(view){
     const detalle=!abierto?'':`
       <div style="border-top:1px solid var(--linea);margin-top:10px;padding-top:10px">
         <div class="field-l" style="margin-bottom:6px">Por qué ${f.M.total} puntos</div>
-        ${f.M.lineas.map(l=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--linea);font-size:12px">
-          <div><b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span></div>
-          <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}</b></div>`).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
+        ${f.M.lineas.map(l=>{
+          const marca=l.origen==='ia'?(l.conf==='baja'?'<span title="Analizada con pocos datos">🤖⚠</span> ':'🤖 ')
+            :l.origen==='manual'?'✏️ ':l.origen==='tabla'?'<span title="Todavía sin analizar: puntúa por la tabla de pesos" style="opacity:.7">📋</span> ':'';
+          return `<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--linea);font-size:12px">
+          <div>${marca}<b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span>${l.motivoIA?`<div class="sub" style="font-size:11px;opacity:.85;padding-left:2px">${String(l.motivoIA).replace(/</g,'&lt;')}</div>`:''}</div>
+          <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}${l.id?` <button class="btn-salir" style="padding:1px 6px;font-size:10px;font-weight:400" onclick="event.stopPropagation();editarPuntaje('${l.id}','${String(l.pts||'').replace('+','')}')" title="Corregir el puntaje a mano">✏️</button>`:''}</b></div>`;}).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
         ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
           ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0" onclick="event.stopPropagation()">
             <div style="display:flex;gap:8px;align-items:center">
@@ -2199,7 +2260,7 @@ async function vRepPerf(view){
             <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
             ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
           </div>`).join('')}`:''}
-        <div class="sub" style="font-size:11px;margin-top:8px">Puntos = horas de taller estimadas (equipo × falla): 2T chica 1-4 · media 1-6 · grande 2-8 · vehículo 2-8. Extras: crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
+        <div class="sub" style="font-size:11px;margin-top:8px">🤖 Cada reparación se analiza al finalizarla: criticidad, falla, lo que hizo el taller y los repuestos → <b>1 punto ≈ 1 hora de mano de obra</b> (la espera de repuestos no cuenta). ✏️ podés corregir cualquier puntaje a mano. 📋 = sin analizar todavía, puntúa por la tabla de pesos. Aparte: preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
       </div>`;
     return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
@@ -2237,6 +2298,12 @@ async function vRepPerf(view){
       ${meses.map(m=>`<option value="${m}" ${m===perfPer?'selected':''}>${mesStk(m)}</option>`).join('')}
     </select></div>
   ${tabsRep()}
+  ${(()=>{const sa=filas.reduce((a,f)=>a+(f.M.sinAnalizar||0),0),fl=filas.reduce((a,f)=>a+(f.M.flojas||0),0);
+    if(!sa&&!fl)return '';
+    return `<div class="aviso-amarillo" style="margin-bottom:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="flex:1">${sa?`<b>${sa}</b> reparación/es todavía sin analizar (puntúan por la tabla de pesos). `:''}${fl?`<b>${fl}</b> se analizaron con pocos datos 🤖⚠ — conviene que el taller cargue qué hizo.`:''}</span>
+      ${sa?`<button class="btn" style="padding:5px 12px;font-size:12px" onclick="event.stopPropagation();recalcularPuntajes()">🤖 Analizar pendientes</button>`:''}
+    </div>`;})()}
   <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> (provisorio — se ajusta con 2-3 meses de datos) · para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
   ${cards||'<div class="empty" style="height:200px"><div>Sin reparaciones finalizadas en el período.</div></div>'}`;
 }
@@ -2875,7 +2942,7 @@ function renderReparaciones(view){
   const filas=filtrada.map((r,ix)=>{
     const idx=EST_REP.indexOf(r.estado);
     return `<tr onclick="selRep(${ix})" data-ix="${ix}">
-      <td><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span></td>
+      <td style="${r.prioridad==='critico'?'box-shadow:inset 3px 0 0 var(--rojo)':''}">${prioBadge(r.prioridad)}</td>
       <td><div style="font-weight:500">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}${r.tipo_mant==='preventivo'?' <span class="badge b-green" style="font-size:9.5px;padding:2px 7px;vertical-align:1px">PREV</span>':''}</div><div class="sub">${r.equipos&&r.equipos.codigo?r.equipos.codigo:''}</div></td>
       <td>${r.numero_unidad?'<span class="uni-num">'+r.numero_unidad+'</span>':'<span class="sub">—</span>'}</td>
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
@@ -2930,7 +2997,7 @@ function selRep(ix){
     <div class="side-title">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}</div>
     ${r.reclamada?`<div style="background:var(--diesel-soft);border:1px solid var(--diesel);border-radius:8px;padding:8px 11px;margin:8px 0;font-size:12px;color:#854F0B"><b>⏰ Reclamada por ${r.reclamada_por||'supervisor'}</b>${r.reclamada_at?' · '+fechaAR(r.reclamada_at):''}<div class="sub" style="margin-top:2px">El supervisor del objetivo pide apurar esta reparación.</div></div>`:''}
     <div class="side-meta">${r.objetivos?r.objetivos.nombre:'Taller / sin objetivo'} · ${r.capataces?r.capataces.nombre:(r.origen==='app'?'Alta del mecánico':'Alta del panel')}</div>
-    <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge ${PRIO_BADGE[r.prioridad]||'b-gray'}">${cap(r.prioridad)}</span>
+    <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${prioBadge(r.prioridad)}
       <span class="badge ${r.tipo_mant==='preventivo'?'b-green':'b-gray'}">${r.tipo_mant==='preventivo'?'PREVENTIVO':'CORRECTIVO'}</span>
       <button class="mini-btn" style="font-size:10.5px" title="Cambiar tipo de mantenimiento" onclick="cambiarTipoRep('${r.id}','${r.tipo_mant==='preventivo'?'correctivo':'preventivo'}')">⇄ ${r.tipo_mant==='preventivo'?'pasar a correctivo':'pasar a preventivo'}</button></div>
     <div class="field-l" style="margin-bottom:6px">Descripción</div>
@@ -4488,7 +4555,7 @@ function renderRt(){
     const parcial=!done&&nComp>0&&nComp<its.length;
     return `<div class="panel" style="margin-bottom:10px;${done?'opacity:.62':''}">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span class="badge ${PRIO_BADGE[inc.prioridad]||'b-gray'}">${cap(inc.prioridad||'—')}</span>
+        ${prioBadge(inc.prioridad)}
         <span style="font-weight:700;font-size:13.5px">${eq}</span>
         <span class="sub" style="font-size:12px">${inc.objetivos?inc.objetivos.nombre:''}</span>
         <div style="flex:1"></div>
