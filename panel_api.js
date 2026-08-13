@@ -3924,6 +3924,62 @@ router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
   }
 });
 
+// Cargar/editar a mano el stock de un objetivo desde el panel, sin esperar la
+// respuesta del capataz por WhatsApp. Reemplaza los ítems del censo del
+// período y lo marca respondido.
+// Columnas reales de censos_stock_items: censo_id, tipo_equipo, cantidad,
+// numeros (array), observacion. NO se toca `origen` (parece acotado a los
+// valores que escribe el bot) ni se siembra el inventario: para eso está el
+// botón "Sembrar desde el censo" de la solapa Inventario.
+router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
+  try {
+    const entrada = Array.isArray(req.body && req.body.items) ? req.body.items : null;
+    if (!entrada) return res.status(422).json({ error: 'Faltan los equipos' });
+
+    const items = [];
+    for (const i of entrada) {
+      const tipo = String((i && i.tipo) || '').trim();
+      if (!tipo) continue;                       // fila vacía: se ignora
+      const numeros = Array.isArray(i.numeros)
+        ? i.numeros.map(n => String(n).trim()).filter(Boolean)
+        : String(i.numeros || '').split(/[,;\s]+/).map(n => n.trim()).filter(Boolean);
+      let cantidad = parseInt(i.cantidad) || 0;
+      // Si enumeró máquinas, mandan los números: es lo verificable.
+      if (numeros.length && cantidad < numeros.length) cantidad = numeros.length;
+      if (!cantidad) cantidad = numeros.length || 1;
+      items.push({ tipo_equipo: tipo, cantidad, numeros, observacion: (i.observacion || '').trim() || null });
+    }
+    if (!items.length) return res.status(422).json({ error: 'Cargá al menos un equipo' });
+
+    const { data: censo, error: eC } = await supabase
+      .from('censos_stock').select('id, periodo, objetivo_id, objetivos(nombre)')
+      .eq('id', req.params.id).maybeSingle();
+    if (eC) throw eC;
+    if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
+
+    const { error: eD } = await supabase
+      .from('censos_stock_items').delete().eq('censo_id', censo.id);
+    if (eD) throw eD;
+
+    const { error: eI } = await supabase.from('censos_stock_items')
+      .insert(items.map(i => Object.assign({ censo_id: censo.id }, i)));
+    if (eI) throw eI;
+
+    const { error: eU } = await supabase.from('censos_stock')
+      .update({ estado: 'respondido', respondido_at: new Date().toISOString() })
+      .eq('id', censo.id);
+    if (eU) throw eU;
+
+    const total = items.reduce((s2, i) => s2 + i.cantidad, 0);
+    console.log(`[stock] carga manual desde panel · ${censo.objetivos ? censo.objetivos.nombre : censo.objetivo_id} · ` +
+      `${censo.periodo} · ${items.length} tipos, ${total} equipos · por ${req.usuario || '?'}`);
+    res.json({ ok: true, tipos: items.length, equipos: total });
+  } catch (err) {
+    console.error('cargar stock manual:', err);
+    res.status(500).json({ error: 'No pude guardar el stock' });
+  }
+});
+
 // Borrar la respuesta de un censo (los equipos informados) y dejarlo
 // pendiente otra vez. Pensado para limpiar pruebas sin tocar la base.
 // No elimina la fila del censo: si se borrara, el objetivo desaparecería
