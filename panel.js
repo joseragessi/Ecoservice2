@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · detalle + borrar + carga manual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · stock + rebotes por falla';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1920,6 +1920,25 @@ let perfPer='', perfOpen=null;   // mes filtrado y card expandida
 // Candado extra: los mecánicos también entran al panel, así que además de ser
 // admin la vista pide el PIN de súper admin (env PERFORMANCE_PIN en Railway).
 // El OK dura lo que dure la pestaña del navegador (sessionStorage).
+/* La vuelta no es atribuible al arreglo anterior (volvió por otra cosa).
+   Se marca en la incidencia de la vuelta y deja de contar contra la calidad. */
+async function descartarRebote(id){
+  const motivo=prompt('¿Por qué no cuenta? (opcional — ej: "volvió por pistón, entró por trinquete")')
+  if(motivo===null)return;
+  try{
+    await api('/api/reparaciones/'+id+'/rebote',{method:'POST',body:JSON.stringify({descartar:true,motivo})});
+    toast('Listo, esa vuelta ya no cuenta contra la calidad');
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude guardar: '+e.message,'error');}
+}
+async function restaurarRebote(id){
+  try{
+    await api('/api/reparaciones/'+id+'/rebote',{method:'POST',body:JSON.stringify({descartar:false})});
+    toast('Restaurado · vuelve a contar');
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude guardar: '+e.message,'error');}
+}
+
 async function perfValidarPin(){
   const inp=document.getElementById('perf-pin'),msg=document.getElementById('perf-pin-msg');
   const pin=inp?inp.value:'';
@@ -1964,12 +1983,37 @@ async function vRepPerf(view){
   // 90 días cuya unidad volvió como correctivo dentro de los 30 días siguientes.
   const hoy=Date.now(), MS90=90*86400000, MS30=30*86400000;
   const base90=fin.filter(r=>!esPrev(r)&&normU(r.numero_unidad)&&hoy-new Date(r.fecha_finalizado).getTime()<=MS90);
-  const rebotes={};   // mecánico → [{eq,uni,dias}]
+  // Una vuelta cuenta contra la calidad SOLO si puede ser el mismo problema.
+  // Si las DOS fallas son específicas y DISTINTAS (entró por trinquete,
+  // volvió por pistón), no es atribuible al arreglo → se descarta sola.
+  // Las genéricas ("Otro", "Ingreso taller"…) no permiten comparar: cuentan,
+  // y José puede descartarlas a mano (rebote_descartado en la vuelta).
+  const FALLA_GENERICA=['','otro','ingreso taller','preventivo','service / mantenimiento','service/mantenimiento'];
+  const normFalla=v=>String(v||'').toLowerCase().trim();
+  const fallaEspecifica=v=>!FALLA_GENERICA.includes(normFalla(v));
+  const rebotes={};      // mecánico → [{eq,uni,dias,idVuelta,fallaBase,fallaVuelta}] · cuentan
+  const descartes={};    // mecánico → los que NO cuentan, para mostrarlos igual
   base90.forEach(f=>{
     const k=normU(f.numero_unidad), ff=new Date(f.fecha_finalizado).getTime();
-    const vuelta=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
-      .map(o=>new Date(o.created_at).getTime()).filter(c=>c>ff&&c-ff<=MS30).sort((a,b)=>a-b)[0];
-    if(vuelta){const m=nomMec(f)||'Sin asignar';(rebotes[m]=rebotes[m]||[]).push({eq:f.tipo_equipo||'—',uni:f.numero_unidad||'',dias:Math.round((vuelta-ff)/86400000)});}
+    const m=nomMec(f)||'Sin asignar';
+    const cands=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
+      .map(o=>({o,c:new Date(o.created_at).getTime()}))
+      .filter(x=>x.c>ff&&x.c-ff<=MS30).sort((a,b)=>a.c-b.c);
+    let contado=false;
+    for(const x of cands){
+      const base={eq:f.tipo_equipo||'—',uni:f.numero_unidad||'',dias:Math.round((x.c-ff)/86400000),
+        idVuelta:x.o.id,fallaBase:f.tipo_falla||'',fallaVuelta:x.o.tipo_falla||''};
+      if(x.o.rebote_descartado){
+        (descartes[m]=descartes[m]||[]).push(Object.assign({por:'manual',motivo:x.o.rebote_motivo||''},base));
+        continue;
+      }
+      if(fallaEspecifica(f.tipo_falla)&&fallaEspecifica(x.o.tipo_falla)&&normFalla(f.tipo_falla)!==normFalla(x.o.tipo_falla)){
+        (descartes[m]=descartes[m]||[]).push(Object.assign({por:'auto'},base));
+        continue;
+      }
+      (rebotes[m]=rebotes[m]||[]).push(base);
+      contado=true;break;   // como antes: un rebote por reparación base
+    }
   });
   const base90PorMec={};
   base90.forEach(f=>{const m=nomMec(f)||'Sin asignar';base90PorMec[m]=(base90PorMec[m]||0)+1;});
@@ -2045,7 +2089,15 @@ async function vRepPerf(view){
           <div><b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span></div>
           <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}</b></div>`).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
         ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
-          ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0">↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d</div>`).join('')}`:''}
+          ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center">
+            <span style="flex:1">↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d${x.fallaBase?` · <span title="Falla de entrada de las dos reparaciones">${x.fallaBase} → ${x.fallaVuelta||'s/falla'}</span>`:''}</span>
+            <button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="descartarRebote('${x.idVuelta}')" title="La vuelta no es atribuible a este arreglo">No atribuir</button>
+          </div>`).join('')}`:''}
+        ${(descartes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Vueltas que NO cuentan</div>
+          ${descartes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center;opacity:.75">
+            <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
+            ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
+          </div>`).join('')}`:''}
         <div class="sub" style="font-size:11px;margin-top:8px">Puntos: pesado 5 · mediano 3 · liviano 1 · crítica +2 · alta +1 · destrabó parada +1 · preventivo +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
       </div>`;
     return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
