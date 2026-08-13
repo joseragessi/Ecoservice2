@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · detalle-stock + borrar censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · detalle + borrar + carga manual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1696,7 +1696,8 @@ function selCenso(id){
     <div class="divider"></div>
     ${c.estado!=='respondido'
       ?`<div class="aviso-amarillo" style="margin:0 0 10px">Sin respuesta todavía. El pedido se mandó por WhatsApp${c.reenviado_at?' (último reenvío '+horaStk(c.reenviado_at)+')':''}.</div>
-        <button class="btn" style="width:100%" onclick="reenviarStock('${c.id}')">↻ Reenviar pedido</button>`
+        <button class="btn" style="width:100%" onclick="reenviarStock('${c.id}')">↻ Reenviar pedido</button>
+        <button class="btn-salir" style="width:100%;margin-top:6px" onclick="cargarStockManual('${c.id}')">✏️ Cargarlo yo</button>`
       :items.length?items.map(i=>`
         <div class="queue-item" style="margin-bottom:8px">
           <div style="flex:1"><div style="font-weight:600;font-size:12.5px">${i.tipo_equipo}</div>
@@ -1704,13 +1705,77 @@ function selCenso(id){
           <div class="mono" style="font-size:15px;font-weight:600">${i.cantidad}</div>
         </div>`).join('')
       :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}
-    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px;color:var(--rojo)"
+    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px" onclick="cargarStockManual('${c.id}')">✏️ Editar el stock</button>
+      <button class="btn-salir" style="width:100%;margin-top:6px;color:var(--rojo)"
       onclick="borrarCenso('${c.id}')">🗑 Borrar esta respuesta</button>`:''}
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Histórico</div>
     <div id="stk-hist"><div class="sub">Cargando…</div></div>`;
   cargarHistorico(c.objetivo_id);
 }
+/* Cargar el stock de un objetivo a mano, sin esperar al capataz.
+   Filas libres: tipo (con sugerencias de los tipos ya usados), cantidad,
+   números y observación. Si el censo ya tenía respuesta, la precarga para
+   corregirla. */
+function stockTiposConocidos(){
+  const t=new Set();
+  (stockData&&stockData.censos||[]).forEach(c=>(c.censos_stock_items||[]).forEach(i=>{if(i.tipo_equipo)t.add(i.tipo_equipo);}));
+  ['Motoguadaña','Motosierra','Extensible','Sopladora','Mini tractor / Giro cero','Tractor','Hidrolavadora','Cortadora de pasto','Pala','Carro / Remolque']
+    .forEach(x=>t.add(x));
+  return [...t].sort();
+}
+function filaStockManual(i){
+  return `<div class="cs-fila" style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start">
+    <input class="busca cs-tipo" list="cs-tipos" placeholder="Tipo de equipo" style="flex:2;min-width:0" value="${(i&&i.tipo_equipo||'').replace(/"/g,'&quot;')}">
+    <input class="busca cs-cant" type="number" min="0" placeholder="Cant." style="width:70px" value="${i?i.cantidad:''}">
+    <input class="busca cs-nums" placeholder="N° 12, 15, 21" style="flex:2;min-width:0" value="${((i&&i.numeros||[]).join(', ')).replace(/"/g,'&quot;')}">
+    <input class="busca cs-obs" placeholder="Observación" style="flex:2;min-width:0" value="${(i&&i.observacion||'').replace(/"/g,'&quot;')}">
+    <button class="btn-salir" style="padding:6px 9px;color:var(--rojo)" onclick="this.closest('.cs-fila').remove()" title="Quitar">✕</button>
+  </div>`;
+}
+function cargarStockManual(id){
+  const d=stockData;const c=d&&d.censos.find(x=>String(x.id)===String(id));if(!c)return;
+  const items=c.censos_stock_items||[];
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:820px">
+    <h3>Stock de ${c.objetivos?c.objetivos.nombre:'—'}</h3>
+    <div class="sub" style="font-size:12.5px;margin-bottom:12px">Cargalo vos, sin esperar la respuesta del capataz. Si ponés los números, la cantidad se ajusta sola.</div>
+    <datalist id="cs-tipos">${stockTiposConocidos().map(t=>`<option value="${String(t).replace(/"/g,'&quot;')}">`).join('')}</datalist>
+    <div id="cs-filas" style="max-height:340px;overflow:auto">${items.length?items.map(filaStockManual).join(''):filaStockManual(null)}</div>
+    <button class="btn-salir" style="margin-top:4px" id="cs-add">＋ Agregar equipo</button>
+    <div class="modal-acciones">
+      <button class="btn ghost" id="cs-no">Cancelar</button>
+      <button class="btn" id="cs-si">Guardar</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#cs-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  bg.querySelector('#cs-add').onclick=()=>{
+    bg.querySelector('#cs-filas').insertAdjacentHTML('beforeend',filaStockManual(null));
+    bg.querySelector('#cs-filas').scrollTop=bg.querySelector('#cs-filas').scrollHeight;
+  };
+  bg.querySelector('#cs-si').onclick=async()=>{
+    const filas=[...bg.querySelectorAll('.cs-fila')].map(f=>({
+      tipo:f.querySelector('.cs-tipo').value.trim(),
+      cantidad:f.querySelector('.cs-cant').value,
+      numeros:f.querySelector('.cs-nums').value,
+      observacion:f.querySelector('.cs-obs').value,
+    })).filter(f=>f.tipo);
+    if(!filas.length){toast('Cargá al menos un equipo','error');return;}
+    const btn=bg.querySelector('#cs-si');btn.disabled=true;btn.textContent='Guardando…';
+    try{
+      const r=await api('/api/stock/censo/'+id+'/items',{method:'POST',body:JSON.stringify({items:filas})});
+      cerrar();
+      toast(`Guardado · ${r.equipos} equipo${r.equipos===1?'':'s'} en ${r.tipos} tipo${r.tipos===1?'':'s'}`);
+      go('stock');
+    }catch(e){
+      btn.disabled=false;btn.textContent='Guardar';
+      toast('No pude guardar: '+e.message,'error');
+    }
+  };
+}
+
 /* Borra lo que informó el capataz y deja el censo pendiente otra vez.
    Sirve para limpiar pruebas. No borra la fila del censo: si desapareciera,
    el objetivo saldría del listado del período y no se le podría reenviar. */
