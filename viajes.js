@@ -38,12 +38,60 @@ function resumenParadas(paradas) {
   return paradas.map(p => `  • ${p.objetivo_nombre} — ${p.bateas} batea${p.bateas === 1 ? '' : 's'}`).join('\n');
 }
 
+// Normaliza un nombre para comparar: minúsculas, sin acentos, solo letras y
+// números. Tiene que dar EXACTAMENTE lo mismo que normObjetivo() en
+// panel_api.js — los alias se guardan con este formato.
+function normObjetivo(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Resuelve el texto que escribió el chofer contra un objetivo real.
+// Orden: alias exacto → nombre exacto → una sola candidata parcial.
+// Si hay VARIAS candidatas no elige ninguna: antes se quedaba con la primera
+// sin avisar (escribir "caminos" caía en cualquiera de los tres Caminos de
+// las Sierras). Sin match, la parada se guarda como texto libre y se corrige
+// desde el panel de Bateas.
+function resolverObjetivo(nombreTxt, objetivos, aliasMap) {
+  const nt = normObjetivo(nombreTxt);
+  if (!nt) return null;
+
+  const porAlias = aliasMap[nt];
+  if (porAlias) return porAlias;
+
+  const exacto = (objetivos || []).find(o => normObjetivo(o.nombre) === nt);
+  if (exacto) return exacto;
+
+  const parciales = (objetivos || []).filter(o => {
+    const no = normObjetivo(o.nombre);
+    return no.includes(nt) || nt.includes(no);
+  });
+  return parciales.length === 1 ? parciales[0] : null;
+}
+
 // Parsea una línea tipo "chacras 2, deposito 1, cañuelas 2" → paradas.
 // Separa por comas o saltos de línea; en cada tramo, el número final es la
 // cantidad y el resto es el objetivo. Devuelve { paradas, noReconocidos }.
 async function parsearBateas(texto) {
   const { data: objetivos } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
-  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // Alias aprendidos desde el panel ("ucc" → UNIVERSIDAD CATOLICA DE CORDOBA).
+  // Si la tabla todavía no existe, se sigue sin alias: nunca frena una carga.
+  const aliasMap = {};
+  try {
+    const { data: alias } = await supabase
+      .from('objetivos_alias').select('alias, objetivo_id, objetivos(nombre)');
+    (alias || []).forEach(a => {
+      if (a.objetivo_id && a.objetivos) {
+        aliasMap[a.alias] = { id: a.objetivo_id, nombre: a.objetivos.nombre };
+      }
+    });
+  } catch (e) {
+    console.log('[bateas] sin tabla objetivos_alias todavía:', e.message);
+  }
+
   const tramos = String(texto).split(/[,\n;]+/).map(t => t.trim()).filter(Boolean);
   const paradas = [], noReconocidos = [];
   for (const tramo of tramos) {
@@ -53,11 +101,13 @@ async function parsearBateas(texto) {
     const nombreTxt = m[1].trim();
     const cant = parseInt(m[2], 10);
     if (!cant || cant <= 0) { noReconocidos.push(tramo); continue; }
-    const nt = norm(nombreTxt);
-    const match = (objetivos || []).find(o => { const no = norm(o.nombre); return no.includes(nt) || nt.includes(no); });
+    const match = resolverObjetivo(nombreTxt, objetivos, aliasMap);
     paradas.push({
       objetivo_id: match ? match.id : null,
       objetivo_nombre: match ? match.nombre : nombreTxt,
+      // Lo que escribió el chofer, tal cual. Es lo que después se convierte
+      // en alias cuando José corrige la parada desde el panel.
+      texto_original: nombreTxt,
       bateas: cant,
       reconocido: !!match,
     });
@@ -174,6 +224,8 @@ async function guardarViaje(d) {
 }
 
 module.exports = {
+  normObjetivo,
+  resolverObjetivo,
   iniciarViajes: ses.conPersistencia('viajes', sesiones, iniciarViajes),
   continuarViajes: ses.conPersistencia('viajes', sesiones, continuarViajes),
   tieneSesionViajes,
