@@ -1439,21 +1439,30 @@ CÓMO ESTIMAR
 Devolvé SOLO un objeto JSON, sin texto antes ni después y sin markdown:
 {"horas": number, "confianza":"alta"|"media"|"baja", "motivo":"una frase corta en criollo explicando de dónde sale la estimación"}`;
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: MODEL_FACTURAS, max_tokens: 400, messages: [{ role: 'user', content: prompt }] }),
-  });
-  if (!resp.ok) throw new Error(`API Claude ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-  const data = await resp.json();
-  const crudo = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
-    .replace(/```json/gi, '').replace(/```/g, '').trim();
-  let parsed = null;
-  try { parsed = JSON.parse(crudo); } catch (e) {
-    const a = crudo.indexOf('{'), b = crudo.lastIndexOf('}');
-    if (a >= 0 && b > a) { try { parsed = JSON.parse(crudo.slice(a, b + 1)); } catch (e2) { /* nada */ } }
+  // Primero el modelo rápido (3-6s en vez de 10-20s). Solo si no sirve se
+  // reintenta con el grande: en un lote de 40 la diferencia son minutos.
+  const pedir = async modelo => {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: modelo, max_tokens: 400, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!resp.ok) throw new Error(`API Claude ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+    const data = await resp.json();
+    const crudo = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+      .replace(/```json/gi, '').replace(/```/g, '').trim();
+    try { return JSON.parse(crudo); } catch (e) {
+      const a = crudo.indexOf('{'), b = crudo.lastIndexOf('}');
+      if (a >= 0 && b > a) { try { return JSON.parse(crudo.slice(a, b + 1)); } catch (e2) { /* nada */ } }
+    }
+    return null;
+  };
+  let parsed = null, ultimo = null;
+  for (const modelo of [MODEL_FACTURAS_RAPIDO, MODEL_FACTURAS]) {
+    try { parsed = await pedir(modelo); } catch (e) { ultimo = e; parsed = null; }
+    if (parsed && parsed.horas != null) break;
   }
-  if (!parsed || parsed.horas == null) throw new Error('la IA no devolvió una estimación legible');
+  if (!parsed || parsed.horas == null) throw new Error(ultimo ? ultimo.message : 'la IA no devolvió una estimación legible');
 
   const horas = Number(parsed.horas) || 0;
   const puntos = Math.min(PUNTOS_MAX, Math.max(PUNTOS_MIN, Math.round(horas)));
@@ -1508,12 +1517,20 @@ router.post('/api/reparaciones/puntaje-lote', auth, async (req, res) => {
     const { data, error } = await q;
     if (error) throw error;
 
+    // De a 5 en paralelo: 40 incidencias pasan de ~5 min a menos de 1.
+    // Más concurrencia que esto empieza a comerse el rate limit de la API.
+    const CONCURRENCIA = 5;
     let ok = 0, fallaron = 0, ultimoError = null;
-    for (const r of (data || [])) {
-      try { await analizarPuntaje(r.id); ok++; }
-      catch (e) { fallaron++; ultimoError = e.message || String(e); }
+    const pendientes = (data || []).slice();
+    const t0 = Date.now();
+    while (pendientes.length) {
+      const tanda = pendientes.splice(0, CONCURRENCIA);
+      await Promise.all(tanda.map(async r => {
+        try { await analizarPuntaje(r.id); ok++; }
+        catch (e) { fallaron++; ultimoError = e.message || String(e); }
+      }));
     }
-    console.log(`[puntaje] lote: ${ok} analizadas, ${fallaron} fallaron`);
+    console.log(`[puntaje] lote de ${ok + fallaron} en ${Math.round((Date.now() - t0) / 1000)}s`);
     res.json({ analizadas: ok, fallaron, pendientes: Math.max(0, (data || []).length - ok - fallaron), error: ultimoError });
   } catch (err) {
     console.error('puntaje-lote:', err);
