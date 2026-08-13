@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · puntaje analizado + prioridad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-13 · informe por mecánico';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1974,6 +1974,91 @@ let perfPer='', perfOpen=null;   // mes filtrado y card expandida
 // Candado extra: los mecánicos también entran al panel, así que además de ser
 // admin la vista pide el PIN de súper admin (env PERFORMANCE_PIN en Railway).
 // El OK dura lo que dure la pestaña del navegador (sessionStorage).
+/* Informe imprimible de un mecánico: una ficha por incidencia con lo que
+   hizo, los repuestos, el puntaje y por qué. Se abre en una ventana y se
+   imprime — desde ahí "Guardar como PDF". Sin librerías en el panel. */
+function informeMecanico(nombre){
+  const todas=repData||[];
+  const mesDeF=r=>r.fecha_finalizado?String(r.fecha_finalizado).slice(0,7):'';
+  const suyas=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado
+    &&mesDeF(r)===perfPer&&(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===nombre)
+    .sort((a,b)=>String(a.fecha_finalizado).localeCompare(String(b.fecha_finalizado)));
+  if(!suyas.length){toast('No tiene reparaciones finalizadas en el mes','error');return;}
+
+  const esc=v=>String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const fecha=d=>d?String(d).slice(0,10).split('-').reverse().join('/'):'—';
+  const total=suyas.reduce((a,r)=>a+(r.puntos_manual!=null?Number(r.puntos_manual):r.puntos_ia!=null?Number(r.puntos_ia):0),0);
+
+  const fichas=suyas.map((r,i)=>{
+    const pts=r.puntos_manual!=null?Number(r.puntos_manual):r.puntos_ia!=null?Number(r.puntos_ia):null;
+    const coms=(r.comentarios_incidencias||[]).map(c=>`<li><b>${esc(c.mecanico_nombre||'?')}:</b> ${esc(c.texto)}</li>`).join('');
+    const reps=(r.repuestos_taller||[]).map(x=>(Array.isArray(x.items)?x.items:[]).map(i=>i.descripcion||i.nombre||'').filter(Boolean).join(', ')).filter(Boolean).join(' · ');
+    const dias=r.created_at&&r.fecha_finalizado?Math.round((new Date(r.fecha_finalizado)-new Date(r.created_at))/86400000):null;
+    return `<div class="ficha">
+      <div class="fh"><span class="num">${i+1}</span>
+        <span class="eq">${esc(r.tipo_equipo||'—')} ${esc(r.numero_unidad||'')}</span>
+        <span class="prio p-${esc(r.prioridad||'')}">${esc(r.prioridad||'—')}</span>
+        ${r.equipo_parado?'<span class="parada">máquina parada</span>':''}
+        <span class="pts">${pts!=null?pts+' pts':'—'}</span></div>
+      <table class="datos">
+        <tr><th>Objetivo</th><td>${esc(r.objetivos?r.objetivos.nombre:'—')}</td>
+            <th>Capataz</th><td>${esc(r.capataces?r.capataces.nombre:'—')}</td></tr>
+        <tr><th>Falla</th><td>${esc(r.tipo_falla||'sin especificar')}</td>
+            <th>Ingresó / salió</th><td>${fecha(r.created_at)} → ${fecha(r.fecha_finalizado)}${dias!=null?` (${dias} d)`:''}</td></tr>
+      </table>
+      ${r.descripcion?`<p class="desc"><b>Reportó:</b> ${esc(r.descripcion)}</p>`:''}
+      <div class="bloque"><b>Qué se hizo</b>${coms?`<ul>${coms}</ul>`:'<p class="vacio">Sin comentarios cargados por el taller.</p>'}</div>
+      ${reps?`<p class="reps"><b>Repuestos:</b> ${esc(reps)}</p>`:''}
+      ${r.puntos_ia_motivo?`<p class="analisis"><b>Puntaje:</b> ${esc(r.puntos_ia_motivo)}${r.puntos_ia_horas!=null?` · ${Math.round(Number(r.puntos_ia_horas)*10)/10} h estimadas`:''}${r.puntos_ia_confianza?` · confianza ${esc(r.puntos_ia_confianza)}`:''}${r.puntos_manual!=null?' · <i>corregido a mano</i>':''}</p>`:''}
+      <div class="firma"><span>Comentarios de la charla:</span><div class="lineas"></div></div>
+    </div>`;}).join('');
+
+  const w=window.open('','_blank');
+  if(!w){toast('El navegador bloqueó la ventana — permití pop-ups','error');return;}
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Informe ${esc(nombre)} · ${mesStk(perfPer)}</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;margin:0;padding:26px 30px;background:#fff}
+    h1{font-size:21px;margin:0 0 2px}
+    .sub{color:#666;font-size:12.5px;margin-bottom:14px}
+    .resumen{background:#f4f7f4;border-left:4px solid #2f7d4f;padding:9px 13px;margin-bottom:18px;font-size:13px}
+    .ficha{border:1px solid #ddd;border-radius:7px;padding:11px 13px;margin-bottom:11px;page-break-inside:avoid}
+    .fh{display:flex;align-items:center;gap:9px;flex-wrap:wrap;border-bottom:1px solid #eee;padding-bottom:7px;margin-bottom:8px}
+    .num{background:#eee;border-radius:50%;width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+    .eq{font-weight:700;font-size:14px;flex:1}
+    .pts{font-weight:700;font-size:15px;color:#2f7d4f}
+    .prio{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:9px;background:#eee}
+    .p-critico{background:#c0392b;color:#fff;font-weight:700}
+    .p-alta{background:#fdf0dc;color:#9a6212;border:1px solid #d99000;font-weight:700}
+    .p-media{background:#e8eff8;color:#31618f}
+    .p-baja{background:#eaf3ec;color:#2f7d4f}
+    .parada{font-size:10.5px;color:#c0392b;border:1px solid #c0392b;padding:1px 6px;border-radius:9px}
+    table.datos{width:100%;border-collapse:collapse;margin-bottom:6px}
+    table.datos th{text-align:left;color:#777;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;padding:2px 8px 2px 0;width:1%;white-space:nowrap;vertical-align:top}
+    table.datos td{padding:2px 16px 2px 0;font-size:12.5px;vertical-align:top}
+    .desc{margin:5px 0;font-size:12.5px}
+    .bloque{margin:7px 0}
+    .bloque b{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:#777}
+    .bloque ul{margin:3px 0 0;padding-left:18px;font-size:12.5px}
+    .vacio{color:#b00;font-size:12.5px;margin:3px 0 0;font-style:italic}
+    .reps,.analisis{font-size:12.5px;margin:5px 0 0}
+    .analisis{color:#555;background:#fafafa;padding:5px 8px;border-radius:5px}
+    .firma{margin-top:9px;border-top:1px dashed #ccc;padding-top:6px;font-size:11px;color:#888}
+    .lineas{height:34px;border-bottom:1px solid #ddd}
+    @media print{body{padding:12px}.ficha{border-color:#ccc}}
+  </style></head><body>
+  <h1>${esc(nombre)}</h1>
+  <div class="sub">Informe de reparaciones · ${mesStk(perfPer)} · EcoService</div>
+  <div class="resumen"><b>${suyas.length} reparaciones finalizadas</b> · ${total} puntos ·
+    1 punto ≈ 1 hora de mano de obra. El puntaje sale de la criticidad, la falla, lo que se cargó
+    que se hizo y los repuestos pedidos.</div>
+  ${fichas}
+  <div class="sub" style="margin-top:16px">Generado el ${new Date().toLocaleDateString('es-AR')} desde EcoService Gestión.</div>
+  </body></html>`);
+  w.document.close();
+  setTimeout(()=>{try{w.print();}catch(e){}},400);
+}
+
 /* Corregir a mano el puntaje de una reparación. Manda sobre el de la IA. */
 async function editarPuntaje(id,actual){
   const v=prompt('Puntos de esta reparación (1 punto ≈ 1 hora de taller).\nDejalo vacío para volver al análisis automático:',actual||'');
@@ -2271,7 +2356,8 @@ async function vRepPerf(view){
             <div class="sub" style="font-size:11px">${f.M.nFin} finalizada${f.M.nFin===1?'':'s'}${f.M.nPrev?' · '+f.M.nPrev+' preventivo'+(f.M.nPrev===1?'':'s'):''} · ${abierto?'▲ cerrar detalle':'▼ ver por qué'}</div></div>
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div class="mono" style="font-weight:700;font-size:20px">${f.M.total} pts</div>${estado}</div>
+          <div class="mono" style="font-weight:700;font-size:20px">${f.M.total} pts</div>${estado}
+          <button class="btn-salir" style="padding:3px 9px;font-size:11px;margin-top:5px" onclick="event.stopPropagation();informeMecanico('${String(f.n).replace(/'/g,"\\'")}')" title="Informe imprimible para hablar con el mecánico">📄 Informe</button></div>
       </div>
       <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${barra}%;background:${colBarra};border-radius:3px"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-2);flex-wrap:wrap;gap:4px">
