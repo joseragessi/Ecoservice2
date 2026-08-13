@@ -888,7 +888,22 @@ async function vBateas(view){
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
     </div>
-    <div class="panel" style="margin-bottom:16px"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo</div>
+    ${(ind.sin_objetivo||[]).length?`
+    <div class="panel" style="margin-bottom:14px;border-left:3px solid var(--ambar,#d99000)">
+      <div class="panel-title" style="margin-bottom:4px">⚠ Paradas sin objetivo <span class="sub" style="font-weight:400;font-size:11px">· ${ind.sin_objetivo.length} para asignar</span></div>
+      <div class="sub" style="font-size:11.5px;margin-bottom:10px">El chofer escribió algo que no coincide con ningún objetivo. Asignalo y, si tildás recordar, la próxima vez entra solo.</div>
+      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Escribió</th><th class="num">Bateas</th><th style="width:120px"></th></tr></thead><tbody>
+        ${ind.sin_objetivo.map(x=>`<tr>
+          <td class="mono" style="font-size:12px">${fechaAR(x.fecha)}</td>
+          <td style="font-size:12.5px">${x.chofer||'—'}</td>
+          <td><span class="uni-chip" style="background:var(--papel)">${(x.texto||'—').replace(/</g,'&lt;')}</span></td>
+          <td class="num mono">${x.bateas}</td>
+          <td style="text-align:right"><button class="btn" style="padding:4px 10px;font-size:11.5px" onclick="corregirParada('${x.viaje_id}',${x.idx})">Asignar</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
+    <div class="panel" style="margin-bottom:16px"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo
+      <button class="btn-salir" style="padding:3px 9px;font-size:11px;float:right" onclick="verAliasObjetivos()">🏷 Alias</button></div>
       ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
         return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
         :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
@@ -900,7 +915,7 @@ async function vBateas(view){
         <td>${v.capataces?v.capataces.nombre:'—'}</td>
         <td><span class="uni-chip">${v.unidades?v.unidades.patente:(v.patente_raw||'—')}</span></td>
         <td class="num mono">${v.total_bateas||0}</td>
-        <td style="font-size:12px">${(v.paradas||[]).map(p=>p.objetivo_nombre+' ('+p.bateas+')').join(', ')||'—'}</td>
+        <td style="font-size:12px">${(v.paradas||[]).length?(v.paradas||[]).map((p,ix)=>`<span class="uni-chip" title="Tocá para cambiar el objetivo" style="cursor:pointer;margin:0 3px 3px 0;display:inline-block;${p.objetivo_id?'':'background:var(--papel);border:1px dashed var(--linea)'}" onclick="corregirParada('${v.id}',${ix})">${(p.objetivo_nombre||'—').replace(/</g,'&lt;')} (${p.bateas})${p.objetivo_id?'':' ⚠'}</span>`).join(''):'—'}</td>
         <td class="num"><button class="btn ghost" style="padding:4px 9px;font-size:11px;color:var(--rojo)" onclick="anularViaje('${v.id}')">✕</button></td>
       </tr>`).join('')
         :'<tr><td colspan="9"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot con la opción "Cargar viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
@@ -910,6 +925,85 @@ async function anularViaje(id){
   if(!await uiConfirm('¿Eliminar esta jornada de viaje?','Eliminar viaje',{ok:'Eliminar',danger:true}))return;
   try{await api('/api/viajes/'+id+'/anular',{method:'POST',body:'{}'});go('bateas');}
   catch(e){toast('No pude eliminar: '+e.message,'error');}
+}
+
+/* ── Corregir el objetivo de una parada de bateas ──────────────
+   El chofer escribe libre por WhatsApp; acá se reasigna contra la lista
+   real de objetivos. Con "recordar" tildado, el texto queda como alias y
+   la próxima carga matchea sola. */
+async function corregirParada(viajeId,idx){
+  if(!objetivos.length){try{objetivos=await api('/api/objetivos');}catch(e){}}
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:460px">
+    <h3>Asignar objetivo</h3>
+    <div class="sub" style="font-size:12.5px;margin-bottom:12px">Elegí a qué objetivo corresponde esta parada.</div>
+    <label class="sub" style="font-size:11px;display:block;margin-bottom:4px">OBJETIVO</label>
+    <input id="cp-obj" list="cp-obj-list" class="busca" style="width:100%;box-sizing:border-box" placeholder="Escribí para buscar…" autocomplete="off">
+    <datalist id="cp-obj-list">${objetivos.map(o=>`<option value="${String(o.nombre).replace(/"/g,'&quot;')}">`).join('')}</datalist>
+    <label style="display:flex;align-items:center;gap:7px;margin-top:14px;font-size:12.5px;cursor:pointer">
+      <input type="checkbox" id="cp-recordar" checked>
+      <span>Recordar: la próxima vez que escriban lo mismo, asignarlo solo</span></label>
+    <div class="modal-acciones">
+      <button class="btn ghost" id="cp-no">Cancelar</button>
+      <button class="btn" id="cp-si">Asignar</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  const inp=bg.querySelector('#cp-obj');inp.focus();
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#cp-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')bg.querySelector('#cp-si').click();});
+  bg.querySelector('#cp-si').onclick=async()=>{
+    const nom=(inp.value||'').trim();
+    const o=objetivos.find(x=>String(x.nombre).toLowerCase()===nom.toLowerCase());
+    if(!o){toast('Elegí un objetivo de la lista','error');inp.focus();return;}
+    const recordar=bg.querySelector('#cp-recordar').checked;
+    const btn=bg.querySelector('#cp-si');btn.disabled=true;btn.textContent='Guardando…';
+    try{
+      const r=await api('/api/viajes/'+viajeId+'/parada',{method:'POST',
+        body:JSON.stringify({idx,objetivo_id:o.id,recordar})});
+      cerrar();
+      toast(r.alias?('Asignado a '+o.nombre+' · alias "'+r.alias+'" guardado')
+        :r.alias_error?('Asignado a '+o.nombre+', pero no pude guardar el alias: '+r.alias_error)
+        :('Asignado a '+o.nombre));
+      go('bateas');
+    }catch(e){
+      btn.disabled=false;btn.textContent='Asignar';
+      toast('No pude asignar: '+e.message,'error');
+    }
+  };
+}
+
+/* Lista de alias aprendidos, para revisar y borrar los que estén mal. */
+async function verAliasObjetivos(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:520px">
+    <h3>Alias de objetivos</h3>
+    <div class="sub" style="font-size:12.5px;margin-bottom:12px">Cómo nombran los choferes cada objetivo. El bot los usa para reconocer lo que escriben.</div>
+    <div id="al-body"><div class="sub">Cargando…</div></div>
+    <div class="modal-acciones"><button class="btn ghost" id="al-no">Cerrar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#al-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  const pintar=async()=>{
+    const box=bg.querySelector('#al-body');if(!box)return;
+    try{
+      const list=await api('/api/viajes/alias');
+      box.innerHTML=list.length?`<div class="tablewrap" style="max-height:320px;overflow:auto"><table><thead><tr><th>Escriben</th><th>Es</th><th style="width:40px"></th></tr></thead><tbody>
+        ${list.map(a=>`<tr>
+          <td><span class="uni-chip">${(a.alias_original||a.alias).replace(/</g,'&lt;')}</span></td>
+          <td style="font-size:12.5px">${a.objetivos?a.objetivos.nombre:'—'}</td>
+          <td style="text-align:right"><button class="btn ghost" style="padding:3px 7px;font-size:11px;color:var(--rojo)" data-del="${a.id}">✕</button></td>
+        </tr>`).join('')}</tbody></table></div>`
+        :'<div class="sub" style="padding:8px 0">Todavía no hay alias. Se guardan cuando asignás una parada con "recordar" tildado.</div>';
+      box.querySelectorAll('[data-del]').forEach(b=>{b.onclick=async()=>{
+        try{await api('/api/viajes/alias/'+b.dataset.del,{method:'DELETE'});pintar();}
+        catch(e){toast('No pude borrar: '+e.message,'error');}
+      };});
+    }catch(e){box.innerHTML='<div class="sub">'+(e.message||'No pude cargar los alias')+'</div>';}
+  };
+  pintar();
 }
 
 async function vCombAnalisis(view,tabs){
