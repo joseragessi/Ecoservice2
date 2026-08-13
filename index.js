@@ -101,6 +101,11 @@ app.post('/webhook', async (req, res) => {
         respuesta = await continuarInsumos(telefono, mensaje);
       } else if (await tieneSesionStock(telefono)) {
         respuesta = await continuarStock(telefono, mensaje);
+        // El capataz escribió "menu"/"salir" estando en el flujo de stock:
+        // la sesión ya se borró, lo mandamos al menú de verdad.
+        if (respuesta && respuesta.__derivar === 'menu') {
+          respuesta = await procesarMensaje(telefono, mensaje);
+        }
       } else if (await tieneSesionViajes(telefono)) {
         respuesta = await continuarViajes(telefono, mensaje);
       } else if (RE_VIAJES.test(mensaje.trim())) {
