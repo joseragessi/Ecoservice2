@@ -1,4 +1,4 @@
-const PANEL_BUILD = 'fase3';  // JS del panel extraído de panel.html (Fase 3)
+const PANEL_BUILD = '2026-08-13 · detalle-stock + borrar censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1704,11 +1704,29 @@ function selCenso(id){
           <div class="mono" style="font-size:15px;font-weight:600">${i.cantidad}</div>
         </div>`).join('')
       :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}
+    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px;color:var(--rojo)"
+      onclick="borrarCenso('${c.id}')">🗑 Borrar esta respuesta</button>`:''}
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Histórico</div>
     <div id="stk-hist"><div class="sub">Cargando…</div></div>`;
   cargarHistorico(c.objetivo_id);
 }
+/* Borra lo que informó el capataz y deja el censo pendiente otra vez.
+   Sirve para limpiar pruebas. No borra la fila del censo: si desapareciera,
+   el objetivo saldría del listado del período y no se le podría reenviar. */
+async function borrarCenso(id){
+  const d=stockData;const c=d&&d.censos.find(x=>String(x.id)===String(id));
+  const nom=c&&c.objetivos?c.objetivos.nombre:'este objetivo';
+  const eq=c?(c.censos_stock_items||[]).reduce((s,i)=>s+(i.cantidad||0),0):0;
+  if(!await uiConfirm(`Se borra lo que informó el capataz de <b>${nom}</b>${eq?' ('+eq+' equipos)':''} y el censo queda pendiente de nuevo.`,
+    'Borrar respuesta',{ok:'Borrar',danger:true}))return;
+  try{
+    await api('/api/stock/censo/'+id,{method:'DELETE'});
+    toast('Respuesta borrada · el censo quedó pendiente');
+    go('stock');
+  }catch(e){toast('No pude borrar: '+e.message,'error');}
+}
+
 async function cargarHistorico(objetivoId){
   const cont=document.getElementById('stk-hist');
   if(!cont)return;
