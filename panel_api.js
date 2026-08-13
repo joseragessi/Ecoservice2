@@ -1385,6 +1385,142 @@ router.get('/api/services', auth, async (req, res) => {
 // exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
 // del código y de la DB). Sin la env seteada, alcanza con ser admin (fail-open
 // avisado). Rate limit reusado del login para que no se pueda adivinar.
+// ── Puntaje analizado de una reparación ───────────────────────
+// Reemplaza la tabla fija de pesos: mira criticidad, falla, lo que el
+// mecánico dijo que hizo y los repuestos, y estima HORAS de mano de obra.
+// 1 punto ≈ 1 hora. Sin temperature ni prefill (familia 5 los rechaza).
+const PUNTOS_MIN = 1, PUNTOS_MAX = 12;
+
+async function analizarPuntaje(id) {
+  const { data: inc, error } = await supabase.from('incidencias')
+    .select('id, tipo_equipo, numero_unidad, tipo_falla, descripcion, prioridad, equipo_parado, tipo_mant, created_at, fecha_finalizado, comentarios_incidencias(mecanico_nombre,texto), repuestos_taller(items,estado), equipos(nombre)')
+    .eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!inc) throw new Error('no encontré la incidencia');
+
+  const coms = (inc.comentarios_incidencias || [])
+    .map(c => `- ${c.mecanico_nombre || '?'}: ${c.texto}`).join('\n') || '(sin comentarios del taller)';
+  const reps = (inc.repuestos_taller || [])
+    .map(r => (Array.isArray(r.items) ? r.items : []).map(i => i.descripcion || i.nombre || '').filter(Boolean).join(', '))
+    .filter(Boolean).join(' · ') || '(sin repuestos registrados)';
+
+  const prompt = `Sos el jefe de un taller de maquinaria de espacios verdes en Córdoba,
+Argentina. Trabajan con motoguadañas, motosierras, extensibles (pértigas),
+sopladoras (todas motor 2 tiempos), cortadoras y planas, giro cero y mini
+tractores, y vehículos (camionetas, camiones, hidrogrúas, tractores).
+
+Tenés que estimar cuántas HORAS DE MANO DE OBRA de mecánico llevó esta
+reparación. No cuentes días de espera de repuestos ni la máquina parada en el
+taller: solo el tiempo con las manos en el fierro.
+
+REPARACIÓN
+- Equipo: ${inc.tipo_equipo || (inc.equipos ? inc.equipos.nombre : '?')} N° ${inc.numero_unidad || '?'}
+- Prioridad asignada: ${inc.prioridad || 'sin definir'}${inc.equipo_parado ? ' · LA MÁQUINA ESTABA PARADA (no podía trabajar)' : ''}
+- Tipo: ${inc.tipo_mant || 'correctivo'}
+- Falla declarada: ${inc.tipo_falla || 'sin especificar'}
+- Descripción del capataz: ${inc.descripcion || '(sin descripción)'}
+- Qué hizo el taller: ${coms}
+- Repuestos pedidos: ${reps}
+
+CÓMO ESTIMAR
+- Guía de referencia: en 2 tiempos chicas, una bujía, una piola o una tanza es
+  15-30 min; una carburación o un embrague, 1-2 h; un pistón o motor completo,
+  3-4 h. En giro cero o mini tractor, una correa o cuchillas es 1-2 h y una
+  hidráulica o transmisión es una jornada entera (6-8 h). En vehículos, un
+  service es 2-4 h y frenos o eléctrico complejo, 3-6 h.
+- Los COMENTARIOS DEL TALLER y los REPUESTOS mandan sobre la falla declarada:
+  es lo que realmente se hizo. Si dicen poco, guiate por la falla y bajá la
+  confianza.
+- Una prioridad crítica o una máquina parada suele implicar trabajo a
+  contrarreloj: podés sumar hasta un 30% por eso, no más.
+- Si no hay casi información, estimá lo típico para ese equipo y esa falla y
+  poné confianza "baja".
+
+Devolvé SOLO un objeto JSON, sin texto antes ni después y sin markdown:
+{"horas": number, "confianza":"alta"|"media"|"baja", "motivo":"una frase corta en criollo explicando de dónde sale la estimación"}`;
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: MODEL_FACTURAS, max_tokens: 400, messages: [{ role: 'user', content: prompt }] }),
+  });
+  if (!resp.ok) throw new Error(`API Claude ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  const data = await resp.json();
+  const crudo = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+    .replace(/```json/gi, '').replace(/```/g, '').trim();
+  let parsed = null;
+  try { parsed = JSON.parse(crudo); } catch (e) {
+    const a = crudo.indexOf('{'), b = crudo.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { parsed = JSON.parse(crudo.slice(a, b + 1)); } catch (e2) { /* nada */ } }
+  }
+  if (!parsed || parsed.horas == null) throw new Error('la IA no devolvió una estimación legible');
+
+  const horas = Number(parsed.horas) || 0;
+  const puntos = Math.min(PUNTOS_MAX, Math.max(PUNTOS_MIN, Math.round(horas)));
+  const patch = {
+    puntos_ia: puntos,
+    puntos_ia_horas: horas,
+    puntos_ia_motivo: String(parsed.motivo || '').slice(0, 400),
+    puntos_ia_confianza: parsed.confianza || 'media',
+    puntos_ia_at: new Date().toISOString(),
+  };
+  const { error: eU } = await supabase.from('incidencias').update(patch).eq('id', id);
+  if (eU) throw eU;
+  console.log(`[puntaje] ${inc.tipo_equipo || '?'} ${inc.numero_unidad || ''} → ${horas}h = ${puntos} pts (${patch.puntos_ia_confianza})`);
+  return patch;
+}
+
+// Analizar una sola (botón del ranking)
+router.post('/api/reparaciones/:id/puntaje', auth, async (req, res) => {
+  try { res.json(await analizarPuntaje(req.params.id)); }
+  catch (err) {
+    console.error('puntaje:', err);
+    res.status(500).json({ error: 'No pude analizar: ' + (err.message || err) });
+  }
+});
+
+// Corrección a mano: si José carga un valor, ese manda sobre el de la IA.
+router.post('/api/reparaciones/:id/puntaje-manual', auth, async (req, res) => {
+  try {
+    const v = req.body && req.body.puntos;
+    const patch = (v === null || v === '' || v === undefined)
+      ? { puntos_manual: null, puntos_manual_por: null }
+      : { puntos_manual: Math.min(PUNTOS_MAX, Math.max(0, Number(v) || 0)), puntos_manual_por: req.usuario || null };
+    const { error } = await supabase.from('incidencias').update(patch).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true, puntos_manual: patch.puntos_manual });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude guardar el puntaje' });
+  }
+});
+
+// Recalcular el mes: analiza las finalizadas que todavía no tienen puntaje.
+// De a una y con tope, para no dispararle 70 llamadas juntas a la API.
+router.post('/api/reparaciones/puntaje-lote', auth, async (req, res) => {
+  try {
+    const desde = String((req.body && req.body.desde) || '').slice(0, 10);
+    const forzar = !!(req.body && req.body.forzar);
+    let q = supabase.from('incidencias').select('id')
+      .eq('estado', 'finalizado').not('fecha_finalizado', 'is', null)
+      .order('fecha_finalizado', { ascending: false }).limit(40);
+    if (desde) q = q.gte('fecha_finalizado', desde);
+    if (!forzar) q = q.is('puntos_ia', null);
+    const { data, error } = await q;
+    if (error) throw error;
+
+    let ok = 0, fallaron = 0, ultimoError = null;
+    for (const r of (data || [])) {
+      try { await analizarPuntaje(r.id); ok++; }
+      catch (e) { fallaron++; ultimoError = e.message || String(e); }
+    }
+    console.log(`[puntaje] lote: ${ok} analizadas, ${fallaron} fallaron`);
+    res.json({ analizadas: ok, fallaron, pendientes: Math.max(0, (data || []).length - ok - fallaron), error: ultimoError });
+  } catch (err) {
+    console.error('puntaje-lote:', err);
+    res.status(500).json({ error: 'No pude recalcular: ' + (err.message || err) });
+  }
+});
+
 // Análisis IA de un rebote: ¿la vuelta es atribuible al arreglo anterior?
 // Devuelve una SUGERENCIA con motivo — la decisión final la toma el usuario
 // con el botón "No atribuir". Sin temperature: los modelos de la familia 5
@@ -1530,6 +1666,15 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
       .from('incidencias').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), equipos(nombre), mecanicos(nombre)').single();
     if (error) throw error;
+
+    // Al FINALIZAR se dispara el análisis de puntaje en segundo plano: recién
+    // ahí están los comentarios y repuestos que le dan sustancia. No se espera
+    // la respuesta para no demorar el panel; si falla, queda el log y el botón
+    // "Recalcular puntajes" del ranking lo levanta después.
+    if (req.body.estado === 'finalizado' && data.tipo_mant !== 'preventivo') {
+      analizarPuntaje(req.params.id).catch(e =>
+        console.error('[puntaje] falló el automático de', req.params.id, e.message || e));
+    }
 
     // Aviso al capataz en cada avance de estado (diagnóstico, esperando
     // repuestos, en reparación, finalizado), con la última nota del mecánico
