@@ -56,7 +56,6 @@ function pedirConfirmacion(sesion) {
   const av = (sesion.avisos && sesion.avisos.length)
     ? `\n\n⚠️ ${sesion.avisos.join('\n⚠️ ')}` : '';
   return `${resumenCenso(sesion)}${av}\n\n` +
-         `Revisá que estén *todos los tipos* de máquina que mandaste.\n` +
          `¿Confirmás? Respondé *sí* para guardar, o decime qué *agregar* o *corregir*.`;
 }
 
