@@ -12,6 +12,10 @@ const CONFIRMACIONES = [
   'perfecto', 'correcto', 'esta bien', 'está bien', 'esta perfecto', 'de una', 'va',
 ];
 const CANCELACIONES = ['cancelar', 'cancela', 'no', 'nada', 'dejalo', 'olvidalo'];
+// Salidas del flujo: valen en CUALQUIER paso. Sin esto el capataz quedaba
+// encerrado — el bot le decía "escribí menu" y "menu" se interpretaba como
+// listado de maquinaria.
+const SALIDAS = ['menu', 'menú', 'salir', 'volver', 'atras', 'atrás', 'chau', 'cancelar', 'cancela'];
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -203,6 +207,13 @@ async function continuarStock(telefono, mensaje) {
   const texto = (mensaje || '').trim();
   const t = texto.toLowerCase();
   const nombre = sesion.capataz.nombre.split(' ')[0];
+
+  // Salida en cualquier paso, ANTES de gastar una llamada a la IA.
+  if (SALIDAS.includes(t)) {
+    delete sesiones[tel];   // conPersistencia también la borra de la base
+    console.log(`[stock] ${sesion.capataz.nombre} salió del flujo con "${t}"`);
+    return { __derivar: 'menu' };
+  }
 
   if (sesion.paso === 'esperando_listado') {
     return await procesarListadoTexto(tel, sesion.capataz, texto);
