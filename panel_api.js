@@ -1444,7 +1444,10 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después:
       body: JSON.stringify({
         model: MODEL_FACTURAS,
         max_tokens: 400,
-        messages: [{ role: 'user', content: prompt }, { role: 'assistant', content: '{' }],
+        // SIN prefill assistant: los modelos de la familia 5 lo rechazan
+        // ("does not support assistant message prefill"). El JSON se pesca
+        // del texto con el recorte primera/última llave.
+        messages: [{ role: 'user', content: prompt }],
       }),
     });
     if (!resp.ok) {
@@ -1452,7 +1455,8 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después:
       throw new Error(`API Claude ${resp.status}: ${det.slice(0, 200)}`);
     }
     const data = await resp.json();
-    const crudo = '{' + (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    const crudo = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+      .replace(/```json/gi, '').replace(/```/g, '').trim();
     let parsed = null;
     try { parsed = JSON.parse(crudo); } catch (e) {
       const a = crudo.indexOf('{'), b = crudo.lastIndexOf('}');
