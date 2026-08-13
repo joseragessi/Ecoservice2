@@ -1252,6 +1252,8 @@ let stockSelId=null;     // censo seleccionado
 let stockPedirSel=new Set(); // objetivos tildados en el modal de pedido
 let stockInv=null;       // inventario oficial
 let stockInvEdit=null;   // línea del inventario en edición
+let stockTipoFil='';     // filtro por tipo de equipo en la solapa Detalle ('' = todos)
+let stockDetBusca='';    // buscador de la solapa Detalle
 
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK[(m||1)-1]||'';return n.charAt(0).toUpperCase()+n.slice(1)+' '+(a||'');}
@@ -1261,6 +1263,7 @@ function tabsStk(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${stockTab==='objetivo'?'on':''}" onclick="stockTab='objetivo';go('stock')">Por objetivo</button>
   <button class="${stockTab==='inventario'?'on':''}" onclick="stockTab='inventario';go('stock')">Inventario</button>
   <button class="${stockTab==='consolidado'?'on':''}" onclick="stockTab='consolidado';go('stock')">Consolidado</button>
+  <button class="${stockTab==='detalle'?'on':''}" onclick="stockTab='detalle';go('stock')">Detalle</button>
 </div>`;}
 function difStk(d){
   if(d==null)return'<span class="sub">—</span>';
@@ -1272,7 +1275,126 @@ async function vStock(view){
   if(stockTab==='inventario')return vStockInventario(view);
   if(stockTab==='consolidado')return vStockConsolidado(view);
   if(stockTab==='objetivo')return vStockObjetivos(view);
+  if(stockTab==='detalle')return vStockDetalle(view);
   return vStockCenso(view);
+}
+
+/* ── Solapa Detalle: una fila por máquina informada, filtrable por tipo
+      y exportable. Se arma con el MISMO GET /api/stock que usa el Censo,
+      así que no agrega llamadas al server. ── */
+
+// Escape para meter texto del capataz en el HTML de la tabla.
+function escStk(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// Aplana los censos: una fila por ítem informado.
+function stockFilasDetalle(d){
+  const filas=[];
+  (d.censos||[]).forEach(c=>{
+    if(c.estado!=='respondido')return;
+    (c.censos_stock_items||[]).forEach(i=>{
+      filas.push({
+        objetivo:c.objetivos?c.objetivos.nombre:'—',
+        capataz:c.capataces?c.capataces.nombre:'',
+        tipo:i.tipo_equipo||'—',
+        cantidad:i.cantidad||0,
+        numeros:(i.numeros||[]).join(', '),
+        observacion:i.observacion||'',
+        respondio:horaStk(c.respondido_at)||'',
+      });
+    });
+  });
+  filas.sort((a,b)=>a.tipo.localeCompare(b.tipo)||a.objetivo.localeCompare(b.objetivo));
+  return filas;
+}
+
+function stockFilasFiltradas(){
+  const d=stockData;if(!d)return[];
+  const q=(stockDetBusca||'').toLowerCase().split(/\s+/).filter(Boolean);
+  return stockFilasDetalle(d).filter(f=>{
+    if(stockTipoFil&&f.tipo!==stockTipoFil)return false;
+    if(!q.length)return true;
+    const txt=(f.objetivo+' '+f.capataz+' '+f.tipo+' '+f.numeros+' '+f.observacion).toLowerCase();
+    return q.every(w=>txt.includes(w));
+  });
+}
+
+async function vStockDetalle(view){
+  try{
+    const qs=stockPeriodo?'?periodo='+encodeURIComponent(stockPeriodo):'';
+    stockData=await api('/api/stock'+qs);
+    const d=stockData;
+    const todas=stockFilasDetalle(d);
+    const tipos=[...new Set(todas.map(f=>f.tipo))].sort();
+    if(stockTipoFil&&!tipos.includes(stockTipoFil))stockTipoFil='';
+    const filas=stockFilasFiltradas();
+    const total=filas.reduce((s,f)=>s+f.cantidad,0);
+    const objs=new Set(filas.map(f=>f.objetivo)).size;
+    const selPer=`<select class="busca" style="width:auto" onchange="stockPeriodo=this.value;go('stock')">
+      ${d.periodos.map(p=>`<option value="${p}" ${p===d.periodo?'selected':''}>${mesStk(p)}</option>`).join('')}</select>`;
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Detalle máquina por máquina · censo de ${mesStk(d.periodo)}</div></div>
+      <div style="display:flex;gap:8px;align-items:center">${selPer}
+      <button class="btn" onclick="exportarStock()">⬇ Exportar</button></div></div>
+    ${tabsStk()}
+    <div class="panel" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select class="busca" style="width:auto;min-width:190px" onchange="stockTipoFil=this.value;go('stock')">
+        <option value="">Todos los tipos (${todas.length} líneas)</option>
+        ${tipos.map(t=>{const n=todas.filter(f=>f.tipo===t).reduce((s,f)=>s+f.cantidad,0);
+          return `<option value="${String(t).replace(/"/g,'&quot;')}" ${t===stockTipoFil?'selected':''}>${t} · ${n}</option>`;}).join('')}
+      </select>
+      <input class="busca" style="flex:1;min-width:180px" placeholder="Buscar objetivo, capataz, N° de máquina…"
+        value="${(stockDetBusca||'').replace(/"/g,'&quot;')}" oninput="stockDetBusca=this.value;pintarDetalleStock()">
+      <div class="sub" id="stk-det-res" style="font-size:12px">${total} máquina${total===1?'':'s'} · ${objs} objetivo${objs===1?'':'s'}</div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">Cant.</th><th>N° de máquina</th><th>Observación</th><th>Capataz</th></tr></thead>
+      <tbody id="stk-det-body">${filasDetalleHTML(filas)}</tbody></table>
+    </div>`;
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">No pude cargar el detalle. ${e.message||''}</div>`;}
+}
+
+function filasDetalleHTML(filas){
+  if(!filas.length)return '<tr><td colspan="6"><div class="sub" style="padding:14px">Nada para mostrar con este filtro.</div></td></tr>';
+  return filas.map(f=>`<tr>
+    <td style="font-weight:500">${escStk(f.objetivo)}</td>
+    <td>${escStk(f.tipo)}</td>
+    <td class="num mono">${f.cantidad}</td>
+    <td class="mono" style="font-size:11.5px;word-break:break-word;max-width:280px">${escStk(f.numeros)||'<span class="sub">—</span>'}</td>
+    <td class="sub" style="font-size:12px">${escStk(f.observacion)||'—'}</td>
+    <td class="sub" style="font-size:12px">${escStk(f.capataz)||'—'}</td></tr>`).join('');
+}
+
+// Repinta solo el cuerpo, para no perder el foco del buscador al tipear.
+function pintarDetalleStock(){
+  const filas=stockFilasFiltradas();
+  const body=document.getElementById('stk-det-body');
+  if(body)body.innerHTML=filasDetalleHTML(filas);
+  const res=document.getElementById('stk-det-res');
+  if(res){const t=filas.reduce((s,f)=>s+f.cantidad,0);const o=new Set(filas.map(f=>f.objetivo)).size;
+    res.textContent=`${t} máquina${t===1?'':'s'} · ${o} objetivo${o===1?'':'s'}`;}
+}
+
+/* Exporta lo que se está viendo (tipo + búsqueda aplicados) a CSV con BOM y
+   separador ';' — Excel en español lo abre en columnas con doble click. */
+function exportarStock(){
+  const filas=stockFilasFiltradas();
+  if(!filas.length){toast('No hay nada para exportar con este filtro','error');return;}
+  const cols=['Objetivo','Tipo','Cantidad','N° de máquina','Observación','Capataz','Respondió'];
+  const celda=v=>{const t=String(v==null?'':v);return /[";\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t;};
+  const lineas=[cols.join(';')];
+  filas.forEach(f=>lineas.push([f.objetivo,f.tipo,f.cantidad,f.numeros,f.observacion,f.capataz,f.respondio].map(celda).join(';')));
+  lineas.push('');
+  lineas.push(['TOTAL','',filas.reduce((s,f)=>s+f.cantidad,0),'','','',''].map(celda).join(';'));
+  const per=(stockData&&stockData.periodo)||'';
+  const tipo=stockTipoFil?'_'+stockTipoFil.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-'):'';
+  const blob=new Blob(['\ufeff'+lineas.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`stock_${per}${tipo}.csv`;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
+  toast(`Exporté ${filas.length} línea${filas.length===1?'':'s'}`);
 }
 
 /* ── Solapa Por objetivo: ficha completa de cada objetivo ── */
