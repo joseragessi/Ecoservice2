@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-14 · dashboard v2';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-14 · observaciones al capataz';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3641,14 +3641,32 @@ async function repRepGuardar(id,ix){
 async function agregarObsRep(id,ix){
   const ta=document.getElementById('rep-obs-nueva');
   const texto=(ta&&ta.value||'').trim();
-  if(!texto){alert('Escribí la observación primero.');return;}
+  if(!texto){toast('Escribí la observación primero','error');return;}
+  const btn=ta&&ta.parentElement?ta.parentElement.querySelector('button.btn.ghost'):null;
+  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  let nuevo=null;
+  // El guardado va en su propio try: antes, si fallaba el repintado de abajo
+  // (índice desincronizado tras un refresh, por ejemplo) el catch decía
+  // "No pude guardar" aunque la observación SÍ se había guardado.
   try{
-    const nuevo=await api('/api/reparaciones/'+id+'/comentario',{method:'POST',body:JSON.stringify({texto})});
-    // Actualizar en memoria y repintar el detalle sin recargar toda la vista
-    const r=window._repFiltrada[ix];
-    (r.comentarios_incidencias=r.comentarios_incidencias||[]).push(nuevo);
-    selRep(ix);
-  }catch(e){alert('No pude guardar: '+e.message);}
+    nuevo=await api('/api/reparaciones/'+id+'/comentario',{method:'POST',body:JSON.stringify({texto})});
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='＋ Agregar observación';}
+    toast('No pude guardar: '+(e.message||''),'error');
+    return;
+  }
+  if(ta)ta.value='';
+  toast('Observación guardada');
+  // Repintado: si algo sale mal acá, la observación ya está a salvo en la base.
+  try{
+    // Se busca por ID y no por índice: la lista se repinta sola cada 90 s.
+    const lista=window._repFiltrada||[];
+    let pos=lista.findIndex(x=>String(x.id)===String(id));
+    if(pos<0)pos=ix;
+    const r=lista[pos];
+    if(r){(r.comentarios_incidencias=r.comentarios_incidencias||[]).push(nuevo);selRep(pos);}
+    else{repData=null;go('reparaciones');}
+  }catch(e){repData=null;go('reparaciones');}
 }
 async function avanzarRep(id,estado){
   try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({estado})});await vReparaciones(document.getElementById('view'));refrescarContadores();}
