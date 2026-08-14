@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-14 · stock en 3 pestañas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-14 · dashboard de desvíos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -298,7 +298,16 @@ async function vDashboard(view){
     const paradas=t.paradas||[];
     const prio=t.por_prioridad||{};
     const mm=n=>{n=Number(n)||0;return n>=1e6?'$'+(n/1e6).toLocaleString('es-AR',{minimumFractionDigits:1,maximumFractionDigits:1})+'M':money0(n);};
-    const varPct=c.var_pct!=null?Math.round(c.var_pct):null;
+    const dv=d.desvios||{},env=d.envejecimiento||{},rf=d.repuestos_frenados||{};
+    const estancadas=d.estancadas||[];
+    const alertas=d.alertas||[];
+    // El mes en curso está incompleto: comparar contra el mes anterior ENTERO
+    // siempre da caída. Se usa el mismo día del mes anterior y la proyección.
+    const varDia=dv.var_mismo_dia!=null?Math.round(dv.var_mismo_dia):null;
+    const varProm=dv.var_vs_promedio!=null?Math.round(dv.var_vs_promedio):null;
+    const flecha=v=>v==null?'':v>0?'▲':v<0?'▼':'=';
+    const colorVar=(v,malSube)=>v==null?'var(--tinta-3)':(malSube?(v>8?'var(--rojo)':v<-8?'var(--brote-2)':'var(--tinta-2)')
+      :(v>8?'var(--brote-2)':v<-8?'var(--rojo)':'var(--tinta-2)'));
 
     // Evolución (línea compacta)
     const ev=(c.evolucion||[]);
@@ -332,6 +341,26 @@ async function vDashboard(view){
       </div>`;}).join('')
       :'<div class="sub" style="padding:10px 0">Sin compras imputadas este mes.</div>';
 
+    // Objetivos por DESVÍO: quién se salió de lo suyo, no quién gastó más.
+    // Un objetivo grande siempre encabeza por monto y eso no informa nada.
+    const desObj=(dv.objetivos||[]).filter(o=>o.nombre!=='Sin asignar');
+    const conHist=desObj.filter(o=>o.veces!=null&&o.meses_historia>=1).slice(0,5);
+    const sinHist=desObj.filter(o=>o.veces==null).slice(0,3);
+    const barsDesvio=conHist.length?conHist.map(o=>{
+      const v=o.veces,pct=Math.round((v-1)*100);
+      const col=v>=1.5?'var(--rojo)':v>=1.15?'#EF9F27':v<=0.6?'var(--azul)':'var(--brote)';
+      const ancho=Math.max(4,Math.min(100,Math.round(v*50)));
+      return `<div style="margin-bottom:9px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:600">${o.nombre.slice(0,24)}</span>
+          <span class="mono" style="color:${col};font-weight:600">${pct>0?'+':''}${pct}%</span></div>
+        <div style="height:7px;background:var(--papel);border-radius:4px;position:relative">
+          <div style="width:${ancho}%;height:100%;background:${col};border-radius:4px"></div>
+          <div style="position:absolute;left:50%;top:-2px;height:11px;border-left:1px dashed var(--tinta-3)"></div></div>
+        <div class="sub" style="font-size:10.5px;margin-top:2px">proyecta ${mm(o.proyectado)} · suele ser ${mm(o.promedio)}</div>
+      </div>`;}).join('')+(sinHist.length?`<div class="sub" style="font-size:11px;margin-top:8px">Sin historia para comparar: ${sinHist.map(o=>o.nombre.slice(0,18)+' '+mm(o.total)).join(' · ')}</div>`:'')
+      :'<div class="sub" style="padding:10px 0">Todavía no hay meses cerrados para comparar. Con dos o tres meses de facturas imputadas esto empieza a marcar desvíos.</div>';
+
     // Paradas ahora
     const listaParadas=paradas.length?paradas.slice(0,4).map(p=>`
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--papel);font-size:12.5px">
@@ -354,18 +383,32 @@ async function vDashboard(view){
       <div class="view-desc">Compras y taller de un vistazo · ${new Date().toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div></div></div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
-      ${kpi('Gasto del mes',mm(c.gasto_mes),
-        varPct!=null?`<span style="color:${varPct>0?'var(--rojo)':'var(--brote-2)'}">${varPct>0?'▲ +':'▼ '}${varPct}% vs mes anterior</span>`:'sin mes anterior',
+      ${kpi('Gasto · va del mes',mm(c.gasto_mes),
+        varDia!=null?`<span style="color:${colorVar(varDia,true)}">${flecha(varDia)} ${varDia>0?'+':''}${varDia}% vs el día ${d.dia_del_mes} del mes pasado</span>`
+          :`día ${d.dia_del_mes} de ${d.dias_del_mes} · sin comparación`,
         null,"go('compras')")}
-      ${kpi('Pendiente de pago',mm(pp.total),`${pp.facturas||0} facturas · ${pp.proveedores||0} proveedores`,
-        null,"comprasTab='cuenta';go('compras')")}
+      ${kpi('Proyección de cierre',mm(dv.gasto_proyectado),
+        varProm!=null?`<span style="color:${colorVar(varProm,true)}">${flecha(varProm)} ${varProm>0?'+':''}${varProm}% vs promedio ${mm(dv.promedio_3m)}</span>`
+          :'al ritmo de lo que va del mes',
+        varProm!=null&&varProm>15?{bg:'var(--rojo-soft)',col:'var(--rojo)',subCol:'var(--rojo)'}:null,"comprasTab='indicadores';go('compras')")}
       ${kpi('Máquinas paradas',paradas.length,
-        paradas.length?paradas.filter(p=>p.unidad).length+' unidad(es) · '+paradas.filter(p=>!p.unidad).length+' máquina(s)':'ninguna ✓',
-        paradas.length?{bg:'var(--rojo-soft)',col:'var(--rojo)',subCol:'var(--rojo)'}:null,"go('reparaciones')")}
-      ${kpi('Taller',`${t.activas||0} <span style="font-size:14px">activas</span>`,
-        t.resolucion_prom!=null?'resolución prom. '+t.resolucion_prom.toFixed(1)+' días':(t.finalizadas_mes||0)+' cerradas este mes',
-        null,"go('reparaciones')")}
+        paradas.length?(paradas.filter(p=>p.dias>=3).length?paradas.filter(p=>p.dias>=3).length+' hace 3 días o más':'la más vieja hace '+paradas[0].dias+' d'):'ninguna ✓',
+        paradas.filter(p=>p.dias>=3).length?{bg:'var(--rojo-soft)',col:'var(--rojo)',subCol:'var(--rojo)'}:null,"go('reparaciones')")}
+      ${kpi('Trabadas',(estancadas.length||0)+(rf.cotizados||0),
+        `${estancadas.length} reparación(es) +7 d · ${rf.cotizados||0} repuesto(s) sin aprobar`,
+        (estancadas.length+(rf.cotizados||0))?{bg:'var(--diesel-soft)',col:'var(--diesel)',subCol:'var(--diesel)'}:null,"go('reparaciones')")}
     </div>
+
+    ${alertas.length?`<div class="panel" style="padding:12px 14px;margin-bottom:10px;border-left:3px solid ${alertas[0].nivel==='alto'?'var(--rojo)':'var(--diesel)'}">
+      <div style="font-size:13.5px;font-weight:600;margin-bottom:8px">Requiere tu atención</div>
+      ${alertas.map(al=>{const col=al.nivel==='alto'?'var(--rojo)':al.nivel==='medio'?'var(--diesel)':'var(--tinta-3)';
+        return `<div style="display:flex;gap:9px;align-items:flex-start;padding:5px 0;border-bottom:1px solid var(--papel);cursor:pointer" onclick="go('${al.modulo}')">
+          <span style="color:${col};font-size:15px;line-height:1.1">●</span>
+          <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600">${al.texto}</div>
+            ${al.detalle?`<div class="sub" style="font-size:11.5px">${al.detalle}</div>`:''}</div>
+          <span class="sub" style="font-size:11px;white-space:nowrap">${al.modulo} →</span></div>`;}).join('')}
+    </div>`:`<div class="panel" style="padding:12px 14px;margin-bottom:10px;border-left:3px solid var(--brote)">
+      <div style="font-size:13px">Nada pendiente que requiera tu atención hoy ✓</div></div>`}
 
     <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:10px;margin-bottom:10px">
       <div class="panel" style="padding:14px 16px;cursor:pointer" onclick="comprasTab='indicadores';go('compras')">
@@ -374,8 +417,9 @@ async function vDashboard(view){
           <div class="sub" style="font-size:11px">últimos 6 meses</div></div>
         ${svgEvol}</div>
       <div class="panel" style="padding:14px 16px;cursor:pointer" onclick="comprasTab='consumos';go('compras')">
-        <div style="font-size:13.5px;font-weight:600;margin-bottom:10px">Objetivos con mayor gasto · ${new Date().toLocaleDateString('es-AR',{month:'long'})}</div>
-        ${barsObj}</div>
+        <div style="font-size:13.5px;font-weight:600;margin-bottom:2px">Objetivos fuera de su promedio</div>
+        <div class="sub" style="font-size:11px;margin-bottom:10px">proyectado al cierre vs. lo que gasta habitualmente</div>
+        ${barsDesvio}</div>
     </div>
 
     <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:10px">
@@ -387,8 +431,23 @@ async function vDashboard(view){
             <div style="font-size:17px;font-weight:700;color:${col}">${prio[k]||0}</div>
             <div style="font-size:10.5px;color:${col}">${l}</div></div>`).join('')}
         </div>
+        ${(()=>{const E=[['hasta_3','0-3 d','var(--brote)'],['de_4_a_7','4-7 d','#8FBF6A'],['de_8_a_15','8-15 d','#EF9F27'],['mas_15','+15 d','var(--rojo)']];
+          const tot=E.reduce((a,[k])=>a+(env[k]||0),0);
+          if(!tot)return '';
+          return `<div style="font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tinta-3);margin-bottom:4px">Cuánto llevan abiertas</div>
+          <div style="display:flex;height:9px;border-radius:5px;overflow:hidden;margin-bottom:5px">
+            ${E.map(([k,l,c])=>(env[k]||0)?`<div title="${env[k]} ${l}" style="width:${(env[k]*100/tot)}%;background:${c}"></div>`:'').join('')}
+          </div>
+          <div style="display:flex;gap:10px;font-size:11px;margin-bottom:11px;flex-wrap:wrap">
+            ${E.map(([k,l,c])=>(env[k]||0)?`<span style="color:${c}">■ <span class="mono">${env[k]}</span> ${l}</span>`:'').join('')}
+          </div>`;})()}
         <div style="font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tinta-3);margin-bottom:4px">Paradas ahora</div>
-        ${listaParadas}</div>
+        ${listaParadas}
+        ${estancadas.length?`<div style="font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tinta-3);margin:11px 0 4px">Abiertas hace más de 7 días</div>
+        ${estancadas.slice(0,4).map(e=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--papel);font-size:12.5px">
+          <div style="flex:1;min-width:0"><b>${e.equipo}</b> <span class="sub" style="font-size:11px">${e.estado} · ${e.mecanico}</span></div>
+          <span class="mono" style="font-size:12px;font-weight:600;color:${e.dias>15?'var(--rojo)':'var(--diesel)'}">${e.dias} d</span></div>`).join('')}
+        ${estancadas.length>4?`<div class="sub" style="font-size:11px;margin-top:4px">y ${estancadas.length-4} más</div>`:''}`:''}</div>
       <div style="display:flex;flex-direction:column;gap:10px">
         <div class="panel" style="flex:1;display:flex;align-items:center;gap:12px;cursor:pointer;padding:12px 16px" onclick="go('insumos')">
           <div style="color:var(--tinta-2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:20px;height:20px;vertical-align:-2px;margin-right:4px"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></div>
