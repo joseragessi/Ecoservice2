@@ -156,7 +156,8 @@ async function procesarMensaje(telefono, mensaje) {
            `  2. 📦 Pedir insumos\n` +
            `  3. 🔧 Reportar una reparación\n` +
            `  4. 📋 Informar stock de maquinaria\n` +
-           `  5. 🚛 Cargar viajes del día`;
+           `  5. 🚛 Cargar viajes del día\n` +
+           `  6. ⛽ Buscar estación de servicio`;
   }
 
   const s = sesiones[tel];
@@ -184,7 +185,11 @@ async function procesarMensaje(telefono, mensaje) {
       limpiarSesion(tel);
       return { __derivar: 'viajes' };   // index.js arranca el flujo de viajes
     }
-    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación), *4* (stock) o *5* (viajes).';
+    if (op === '6') {
+      limpiarSesion(tel);
+      return { __derivar: 'estaciones' };  // index.js arranca la búsqueda de estaciones
+    }
+    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación), *4* (stock), *5* (viajes) o *6* (estación de servicio).';
   }
 
   // P1: tipo de equipo
