@@ -1882,12 +1882,19 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     let notificado = false;
     const AVISAN = ['diagnostico', 'esperando_repuestos', 'en_reparacion', 'finalizado'];
     if (AVISAN.includes(req.body.estado) && data.capataces && data.capataces.telefono) {
+      // Al FINALIZAR se mandan TODAS las observaciones del taller (es lo que
+      // el capataz necesita para saber qué se le hizo al equipo); en los
+      // estados intermedios, solo la última, para no repetir en cada aviso.
       let comentario = null;
       try {
-        const { data: com } = await supabase.from('comentarios_incidencias')
+        const todas = req.body.estado === 'finalizado';
+        let q = supabase.from('comentarios_incidencias')
           .select('texto').eq('incidencia_id', req.params.id)
-          .order('created_at', { ascending: false }).limit(1).maybeSingle();
-        if (com) comentario = com.texto;
+          .order('created_at', { ascending: todas });
+        if (!todas) q = q.limit(1);
+        const { data: com } = await q;
+        const textos = (com || []).map(c => c.texto).filter(Boolean);
+        comentario = todas ? textos : (textos[0] || null);
       } catch (e) { /* sin comentarios */ }
       const msg = mensajeEstadoIncidencia(req.body.estado, {
         equipo:   data.equipos ? data.equipos.nombre : (data.tipo_equipo || '—'),
