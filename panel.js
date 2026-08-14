@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-13 · informe por mecánico';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-14 · padrón de máquinas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1268,6 +1268,8 @@ let stockPedirSel=new Set(); // objetivos tildados en el modal de pedido
 let stockInv=null;       // inventario oficial
 let stockInvEdit=null;   // línea del inventario en edición
 let stockTipoFil='';     // filtro por tipo de equipo en la solapa Detalle ('' = todos)
+let maqData=null;        // padrón de máquinas
+let maqFil={tipo:'',estado:'activa',busca:''};
 let stockDetBusca='';    // buscador de la solapa Detalle
 
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
@@ -1279,6 +1281,7 @@ function tabsStk(){return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${stockTab==='inventario'?'on':''}" onclick="stockTab='inventario';go('stock')">Inventario</button>
   <button class="${stockTab==='consolidado'?'on':''}" onclick="stockTab='consolidado';go('stock')">Consolidado</button>
   <button class="${stockTab==='detalle'?'on':''}" onclick="stockTab='detalle';go('stock')">Detalle</button>
+  <button class="${stockTab==='maquinas'?'on':''}" onclick="stockTab='maquinas';go('stock')">Máquinas</button>
 </div>`;}
 function difStk(d){
   if(d==null)return'<span class="sub">—</span>';
@@ -1291,7 +1294,281 @@ async function vStock(view){
   if(stockTab==='consolidado')return vStockConsolidado(view);
   if(stockTab==='objetivo')return vStockObjetivos(view);
   if(stockTab==='detalle')return vStockDetalle(view);
+  if(stockTab==='maquinas')return vMaquinas(view);
   return vStockCenso(view);
+}
+
+/* ── Padrón de máquinas ───────────────────────────────────────
+   Una fila por máquina física, con su número interno, cuándo se compró y
+   cuánta vida lleva. Es lo que permite responder "cuáles son" y no solo
+   "cuántas hay", y engancha cada máquina con sus reparaciones. */
+function maqFilas(){
+  const t=(maqFil.busca||'').toLowerCase().split(/\s+/).filter(Boolean);
+  return ((maqData&&maqData.maquinas)||[]).filter(m=>{
+    if(maqFil.tipo&&m.tipo_equipo!==maqFil.tipo)return false;
+    if(maqFil.estado&&m.estado!==maqFil.estado)return false;
+    if(!t.length)return true;
+    const txt=[m.codigo_interno,m.maquina,m.marca,m.modelo,m.tipo_equipo,m.objetivo_texto,
+      objNombre(m.objetivo_id),m.motivo_baja,m.notas].filter(Boolean).join(' ').toLowerCase();
+    return t.every(w=>txt.includes(w));
+  });
+}
+function objNombre(id){
+  if(!id)return '';
+  const o=((maqData&&maqData.objetivos)||[]).find(x=>x.id===id);
+  return o?o.nombre:'';
+}
+function vidaChip(m){
+  if(m.vida_anios==null)return '<span class="sub">sin fecha de compra</span>';
+  const v=Number(m.vida_anios);
+  const col=m.dada_de_baja?'var(--tinta-2)':v>=2.5?'var(--rojo)':v>=2?'var(--diesel)':'var(--brote-2)';
+  return `<span class="mono" style="color:${col};font-weight:600">${v.toFixed(2)} años</span>`;
+}
+
+async function vMaquinas(view){
+  try{
+    maqData=await api('/api/maquinas');
+    const todas=maqData.maquinas||[];
+    const tipos=[...new Set(todas.map(m=>m.tipo_equipo).filter(Boolean))].sort();
+    const filas=maqFilas();
+    const activas=todas.filter(m=>m.estado==='activa').length;
+    const bajas=todas.filter(m=>m.estado==='baja').length;
+    const conBaja=todas.filter(m=>m.dada_de_baja&&m.vida_anios!=null);
+    const vidaProm=conBaja.length?(conBaja.reduce((a,m)=>a+Number(m.vida_anios),0)/conBaja.length).toFixed(2):null;
+
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Padrón · una ficha por máquina, con su vida útil</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-salir" onclick="importarMaquinas()">📋 Importar planilla</button>
+        <button class="btn" onclick="altaMaquina()">+ Nueva máquina</button>
+      </div></div>
+    ${tabsStk()}
+    <div class="kpis" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-l">Activas</div><div class="kpi-v">${activas}</div>
+        <div class="kpi-d">${todas.length} en el padrón</div></div>
+      <div class="kpi"><div class="kpi-l">Dadas de baja</div><div class="kpi-v">${bajas}</div>
+        <div class="kpi-d">${conBaja.length} con fecha cargada</div></div>
+      <div class="kpi"><div class="kpi-l">Vida útil promedio</div><div class="kpi-v">${vidaProm||'—'}</div>
+        <div class="kpi-d">${vidaProm?'años, sobre las dadas de baja':'falta cargar bajas para saberlo'}</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select class="busca" style="width:auto;min-width:170px" onchange="maqFil.tipo=this.value;go('stock')">
+        <option value="">Todos los tipos</option>
+        ${tipos.map(t=>`<option value="${escStk(t)}" ${t===maqFil.tipo?'selected':''}>${escStk(t)} · ${todas.filter(m=>m.tipo_equipo===t).length}</option>`).join('')}
+      </select>
+      <select class="busca" style="width:auto" onchange="maqFil.estado=this.value;go('stock')">
+        <option value="activa" ${maqFil.estado==='activa'?'selected':''}>Activas</option>
+        <option value="baja" ${maqFil.estado==='baja'?'selected':''}>Dadas de baja</option>
+        <option value="" ${maqFil.estado===''?'selected':''}>Todas</option>
+      </select>
+      <input class="busca" style="flex:1;min-width:180px" placeholder="Buscar N° interno, modelo, objetivo…"
+        value="${escStk(maqFil.busca)}" oninput="maqFil.busca=this.value;pintarMaquinas()">
+      <button class="btn-salir" onclick="exportarMaquinas()">⬇ Exportar</button>
+      <div class="sub" id="maq-res" style="font-size:12px">${filas.length} máquina${filas.length===1?'':'s'}</div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>N° int.</th><th>Máquina</th><th>Tipo</th><th>Objetivo</th><th>Compra</th><th>Vida</th><th>Estado</th><th></th></tr></thead>
+      <tbody id="maq-body">${maqFilasHTML(filas)}</tbody></table></div>`;
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${e.message||'No pude cargar el padrón'}</div>`;}
+}
+
+function maqFilasHTML(filas){
+  if(!filas.length)return '<tr><td colspan="8"><div class="sub" style="padding:14px">No hay máquinas con este filtro. Si es la primera vez, usá <b>📋 Importar planilla</b>.</div></td></tr>';
+  return filas.map(m=>`<tr style="cursor:pointer" onclick="fichaMaquina('${m.id}')">
+    <td class="mono" style="font-weight:600">${escStk(m.codigo_interno)}</td>
+    <td>${escStk(m.maquina||[m.marca,m.modelo].filter(Boolean).join(' ')||'—')}</td>
+    <td class="sub" style="font-size:12px">${escStk(m.tipo_equipo||'—')}</td>
+    <td class="sub" style="font-size:12px">${escStk(objNombre(m.objetivo_id)||m.objetivo_texto||'—')}</td>
+    <td class="mono" style="font-size:11.5px">${m.fecha_compra?String(m.fecha_compra).split('-').reverse().join('/'):'—'}</td>
+    <td>${vidaChip(m)}</td>
+    <td>${m.estado==='baja'?`<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">baja</span>`
+      :m.estado==='taller'?`<span class="badge b-amber">taller</span>`
+      :`<span class="badge" style="background:var(--brote-soft);color:var(--brote-2)">activa</span>`}
+      ${m.motivo_baja?`<div class="sub" style="font-size:10.5px">${escStk(m.motivo_baja)}</div>`:''}</td>
+    <td style="text-align:right"><button class="btn-salir" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();editarMaquina('${m.id}')">✏️</button></td>
+  </tr>`).join('');
+}
+function pintarMaquinas(){
+  const filas=maqFilas();
+  const b=document.getElementById('maq-body');if(b)b.innerHTML=maqFilasHTML(filas);
+  const r=document.getElementById('maq-res');if(r)r.textContent=`${filas.length} máquina${filas.length===1?'':'s'}`;
+}
+
+/* Ficha: la máquina y TODO su historial de taller. Acá se une el padrón con
+   Reparaciones, que hasta ahora eran dos mundos separados. */
+async function fichaMaquina(id){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:720px"><div id="fm-body"><div class="sub">Cargando…</div></div>
+    <div class="modal-acciones"><button class="btn ghost" id="fm-no">Cerrar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#fm-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  try{
+    const d=await api('/api/maquinas/'+id);
+    const m=d.maquina,R=d.resumen;
+    const box=bg.querySelector('#fm-body');if(!box)return;
+    box.innerHTML=`
+      <h3>${escStk(m.codigo_interno)} · ${escStk(m.maquina||m.tipo_equipo||'')}</h3>
+      <div class="sub" style="font-size:12.5px;margin-bottom:12px">
+        ${escStk(objNombre(m.objetivo_id)||m.objetivo_texto||'sin objetivo')} ·
+        comprada ${m.fecha_compra?String(m.fecha_compra).split('-').reverse().join('/'):'sin fecha'} ·
+        ${vidaChip(m)}${m.dada_de_baja?` · <b style="color:var(--rojo)">baja: ${escStk(m.motivo_baja||'sin motivo')}</b>`:''}</div>
+      <div class="kpis" style="margin-bottom:12px">
+        <div class="kpi"><div class="kpi-l">Entradas al taller</div><div class="kpi-v">${R.total}</div></div>
+        <div class="kpi"><div class="kpi-l">Horas de taller</div><div class="kpi-v">${R.horas_taller||0}</div></div>
+        <div class="kpi"><div class="kpi-l">Repuestos</div><div class="kpi-v">${R.gasto_repuestos?'$'+R.gasto_repuestos.toLocaleString('es-AR'):'—'}</div>
+          <div class="kpi-d">${R.repuestos_con_precio} con precio cargado</div></div>
+      </div>
+      <div class="field-l" style="margin-bottom:6px">Historial de taller</div>
+      ${d.reparaciones.length?`<div style="max-height:280px;overflow:auto">${d.reparaciones.map(r=>`
+        <div style="padding:5px 0;border-bottom:1px dotted var(--linea);font-size:12.5px">
+          <div style="display:flex;justify-content:space-between;gap:8px">
+            <span><b>${escStk(r.tipo_falla||'sin falla')}</b> <span class="sub">${escStk(r.descripcion||'')}</span></span>
+            <span class="mono sub" style="white-space:nowrap;font-size:11px">${String(r.created_at).slice(0,10).split('-').reverse().join('/')}</span></div>
+          <div class="sub" style="font-size:11px">${escStk(r.mecanicos?r.mecanicos.nombre:'sin asignar')} · ${escStk(r.estado)}${r.puntos_ia_horas!=null?' · '+r.puntos_ia_horas+' h':''}</div>
+        </div>`).join('')}</div>`
+      :'<div class="sub" style="padding:6px 0">Sin reparaciones registradas con este número interno. Si tuvo, puede ser que en el taller la cargaran con otro número.</div>'}`;
+  }catch(e){const box=bg.querySelector('#fm-body');if(box)box.innerHTML=`<div class="sub">${e.message||'No pude cargar la ficha'}</div>`;}
+}
+
+function maqCampos(m){
+  const objs=(maqData&&maqData.objetivos)||[];
+  const v=k=>m&&m[k]!=null?String(m[k]).replace(/"/g,'&quot;'):'';
+  return `
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <label style="flex:1;min-width:120px"><span class="field-l">N° interno *</span>
+        <input class="busca" id="mq-cod" value="${v('codigo_interno')}" placeholder="h13"></label>
+      <label style="flex:2;min-width:160px"><span class="field-l">Máquina</span>
+        <input class="busca" id="mq-maq" value="${v('maquina')}" placeholder="HUSQ 143"></label>
+      <label style="flex:1;min-width:140px"><span class="field-l">Tipo</span>
+        <input class="busca" id="mq-tipo" list="mq-tipos" value="${v('tipo_equipo')}" placeholder="Motoguadaña"></label>
+    </div>
+    <datalist id="mq-tipos">${['Motoguadaña','Motosierra','Extensible','Sopladora','Mini tractor / Giro cero','Tractor','Hidrolavadora','Cortadora de pasto','Plana','Toyota / Camioneta','Camión','Hidro grúa'].map(t=>`<option value="${t}">`).join('')}</datalist>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <label style="flex:1;min-width:120px"><span class="field-l">Fecha de compra</span>
+        <input class="busca" id="mq-compra" type="date" value="${v('fecha_compra').slice(0,10)}"></label>
+      <label style="flex:1;min-width:120px"><span class="field-l">Precio</span>
+        <input class="busca" id="mq-precio" value="${v('precio_compra')}" placeholder="1150000"></label>
+      <label style="flex:1;min-width:140px"><span class="field-l">Alimentación</span>
+        <input class="busca" id="mq-alim" list="mq-alims" value="${v('alimentacion')}" placeholder="nafta"></label>
+      <datalist id="mq-alims"><option value="nafta"><option value="batería"><option value="eléctrica"><option value="diésel"></datalist>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <label style="flex:2;min-width:160px"><span class="field-l">Objetivo</span>
+        <select class="busca" id="mq-obj"><option value="">— sin asignar —</option>
+        ${objs.map(o=>`<option value="${o.id}" ${m&&m.objetivo_id===o.id?'selected':''}>${escStk(o.nombre)}</option>`).join('')}</select></label>
+      <label style="flex:1;min-width:120px"><span class="field-l">Estado</span>
+        <select class="busca" id="mq-estado">
+          ${['activa','taller','baja'].map(e=>`<option value="${e}" ${m&&m.estado===e?'selected':''}>${e}</option>`).join('')}</select></label>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <label style="flex:2;min-width:160px"><span class="field-l">Motivo de baja</span>
+        <input class="busca" id="mq-motivo" value="${v('motivo_baja')}" placeholder="pistón rayado"></label>
+      <label style="flex:1;min-width:120px"><span class="field-l">Fecha de baja</span>
+        <input class="busca" id="mq-fbaja" type="date" value="${v('fecha_baja').slice(0,10)}"></label>
+    </div>
+    <label style="display:block;margin-top:8px"><span class="field-l">Notas</span>
+      <input class="busca" id="mq-notas" value="${v('notas')}"></label>`;
+}
+function maqLeer(){
+  const g=id=>{const e=document.getElementById(id);return e?e.value.trim():'';};
+  return {codigo_interno:g('mq-cod'),maquina:g('mq-maq'),tipo_equipo:g('mq-tipo'),
+    fecha_compra:g('mq-compra'),precio_compra:g('mq-precio'),alimentacion:g('mq-alim'),
+    objetivo_id:g('mq-obj')||null,estado:g('mq-estado'),motivo_baja:g('mq-motivo'),
+    fecha_baja:g('mq-fbaja'),notas:g('mq-notas')};
+}
+function modalMaquina(m){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:640px">
+    <h3>${m?'Editar máquina':'Nueva máquina'}</h3>
+    ${maqCampos(m)}
+    <div class="modal-acciones">
+      ${m?`<button class="btn ghost" id="mq-del" style="color:var(--rojo);margin-right:auto">Eliminar</button>`:''}
+      <button class="btn ghost" id="mq-no">Cancelar</button>
+      <button class="btn" id="mq-si">Guardar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#mq-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  const del=bg.querySelector('#mq-del');
+  if(del)del.onclick=async()=>{
+    if(!await uiConfirm(`Se borra la máquina <b>${escStk(m.codigo_interno)}</b> del padrón. Su historial de taller no se toca.`,'Eliminar máquina',{ok:'Eliminar',danger:true}))return;
+    try{await api('/api/maquinas/'+m.id,{method:'DELETE'});cerrar();toast('Máquina eliminada');go('stock');}
+    catch(e){toast('No pude eliminar: '+e.message,'error');}
+  };
+  bg.querySelector('#mq-si').onclick=async()=>{
+    const body=maqLeer();
+    if(!body.codigo_interno){toast('Falta el N° interno','error');return;}
+    const btn=bg.querySelector('#mq-si');btn.disabled=true;btn.textContent='Guardando…';
+    try{
+      await api('/api/maquinas'+(m?'/'+m.id:''),{method:m?'PATCH':'POST',body:JSON.stringify(body)});
+      cerrar();toast(m?'Máquina actualizada':'Máquina dada de alta');go('stock');
+    }catch(e){btn.disabled=false;btn.textContent='Guardar';toast('No pude guardar: '+e.message,'error');}
+  };
+}
+function altaMaquina(){modalMaquina(null);}
+function editarMaquina(id){
+  const m=((maqData&&maqData.maquinas)||[]).find(x=>x.id===id);
+  if(m)modalMaquina(m);
+}
+
+/* Importar la planilla de Excel pegada. Primero previsualiza (no escribe
+   nada) y muestra qué leyó y qué no entendió; recién después inserta. */
+function importarMaquinas(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=190;
+  bg.innerHTML=`<div class="modal" style="max-width:720px">
+    <h3>Importar planilla de máquinas</h3>
+    <div class="sub" style="font-size:12.5px;margin-bottom:10px">Copiá las filas desde Excel <b>con la fila de títulos incluida</b> y pegalas acá. Reconoce las columnas por nombre: MAQUINA, N° INT, Objetivo, COMPRA, RECTIFICACIONES, FECHA REP., MOTIVO DE BAJA, FECHA BAJA, ESTADO.</div>
+    <label style="display:block;margin-bottom:8px"><span class="field-l">Tipo de equipo (si la planilla no trae columna Tipo)</span>
+      <input class="busca" id="im-tipo" placeholder="Motoguadaña"></label>
+    <textarea class="busca" id="im-txt" style="width:100%;height:190px;font-family:ui-monospace,monospace;font-size:11.5px" placeholder="MAQUINA	N° INT	Objetivo	COMPRA	..."></textarea>
+    <div id="im-res"></div>
+    <div class="modal-acciones">
+      <button class="btn ghost" id="im-no">Cancelar</button>
+      <button class="btn" id="im-ver">Previsualizar</button>
+      <button class="btn" id="im-si" style="display:none">Importar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('#im-no').onclick=cerrar;
+  bg.addEventListener('click',e=>{if(e.target===bg)cerrar();});
+  const cuerpo=()=>({texto:bg.querySelector('#im-txt').value,tipo_equipo:bg.querySelector('#im-tipo').value});
+  bg.querySelector('#im-ver').onclick=async()=>{
+    const out=bg.querySelector('#im-res');out.innerHTML='<div class="sub">Leyendo…</div>';
+    try{
+      const r=await api('/api/maquinas/importar',{method:'POST',body:JSON.stringify(Object.assign({previsualizar:true},cuerpo()))});
+      out.innerHTML=`<div class="aviso-amarillo" style="margin:10px 0">
+        Leí <b>${r.leidas}</b> filas · <b>${r.nuevas}</b> se van a dar de alta · ${r.ya_estaban} ya estaban en el padrón.
+        ${r.duplicadas_en_lo_pegado.length?`<div style="margin-top:4px">⚠ repetidas en lo pegado: ${r.duplicadas_en_lo_pegado.join(', ')}</div>`:''}
+        ${r.errores.length?`<div style="margin-top:6px"><b>${r.errores.length} avisos:</b><div style="max-height:110px;overflow:auto;font-size:11.5px">${r.errores.map(e=>'· '+escStk(e)).join('<br>')}</div></div>`:''}
+      </div>`;
+      bg.querySelector('#im-si').style.display=r.nuevas?'':'none';
+    }catch(e){out.innerHTML=`<div class="sub" style="color:var(--rojo);margin:8px 0">${e.message||'No pude leer'}</div>`;}
+  };
+  bg.querySelector('#im-si').onclick=async()=>{
+    const btn=bg.querySelector('#im-si');btn.disabled=true;btn.textContent='Importando…';
+    try{
+      const r=await api('/api/maquinas/importar',{method:'POST',body:JSON.stringify(cuerpo())});
+      cerrar();toast(`${r.insertadas} máquinas importadas`);stockTab='maquinas';go('stock');
+    }catch(e){btn.disabled=false;btn.textContent='Importar';toast('No pude importar: '+e.message,'error');}
+  };
+}
+
+function exportarMaquinas(){
+  const filas=maqFilas();
+  if(!filas.length){toast('No hay nada para exportar','error');return;}
+  const cols=['N° interno','Máquina','Tipo','Marca','Modelo','Alimentación','Objetivo','Compra','Precio','Estado','Rectificaciones','Motivo de baja','Fecha de baja','Vida (años)','Notas'];
+  const celda=v=>{const t=String(v==null?'':v);return /[";\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t;};
+  const l=[cols.join(';')];
+  filas.forEach(m=>l.push([m.codigo_interno,m.maquina,m.tipo_equipo,m.marca,m.modelo,m.alimentacion,
+    objNombre(m.objetivo_id)||m.objetivo_texto,m.fecha_compra,m.precio_compra,m.estado,
+    m.rectificaciones,m.motivo_baja,m.fecha_baja,m.vida_anios,m.notas].map(celda).join(';')));
+  const blob=new Blob(['\ufeff'+l.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='padron_maquinas.csv';document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
+  toast(`Exporté ${filas.length} máquinas`);
 }
 
 /* ── Solapa Detalle: una fila por máquina informada, filtrable por tipo
