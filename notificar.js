@@ -107,11 +107,18 @@ async function notificarCapatazTemplate(telefono, contentSid, variables) {
 // ── Mensajes de avance de estado para el capataz ─────────────
 // Cada estado tiene su mensaje propio; si el mecánico dejó un comentario,
 // se incluye textual para que el capataz sepa el detalle real.
+// `comentario` acepta un texto o una LISTA de observaciones. Al finalizar se
+// mandan todas las que dejó el taller, no solo la última: es lo que el capataz
+// necesita para saber qué se le hizo al equipo.
 function mensajeEstadoIncidencia(estado, { equipo, unidad, mecanico, comentario }) {
   const cab = `🔧 Equipo: ${equipo || '—'}\n` +
               (unidad ? `🔢 Unidad: ${unidad}\n` : '') +
               (mecanico ? `👨‍🔧 Mecánico: ${mecanico}\n` : '');
-  const nota = comentario ? `\n💬 Nota del mecánico:\n_"${comentario}"_\n` : '';
+  const lista = Array.isArray(comentario) ? comentario.filter(Boolean) : (comentario ? [comentario] : []);
+  const nota = !lista.length ? ''
+    : lista.length === 1
+      ? `\n💬 Nota del mecánico:\n_"${lista[0]}"_\n`
+      : `\n💬 Lo que hizo el taller:\n${lista.map(t => `• _${t}_`).join('\n')}\n`;
   const pie = `\n_EcoService · Taller_`;
   switch (estado) {
     case 'diagnostico':
