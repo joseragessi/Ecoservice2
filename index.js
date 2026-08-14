@@ -10,6 +10,7 @@ const { iniciarStock, tieneSesionActiva: tieneSesionStock,
         continuarStock, tienePedidoPendiente } = require('./stock');
 const { procesarFactura } = require('./facturas_bot');
 const { iniciarViajes, continuarViajes, tieneSesionViajes } = require('./viajes');
+const { iniciarEstaciones, continuarEstaciones, tieneSesionEstaciones } = require('./estaciones');
 const panelApi = require('./panel_api');
 const { router: appApi } = require('./app_api');
 const control = require('./control');
@@ -67,6 +68,11 @@ app.post('/webhook', async (req, res) => {
   const paraNumero = req.body.To;
   const mensaje    = req.body.Body || '';
   const numMedia   = parseInt(req.body.NumMedia || '0', 10);
+  // Ubicación compartida desde WhatsApp (clip → Ubicación). Twilio la manda
+  // en estos campos, no en el Body.
+  const ubicacion  = (req.body.Latitude && req.body.Longitude)
+    ? { lat: req.body.Latitude, lng: req.body.Longitude, etiqueta: req.body.Label || req.body.Address || '' }
+    : null;
 
   const esProveedores = NUMERO_PROVEEDORES && paraNumero === NUMERO_PROVEEDORES;
 
@@ -106,6 +112,11 @@ app.post('/webhook', async (req, res) => {
         if (respuesta && respuesta.__derivar === 'menu') {
           respuesta = await procesarMensaje(telefono, mensaje);
         }
+      } else if (await tieneSesionEstaciones(telefono)) {
+        respuesta = await continuarEstaciones(telefono, mensaje, ubicacion);
+        if (respuesta && respuesta.__derivar === 'menu') {
+          respuesta = await procesarMensaje(telefono, mensaje);
+        }
       } else if (await tieneSesionViajes(telefono)) {
         respuesta = await continuarViajes(telefono, mensaje);
       } else if (RE_VIAJES.test(mensaje.trim())) {
@@ -136,6 +147,11 @@ app.post('/webhook', async (req, res) => {
           respuesta = await iniciarStock(telefono, '');
         } else if (respuesta && respuesta.__derivar === 'viajes') {
           respuesta = await iniciarViajes(telefono, '');
+        } else if (respuesta && respuesta.__derivar === 'estaciones') {
+          // El capataz puede mandar la ubicación en el mismo mensaje que abre
+          // el flujo: si ya vino, se contesta directo sin pedírsela.
+          respuesta = await iniciarEstaciones(telefono, null);
+          if (ubicacion) respuesta = await continuarEstaciones(telefono, '', ubicacion);
         }
       }
     }
