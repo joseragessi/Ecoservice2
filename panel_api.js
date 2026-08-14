@@ -4251,6 +4251,251 @@ router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
   }
 });
 
+// ── Padrón de máquinas ────────────────────────────────────────
+// Una fila por máquina física. La llave es codigo_interno, normalizado en
+// codigo_norm para poder cruzarlo con incidencias.numero_unidad, que es
+// texto libre cargado por capataces ("h13", "H 13", "13").
+function normCodigo(v) {
+  return String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Fechas de la planilla: 1/03/2024, 30/9/2025, 2024-03-01, oct-21.
+// Devuelve YYYY-MM-DD o null. Nunca inventa: si no la entiende, null.
+function fechaPlanilla(v) {
+  const t = String(v || '').trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return t;
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) {
+    const d = m[1].padStart(2, '0'), mes = m[2].padStart(2, '0');
+    let a = m[3]; if (a.length === 2) a = (Number(a) > 70 ? '19' : '20') + a;
+    return `${a}-${mes}-${d}`;
+  }
+  // "oct-21" / "abr-20": mes abreviado + año de dos dígitos
+  const MESES = { ene: '01', feb: '02', mar: '03', abr: '04', may: '05', jun: '06',
+                  jul: '07', ago: '08', sep: '09', set: '09', oct: '10', nov: '11', dic: '12' };
+  m = t.toLowerCase().match(/^([a-záéíóú]{3})[\-\/ ](\d{1,4})$/);
+  if (m && MESES[m[1]]) {
+    const a = m[2];
+    // Solo año de 2 o 4 dígitos. "oct-3" es ambiguo (¿2003? ¿3 de octubre?
+    // ¿2023 cortado por Excel?) y no se adivina: vuelve null y se reporta
+    // como error para que se corrija en la planilla.
+    if (a.length === 4) return `${a}-${MESES[m[1]]}-01`;
+    if (a.length === 2) return `${(Number(a) > 70 ? '19' : '20') + a}-${MESES[m[1]]}-01`;
+    return null;
+  }
+  return null;
+}
+
+const CAMPOS_MAQUINA = ['codigo_interno', 'tipo_equipo', 'maquina', 'marca', 'modelo',
+  'alimentacion', 'numero_serie', 'fecha_compra', 'precio_compra', 'proveedor',
+  'objetivo_id', 'objetivo_texto', 'estado', 'rectificaciones', 'fecha_rectificacion',
+  'motivo_baja', 'fecha_baja', 'notas'];
+
+function limpiarMaquina(body) {
+  const out = {};
+  for (const k of CAMPOS_MAQUINA) {
+    if (body[k] === undefined) continue;
+    let v = body[k];
+    if (['fecha_compra', 'fecha_baja', 'fecha_rectificacion'].includes(k)) v = fechaPlanilla(v);
+    else if (k === 'precio_compra') v = v === '' || v == null ? null : Number(String(v).replace(/[^\d.,-]/g, '').replace(/\./g, '').replace(',', '.')) || null;
+    else if (k === 'objetivo_id') v = v || null;
+    else if (typeof v === 'string') v = v.trim() || null;
+    out[k] = v;
+  }
+  if (out.codigo_interno) out.codigo_norm = normCodigo(out.codigo_interno);
+  // Coherencia: si hay fecha de baja o motivo, la máquina está de baja.
+  if (out.fecha_baja || (out.motivo_baja && out.estado !== 'activa')) out.estado = out.estado === 'activa' ? 'baja' : (out.estado || 'baja');
+  return out;
+}
+
+// Listado del padrón, con la vida útil ya calculada por la vista.
+router.get('/api/maquinas', auth, async (req, res) => {
+  try {
+    let q = supabase.from('maquinas_vida').select('*').order('tipo_equipo').order('codigo_interno');
+    if (req.query.tipo) q = q.eq('tipo_equipo', req.query.tipo);
+    if (req.query.estado) q = q.eq('estado', req.query.estado);
+    const { data, error } = await q;
+    if (error) throw error;
+
+    // Objetivos para el selector y para mostrar el nombre.
+    const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
+    res.json({ maquinas: data || [], objetivos: objs || [] });
+  } catch (err) {
+    console.error('maquinas:', err);
+    res.status(500).json({ error: 'No pude cargar el padrón (¿corriste maquinas.sql?)' });
+  }
+});
+
+// Ficha: la máquina + TODAS sus reparaciones, cruzadas por número interno.
+// Esto es lo que hoy no existe: stock y taller no se hablaban.
+router.get('/api/maquinas/:id', auth, async (req, res) => {
+  try {
+    const { data: maq, error } = await supabase.from('maquinas_vida').select('*').eq('id', req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!maq) return res.status(404).json({ error: 'No encontré esa máquina' });
+
+    // numero_unidad es texto libre: se compara normalizado, no por igualdad.
+    const { data: incs } = await supabase.from('incidencias')
+      .select('id, numero_unidad, tipo_equipo, tipo_falla, descripcion, prioridad, estado, created_at, fecha_finalizado, puntos_ia, puntos_ia_horas, mecanicos(nombre), repuestos_taller(items,nota_precio,estado)')
+      .order('created_at', { ascending: false }).limit(500);
+    const suyas = (incs || []).filter(i => normCodigo(i.numero_unidad) === maq.codigo_norm
+      && (!maq.tipo_equipo || !i.tipo_equipo || normCodigo(i.tipo_equipo) === normCodigo(maq.tipo_equipo)));
+
+    // Plata: solo lo que tiene precio cargado en la nota de pedido.
+    let gastoRepuestos = 0, conPrecio = 0;
+    suyas.forEach(i => (i.repuestos_taller || []).forEach(r => {
+      if (r.nota_precio != null) { gastoRepuestos += Number(r.nota_precio) || 0; conPrecio++; }
+    }));
+    const horas = suyas.reduce((a, i) => a + (Number(i.puntos_ia_horas) || 0), 0);
+
+    res.json({ maquina: maq, reparaciones: suyas,
+      resumen: { total: suyas.length, gasto_repuestos: gastoRepuestos, repuestos_con_precio: conPrecio,
+                 horas_taller: Math.round(horas * 10) / 10 } });
+  } catch (err) {
+    console.error('maquina ficha:', err);
+    res.status(500).json({ error: 'No pude cargar la ficha' });
+  }
+});
+
+router.post('/api/maquinas', auth, async (req, res) => {
+  try {
+    const fila = limpiarMaquina(req.body || {});
+    if (!fila.codigo_interno) return res.status(422).json({ error: 'Falta el número interno' });
+    const { data, error } = await supabase.from('maquinas').insert(fila).select().single();
+    if (error) {
+      if (String(error.message || '').includes('duplicate')) return res.status(422).json({ error: `Ya existe una máquina con el número ${fila.codigo_interno}` });
+      throw error;
+    }
+    console.log(`[maquinas] alta ${fila.codigo_interno} (${fila.tipo_equipo || '?'}) por ${req.usuario || '?'}`);
+    res.json(data);
+  } catch (err) {
+    console.error('alta maquina:', err);
+    res.status(500).json({ error: 'No pude dar de alta la máquina' });
+  }
+});
+
+router.patch('/api/maquinas/:id', auth, async (req, res) => {
+  try {
+    const fila = limpiarMaquina(req.body || {});
+    fila.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from('maquinas').update(fila).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('editar maquina:', err);
+    res.status(500).json({ error: 'No pude guardar los cambios' });
+  }
+});
+
+router.delete('/api/maquinas/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('maquinas').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude borrar la máquina' });
+  }
+});
+
+// Importar la planilla pegada desde Excel (TSV o CSV con ;).
+// Modo previsualizar: no escribe nada, devuelve lo que haría.
+router.post('/api/maquinas/importar', auth, async (req, res) => {
+  try {
+    const texto = String((req.body && req.body.texto) || '');
+    const previsualizar = !!(req.body && req.body.previsualizar);
+    const tipoDefault = String((req.body && req.body.tipo_equipo) || '').trim() || null;
+    const lineas = texto.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lineas.length) return res.status(422).json({ error: 'No pegaste nada' });
+
+    const partir = l => l.includes('\t') ? l.split('\t') : l.split(';');
+    // Cabecera: se busca por nombre, no por posición — el orden de columnas
+    // de la planilla puede cambiar.
+    const cab = partir(lineas[0]).map(h => normCodigo(h));
+    const col = (...nombres) => {
+      for (const n of nombres) { const i = cab.indexOf(normCodigo(n)); if (i >= 0) return i; }
+      return -1;
+    };
+    const iMaq = col('maquina'), iNum = col('nint', 'n int', 'numero interno', 'interno'),
+          iObj = col('objetivo'), iCom = col('compra', 'fecha compra'),
+          iRec = col('rectificaciones'), iFRep = col('fecha rep', 'fecha rep.'),
+          iMot = col('motivo de baja', 'motivo baja'), iFBaja = col('fecha baja'),
+          iEst = col('estado'), iTipo = col('tipo', 'tipo equipo');
+    if (iNum < 0) return res.status(422).json({ error: 'No encontré la columna del número interno (N° INT). Pegá también la fila de títulos.' });
+
+    const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
+    const buscarObj = txt => {
+      const n = normCodigo(txt); if (!n) return null;
+      const ex = (objs || []).find(o => normCodigo(o.nombre) === n);
+      if (ex) return ex.id;
+      const parcial = (objs || []).filter(o => normCodigo(o.nombre).includes(n) || n.includes(normCodigo(o.nombre)));
+      return parcial.length === 1 ? parcial[0].id : null;   // ambiguo → texto libre
+    };
+
+    const filas = [], errores = [];
+    for (let i = 1; i < lineas.length; i++) {
+      const c = partir(lineas[i]);
+      const val = ix => ix >= 0 && c[ix] != null ? String(c[ix]).trim() : '';
+      const codigo = val(iNum);
+      if (!codigo) continue;                       // fila de totales o vacía
+      if (/^total/i.test(codigo)) continue;
+      const estadoTxt = val(iEst).toLowerCase();
+      const fechaBaja = fechaPlanilla(val(iFBaja));
+      const motivo = val(iMot);
+      const estado = estadoTxt.startsWith('baja') || fechaBaja || (motivo && !estadoTxt.startsWith('activ')) ? 'baja' : 'activa';
+      const objTxt = val(iObj);
+      const fila = {
+        codigo_interno: codigo, codigo_norm: normCodigo(codigo),
+        tipo_equipo: val(iTipo) || tipoDefault,
+        maquina: val(iMaq) || null,
+        fecha_compra: fechaPlanilla(val(iCom)),
+        objetivo_id: buscarObj(objTxt), objetivo_texto: objTxt || null,
+        estado,
+        rectificaciones: val(iRec) || null,
+        fecha_rectificacion: fechaPlanilla(val(iFRep)),
+        motivo_baja: motivo || null, fecha_baja: fechaBaja,
+      };
+      if (!fila.fecha_compra && val(iCom)) errores.push(`${codigo}: no entendí la fecha de compra "${val(iCom)}"`);
+      if (!fila.fecha_baja && val(iFBaja)) errores.push(`${codigo}: no entendí la fecha de baja "${val(iFBaja)}" (queda de baja, sin fecha)`);
+      // Una baja anterior a la compra no puede ser: rompe la vida útil.
+      if (fila.fecha_compra && fila.fecha_baja && fila.fecha_baja < fila.fecha_compra)
+        errores.push(`${codigo}: la baja (${fila.fecha_baja}) es ANTERIOR a la compra (${fila.fecha_compra}) — revisá la planilla`);
+      filas.push(fila);
+    }
+    if (!filas.length) return res.status(422).json({ error: 'No encontré filas con número interno' });
+
+    // Repetidos dentro de lo pegado
+    const vistos = new Set(), dupes = [];
+    filas.forEach(f => { if (vistos.has(f.codigo_norm)) dupes.push(f.codigo_interno); vistos.add(f.codigo_norm); });
+
+    const { data: existentes } = await supabase.from('maquinas').select('codigo_norm');
+    const yaEstan = new Set((existentes || []).map(m => m.codigo_norm));
+    const nuevas = filas.filter(f => !yaEstan.has(f.codigo_norm));
+    const repetidas = filas.filter(f => yaEstan.has(f.codigo_norm));
+
+    if (previsualizar) {
+      return res.json({ previsualizacion: true, leidas: filas.length, nuevas: nuevas.length,
+        ya_estaban: repetidas.length, duplicadas_en_lo_pegado: dupes, errores,
+        muestra: nuevas.slice(0, 5) });
+    }
+
+    let insertadas = 0;
+    for (let i = 0; i < nuevas.length; i += 100) {
+      const tanda = nuevas.slice(i, i + 100).filter((f, ix, arr) => arr.findIndex(x => x.codigo_norm === f.codigo_norm) === ix);
+      const { error } = await supabase.from('maquinas').insert(tanda);
+      if (error) throw error;
+      insertadas += tanda.length;
+    }
+    console.log(`[maquinas] importadas ${insertadas} de ${filas.length} por ${req.usuario || '?'}`);
+    res.json({ insertadas, leidas: filas.length, ya_estaban: repetidas.length, errores });
+  } catch (err) {
+    console.error('importar maquinas:', err);
+    res.status(500).json({ error: 'No pude importar: ' + (err.message || err) });
+  }
+});
+
 // Borrar la respuesta de un censo (los equipos informados) y dejarlo
 // pendiente otra vez. Pensado para limpiar pruebas sin tocar la base.
 // No elimina la fila del censo: si se borrara, el objetivo desaparecería
