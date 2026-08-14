@@ -237,7 +237,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     })();
 
-    const [fact, ins, carg, reps, censos, objs, invFact, repu] = await Promise.all([
+    const [fact, ins, carg, reps, censos, objs, invFact, repu, viaj] = await Promise.all([
       supabase.from('facturas_proveedor').select('estado, total'),
       supabase.from('pedidos_insumos').select('estado, created_at, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item)'),
       supabase.from('cargas_combustible').select('estado, litros_total, fecha').neq('estado', 'anulada'),
@@ -246,6 +246,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       supabase.from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo'),
       supabaseCompras.from('facturas').select('*'),
       supabase.from('repuestos_taller').select('id, estado, nota_precio, estado_desde, created_at'),
+      supabase.from('viajes_bateas').select('fecha, total_bateas, capataz_id, unidad_id').neq('estado', 'anulado'),
     ]);
 
     const facturas = fact.data || [], insumos = ins.data || [], cargas = carg.data || [];
@@ -451,6 +452,53 @@ router.get('/api/dashboard', auth, async (req, res) => {
         && diasDesde(r.estado_desde || r.created_at) > 3).length,
     };
 
+    // ── Bateas: ritmo del mes contra el anterior a igual día ────
+    const viajes = viaj.data || [];
+    const diaDeFecha = f => Number(String(f || '').slice(8, 10)) || 99;
+    const bateasDe = (mes, hastaDia) => {
+      const v = viajes.filter(x => mesDe(x.fecha) === mes && (!hastaDia || diaDeFecha(x.fecha) <= hastaDia));
+      const bat = v.reduce((a, x) => a + (Number(x.total_bateas) || 0), 0);
+      return { bateas: bat, jornadas: v.length, prom: v.length ? bat / v.length : 0 };
+    };
+    const batMes = bateasDe(periodo), batAntIgual = bateasDe(mesAnterior, diaHoy), batAntTotal = bateasDe(mesAnterior);
+    const bateas = {
+      bateas: batMes.bateas, jornadas: batMes.jornadas, prom_jornada: batMes.prom,
+      m3: batMes.bateas * 14,
+      anterior_mismo_dia: batAntIgual.bateas,
+      anterior_total: batAntTotal.bateas,
+      prom_anterior: batAntTotal.prom,
+      var_pct: batAntIgual.bateas ? ((batMes.bateas - batAntIgual.bateas) * 100 / batAntIgual.bateas) : null,
+      proyectado: diaHoy > 0 ? Math.round(batMes.bateas * (diasDelMes / diaHoy)) : batMes.bateas,
+    };
+
+    // ── Combustible: litros del mes contra el anterior a igual día ──
+    const litrosDe = (mes, hastaDia) => cargas
+      .filter(c => mesDe(c.fecha) === mes && (!hastaDia || diaDeFecha(c.fecha) <= hastaDia))
+      .reduce((a, c) => a + (Number(c.litros_total) || 0), 0);
+    const litMes = litrosDe(periodo), litAntIgual = litrosDe(mesAnterior, diaHoy);
+    const combustibleMes = {
+      litros: litMes, cargas: cargasMes.length,
+      anterior_mismo_dia: litAntIgual, anterior_total: litrosDe(mesAnterior),
+      var_pct: litAntIgual ? ((litMes - litAntIgual) * 100 / litAntIgual) : null,
+      proyectado: diaHoy > 0 ? litMes * (diasDelMes / diaHoy) : litMes,
+      sin_facturar: cuenta(cargas, 'estado', 'sin_facturar'),
+    };
+
+    // ── Tiempo de máquina frenada: lo que cuesta de verdad una rotura ──
+    // Se mide sobre las incidencias con equipo_parado: cuánto estuvo la
+    // máquina sin poder trabajar. Las abiertas cuentan hasta hoy.
+    const paradasCerradas = incid.filter(i => i.equipo_parado && i.estado === 'finalizado'
+      && mesDe(i.fecha_finalizado) === periodo);
+    const dParadas = paradasCerradas.map(i => dias(i.created_at, i.fecha_finalizado)).filter(x => x != null);
+    const diasAbiertas = activas.filter(i => i.equipo_parado).reduce((a, i) => a + diasDesde(i.created_at), 0);
+    const frenado = {
+      prom_dias: dParadas.length ? dParadas.reduce((a, b) => a + b, 0) / dParadas.length : null,
+      peor: dParadas.length ? Math.max(...dParadas) : null,
+      resueltas_mes: dParadas.length,
+      dias_acumulados_abiertas: diasAbiertas,
+      parada_mas_vieja: paradas.length ? paradas[0].dias : 0,
+    };
+
     // ── Alertas: lo que hay que mirar hoy. Solo entra lo que tiene una
     // acción concreta detrás, ordenado por urgencia.
     const alertas = [];
@@ -491,6 +539,9 @@ router.get('/api/dashboard', auth, async (req, res) => {
       },
       envejecimiento,
       estancadas,
+      bateas,
+      combustible_mes: combustibleMes,
+      frenado,
       repuestos_frenados: repuestosFrenados,
       // Lo que requiere acción, en orden de urgencia
       acciones: {
@@ -2162,9 +2213,18 @@ router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
 // ── COMPRAS (segunda base de datos) ───────────────────────────
 // Las tablas guardan pocos campos duros + un jsonb `data` con el resto.
 // Aplanamos el data para que el front lo consuma directo.
+// Las facturas guardan casi todo dentro del jsonb `data`, y algunas columnas
+// duras de la tabla repiten esos campos. El spread de las columnas va después,
+// así que una columna VACÍA pisaba el valor bueno que estaba en `data`: la
+// factura quedaba sin fecha_factura y no caía en ningún mes (gasto del mes en
+// $0 con facturas cargadas, 14-ago). Ahora las columnas nulas no pisan nada.
 function aplanar(row) {
   const { data, ...duros } = row;
-  return { ...(data || {}), ...duros };
+  const out = { ...(data || {}) };
+  for (const [k, v] of Object.entries(duros)) {
+    if (v !== null && v !== undefined && v !== '') out[k] = v;
+  }
+  return out;
 }
 
 // ── Flexxus ERP ───────────────────────────────────────────────
