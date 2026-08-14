@@ -237,7 +237,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     })();
 
-    const [fact, ins, carg, reps, censos, objs, invFact] = await Promise.all([
+    const [fact, ins, carg, reps, censos, objs, invFact, repu] = await Promise.all([
       supabase.from('facturas_proveedor').select('estado, total'),
       supabase.from('pedidos_insumos').select('estado, created_at, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item)'),
       supabase.from('cargas_combustible').select('estado, litros_total, fecha').neq('estado', 'anulada'),
@@ -245,6 +245,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       supabase.from('censos_stock').select('periodo, estado').eq('periodo', periodo),
       supabase.from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo'),
       supabaseCompras.from('facturas').select('*'),
+      supabase.from('repuestos_taller').select('id, estado, nota_precio, estado_desde, created_at'),
     ]);
 
     const facturas = fact.data || [], insumos = ins.data || [], cargas = carg.data || [];
@@ -357,8 +358,140 @@ router.get('/api/dashboard', auth, async (req, res) => {
     // ── Insumos pendientes (para la lista de acción)
     const insPend = insumos.filter(p => p.estado === 'pendiente' || p.estado === 'en_compra');
 
+    // ═══ DESVÍOS ═══════════════════════════════════════════════
+    // Un número solo no dice nada: lo que sirve es contra qué se compara.
+
+    // El mes en curso está incompleto. Comparar sus 14 días contra un mes
+    // entero SIEMPRE da caída y no significa nada. Se compara a IGUAL DÍA
+    // y se proyecta el cierre con el ritmo de lo que va del mes.
+    const hoyCba = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
+    const diaHoy = hoyCba.getDate();
+    const diasDelMes = new Date(hoyCba.getFullYear(), hoyCba.getMonth() + 1, 0).getDate();
+    const diaDeFactura = f => {
+      const s2 = String(f.fecha_factura || '').trim();
+      let m = s2.match(/^\d{4}-\d{2}-(\d{2})/); if (m) return Number(m[1]);
+      m = s2.match(/^(\d{1,2})\/\d{1,2}\/\d{4}/); if (m) return Number(m[1]);
+      return 99;
+    };
+    const gastoAntMismoDia = compras
+      .filter(f => mesFac(f) === mesAnterior && diaDeFactura(f) <= diaHoy)
+      .reduce((x, f) => x + totalFac(f), 0);
+    const proyeccion = diaHoy > 0 ? gastoMes * (diasDelMes / diaHoy) : gastoMes;
+    // Promedio de los meses cerrados con movimiento (hasta 3)
+    const cerrados = evolucion.slice(0, -1).filter(e => e.total > 0).slice(-3);
+    const promedio3 = cerrados.length ? cerrados.reduce((a, e) => a + e.total, 0) / cerrados.length : null;
+
+    // Objetivos: lo que importa no es quién gastó más, sino quién se salió de
+    // SU propio promedio. Un objetivo grande siempre encabeza la lista; uno
+    // que duplicó lo suyo es el que hay que mirar.
+    const gastoObjMes = (mes) => {
+      const acc = {};
+      compras.filter(f => mesFac(f) === mes).forEach(f => {
+        const tot = totalFac(f); if (!tot) return;
+        const items = f.items || [];
+        const montoIt = it => (Number(it.monto_sin_iva) || 0) + (Number(it.monto_iva) || 0);
+        const objTotal = (f.totalAssign && f.totalAssign.objetivo) || null;
+        if (f.assignmentMode === 'per-item' && f.assignments && items.length) {
+          const sumIt = items.reduce((x, it) => x + montoIt(it), 0) || 1;
+          items.forEach((it, ix) => {
+            const asg = f.assignments[ix] || {};
+            const k = asg.objetivo || objTotal || 'Sin asignar';
+            acc[k] = (acc[k] || 0) + tot * (montoIt(it) / sumIt);
+          });
+        } else {
+          const k = objTotal || 'Sin asignar';
+          acc[k] = (acc[k] || 0) + tot;
+        }
+      });
+      return acc;
+    };
+    const histObj = {};
+    evolucion.slice(0, -1).forEach(e => {
+      const g = gastoObjMes(e.mes);
+      Object.entries(g).forEach(([k, v]) => { (histObj[k] = histObj[k] || []).push(v); });
+    });
+    const desviosObjetivo = objetivosGasto.map(o => {
+      const hist = histObj[o.nombre] || [];
+      const prom = hist.length ? hist.reduce((a, b) => a + b, 0) / hist.length : null;
+      const proy = diaHoy > 0 ? o.total * (diasDelMes / diaHoy) : o.total;
+      return { nombre: o.nombre, total: o.total, proyectado: proy, promedio: prom,
+               veces: prom ? proy / prom : null, meses_historia: hist.length };
+    }).sort((a, b) => (b.veces || 0) - (a.veces || 0));
+
+    // ── Taller: envejecimiento. No alcanza con "13 activas": importa cuántas
+    // llevan demasiado tiempo abiertas.
+    const diasDesde = iso => Math.floor((Date.now() - new Date(iso)) / 86400000);
+    const edades = activas.map(i => diasDesde(i.created_at));
+    const envejecimiento = {
+      hasta_3: edades.filter(d => d <= 3).length,
+      de_4_a_7: edades.filter(d => d > 3 && d <= 7).length,
+      de_8_a_15: edades.filter(d => d > 7 && d <= 15).length,
+      mas_15: edades.filter(d => d > 15).length,
+    };
+    // Estancadas: abiertas hace más de 7 días y que NO están esperando
+    // repuestos (esas tienen motivo). Son las que se durmieron.
+    const estancadas = activas
+      .filter(i => diasDesde(i.created_at) > 7 && i.estado !== 'esperando_repuestos')
+      .map(i => ({
+        equipo: [i.tipo_equipo || 'Equipo', i.numero_unidad ? 'N° ' + i.numero_unidad : ''].filter(Boolean).join(' '),
+        estado: i.estado, prioridad: i.prioridad,
+        mecanico: i.mecanicos ? i.mecanicos.nombre : 'sin asignar',
+        objetivo: i.objetivos ? i.objetivos.nombre : '',
+        dias: diasDesde(i.created_at),
+      })).sort((a, b) => b.dias - a.dias);
+
+    // ── Plata frenada en el circuito de repuestos
+    const repuestos = repu.data || [];
+    const esperandoAprob = repuestos.filter(r => r.estado === 'cotizado');
+    const repuestosFrenados = {
+      cotizados: esperandoAprob.length,
+      monto: esperandoAprob.reduce((a, r) => a + (Number(r.nota_precio) || 0), 0),
+      sin_cotizar: repuestos.filter(r => r.estado === 'pedido' || r.estado === 'en_cotizacion').length,
+      demorados: repuestos.filter(r => ['pedido', 'en_cotizacion', 'cotizado'].includes(r.estado)
+        && diasDesde(r.estado_desde || r.created_at) > 3).length,
+    };
+
+    // ── Alertas: lo que hay que mirar hoy. Solo entra lo que tiene una
+    // acción concreta detrás, ordenado por urgencia.
+    const alertas = [];
+    const paradasViejas = paradas.filter(p => p.dias >= 3);
+    if (paradasViejas.length) alertas.push({ nivel: 'alto', modulo: 'reparaciones',
+      texto: `${paradasViejas.length} máquina(s) parada(s) hace 3 días o más`,
+      detalle: paradasViejas.slice(0, 3).map(p => `${p.equipo} (${p.dias} d)`).join(' · ') });
+    if (repuestosFrenados.cotizados) alertas.push({ nivel: 'alto', modulo: 'compras',
+      texto: `${repuestosFrenados.cotizados} pedido(s) de repuestos esperando tu aprobación`,
+      detalle: repuestosFrenados.monto ? '$' + Math.round(repuestosFrenados.monto).toLocaleString('es-AR') + ' frenados' : '' });
+    if (estancadas.length) alertas.push({ nivel: 'medio', modulo: 'reparaciones',
+      texto: `${estancadas.length} reparación(es) abiertas hace más de 7 días`,
+      detalle: estancadas.slice(0, 3).map(e => `${e.equipo} (${e.dias} d)`).join(' · ') });
+    if (censoPend) alertas.push({ nivel: 'medio', modulo: 'stock',
+      texto: `${censoPend} objetivo(s) no informaron el stock de este mes`, detalle: '' });
+    if (cuenta(facturas, 'estado', 'pendiente')) alertas.push({ nivel: 'medio', modulo: 'compras',
+      texto: `${cuenta(facturas, 'estado', 'pendiente')} factura(s) sin imputar`, detalle: '' });
+    if (sinAsignar > 0) alertas.push({ nivel: 'medio', modulo: 'compras',
+      texto: 'Gasto del mes sin objetivo asignado',
+      detalle: '$' + Math.round(sinAsignar).toLocaleString('es-AR') + ' que no se puede atribuir' });
+    if (insPend.length) alertas.push({ nivel: 'bajo', modulo: 'insumos',
+      texto: `${insPend.length} pedido(s) de insumos pendientes`, detalle: '' });
+    const ordenNivel = { alto: 0, medio: 1, bajo: 2 };
+    alertas.sort((a, b) => ordenNivel[a.nivel] - ordenNivel[b.nivel]);
+
     res.json({
       periodo,
+      dia_del_mes: diaHoy,
+      dias_del_mes: diasDelMes,
+      alertas,
+      desvios: {
+        gasto_vs_mismo_dia: gastoAntMismoDia,
+        gasto_proyectado: proyeccion,
+        promedio_3m: promedio3,
+        var_mismo_dia: gastoAntMismoDia ? ((gastoMes - gastoAntMismoDia) * 100 / gastoAntMismoDia) : null,
+        var_vs_promedio: promedio3 ? ((proyeccion - promedio3) * 100 / promedio3) : null,
+        objetivos: desviosObjetivo,
+      },
+      envejecimiento,
+      estancadas,
+      repuestos_frenados: repuestosFrenados,
       // Lo que requiere acción, en orden de urgencia
       acciones: {
         facturas_pendientes: cuenta(facturas, 'estado', 'pendiente'),
