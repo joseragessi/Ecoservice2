@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-14 · padrón de máquinas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-14 · stock en 3 pestañas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1260,7 +1260,7 @@ function selUniAna(key){
 }
 
 /* ===== Stock de maquinaria ===== */
-let stockTab='censo';    // 'censo' | 'inventario' | 'consolidado'
+let stockTab='maquinas'; // 'maquinas' | 'censo' | 'control' (+ subvistas de Control)
 let stockPeriodo=null;   // null = período actual
 let stockData=null;      // último GET /api/stock (para el detalle lateral)
 let stockSelId=null;     // censo seleccionado
@@ -1275,14 +1275,19 @@ let stockDetBusca='';    // buscador de la solapa Detalle
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 function mesStk(p){const[a,m]=String(p).split('-').map(Number);const n=MESES_STK[(m||1)-1]||'';return n.charAt(0).toUpperCase()+n.slice(1)+' '+(a||'');}
 function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-AR',{timeZone:'America/Argentina/Cordoba',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
-function tabsStk(){return `<div class="toggle-imp" style="margin-bottom:16px">
-  <button class="${stockTab==='censo'?'on':''}" onclick="stockTab='censo';go('stock')">Censo</button>
-  <button class="${stockTab==='objetivo'?'on':''}" onclick="stockTab='objetivo';go('stock')">Por objetivo</button>
-  <button class="${stockTab==='inventario'?'on':''}" onclick="stockTab='inventario';go('stock')">Inventario</button>
-  <button class="${stockTab==='consolidado'?'on':''}" onclick="stockTab='consolidado';go('stock')">Consolidado</button>
-  <button class="${stockTab==='detalle'?'on':''}" onclick="stockTab='detalle';go('stock')">Detalle</button>
-  <button class="${stockTab==='maquinas'?'on':''}" onclick="stockTab='maquinas';go('stock')">Máquinas</button>
-</div>`;}
+/* Tres pestañas, no seis. Máquinas = qué tenemos (padrón), Censo = qué
+   informaron los capataces, Control = las dos cosas comparadas.
+   Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
+   en el código y se llegan desde Control mientras el padrón se termina de
+   cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
+const STOCK_TABS=[['maquinas','Máquinas'],['censo','Censo'],['control','Control']];
+const STOCK_SUB={objetivo:'Por objetivo',inventario:'Inventario',consolidado:'Consolidado',detalle:'Detalle censado'};
+function tabsStk(){
+  const sub=STOCK_SUB[stockTab];
+  return `<div class="toggle-imp" style="margin-bottom:${sub?'8px':'16px'}">
+  ${STOCK_TABS.map(([k,t])=>`<button class="${stockTab===k||(sub&&k==='control')?'on':''}" onclick="stockTab='${k}';go('stock')">${t}</button>`).join('')}
+</div>${sub?`<div class="sub" style="margin-bottom:14px;font-size:12px">Control › <b>${sub}</b>
+  <button class="btn-salir" style="padding:2px 8px;font-size:11px;margin-left:8px" onclick="stockTab='control';go('stock')">← volver</button></div>`:''}`;}
 function difStk(d){
   if(d==null)return'<span class="sub">—</span>';
   if(d===0)return'<span class="badge b-green">ok</span>';
@@ -1295,7 +1300,93 @@ async function vStock(view){
   if(stockTab==='objetivo')return vStockObjetivos(view);
   if(stockTab==='detalle')return vStockDetalle(view);
   if(stockTab==='maquinas')return vMaquinas(view);
+  if(stockTab==='control')return vStockControl(view);
   return vStockCenso(view);
+}
+
+/* ── Control: padrón contra censo ─────────────────────────────
+   La pregunta que ninguna de las vistas viejas contestaba: de las máquinas
+   que figuran en un objetivo, ¿cuáles informó el capataz y cuáles no?
+   El cruce es por NÚMERO, no por cantidad — así aparece la máquina puntual
+   que falta, no un total que no cierra. */
+function ctrlCruce(maquinas,censos){
+  const norm=v=>String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+  const porObj={};
+  const nombreObj=id=>{const o=((maqData&&maqData.objetivos)||[]).find(x=>x.id===id);return o?o.nombre:null;};
+  const slot=(id,nombre)=>{
+    const k=id||('txt:'+norm(nombre));
+    return porObj[k]||(porObj[k]={id,nombre:nombre||'— sin objetivo —',padron:[],censadas:new Set(),
+      censoTotal:0,respondio:false,capataz:null,tiposCenso:{}});
+  };
+  // Padrón: solo activas — una máquina de baja no tiene por qué estar en el objetivo.
+  (maquinas||[]).filter(m=>m.estado==='activa').forEach(m=>{
+    slot(m.objetivo_id,nombreObj(m.objetivo_id)||m.objetivo_texto).padron.push(m);
+  });
+  (censos||[]).forEach(c=>{
+    if(c.estado!=='respondido')return;
+    const sl=slot(c.objetivo_id,c.objetivos?c.objetivos.nombre:null);
+    sl.respondio=true;sl.capataz=c.capataces?c.capataces.nombre:null;
+    (c.censos_stock_items||[]).forEach(i=>{
+      sl.censoTotal+=Number(i.cantidad)||0;
+      sl.tiposCenso[i.tipo_equipo]=(sl.tiposCenso[i.tipo_equipo]||0)+(Number(i.cantidad)||0);
+      (i.numeros||[]).forEach(n=>{const nn=norm(n);if(nn&&nn!=='sn')sl.censadas.add(nn);});
+    });
+  });
+  return Object.values(porObj).map(o=>{
+    const faltan=o.padron.filter(m=>!o.censadas.has(m.codigo_norm));
+    const codigosPadron=new Set(o.padron.map(m=>m.codigo_norm));
+    const sobran=[...o.censadas].filter(n=>!codigosPadron.has(n));
+    return Object.assign(o,{faltan,sobran,dif:o.censoTotal-o.padron.length});
+  }).sort((a,b)=>b.padron.length-a.padron.length||String(a.nombre).localeCompare(String(b.nombre)));
+}
+
+async function vStockControl(view){
+  try{
+    const qs=stockPeriodo?'?periodo='+encodeURIComponent(stockPeriodo):'';
+    const [d,mq]=await Promise.all([api('/api/stock'+qs),api('/api/maquinas')]);
+    stockData=d;maqData=mq;
+    const filas=ctrlCruce(mq.maquinas||[],d.censos||[]);
+    const conPadron=filas.filter(f=>f.padron.length);
+    const totalPadron=conPadron.reduce((a,f)=>a+f.padron.length,0);
+    const totalFaltan=conPadron.reduce((a,f)=>a+(f.respondio?f.faltan.length:0),0);
+    const sinResponder=filas.filter(f=>!f.respondio&&f.padron.length).length;
+    const selPer=`<select class="busca" style="width:auto" onchange="stockPeriodo=this.value;go('stock')">
+      ${d.periodos.map(p=>`<option value="${p}" ${p===d.periodo?'selected':''}>${mesStk(p)}</option>`).join('')}</select>`;
+
+    view.innerHTML=`
+    <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+      <div class="view-desc">Control · lo que figura en el padrón contra lo que informó cada capataz</div></div>
+      <div>${selPer}</div></div>
+    ${tabsStk()}
+    ${!totalPadron?`<div class="aviso-amarillo" style="margin-bottom:14px">Todavía no hay máquinas con objetivo asignado en el padrón, así que no hay con qué comparar. Cargalas en <b>Máquinas</b> y volvé acá.</div>`:''}
+    <div class="kpis" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-l">Máquinas en el padrón</div><div class="kpi-v">${totalPadron}</div>
+        <div class="kpi-d">activas y con objetivo</div></div>
+      <div class="kpi"><div class="kpi-l">No informadas</div><div class="kpi-v" style="color:${totalFaltan?'var(--rojo)':'var(--brote-2)'}">${totalFaltan}</div>
+        <div class="kpi-d">están en el padrón y el capataz no las listó</div></div>
+      <div class="kpi"><div class="kpi-l">Objetivos sin responder</div><div class="kpi-v">${sinResponder}</div>
+        <div class="kpi-d">con máquinas asignadas</div></div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Objetivo</th><th class="num">Padrón</th><th class="num">Censó</th><th class="num">Dif</th><th>No informadas</th><th>Informó de más</th></tr></thead>
+      <tbody>${filas.length?filas.map(f=>`<tr>
+        <td style="font-weight:500">${escStk(f.nombre)}${f.capataz?`<div class="sub" style="font-size:11px">${escStk(f.capataz)}</div>`:''}</td>
+        <td class="num mono">${f.padron.length||'—'}</td>
+        <td class="num mono">${f.respondio?f.censoTotal:'<span class="sub">sin responder</span>'}</td>
+        <td class="num">${f.respondio&&f.padron.length?difStk(f.dif):'<span class="sub">—</span>'}</td>
+        <td>${f.respondio&&f.faltan.length?`<div style="display:flex;gap:3px;flex-wrap:wrap">${f.faltan.map(m=>`<span class="uni-chip" style="background:var(--rojo-soft);color:var(--rojo);cursor:pointer" onclick="fichaMaquina('${m.id}')" title="${escStk(m.maquina||'')} · ver ficha">${escStk(m.codigo_interno)}</span>`).join('')}</div>`
+          :f.respondio?'<span class="sub">todas informadas</span>':'<span class="sub">—</span>'}</td>
+        <td>${f.sobran.length?`<div style="display:flex;gap:3px;flex-wrap:wrap">${f.sobran.map(n=>`<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)" title="El capataz la informó pero no está en el padrón">${escStk(n)}</span>`).join('')}</div>`:'<span class="sub">—</span>'}</td>
+      </tr>`).join(''):'<tr><td colspan="6"><div class="sub" style="padding:14px">Sin datos para este período.</div></td></tr>'}
+      </tbody></table></div>
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-title" style="margin-bottom:4px">Vistas anteriores</div>
+      <div class="sub" style="font-size:12px;margin-bottom:10px">Siguen disponibles mientras se termina de cargar el padrón.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${Object.entries(STOCK_SUB).map(([k,t])=>`<button class="btn-salir" onclick="stockTab='${k}';go('stock')">${t}</button>`).join('')}
+      </div>
+    </div>`;
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${e.message||'No pude cargar el control'}</div>`;}
 }
 
 /* ── Padrón de máquinas ───────────────────────────────────────
