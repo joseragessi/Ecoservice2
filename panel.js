@@ -6016,12 +6016,19 @@ function vComprasDetalle(view){
       <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>
       ${(()=>{const al=(inv.ivas||[]).filter(x=>Number(x.monto));
         if(!al.length)return '';
-        const suma=al.reduce((a,x)=>a+(Number(x.monto)||0),0);
-        const cierra=Math.abs(suma-(Number(inv.total_iva)||0))<=0.02;
+        const suma=Math.round(al.reduce((a,x)=>a+(Number(x.monto)||0),0)*100)/100;
+        const ivaTot=Number(inv.total_iva)||0;
+        const dif=Math.abs(suma-ivaTot);
+        // Las alícuotas mandan: si difieren por centavos se imputan igual y
+        // el total se ajusta a su suma. Solo se descartan si la diferencia es
+        // grande (falta una alícuota o se leyó mal).
+        const tol=Math.max(100,ivaTot*0.02);
         return `<div style="padding:2px 0 6px 12px">
           ${al.map(x=>`<div class="mcard-row" style="font-size:12px;padding:1px 0">
             <span class="sub">IVA ${x.porcentaje}%</span><span class="money sub">${money(x.monto)}</span></div>`).join('')}
-          ${cierra?'':`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(inv.total_iva)} — se va a imputar todo al 21%</div>`}
+          ${dif<=0.01?`<div class="sub" style="font-size:11px">se imputan por separado en Flexxus</div>`
+            :dif<=tol?`<div class="sub" style="font-size:11px;color:var(--diesel)">se imputan por separado · el IVA total se ajusta a ${money(suma)} (decía ${money(ivaTot)})</div>`
+            :`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(ivaTot)} — hay demasiada diferencia, se imputa todo al 21%. Corregilo con ✏️ Editar</div>`}
         </div>`;})()}
       ${(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
         <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
@@ -6553,6 +6560,20 @@ async function comprasExtraer(){
   comprasStep='assign';go('compras');
 }
 
+/* Al tocar una alícuota se recalcula el IVA total: son la misma plata vista
+   de dos formas, y si no cierran Flexxus recibe todo al 21%. */
+function comprasAlicuotaCambio(){
+  const g=id=>document.getElementById(id);
+  const al=(comprasExtracted&&comprasExtracted.ivas)||[];
+  let suma=0,n=0;
+  al.forEach((x,ix)=>{const m=g('cf-alic-m-'+ix);if(m){suma+=parseFloat(m.value)||0;n++;}});
+  if(!n)return;
+  const iva=g('cf-iva');
+  if(iva)iva.value=Math.round(suma*100)/100;
+  const av=g('cf-alic-aviso');
+  if(av)av.textContent=`Suman ${money(suma)} — es lo que va como IVA total.`;
+}
+
 // Lee lo que hay en el DOM y lo guarda en el estado (para no perderlo al re-renderizar)
 function comprasCaptura(){
   const g=id=>document.getElementById(id);
@@ -6565,6 +6586,14 @@ function comprasCaptura(){
     comprasExtracted.cuit=g('cf-cuit').value||null;
     comprasExtracted.total_sin_iva=parseFloat(g('cf-neto').value)||0;
     comprasExtracted.total_iva=parseFloat(g('cf-iva').value)||0;
+    // Alícuotas editadas a mano en el paso de revisión
+    if((comprasExtracted.ivas||[]).length){
+      comprasExtracted.ivas=comprasExtracted.ivas.map((x,ix)=>{
+        const p=g('cf-alic-p-'+ix),m=g('cf-alic-m-'+ix);
+        return {porcentaje:p?parseFloat(p.value)||0:x.porcentaje,
+                monto:m?parseFloat(m.value)||0:x.monto};
+      }).filter(x=>x.monto);
+    }
   }
   if(comprasAssignMode==='total'&&g('cf-obj')){
     comprasAssign={objetivo:g('cf-obj').value||'',unidad:g('cf-uni').value||'',comentario:g('cf-com').value||''};
@@ -6745,7 +6774,20 @@ function vComprasCarga(view){
             <div class="mm-field"><label>CUIT</label><input id="cf-cuit" value="${(d.cuit||'').replace(/"/g,'&quot;')}"></div>
             <div class="mm-field"><label>Neto (sin IVA)</label><input id="cf-neto" type="number" step="0.01" value="${Number(d.total_sin_iva)||0}"></div>
           </div>
-          <div class="mm-field"><label>IVA</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}"></div>
+          <div class="mm-field"><label>IVA${(d.ivas||[]).length>1?' (suma de las alícuotas)':''}</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}"></div>
+          ${(()=>{const al=(d.ivas||[]).filter(x=>Number(x.monto));
+            if(!al.length)return '';
+            return `<div class="mm-field" style="grid-column:1/-1">
+              <label>Alícuotas · van discriminadas a Flexxus</label>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${al.map((x,ix)=>`<div style="display:flex;align-items:center;gap:5px;background:var(--papel);padding:4px 8px;border-radius:7px">
+                  <input id="cf-alic-p-${ix}" type="number" step="0.5" value="${x.porcentaje}" style="width:62px;padding:3px 5px" onchange="comprasAlicuotaCambio()">
+                  <span class="sub" style="font-size:12px">%</span>
+                  <input id="cf-alic-m-${ix}" type="number" step="0.01" value="${x.monto}" style="width:130px;padding:3px 5px" onchange="comprasAlicuotaCambio()">
+                </div>`).join('')}
+              </div>
+              <div class="sub" id="cf-alic-aviso" style="font-size:11.5px;margin-top:4px"></div>
+            </div>`;})()}
         </div>
         <div class="mm-label">Ítems</div>
         <div class="tabla-wrap">
