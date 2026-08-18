@@ -453,7 +453,25 @@ async function imputarFactura(f, letra, opts = {}) {
   };
   if (iva > 0) {
     body.calculaiva = true;
-    body.iva = [{ monto: Math.round(iva * 100) / 100, porcentaje: 21 }];
+    // Alícuotas discriminadas. Muchas facturas traen DOS (21% y 10,5%) y
+    // antes se mandaba todo como 21%: el crédito fiscal quedaba mal
+    // acreditado. `f.ivas` viene del OCR ([{porcentaje, monto}]); si no
+    // está (facturas viejas o extracción sin alícuotas) se cae al 21%
+    // de siempre, que es lo que había.
+    const alicuotas = (Array.isArray(f.ivas) ? f.ivas : [])
+      .map(x => ({ porcentaje: Number(x.porcentaje) || 0, monto: Math.round((Number(x.monto) || 0) * 100) / 100 }))
+      .filter(x => x.porcentaje > 0 && x.monto);
+    const sumaAlic = alicuotas.reduce((a, x) => a + x.monto, 0);
+    // Solo se usan si cierran con el IVA total (tolerancia de un centavo por
+    // alícuota): si no cuadran, algo se leyó mal y es preferible el camino
+    // conocido antes que acreditar cualquier cosa.
+    const cierran = alicuotas.length && Math.abs(sumaAlic - iva) <= 0.01 * alicuotas.length + 0.01;
+    body.iva = cierran
+      ? alicuotas
+      : [{ monto: Math.round(iva * 100) / 100, porcentaje: 21 }];
+    if (alicuotas.length && !cierran) {
+      console.log(`[flexxus] alícuotas ignoradas: suman ${sumaAlic} y el IVA total es ${iva} — se manda todo al 21%`);
+    }
   }
   if (percepciones.length) {
     body.percepciones = percepciones.map(o => ({
