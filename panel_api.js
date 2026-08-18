@@ -2695,6 +2695,15 @@ function expandirFactura(d) {
     cuit: d.c ?? null,
     total_sin_iva: num(d.tn) || 0,
     total_iva: num(d.ti) || 0,
+    // Alícuotas discriminadas: [[21, 103281.87], [10.5, 700777.52]].
+    // Muchas facturas de ferretería/agro mezclan 21% y 10,5%; Flexxus
+    // acepta varias y hasta ahora se mandaba todo como 21%.
+    ivas: Array.isArray(d.iv)
+      ? d.iv.map(x => Array.isArray(x)
+            ? { porcentaje: num(x[0]) || 0, monto: num(x[1]) || 0 }
+            : { porcentaje: num(x && x.porcentaje) || 0, monto: num(x && x.monto) || 0 })
+          .filter(x => x.monto)
+      : [],
     items: Array.isArray(d.i) ? d.i.map(item) : [],
     otros_conceptos: Array.isArray(d.o) ? d.o.map(otro) : [],
   };
@@ -2843,18 +2852,38 @@ router.post('/api/compras/extract', auth, async (req, res) => {
   const t0 = Date.now();
   try {
     const { fileData, fileType } = req.body || {};
-    if (!fileData) return res.status(400).json({ error: 'Falta el archivo' });
-    const isImg = fileType && fileType.startsWith('image/');
-    const part = isImg
-      ? { type: 'image',    source: { type: 'base64', media_type: fileType, data: fileData } }
-      : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: fileData } };
+    // Facturas de VARIAS PÁGINAS: llegan como `paginas`, un array de
+    // {data, type}. Se mandan todas juntas en el mismo mensaje — el modelo
+    // lee la factura completa y devuelve UN solo JSON. Compatible con el
+    // envío de una sola página de siempre.
+    const paginas = Array.isArray(req.body && req.body.paginas) && req.body.paginas.length
+      ? req.body.paginas
+      : (fileData ? [{ data: fileData, type: fileType }] : []);
+    if (!paginas.length) return res.status(400).json({ error: 'Falta el archivo' });
+    if (paginas.length > 6) return res.status(422).json({ error: 'Máximo 6 páginas por factura' });
+
+    const aParte = (pg) => {
+      const esImg = pg.type && String(pg.type).startsWith('image/');
+      return esImg
+        ? { type: 'image',    source: { type: 'base64', media_type: pg.type, data: pg.data } }
+        : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pg.data } };
+    };
+    const partes = paginas.map(aParte);
+    const part = partes[0];   // compatibilidad con el resto del handler
     // FORMATO COMPACTO: claves de 1-2 letras y los ítems como arrays. El
     // grueso del tiempo de extracción son los tokens que el modelo ESCRIBE;
     // con este formato una factura de 10 ítems escribe la mitad. Se remapea
     // acá abajo al formato de siempre, así el resto del sistema no cambia.
-    const prompt = 'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
+    const prompt = (partes.length > 1
+        ? `Te paso ${partes.length} imágenes: son las PÁGINAS DE UNA MISMA FACTURA, en orden. ` +
+          'Leelas todas juntas como un solo documento: los ítems se acumulan de todas las páginas y ' +
+          'los totales están en la última. Cabecera (proveedor, CUIT, número, fecha) una sola vez, ' +
+          'sin repetir. Devolvé UN SOLO JSON para la factura completa.\n\n'
+        : '') +
+      'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
       '{"f":"YYYY-MM-DD","n":"numero","l":"A|B|C","p":"razon social emisor","c":"cuit emisor",' +
-      '"tn":neto_sin_iva,"ti":iva_total,"i":[["descripcion",monto_sin_iva,cantidad]],' +
+      '"tn":neto_sin_iva,"ti":iva_total,"iv":[[porcentaje,monto]],' +
+      '"i":[["descripcion",monto_sin_iva,cantidad]],' +
       '"o":[["concepto",monto,"p|i|x"]]}\n' +
       'Reglas:\n' +
       '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n- cantidad = la CANTIDAD facturada del ítem (columna Cant./Un.). Si no figura o es ilegible: 1. El monto_sin_iva sigue siendo el TOTAL del renglón, NO el precio unitario.\n' +
@@ -2869,12 +2898,17 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       '- Los datos fiscales del encabezado (CUIT, Ingresos Brutos, Inicio de Actividades, condición ' +
       'IVA, CAE) son identificación, NUNCA montos.\n' +
       '- Cada ítem lleva SOLO su importe sin IVA. El IVA no va por ítem.\n' +
+      '- "iv" = las ALÍCUOTAS DE IVA discriminadas en el pie, una por cada tasa distinta: ' +
+      '[[21,103281.87],[10.5,700777.52]]. Muchas facturas tienen DOS (21% y 10,5%) y hay que ' +
+      'traer las dos por separado, con su porcentaje exacto. "ti" sigue siendo la SUMA de todas. ' +
+      'Si hay una sola alícuota igual poné "iv":[[21,monto]]. Factura C o sin IVA: "iv":[].\n' +
       '- Factura C: no discrimina IVA → "ti":0 y el importe completo de cada ítem en su monto.\n' +
       '- La suma de los montos de "i" tiene que dar "tn".\n' +
       '- "o" = SOLO cargos extra reales que no son neto ni IVA: percepciones (IIBB de cualquier ' +
       'provincia, percepción IVA, ganancias) → "p"; impuestos/tasas (sellados, tasa SSN, servicios ' +
       'sociales, gastos notariales, impuestos internos, tasa municipal) → "i"; el resto ' +
       '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
+      '- La suma de los montos de "iv" tiene que dar "ti".\n' +
       '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
       'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
     // Parseo a prueba de balas: el modelo puede devolver el JSON tal cual, o
@@ -2920,7 +2954,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
             // Texto ANTES que la imagen y con cache_control: las reglas son
             // estáticas, así que de la 2ª factura de la tanda en adelante el
             // modelo las toma de caché en vez de reprocesarlas (ventana ~5 min).
-            { role: 'user',      content: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }, part] },
+            { role: 'user',      content: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }, ...partes] },
             { role: 'assistant', content: '{' },
           ],
         }),
@@ -2928,7 +2962,8 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       const data = await resp.json();
       const crudo = (data.content || []).map(c => c.text || '').join('');
       console.log(`[factura] ${modelo} en ${((Date.now() - t1) / 1000).toFixed(1)}s ` +
-        `(${Math.round(String(fileData).length * 0.75 / 1024)} KB, ` +
+        `(${paginas.length > 1 ? paginas.length + ' págs, ' : ''}` +
+        `${Math.round(paginas.reduce((a, p) => a + String(p.data || '').length, 0) * 0.75 / 1024)} KB, ` +
         `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out` +
         ((data.usage && data.usage.cache_read_input_tokens) ? `, ${data.usage.cache_read_input_tokens} de caché` : '') + ')');
       if (data.error) {
@@ -3119,9 +3154,20 @@ router.post('/api/compras/factura', auth, async (req, res) => {
     const inv = req.body || {};
     // El PDF/imagen viaja aparte de los datos; se sube a Storage y en la fila
     // queda solo la ruta.
-    const { fileData, fileType, fileName, ...datos } = inv;
+    const { fileData, fileType, fileName, paginasExtra, ...datos } = inv;
     const comp = await subirComprobante(fileData, fileType, fileName);
     if (comp) datos.comprobante = comp;
+    // Facturas de varias hojas: la 1ª es el comprobante principal y el resto
+    // quedan como páginas adicionales, así el respaldo está completo.
+    if (Array.isArray(paginasExtra) && paginasExtra.length) {
+      const extra = [];
+      for (let i = 0; i < paginasExtra.length && i < 5; i++) {
+        const pg = paginasExtra[i];
+        const c = await subirComprobante(pg.data, pg.type, pg.name || `pagina-${i + 2}`);
+        if (c) extra.push(c);
+      }
+      if (extra.length) datos.comprobante_paginas = extra;
+    }
 
     const { data, error } = await supabaseCompras
       .from('facturas').insert({ numero_factura: datos.numero_factura || null, data: datos })
