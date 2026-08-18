@@ -144,6 +144,50 @@ async function tieneSesionActiva(telefono) {
 }
 
 /**
+ * Trae lo último que se informó en ese objetivo (censo respondido más
+ * reciente, de cualquier período). Es la base sobre la que el capataz
+ * corrige, en vez de tener que escribir todo de nuevo cada mes.
+ */
+async function ultimoStockDelObjetivo(objetivoId, periodoActualStr) {
+  try {
+    const { data, error } = await supabase.from('censos_stock')
+      .select('periodo, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+      .eq('objetivo_id', objetivoId).eq('estado', 'respondido')
+      .order('periodo', { ascending: false }).limit(1);
+    if (error) throw error;
+    const censo = (data || [])[0];
+    if (!censo || !(censo.censos_stock_items || []).length) {
+      // Log explícito: sin esto, "no encontró nada" y "el código no está
+      // corriendo" se ven igual desde afuera.
+      console.log(`[stock] sin censo previo para objetivo ${objetivoId} ` +
+        `(censos respondidos: ${(data || []).length})`);
+      return null;
+    }
+    console.log(`[stock] precargando ${censo.censos_stock_items.length} tipos del censo de ${censo.periodo}`);
+    return {
+      periodo: censo.periodo,
+      mismo_mes: censo.periodo === periodoActualStr,
+      items: censo.censos_stock_items.map(i => ({
+        tipo: i.tipo_equipo, cantidad: i.cantidad,
+        numeros: i.numeros || [], observacion: i.observacion || null,
+      })),
+    };
+  } catch (e) {
+    console.error('[stock] no pude traer el último censo:', e.message);
+    return null;   // sin historial se sigue con el flujo de siempre
+  }
+}
+
+function mesLegible(periodo) {
+  const M = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const [a, m] = String(periodo || '').split('-').map(Number);
+  // Si el período no tiene la forma YYYY-MM se devuelve tal cual: mejor que
+  // inventar un "enero de NaN".
+  if (!a || !m || m < 1 || m > 12) return String(periodo || '');
+  return `${M[m - 1]} de ${a}`;
+}
+
+/**
  * Arranca el flujo de stock. `resto` es lo que el capataz escribió
  * después de la palabra "stock" (puede venir vacío).
  */
@@ -160,6 +204,26 @@ async function iniciarStock(telefono, resto) {
   const nombre = capataz.nombre.split(' ')[0];
 
   if (!resto || !resto.trim()) {
+    // Si el objetivo ya tiene stock informado, se arranca DESDE AHÍ: el
+    // capataz solo dice qué cambió en vez de escribir todo de nuevo.
+    const previo = await ultimoStockDelObjetivo(capataz.objetivo_id, periodoActual());
+    if (previo) {
+      sesiones[tel] = {
+        paso: 'confirmando', capataz,
+        items: previo.items, avisos: [], desdePrevio: true,
+      };
+      const total = previo.items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0);
+      const cuando = previo.mismo_mes
+        ? 'Esto es lo que ya cargaste este mes'
+        : `Esto es lo último que informaste (${mesLegible(previo.periodo)})`;
+      return `Dale *${nombre}*. ${cuando} en *${capataz.objetivo_nombre || 'tu objetivo'}*:\n\n` +
+             `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*\n\n` +
+             `¿Sigue igual? Respondé *sí* para confirmarlo.\n` +
+             `Si cambió algo, decímelo en criollo:\n` +
+             `_agregá 2 motosierras la 12 y la 15_\n` +
+             `_sacá una motoguadaña_\n` +
+             `_la 21 ya no está_`;
+    }
     sesiones[tel] = { paso: 'esperando_listado', capataz };
     return `Dale *${nombre}*, mandame el listado de maquinaria de tu objetivo ` +
            `con cantidades y números de máquina, por ejemplo:\n\n` +
@@ -208,9 +272,10 @@ async function continuarStock(telefono, mensaje) {
   const t = texto.toLowerCase();
   const nombre = sesion.capataz.nombre.split(' ')[0];
 
-  // Salida en cualquier paso, ANTES de gastar una llamada a la IA.
+  // Salida en cualquier paso, ANTES de mandar el texto a la IA como si fuera
+  // un listado: el bot le dice "escribí menu" y tiene que funcionar.
   if (SALIDAS.includes(t)) {
-    delete sesiones[tel];   // conPersistencia también la borra de la base
+    delete sesiones[tel];
     console.log(`[stock] ${sesion.capataz.nombre} salió del flujo con "${t}"`);
     return { __derivar: 'menu' };
   }
@@ -230,9 +295,12 @@ async function continuarStock(telefono, mensaje) {
         return `El listado está vacío. Decime qué maquinaria tenés, o *cancelar* para salir.`;
       }
       const censo = await guardarCenso(sesion);
+      const veniaDePrevio = sesion.desdePrevio;
       delete sesiones[tel];
       if (!censo) return '⚠️ No pude guardar el stock. Avisá a administración.';
-      return `✅ Stock registrado, *${nombre}*. Gracias.\n\n${resumenCenso(sesion)}`;
+      return `✅ Stock registrado, *${nombre}*. Gracias.` +
+             (veniaDePrevio ? ' (confirmaste el listado anterior)' : '') +
+             `\n\n${resumenCenso(sesion)}`;
     }
 
     // Cualquier otra cosa -> es un ajuste: reinterpretar con la IA
