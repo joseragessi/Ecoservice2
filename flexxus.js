@@ -455,22 +455,36 @@ async function imputarFactura(f, letra, opts = {}) {
     body.calculaiva = true;
     // Alícuotas discriminadas. Muchas facturas traen DOS (21% y 10,5%) y
     // antes se mandaba todo como 21%: el crédito fiscal quedaba mal
-    // acreditado. `f.ivas` viene del OCR ([{porcentaje, monto}]); si no
-    // está (facturas viejas o extracción sin alícuotas) se cae al 21%
-    // de siempre, que es lo que había.
+    // acreditado. `f.ivas` viene del OCR ([{porcentaje, monto}]).
+    //
+    // LAS ALÍCUOTAS MANDAN sobre el IVA total: son el dato fino de la
+    // factura y el total es su suma. Si difieren por centavos (redondeos o
+    // un dígito mal leído en el pie), se usa la suma de las alícuotas y se
+    // ajusta el total del comprobante para que cierre. Solo se descartan si
+    // la diferencia es GRANDE (más del 2% o más de $100), que ahí sí
+    // significa que falta una alícuota o se leyó cualquier cosa.
     const alicuotas = (Array.isArray(f.ivas) ? f.ivas : [])
       .map(x => ({ porcentaje: Number(x.porcentaje) || 0, monto: Math.round((Number(x.monto) || 0) * 100) / 100 }))
       .filter(x => x.porcentaje > 0 && x.monto);
-    const sumaAlic = alicuotas.reduce((a, x) => a + x.monto, 0);
-    // Solo se usan si cierran con el IVA total (tolerancia de un centavo por
-    // alícuota): si no cuadran, algo se leyó mal y es preferible el camino
-    // conocido antes que acreditar cualquier cosa.
-    const cierran = alicuotas.length && Math.abs(sumaAlic - iva) <= 0.01 * alicuotas.length + 0.01;
-    body.iva = cierran
-      ? alicuotas
-      : [{ monto: Math.round(iva * 100) / 100, porcentaje: 21 }];
-    if (alicuotas.length && !cierran) {
-      console.log(`[flexxus] alícuotas ignoradas: suman ${sumaAlic} y el IVA total es ${iva} — se manda todo al 21%`);
+    const sumaAlic = Math.round(alicuotas.reduce((a, x) => a + x.monto, 0) * 100) / 100;
+    const dif = Math.abs(sumaAlic - iva);
+    const tolerancia = Math.max(100, iva * 0.02);
+    const usarAlicuotas = alicuotas.length && dif <= tolerancia;
+
+    if (usarAlicuotas) {
+      body.iva = alicuotas;
+      if (dif > 0.01) {
+        // El total del comprobante tiene que cerrar con lo que se manda de
+        // IVA, si no Flexxus rechaza por diferencia.
+        body.total = Math.round((neto + sumaAlic + totPerc + totOtros + exento) * 100) / 100;
+        console.log(`[flexxus] IVA: uso las alícuotas (suman ${sumaAlic}, el total decía ${iva}, dif ${dif.toFixed(2)})`);
+      }
+      console.log(`[flexxus] IVA discriminado: ${alicuotas.map(a => a.porcentaje + '% $' + a.monto).join(' + ')}`);
+    } else {
+      body.iva = [{ monto: Math.round(iva * 100) / 100, porcentaje: 21 }];
+      if (alicuotas.length) {
+        console.log(`[flexxus] alícuotas descartadas: suman ${sumaAlic} y el IVA total es ${iva} (dif ${dif.toFixed(2)}, tolerancia ${tolerancia.toFixed(2)}) — se manda todo al 21%`);
+      }
     }
   }
   if (percepciones.length) {
