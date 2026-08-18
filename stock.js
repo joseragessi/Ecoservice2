@@ -218,11 +218,10 @@ async function iniciarStock(telefono, resto) {
         : `Esto es lo último que informaste (${mesLegible(previo.periodo)})`;
       return `Dale *${nombre}*. ${cuando} en *${capataz.objetivo_nombre || 'tu objetivo'}*:\n\n` +
              `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*\n\n` +
-             `¿Sigue igual? Respondé *sí* para confirmarlo.\n` +
-             `Si cambió algo, decímelo en criollo:\n` +
-             `_agregá 2 motosierras la 12 y la 15_\n` +
-             `_sacá una motoguadaña_\n` +
-             `_la 21 ya no está_`;
+             `¿Está completo? Respondé *sí* para confirmarlo.\n` +
+             `Si sumaste equipos, decímelo en criollo:\n` +
+             `_agregá 2 motosierras la 12 y la 15_\n\n` +
+             `_Si falta alguna máquina no la saques vos: avisá a administración._`;
     }
     sesiones[tel] = { paso: 'esperando_listado', capataz };
     return `Dale *${nombre}*, mandame el listado de maquinaria de tu objetivo ` +
@@ -231,6 +230,54 @@ async function iniciarStock(telefono, resto) {
   }
 
   return await procesarListadoTexto(tel, capataz, resto.trim());
+}
+
+/**
+ * El capataz SOLO PUEDE SUMAR. Una máquina que falta no se borra del
+ * listado desde WhatsApp: si se pudiera, una unidad perdida o robada
+ * desaparecería del sistema sin que nadie se entere. Las bajas las
+ * registra administración desde el panel.
+ *
+ * Compara lo que devolvió la IA contra lo que ya estaba y repone todo lo
+ * que se haya intentado quitar o reducir. Devuelve los items corregidos y
+ * la lista de lo que se bloqueó, para avisárselo al capataz.
+ */
+function soloAgregar(previos, nuevos) {
+  const clave = i => String(i.tipo || '').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  const acum = lista => {
+    const m = {};
+    (lista || []).forEach(i => {
+      const k = clave(i);
+      if (!m[k]) m[k] = { tipo: i.tipo, cantidad: 0, numeros: [], observacion: i.observacion || null };
+      m[k].cantidad += Number(i.cantidad) || 0;
+      (i.numeros || []).forEach(n => { if (!m[k].numeros.includes(String(n))) m[k].numeros.push(String(n)); });
+    });
+    return m;
+  };
+  const antes = acum(previos), despues = acum(nuevos);
+  const bloqueados = [];
+
+  for (const [k, v] of Object.entries(antes)) {
+    const d = despues[k];
+    if (!d) {                          // se quiso borrar el tipo entero
+      bloqueados.push(`${v.tipo} (${v.cantidad})`);
+      despues[k] = v;
+      continue;
+    }
+    if (d.cantidad < v.cantidad) {     // se quiso bajar la cantidad
+      bloqueados.push(`${v.tipo}: ${v.cantidad} → ${d.cantidad}`);
+      d.cantidad = v.cantidad;
+    }
+    // los números que estaban tienen que seguir estando
+    const faltan = v.numeros.filter(n => !d.numeros.includes(n));
+    if (faltan.length) {
+      bloqueados.push(`${v.tipo} N° ${faltan.join(', ')}`);
+      d.numeros = d.numeros.concat(faltan);
+    }
+    if (!d.observacion && v.observacion) d.observacion = v.observacion;
+  }
+  return { items: Object.values(despues), bloqueados };
 }
 
 /** Interpreta el listado y pasa a confirmación. */
@@ -312,7 +359,17 @@ async function continuarStock(telefono, mensaje) {
       const motivo = String(err && err.message || err).slice(0, 160);
       return `⚠️ No entendí el cambio. Probá de nuevo, o respondé *sí* para guardar como está.\n\n_[${motivo}]_`;
     }
-    sesion.items = actualizado.items;
+    // El capataz solo suma: lo que haya intentado sacar se repone.
+    const { items, bloqueados } = soloAgregar(sesion.items, actualizado.items);
+    sesion.items = items;
+
+    if (bloqueados.length) {
+      console.log(`[stock] ⚠ ${sesion.capataz.nombre} intentó dar de baja: ${bloqueados.join(' · ')}`);
+      return `⚠️ No puedo sacar máquinas del listado, *${nombre}* — eso lo registra administración.\n\n` +
+             `Quedó todo como estaba en: _${bloqueados.join(', ')}_.\n` +
+             `Si esas máquinas ya no están en el objetivo, avisá a administración para que las den de baja.\n\n` +
+             `${pedirConfirmacion(sesion)}`;
+    }
 
     return `Actualicé el listado:\n\n${pedirConfirmacion(sesion)}`;
   }
