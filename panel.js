@@ -6014,6 +6014,15 @@ function vComprasDetalle(view){
       <div class="mcard-row"><span>CUIT</span>${campo('ec-cuit',inv.cuit)}</div>
       <div class="mcard-row"><span>Neto</span>${campo('ec-neto',inv.total_sin_iva,'num')}</div>
       <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>
+      ${(()=>{const al=(inv.ivas||[]).filter(x=>Number(x.monto));
+        if(!al.length)return '';
+        const suma=al.reduce((a,x)=>a+(Number(x.monto)||0),0);
+        const cierra=Math.abs(suma-(Number(inv.total_iva)||0))<=0.02;
+        return `<div style="padding:2px 0 6px 12px">
+          ${al.map(x=>`<div class="mcard-row" style="font-size:12px;padding:1px 0">
+            <span class="sub">IVA ${x.porcentaje}%</span><span class="money sub">${money(x.monto)}</span></div>`).join('')}
+          ${cierra?'':`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(inv.total_iva)} — se va a imputar todo al 21%</div>`}
+        </div>`;})()}
       ${(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
         <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
         ${(inv.otros_conceptos||[]).map((o,ix)=>`
@@ -6458,32 +6467,56 @@ let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentar
 let comprasMsg='';
 
 function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
-function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasExtracted=null;comprasOCRVuelo=null;go('compras');}
+function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasPaginas=[];comprasExtracted=null;comprasOCRVuelo=null;go('compras');}
 
 // Las fotos de factura se ACHICAN antes de subirlas (máx 1300px, JPEG 0.82):
 // una foto de celular de 4000px no se lee mejor y hace que la extracción tarde
 // mucho más. Los PDF viajan tal cual.
-function comprasPickFile(input){
-  const f=input.files&&input.files[0];if(!f)return;
-  const r=new FileReader();
-  r.onload=()=>{
-    const dataUrl=String(r.result);
-    if(!(f.type||'').startsWith('image/')){
-      comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};comprasPrefetchOCR();go('compras');return;
-    }
-    const img=new Image();
-    img.onload=()=>{
-      const esc=Math.min(1,1300/Math.max(img.width,img.height));
-      const cv=document.createElement('canvas');
-      cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
-      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-      comprasFile={data:cv.toDataURL('image/jpeg',0.82).split(',')[1],type:'image/jpeg',name:f.name};
-      comprasPrefetchOCR();go('compras');
+// Prepara UN archivo (achica las imágenes en el navegador para que suban
+// livianas). Devuelve una promesa con {data,type,name}.
+function comprasPrepararArchivo(f){
+  return new Promise(resolve=>{
+    const r=new FileReader();
+    r.onload=()=>{
+      const dataUrl=String(r.result);
+      if(!(f.type||'').startsWith('image/')){
+        resolve({data:dataUrl.split(',')[1],type:f.type,name:f.name});return;
+      }
+      const img=new Image();
+      img.onload=()=>{
+        const esc=Math.min(1,1300/Math.max(img.width,img.height));
+        const cv=document.createElement('canvas');
+        cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+        cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+        resolve({data:cv.toDataURL('image/jpeg',0.82).split(',')[1],type:'image/jpeg',name:f.name});
+      };
+      img.onerror=()=>resolve({data:dataUrl.split(',')[1],type:f.type,name:f.name});
+      img.src=dataUrl;
     };
-    img.onerror=()=>{comprasFile={data:dataUrl.split(',')[1],type:f.type,name:f.name};comprasPrefetchOCR();go('compras');};
-    img.src=dataUrl;
-  };
-  r.readAsDataURL(f);
+    r.readAsDataURL(f);
+  });
+}
+
+/* Facturas de VARIAS PÁGINAS: se pueden elegir varias fotos juntas (o sumarlas
+   de a una con "＋ Agregar página"). Van todas al mismo pedido de lectura y el
+   modelo devuelve un solo JSON con la factura completa. */
+async function comprasPickFile(input,sumar){
+  const fs=[...(input.files||[])];if(!fs.length)return;
+  const nuevos=[];
+  for(const f of fs.slice(0,6))nuevos.push(await comprasPrepararArchivo(f));
+  if(sumar&&comprasPaginas.length)comprasPaginas=comprasPaginas.concat(nuevos).slice(0,6);
+  else comprasPaginas=nuevos.slice(0,6);
+  comprasFile=comprasPaginas[0];   // la 1ª es la que se ve en la vista previa
+  input.value='';
+  comprasPrefetchOCR();go('compras');
+}
+function comprasQuitarPagina(ix){
+  comprasPaginas.splice(ix,1);
+  comprasFile=comprasPaginas[0]||null;
+  if(!comprasPaginas.length)comprasStep='pick';
+  comprasOCRVuelo=null;
+  if(comprasPaginas.length)comprasPrefetchOCR();
+  go('compras');
 }
 
 // PREFETCH DEL OCR (11-ago): la lectura arranca EN EL MOMENTO en que se elige
@@ -6491,12 +6524,18 @@ function comprasPickFile(input){
 // previa. Cuando aprieta "Extraer con IA", la respuesta ya viene en camino (o
 // ya llegó) — el tiempo de la IA corre en paralelo con el tiempo humano.
 let comprasOCRVuelo=null;   // { clave, p:Promise }
+let comprasPaginas=[];      // páginas de la MISMA factura (1 o varias)
 function comprasPrefetchOCR(){
   if(!comprasFile||!comprasFile.data)return;
-  const clave=comprasFile.data.slice(0,80)+'|'+comprasFile.data.length;
+  const pgs=comprasPaginas.length?comprasPaginas:[comprasFile];
+  // La clave incluye la cantidad de páginas: si se agrega una, el prefetch
+  // anterior queda obsoleto y se vuelve a pedir con la factura completa.
+  const clave=comprasFile.data.slice(0,80)+'|'+comprasFile.data.length+'|'+pgs.length;
   if(comprasOCRVuelo&&comprasOCRVuelo.clave===clave)return;
   comprasOCRVuelo={clave,
-    p:api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:comprasFile.data,fileType:comprasFile.type})})
+    p:api('/api/compras/extract',{method:'POST',body:JSON.stringify({
+        fileData:comprasFile.data,fileType:comprasFile.type,
+        paginas:pgs.map(x=>({data:x.data,type:x.type}))})})
       .catch(e=>({__error:e.message||'No se pudo extraer. Completá a mano.'}))};
 }
 async function comprasExtraer(){
@@ -6571,6 +6610,10 @@ async function comprasGuardar(){
     cuit:d.cuit||null,
     total_sin_iva:Number(d.total_sin_iva)||0,
     total_iva:Number(d.total_iva)||0,
+    // Alícuotas discriminadas (21% y 10,5% en la misma factura). Sin esto se
+    // acreditaba todo al 21% en Flexxus.
+    ivas:(d.ivas||[]).filter(x=>Number(x.monto))
+      .map(x=>({porcentaje:Number(x.porcentaje)||0,monto:Number(x.monto)||0})),
     // Otros conceptos detectados por la IA. Default: percepciones se pagan
     // (exento=false), impuestos/tasas arrancan exentos (exento=true) porque
     // en la mayoría de nuestras facturas de seguros estamos exentos — se puede
@@ -6588,6 +6631,11 @@ async function comprasGuardar(){
     fileData:comprasFile?comprasFile.data:null,
     fileType:comprasFile?comprasFile.type:null,
     fileName:comprasFile?comprasFile.name:null,
+    // Páginas 2 en adelante: se suben también, así el comprobante queda
+    // completo y no solo la primera hoja.
+    paginasExtra:comprasPaginas.length>1
+      ? comprasPaginas.slice(1).map(p=>({data:p.data,type:p.type,name:p.name}))
+      : [],
   };
   const btn=document.getElementById('cf-save');
   if(btn){btn.disabled=true;btn.textContent='Verificando…';}
@@ -6619,17 +6667,29 @@ function vComprasCarga(view){
   const uo=COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}">${u}</option>`).join('');
   const optSel=(v,val)=>v===val?' selected':'';
   if(comprasStep==='upload'){
+    const nPg=comprasPaginas.length;
     view.innerHTML=`
-    <div class="view-head"><div><div class="view-title">Nueva factura</div><div class="view-desc">Subí el PDF o imagen · la IA extrae los datos</div></div>
+    <div class="view-head"><div><div class="view-title">Nueva factura</div><div class="view-desc">Subí el PDF o las fotos · la IA extrae los datos</div></div>
       <button class="btn-salir" onclick="comprasCancelar()">← Volver</button></div>
     <div style="max-width:520px">
       <label class="dropzone" id="cf-dz">
-        <input type="file" accept="application/pdf,image/*" style="display:none" onchange="comprasPickFile(this)">
+        <input type="file" accept="application/pdf,image/*" multiple style="display:none" onchange="comprasPickFile(this)">
         <div class="dz-ico">＋</div>
-        <div class="dz-t">${comprasFile?comprasFile.name:'Tocá para elegir un archivo'}</div>
-        <div class="dz-s">PDF, JPG o PNG</div>
+        <div class="dz-t">${comprasFile?comprasFile.name:'Tocá para elegir el archivo'}</div>
+        <div class="dz-s">PDF, JPG o PNG · si la factura tiene varias hojas, elegilas todas juntas</div>
       </label>
-      ${comprasFile?`<button class="btn" style="margin-top:14px;width:100%" onclick="comprasExtraer()">✦ Extraer con IA</button>`:''}
+      ${nPg?`<div class="panel" style="margin-top:12px;padding:10px 12px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:6px">${nPg} página${nPg===1?'':'s'} de esta factura</div>
+        ${comprasPaginas.map((p,ix)=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 0;font-size:12.5px">
+          <span><b>${ix+1}.</b> ${String(p.name||'página '+(ix+1)).slice(0,42)}</span>
+          <button class="btn-salir" style="padding:2px 8px;font-size:11px;color:var(--rojo)" onclick="comprasQuitarPagina(${ix})">✕</button>
+        </div>`).join('')}
+        ${nPg<6?`<label class="btn-salir" style="display:inline-block;margin-top:6px;padding:4px 10px;font-size:11.5px;cursor:pointer">
+          ＋ Agregar página
+          <input type="file" accept="application/pdf,image/*" multiple style="display:none" onchange="comprasPickFile(this,true)">
+        </label>`:'<div class="sub" style="font-size:11px;margin-top:4px">Máximo 6 páginas</div>'}
+      </div>`:''}
+      ${comprasFile?`<button class="btn" style="margin-top:14px;width:100%" onclick="comprasExtraer()">✦ Extraer con IA${nPg>1?` (${nPg} páginas)`:''}</button>`:''}
     </div>`;
     return;
   }
