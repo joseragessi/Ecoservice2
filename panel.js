@@ -1388,8 +1388,15 @@ async function vStockGeneral(view){
     view.innerHTML='<div class="sub" style="padding:30px">Cargando…</div>';
     try{stkGen=await api('/api/stock/general');}
     catch(e){view.innerHTML=`<div class="sub" style="padding:30px">${escStk(e.message||'No pude cargar')}</div>`;return;}
-    // El padrón para linkear cada número a su ficha (si falla, sin links)
-    try{if(!window._maqPadron)window._maqPadron=await api('/api/maquinas');}catch(e){window._maqPadron=[];}
+    // El padrón para linkear cada número a su ficha (si falla, sin links).
+    // OJO: /api/maquinas devuelve {maquinas, objetivos}, no un array.
+    try{
+      if(!Array.isArray(window._maqPadron)){
+        const r=await api('/api/maquinas');
+        window._maqPadron=Array.isArray(r)?r:(r&&Array.isArray(r.maquinas)?r.maquinas:[]);
+      }
+    }catch(e){window._maqPadron=[];}
+    if(!Array.isArray(window._maqPadron))window._maqPadron=[];
   }
   const filas=stkGen.filas||[], faltantes=stkGen.faltantes||[];
   const F=stkGenF;
