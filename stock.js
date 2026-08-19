@@ -211,6 +211,7 @@ async function iniciarStock(telefono, resto) {
       sesiones[tel] = {
         paso: 'confirmando', capataz,
         items: previo.items, avisos: [], desdePrevio: true,
+        periodoPrevio: previo.periodo,
       };
       const total = previo.items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0);
       const cuando = previo.mismo_mes
@@ -219,9 +220,9 @@ async function iniciarStock(telefono, resto) {
       return `Dale *${nombre}*. ${cuando} en *${capataz.objetivo_nombre || 'tu objetivo'}*:\n\n` +
              `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*\n\n` +
              `¿Está completo? Respondé *sí* para confirmarlo.\n` +
-             `Si sumaste equipos, decímelo en criollo:\n` +
-             `_agregá 2 motosierras la 12 y la 15_\n\n` +
-             `_Si falta alguna máquina no la saques vos: avisá a administración._`;
+             `Si algo cambió, decímelo en criollo:\n` +
+             `_agregá 2 motosierras la 12 y la 15_\n` +
+             `_la 21 no está_ (queda registrada como faltante)`;
     }
     sesiones[tel] = { paso: 'esperando_listado', capataz };
     return `Dale *${nombre}*, mandame el listado de maquinaria de tu objetivo ` +
@@ -233,51 +234,84 @@ async function iniciarStock(telefono, resto) {
 }
 
 /**
- * El capataz SOLO PUEDE SUMAR. Una máquina que falta no se borra del
- * listado desde WhatsApp: si se pudiera, una unidad perdida o robada
- * desaparecería del sistema sin que nadie se entere. Las bajas las
- * registra administración desde el panel.
+ * El capataz informa LO QUE TIENE. Si informa menos que la vez anterior,
+ * no se bloquea ni se repone en silencio: se registra como POSIBLE
+ * FALTANTE y se avisa a administración. Con máquinas que se pierden de
+ * verdad (10 motoguadañas, ~$10M), tapar la diferencia era esconder el
+ * problema — lo que hace falta es verla en el momento.
  *
- * Compara lo que devolvió la IA contra lo que ya estaba y repone todo lo
- * que se haya intentado quitar o reducir. Devuelve los items corregidos y
- * la lista de lo que se bloqueó, para avisárselo al capataz.
+ * Compara lo nuevo contra lo anterior y devuelve la lista de faltantes:
+ * números que estaban y ya no, y bajas de cantidad por tipo.
  */
-function soloAgregar(previos, nuevos) {
+function detectarFaltantes(previos, nuevos) {
   const clave = i => String(i.tipo || '').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  const normN = n => String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const acum = lista => {
     const m = {};
     (lista || []).forEach(i => {
       const k = clave(i);
-      if (!m[k]) m[k] = { tipo: i.tipo, cantidad: 0, numeros: [], observacion: i.observacion || null };
+      if (!m[k]) m[k] = { tipo: i.tipo, cantidad: 0, numeros: [] };
       m[k].cantidad += Number(i.cantidad) || 0;
-      (i.numeros || []).forEach(n => { if (!m[k].numeros.includes(String(n))) m[k].numeros.push(String(n)); });
+      (i.numeros || []).forEach(n => { const s = String(n); if (!m[k].numeros.includes(s)) m[k].numeros.push(s); });
     });
     return m;
   };
   const antes = acum(previos), despues = acum(nuevos);
-  const bloqueados = [];
-
+  const faltantes = [];
   for (const [k, v] of Object.entries(antes)) {
     const d = despues[k];
-    if (!d) {                          // se quiso borrar el tipo entero
-      bloqueados.push(`${v.tipo} (${v.cantidad})`);
-      despues[k] = v;
+    if (!d) {
+      // Todo el tipo desapareció: cada número que estaba es un faltante
+      if (v.numeros.length) v.numeros.forEach(n => faltantes.push({ tipo: v.tipo, numero: n, detalle: null }));
+      else faltantes.push({ tipo: v.tipo, numero: null, detalle: `${v.cantidad} → 0` });
       continue;
     }
-    if (d.cantidad < v.cantidad) {     // se quiso bajar la cantidad
-      bloqueados.push(`${v.tipo}: ${v.cantidad} → ${d.cantidad}`);
-      d.cantidad = v.cantidad;
+    const numsDesp = d.numeros.map(normN);
+    v.numeros.forEach(n => {
+      if (normN(n) !== 'sn' && !numsDesp.includes(normN(n))) faltantes.push({ tipo: v.tipo, numero: n, detalle: null });
+    });
+    // Baja de cantidad no explicada por números (equipos sin numerar)
+    const sinNumAntes = v.cantidad - v.numeros.length;
+    const sinNumDesp = d.cantidad - d.numeros.length;
+    if (d.cantidad < v.cantidad && sinNumDesp < sinNumAntes) {
+      const yaPorNumeros = faltantes.filter(f => f.tipo === v.tipo && f.numero).length;
+      const resto = (v.cantidad - d.cantidad) - yaPorNumeros;
+      if (resto > 0) faltantes.push({ tipo: v.tipo, numero: null, detalle: `${v.cantidad} → ${d.cantidad}` });
     }
-    // los números que estaban tienen que seguir estando
-    const faltan = v.numeros.filter(n => !d.numeros.includes(n));
-    if (faltan.length) {
-      bloqueados.push(`${v.tipo} N° ${faltan.join(', ')}`);
-      d.numeros = d.numeros.concat(faltan);
-    }
-    if (!d.observacion && v.observacion) d.observacion = v.observacion;
   }
-  return { items: Object.values(despues), bloqueados };
+  return faltantes;
+}
+
+/** Guarda los faltantes y avisa a administración. Best-effort: si algo
+ *  falla, el censo igual se guarda — el aviso no puede frenar la carga. */
+async function registrarFaltantes(sesion, censoId, faltantes) {
+  if (!faltantes.length) return;
+  const obj = sesion.capataz.objetivo_nombre || 'sin objetivo';
+  try {
+    await supabase.from('stock_faltantes').insert(faltantes.map(f => ({
+      objetivo_id: sesion.capataz.objetivo_id || null,
+      censo_id: censoId || null,
+      tipo_equipo: f.tipo, numero: f.numero, detalle: f.detalle,
+      visto_en: sesion.periodoPrevio || null,
+    })));
+  } catch (e) { console.error('[stock] no pude guardar faltantes:', e.message); }
+  console.log(`[stock] ⚠ FALTANTES en ${obj} (${sesion.capataz.nombre}): ` +
+    faltantes.map(f => f.numero ? `${f.tipo} N° ${f.numero}` : `${f.tipo} ${f.detalle}`).join(' · '));
+  // Aviso por WhatsApp a administración (env STOCK_ADMIN_TEL). Sujeto a la
+  // ventana de 24 hs de WhatsApp: si José no le escribió al bot ese día,
+  // puede no entregarse — el registro en la tabla queda igual.
+  const admin = process.env.STOCK_ADMIN_TEL;
+  if (admin) {
+    try {
+      const { notificarCapataz } = require('./notificar');
+      await notificarCapataz(admin,
+        `🔔 *Posible faltante de stock*\n\n📍 ${obj} · ${sesion.capataz.nombre}\nEl censo de hoy no incluye:\n` +
+        faltantes.map(f => f.numero ? `  • ${f.tipo} *N° ${f.numero}*` : `  • ${f.tipo} (${f.detalle})`).join('\n') +
+        (sesion.periodoPrevio ? `\n_(estaban en el censo de ${mesLegible(sesion.periodoPrevio)})_` : '') +
+        `\n\nRevisá si se trasladó, está en el taller o falta de verdad. Detalle en el panel → Stock → General.`);
+    } catch (e) { console.error('[stock] no pude avisar el faltante:', e.message); }
+  }
 }
 
 /** Interpreta el listado y pasa a confirmación. */
@@ -343,6 +377,9 @@ async function continuarStock(telefono, mensaje) {
       }
       const censo = await guardarCenso(sesion);
       const veniaDePrevio = sesion.desdePrevio;
+      if (censo && sesion.faltantesPend && sesion.faltantesPend.length) {
+        await registrarFaltantes(sesion, censo.id, sesion.faltantesPend);
+      }
       delete sesiones[tel];
       if (!censo) return '⚠️ No pude guardar el stock. Avisá a administración.';
       return `✅ Stock registrado, *${nombre}*. Gracias.` +
@@ -359,16 +396,16 @@ async function continuarStock(telefono, mensaje) {
       const motivo = String(err && err.message || err).slice(0, 160);
       return `⚠️ No entendí el cambio. Probá de nuevo, o respondé *sí* para guardar como está.\n\n_[${motivo}]_`;
     }
-    // El capataz solo suma: lo que haya intentado sacar se repone.
-    const { items, bloqueados } = soloAgregar(sesion.items, actualizado.items);
-    sesion.items = items;
+    // Si informa menos que antes NO se bloquea: se marca el faltante para
+    // registrarlo al confirmar, y se le dice en el momento qué falta.
+    const faltantes = detectarFaltantes(sesion.items, actualizado.items);
+    sesion.items = actualizado.items;
+    sesion.faltantesPend = faltantes;
 
-    if (bloqueados.length) {
-      console.log(`[stock] ⚠ ${sesion.capataz.nombre} intentó dar de baja: ${bloqueados.join(' · ')}`);
-      return `⚠️ No puedo sacar máquinas del listado, *${nombre}* — eso lo registra administración.\n\n` +
-             `Quedó todo como estaba en: _${bloqueados.join(', ')}_.\n` +
-             `Si esas máquinas ya no están en el objetivo, avisá a administración para que las den de baja.\n\n` +
-             `${pedirConfirmacion(sesion)}`;
+    if (faltantes.length) {
+      const lista = faltantes.map(f => f.numero ? `${f.tipo} *N° ${f.numero}*` : `${f.tipo} (${f.detalle})`).join(', ');
+      return `Actualicé el listado.\n\n⚠️ Respecto de la vez pasada falta: ${lista}. ` +
+             `Queda registrado como faltante y le aviso a administración.\n\n${pedirConfirmacion(sesion)}`;
     }
 
     return `Actualicé el listado:\n\n${pedirConfirmacion(sesion)}`;
