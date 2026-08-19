@@ -262,5 +262,20 @@ async function chequearRepuestos48() {
 setTimeout(chequearRepuestos48, 90 * 1000);            // al arrancar (con margen)
 setInterval(chequearRepuestos48, 60 * 60 * 1000);      // cada hora
 
+// Recordatorio automático de stock: depósito cada 15 días, privado 1 vez al
+// mes, a las 8 de la mañana y solo en días hábiles. Usa la misma función
+// que el botón "Pedir stock" del panel.
+const { chequearRecordatoriosStock } = require('./stock_recordatorio');
+const { pedirStockObjetivos } = require('./panel_api');
+function correrRecordatoriosStock() {
+  if (typeof pedirStockObjetivos !== 'function') {
+    console.error('[stock-auto] pedirStockObjetivos no está disponible');
+    return;
+  }
+  chequearRecordatoriosStock(pedirStockObjetivos);
+}
+setTimeout(correrRecordatoriosStock, 3 * 60 * 1000);       // 3 min tras arrancar
+setInterval(correrRecordatoriosStock, 60 * 60 * 1000);     // cada hora
+
 chequearControl();                          // al arrancar
 setInterval(chequearControl, 6 * 60 * 60 * 1000);  // cada 6 horas
