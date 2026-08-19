@@ -2136,7 +2136,7 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
 
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app', 'objetivos_cargo'],
-  objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus'],
+  objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus', 'grupo_stock'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id', 'usuario'],
   centros_costo: ['nombre', 'activo', 'codigo_flexxus'],
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo'],
@@ -3836,16 +3836,21 @@ router.get('/api/stock', auth, async (req, res) => {
 // Pide el stock por WhatsApp. Sin objetivo_id: a todos los objetivos operativos
 // activos que aún no respondieron el período (crea el censo pendiente si no existe,
 // o reenvía si ya estaba pendiente). Con objetivo_id: solo a ese.
-router.post('/api/stock/pedir', auth, async (req, res) => {
-  try {
-    const body = req.body || {};
+// El cuerpo del pedido de stock vive acá (y no dentro del handler) para que
+// el recordatorio automático de stock_recordatorio.js use exactamente la
+// misma lógica que el botón "Pedir stock" del panel.
+async function pedirStockObjetivos(body) {
+  {
     const periodo = String(body.periodo || '').trim() || periodoStockActual();
 
-    let qObjs = supabase.from('objetivos').select('id, nombre').eq('activo', true);
+    let qObjs = supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true);
     if (Array.isArray(body.objetivo_ids) && body.objetivo_ids.length) {
       qObjs = qObjs.in('id', body.objetivo_ids);   // selección explícita del panel
     } else if (body.objetivo_id) {
       qObjs = qObjs.eq('id', body.objetivo_id);
+    } else if (body.grupo) {
+      // Pedido por grupo: depósito cada 15 días, privado 1 vez al mes
+      qObjs = qObjs.eq('grupo_stock', body.grupo);
     } else {
       qObjs = qObjs.eq('tipo', 'operativo');
     }
@@ -3883,10 +3888,22 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
         const ok = await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK);
         if (ok) algunoOk = true; else fallidos++;
       }
-      if (algunoOk) enviados++;
+      if (algunoOk) {
+        enviados++;
+        // Queda registrado cuándo se le pidió por última vez a este objetivo:
+        // es lo que usa el recordatorio automático para no repetir.
+        await supabase.from('objetivos')
+          .update({ stock_ultimo_pedido: new Date().toISOString() }).eq('id', o.id);
+      }
     }
-    console.log(`[stock] pedido ${periodo}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} fallidos=${fallidos}`);
-    res.json({ enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos });
+    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} fallidos=${fallidos}`);
+    return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos };
+  }
+}
+
+router.post('/api/stock/pedir', auth, async (req, res) => {
+  try {
+    res.json(await pedirStockObjetivos(req.body || {}));
   } catch (err) {
     console.error('stock pedir:', err);
     res.status(500).json({ error: 'Error pidiendo el stock' });
@@ -4742,6 +4759,62 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
   }
 });
 
+// ── Stock · General ───────────────────────────────────────────
+// La pregunta "¿cuántas motoguadañas tenemos y dónde?" contestada en una
+// sola llamada: el último censo respondido de CADA objetivo (sea del mes
+// que sea), con su grupo, los números informados y los faltantes abiertos.
+router.get('/api/stock/general', auth, async (req, res) => {
+  try {
+    const [objs, censos, faltantes] = await Promise.all([
+      supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true),
+      supabase.from('censos_stock')
+        .select('id, periodo, objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+        .eq('estado', 'respondido').order('periodo', { ascending: false }),
+      supabase.from('stock_faltantes').select('*').eq('estado', 'abierto')
+        .then(r => r, () => ({ data: [] })),   // si la tabla no existe aún, sin faltantes
+    ]);
+    if (objs.error) throw objs.error;
+    if (censos.error) throw censos.error;
+
+    // Último censo respondido por objetivo (vienen ordenados desc)
+    const ultimo = {};
+    (censos.data || []).forEach(c => { if (!ultimo[c.objetivo_id]) ultimo[c.objetivo_id] = c; });
+
+    const filas = [];
+    (objs.data || []).forEach(o => {
+      const c = ultimo[o.id];
+      if (!c) return;
+      (c.censos_stock_items || []).forEach(i => {
+        filas.push({
+          objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
+          capataz: c.capataces ? c.capataces.nombre : null,
+          periodo: c.periodo, respondido_at: c.respondido_at,
+          tipo: i.tipo_equipo, cantidad: i.cantidad,
+          numeros: i.numeros || [], observacion: i.observacion || null,
+        });
+      });
+    });
+    res.json({ filas, faltantes: faltantes.data || [] });
+  } catch (err) {
+    console.error('stock general:', err);
+    res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
+  }
+});
+
+// Marcar un faltante como resuelto (apareció, se trasladó, se dio de baja…)
+router.post('/api/stock/faltantes/:id/resolver', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('stock_faltantes')
+      .update({ estado: 'resuelto', resuelto_nota: String((req.body && req.body.nota) || '').trim() || null,
+                resuelto_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude marcarlo como resuelto' });
+  }
+});
+
 // Borrar la respuesta de un censo (los equipos informados) y dejarlo
 // pendiente otra vez. Pensado para limpiar pruebas sin tocar la base.
 // No elimina la fila del censo: si se borrara, el objetivo desaparecería
@@ -4813,3 +4886,4 @@ setTimeout(() => {
 }, 1000).unref?.();
 
 module.exports = router;
+module.exports.pedirStockObjetivos = pedirStockObjetivos;
