@@ -1385,9 +1385,9 @@ async function vStock(view){
 let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:''};
 async function vStockGeneral(view){
   if(!stkGen){
-    view.innerHTML='<div class="sub" style="padding:30px">Cargando…</div>';
+    view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando…</div>';
     try{stkGen=await api('/api/stock/general');}
-    catch(e){view.innerHTML=`<div class="sub" style="padding:30px">${escStk(e.message||'No pude cargar')}</div>`;return;}
+    catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
     // El padrón para linkear cada número a su ficha (si falla, sin links).
     // OJO: /api/maquinas devuelve {maquinas, objetivos}, no un array.
     try{
@@ -1423,6 +1423,9 @@ async function vStockGeneral(view){
   vis.forEach(f=>{(filasPorObj[f.objetivo]=filasPorObj[f.objetivo]||[]).push(f);});
 
   view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+    <div class="view-desc">General · qué hay y dónde, según el último censo de cada objetivo</div></div></div>
+  ${tabsStk()}
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
     <select onchange="stkGenF.tipo=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
       <option value="">Todos los tipos</option>
@@ -1513,14 +1516,18 @@ function pintarEditorStock(){
   document.getElementById('mm-titulo').textContent='Editar stock · '+e.objetivo;
   document.getElementById('mm-campos').innerHTML=`
     <div class="sub" style="margin-bottom:10px">Esto pisa el último censo del objetivo: es lo que va a ver el capataz precargado en el bot y lo que muestra el General. Los números van separados por coma.</div>
+    <div style="max-height:52vh;overflow-y:auto;margin:0 -4px;padding:0 4px">
     ${e.items.map((i,ix)=>`
-      <div style="display:grid;grid-template-columns:1.2fr 64px 1.6fr 1.2fr 30px;gap:6px;margin-bottom:6px;align-items:center">
-        <input value="${(i.tipo||'').replace(/"/g,'&quot;')}" placeholder="Tipo" onchange="stkEdit.items[${ix}].tipo=this.value">
-        <input type="number" min="1" value="${i.cantidad}" onchange="stkEdit.items[${ix}].cantidad=this.value">
-        <input value="${(i.numeros||[]).join(', ').replace(/"/g,'&quot;')}" placeholder="N° separados por coma" onchange="stkEdit.items[${ix}].numeros=this.value.split(',').map(x=>x.trim()).filter(Boolean)">
-        <input value="${(i.observacion||'').replace(/"/g,'&quot;')}" placeholder="Observación" onchange="stkEdit.items[${ix}].observacion=this.value">
-        <button class="btn-salir" style="padding:4px 7px;color:var(--rojo)" title="sacar este renglón" onclick="stkEdit.items.splice(${ix},1);pintarEditorStock()">✕</button>
+      <div style="border:1px solid var(--linea);border-radius:9px;padding:8px 9px;margin-bottom:7px;background:var(--hueso)">
+        <div style="display:grid;grid-template-columns:1fr 70px 30px;gap:6px;align-items:center;margin-bottom:5px">
+          <input value="${(i.tipo||'').replace(/"/g,'&quot;')}" placeholder="Tipo de equipo" onchange="stkEdit.items[${ix}].tipo=this.value" style="min-width:0">
+          <input type="number" min="1" value="${i.cantidad}" title="cantidad" onchange="stkEdit.items[${ix}].cantidad=this.value" style="min-width:0">
+          <button class="btn-salir" style="padding:5px 0;color:var(--rojo)" title="sacar este equipo" onclick="stkEdit.items.splice(${ix},1);pintarEditorStock()">✕</button>
+        </div>
+        <input value="${(i.numeros||[]).join(', ').replace(/"/g,'&quot;')}" placeholder="N° de máquina separados por coma" onchange="stkEdit.items[${ix}].numeros=this.value.split(',').map(x=>x.trim()).filter(Boolean)" style="width:100%;margin-bottom:5px">
+        <input value="${(i.observacion||'').replace(/"/g,'&quot;')}" placeholder="Observación (marca, detalle…)" onchange="stkEdit.items[${ix}].observacion=this.value" style="width:100%">
       </div>`).join('')}
+    </div>
     <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick="stkEdit.items.push({tipo:'',cantidad:1,numeros:[],observacion:''});pintarEditorStock()">＋ Agregar equipo</button>
     <div class="modal-acciones">
       <button class="btn-salir" onclick="cerrarMaestro();stkEdit=null">Cancelar</button>
@@ -1659,12 +1666,12 @@ async function vStockControl(view){
     ${tabsStk()}
     ${!totalPadron?`<div class="aviso-amarillo" style="margin-bottom:14px">Todavía no hay máquinas con objetivo asignado en el padrón, así que no hay con qué comparar. Cargalas en <b>Máquinas</b> y volvé acá.</div>`:''}
     <div class="kpis" style="margin-bottom:14px">
-      <div class="kpi"><div class="kpi-l">Máquinas en el padrón</div><div class="kpi-v">${totalPadron}</div>
-        <div class="kpi-d">activas y con objetivo</div></div>
-      <div class="kpi"><div class="kpi-l">No informadas</div><div class="kpi-v" style="color:${totalFaltan?'var(--rojo)':'var(--brote-2)'}">${totalFaltan}</div>
-        <div class="kpi-d">están en el padrón y el capataz no las listó</div></div>
-      <div class="kpi"><div class="kpi-l">Objetivos sin responder</div><div class="kpi-v">${sinResponder}</div>
-        <div class="kpi-d">con máquinas asignadas</div></div>
+      <div class="kpi"><div class="kpi-label">Máquinas en el padrón</div><div class="kpi-val">${totalPadron}</div>
+        <div class="kpi-sub">activas y con objetivo</div></div>
+      <div class="kpi"><div class="kpi-label">No informadas</div><div class="kpi-val" style="color:${totalFaltan?'var(--rojo)':'var(--brote-2)'}">${totalFaltan}</div>
+        <div class="kpi-sub">están en el padrón y el capataz no las listó</div></div>
+      <div class="kpi"><div class="kpi-label">Objetivos sin responder</div><div class="kpi-val">${sinResponder}</div>
+        <div class="kpi-sub">con máquinas asignadas</div></div>
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th>Objetivo</th><th class="num">Padrón</th><th class="num">Censó</th><th class="num">Dif</th><th>No informadas</th><th>Informó de más</th></tr></thead>
@@ -1735,12 +1742,12 @@ async function vMaquinas(view){
       </div></div>
     ${tabsStk()}
     <div class="kpis" style="margin-bottom:14px">
-      <div class="kpi"><div class="kpi-l">Activas</div><div class="kpi-v">${activas}</div>
-        <div class="kpi-d">${todas.length} en el padrón</div></div>
-      <div class="kpi"><div class="kpi-l">Dadas de baja</div><div class="kpi-v">${bajas}</div>
-        <div class="kpi-d">${conBaja.length} con fecha cargada</div></div>
-      <div class="kpi"><div class="kpi-l">Vida útil promedio</div><div class="kpi-v">${vidaProm||'—'}</div>
-        <div class="kpi-d">${vidaProm?'años, sobre las dadas de baja':'falta cargar bajas para saberlo'}</div></div>
+      <div class="kpi"><div class="kpi-label">Activas</div><div class="kpi-val">${activas}</div>
+        <div class="kpi-sub">${todas.length} en el padrón</div></div>
+      <div class="kpi"><div class="kpi-label">Dadas de baja</div><div class="kpi-val">${bajas}</div>
+        <div class="kpi-sub">${conBaja.length} con fecha cargada</div></div>
+      <div class="kpi"><div class="kpi-label">Vida útil promedio</div><div class="kpi-val">${vidaProm||'—'}</div>
+        <div class="kpi-sub">${vidaProm?'años, sobre las dadas de baja':'falta cargar bajas para saberlo'}</div></div>
     </div>
     <div class="panel" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <select class="busca" style="width:auto;min-width:170px" onchange="maqFil.tipo=this.value;go('stock')">
@@ -1806,10 +1813,10 @@ async function fichaMaquina(id){
         comprada ${m.fecha_compra?String(m.fecha_compra).split('-').reverse().join('/'):'sin fecha'} ·
         ${vidaChip(m)}${m.dada_de_baja?` · <b style="color:var(--rojo)">baja: ${escStk(m.motivo_baja||'sin motivo')}</b>`:''}</div>
       <div class="kpis" style="margin-bottom:12px">
-        <div class="kpi"><div class="kpi-l">Entradas al taller</div><div class="kpi-v">${R.total}</div></div>
-        <div class="kpi"><div class="kpi-l">Horas de taller</div><div class="kpi-v">${R.horas_taller||0}</div></div>
-        <div class="kpi"><div class="kpi-l">Repuestos</div><div class="kpi-v">${R.gasto_repuestos?'$'+R.gasto_repuestos.toLocaleString('es-AR'):'—'}</div>
-          <div class="kpi-d">${R.repuestos_con_precio} con precio cargado</div></div>
+        <div class="kpi"><div class="kpi-label">Entradas al taller</div><div class="kpi-val">${R.total}</div></div>
+        <div class="kpi"><div class="kpi-label">Horas de taller</div><div class="kpi-val">${R.horas_taller||0}</div></div>
+        <div class="kpi"><div class="kpi-label">Repuestos</div><div class="kpi-val">${R.gasto_repuestos?'$'+R.gasto_repuestos.toLocaleString('es-AR'):'—'}</div>
+          <div class="kpi-sub">${R.repuestos_con_precio} con precio cargado</div></div>
       </div>
       <div class="field-l" style="margin-bottom:6px">Historial de taller</div>
       ${d.reparaciones.length?`<div style="max-height:280px;overflow:auto">${d.reparaciones.map(r=>`
