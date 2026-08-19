@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-14 · observaciones al capataz';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-18 · stock: general + grupos + planilla + faltantes';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1332,7 +1332,7 @@ function selUniAna(key){
 }
 
 /* ===== Stock de maquinaria ===== */
-let stockTab='maquinas'; // 'maquinas' | 'censo' | 'control' (+ subvistas de Control)
+let stockTab='general'; // 'general' | 'maquinas' | 'censo' | 'control' (+ subvistas de Control)
 let stockPeriodo=null;   // null = período actual
 let stockData=null;      // último GET /api/stock (para el detalle lateral)
 let stockSelId=null;     // censo seleccionado
@@ -1352,7 +1352,7 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['maquinas','Máquinas'],['censo','Censo'],['control','Control']];
+const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['censo','Censo'],['control','Control']];
 const STOCK_SUB={objetivo:'Por objetivo',inventario:'Inventario',consolidado:'Consolidado',detalle:'Detalle censado'};
 function tabsStk(){
   const sub=STOCK_SUB[stockTab];
@@ -1367,6 +1367,7 @@ function difStk(d){
 }
 
 async function vStock(view){
+  if(stockTab==='general')return vStockGeneral(view);
   if(stockTab==='inventario')return vStockInventario(view);
   if(stockTab==='consolidado')return vStockConsolidado(view);
   if(stockTab==='objetivo')return vStockObjetivos(view);
@@ -1374,6 +1375,170 @@ async function vStock(view){
   if(stockTab==='maquinas')return vMaquinas(view);
   if(stockTab==='control')return vStockControl(view);
   return vStockCenso(view);
+}
+
+/* ── General: toda la flota con filtros ───────────────────────
+   La pregunta "¿cuántas motoguadañas tenemos y dónde?" en una sola
+   pantalla: el último censo respondido de cada objetivo, con grupo,
+   números, marca y los faltantes abiertos. Cada N° abre la ficha de la
+   máquina si está en el padrón. */
+let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:''};
+async function vStockGeneral(view){
+  if(!stkGen){
+    view.innerHTML='<div class="sub" style="padding:30px">Cargando…</div>';
+    try{stkGen=await api('/api/stock/general');}
+    catch(e){view.innerHTML=`<div class="sub" style="padding:30px">${escStk(e.message||'No pude cargar')}</div>`;return;}
+    // El padrón para linkear cada número a su ficha (si falla, sin links)
+    try{if(!window._maqPadron)window._maqPadron=await api('/api/maquinas');}catch(e){window._maqPadron=[];}
+  }
+  const filas=stkGen.filas||[], faltantes=stkGen.faltantes||[];
+  const F=stkGenF;
+  const tipos=[...new Set(filas.map(f=>f.tipo))].sort();
+  const objetivos=[...new Set(filas.map(f=>f.objetivo))].sort();
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const vis=filas.filter(f=>
+    (!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&
+    (!F.grupo||f.grupo===F.grupo)&&
+    (!F.q||norm(f.numeros.join(' ')+' '+(f.observacion||'')+' '+f.objetivo+' '+f.tipo).includes(norm(F.q))));
+  const total=vis.reduce((a,f)=>a+(Number(f.cantidad)||0),0);
+  const nObjs=new Set(vis.map(f=>f.objetivo)).size;
+  const enDep=vis.filter(f=>f.grupo==='deposito').reduce((a,f)=>a+(Number(f.cantidad)||0),0);
+  // faltantes que aplican al filtro actual
+  const faltVis=faltantes.filter(fa=>{
+    const fila=filas.find(f=>f.objetivo_id===fa.objetivo_id);
+    return (!F.tipo||fa.tipo_equipo===F.tipo)&&(!F.objetivo||(fila&&fila.objetivo===F.objetivo));
+  });
+  const padronPorNum={};
+  (window._maqPadron||[]).forEach(m=>{if(m.codigo_interno)padronPorNum[norm(m.codigo_interno)]=m.id;});
+  const fFecha=p=>{const[a,m]=String(p||'').split('-');return m?`${m}/${a}`:p;};
+  const hoyMs=Date.now();
+  const filasPorObj={};
+  vis.forEach(f=>{(filasPorObj[f.objetivo]=filasPorObj[f.objetivo]||[]).push(f);});
+
+  view.innerHTML=`
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+    <select onchange="stkGenF.tipo=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+      <option value="">Todos los tipos</option>
+      ${tipos.map(t=>`<option ${F.tipo===t?'selected':''}>${escStk(t)}</option>`).join('')}
+    </select>
+    <select onchange="stkGenF.objetivo=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+      <option value="">Todos los objetivos</option>
+      ${objetivos.map(o=>`<option ${F.objetivo===o?'selected':''}>${escStk(o)}</option>`).join('')}
+    </select>
+    <select onchange="stkGenF.grupo=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+      <option value="">Todos los grupos</option>
+      <option value="deposito" ${F.grupo==='deposito'?'selected':''}>Depósito</option>
+      <option value="privado" ${F.grupo==='privado'?'selected':''}>Privado</option>
+    </select>
+    <input placeholder="Buscar N°, marca, texto…" value="${escStk(F.q)}" onchange="stkGenF.q=this.value;go('stock')"
+      style="flex:1;min-width:150px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+    <button class="btn-salir" style="padding:6px 10px;font-size:11.5px" onclick="stkGen=null;go('stock')">↻</button>
+  </div>
+
+  <div class="kpis" style="grid-template-columns:repeat(3,minmax(160px,1fr))">
+    <div class="kpi"><div class="kpi-label">${F.tipo?escStk(F.tipo):'Equipos'}</div><div class="kpi-val">${total}</div><div class="kpi-sub">en ${nObjs} objetivo${nObjs===1?'':'s'}</div></div>
+    <div class="kpi"><div class="kpi-label">En depósito</div><div class="kpi-val">${enDep}</div><div class="kpi-sub">del grupo depósito</div></div>
+    <div class="kpi"><div class="kpi-label">Faltantes abiertos</div><div class="kpi-val" style="color:${faltVis.length?'var(--rojo)':'inherit'}">${faltVis.length}</div><div class="kpi-sub">${faltVis.length?'revisar abajo':'sin faltantes'}</div></div>
+  </div>
+
+  ${faltVis.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--rojo)">⚠ Faltantes sin resolver</div>
+    <table><thead><tr><th>Objetivo</th><th>Equipo</th><th>Visto por última vez</th><th>Detectado</th><th></th></tr></thead><tbody>
+    ${faltVis.map(fa=>{
+      const fila=filas.find(f=>f.objetivo_id===fa.objetivo_id);
+      const dias=Math.ceil((hoyMs-new Date(fa.created_at).getTime())/86400000);
+      return `<tr>
+        <td>${escStk(fila?fila.objetivo:'—')}</td>
+        <td><b>${escStk(fa.tipo_equipo||'')}</b> ${fa.numero?`<span class="uni-chip" style="background:var(--rojo-soft);color:var(--rojo)">N° ${escStk(fa.numero)}</span>`:`<span class="sub">(${escStk(fa.detalle||'')})</span>`}</td>
+        <td class="mono" style="font-size:12px">${fa.visto_en?fFecha(fa.visto_en):'—'}</td>
+        <td class="sub" style="font-size:12px">hace ${dias} d</td>
+        <td><button class="mini-btn" onclick="resolverFaltante('${fa.id}')">✓ Resolver</button></td></tr>`;}).join('')}
+    </tbody></table></div>`:''}
+
+  <div class="panel">
+    <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span></span>
+    </div>
+    <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
+    ${Object.keys(filasPorObj).sort().map(obj=>{
+      const fs=filasPorObj[obj];
+      return fs.map((f,ix)=>{
+        const chips=(f.numeros||[]).map(n=>{
+          const id=padronPorNum[norm(n)];
+          return id?`<span class="uni-chip" style="cursor:pointer" onclick="fichaMaquina('${id}')" title="ver ficha">${escStk(n)}</span>`
+                   :`<span class="uni-chip">${escStk(n)}</span>`;}).join('');
+        return `<tr>
+          ${ix===0?`<td rowspan="${fs.length}" style="font-weight:600;vertical-align:top">${escStk(obj)}</td>
+          <td rowspan="${fs.length}" style="vertical-align:top">${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>'}</td>`:''}
+          <td>${escStk(f.tipo)}</td>
+          <td class="mono" style="text-align:right">${f.cantidad}</td>
+          <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${chips||'<span class="sub">—</span>'}</div></td>
+          <td class="sub" style="font-size:12px">${escStk(f.observacion||'')}</td>
+          ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${fFecha(f.periodo)}</td>
+          <td rowspan="${fs.length}" style="vertical-align:top">${f.grupo==='deposito'?`<button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico">🖨 Planilla</button>`:''}</td>`:''}
+        </tr>`;}).join('');
+    }).join('')}
+    ${!vis.length?'<tr><td colspan="8" class="sub" style="padding:18px">Nada que mostrar con estos filtros.</td></tr>':''}
+    </tbody></table>
+  </div>`;
+}
+
+async function resolverFaltante(id){
+  const nota=prompt('¿Cómo se resolvió? (apareció / se trasladó a X / se dio de baja…)');
+  if(nota===null)return;
+  try{
+    await api('/api/stock/faltantes/'+id+'/resolver',{method:'POST',body:JSON.stringify({nota})});
+    stkGen=null;go('stock');
+  }catch(e){alert('No pude marcarlo: '+e.message);}
+}
+
+/* Planilla de control físico: UNA HOJA por objetivo, para imprimir y
+   recorrer el depósito tildando máquina por máquina. Lo que no cierra se
+   anota a mano y después se carga en el sistema. */
+function imprimirPlanillaStock(objetivoId){
+  const filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
+  if(!filas.length)return alert('Ese objetivo no tiene censo cargado.');
+  const obj=filas[0];
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const marcaDe={};
+  (window._maqPadron||[]).forEach(m=>{if(m.codigo_interno)marcaDe[norm(m.codigo_interno)]=[m.marca,m.modelo].filter(Boolean).join(' ');});
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const hoy=new Date().toLocaleDateString('es-AR');
+  let renglones='';
+  filas.forEach(f=>{
+    if(f.numeros&&f.numeros.length){
+      f.numeros.forEach(n=>{renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">${esc(n)}</td><td class="sub">${esc(marcaDe[norm(n)]||f.observacion||'')}</td><td class="raya"></td></tr>`;});
+      const sinNum=(Number(f.cantidad)||0)-f.numeros.length;
+      for(let i=0;i<sinNum;i++)renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">S/N</td><td class="sub">${esc(f.observacion||'')}</td><td class="raya"></td></tr>`;
+    }else{
+      for(let i=0;i<(Number(f.cantidad)||0);i++)renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">S/N</td><td class="sub">${esc(f.observacion||'')}</td><td class="raya"></td></tr>`;
+    }
+  });
+  const html=`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Control físico · ${esc(obj.objetivo)}</title><style>
+    body{font-family:system-ui,sans-serif;color:#16221C;margin:24px;font-size:12px}
+    h1{font-size:17px;margin:0;border-bottom:2px solid #16221C;padding-bottom:6px}
+    .meta{display:flex;gap:18px;padding:8px 0 12px;font-size:11px;color:#4A5A51}
+    table{width:100%;border-collapse:collapse}
+    th{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:#8A968E;text-align:left;padding:4px 6px;border-bottom:1px solid #E6EBE4}
+    td{padding:5px 6px;border-bottom:1px solid #F0F3EE}
+    .mono{font-family:ui-monospace,monospace}
+    .sub{color:#4A5A51;font-size:11px}
+    .cas{width:22px}.c{display:inline-block;width:13px;height:13px;border:1.5px solid #4A5A51;border-radius:3px}
+    .raya{width:130px;border-bottom:1px dotted #B8C2BA!important}
+    .extra{margin-top:12px;font-size:11px;color:#4A5A51}
+    .pie{display:flex;justify-content:space-between;margin-top:28px;font-size:11px;color:#4A5A51}
+    .firma{border-top:1px solid #4A5A51;padding-top:3px;min-width:160px;text-align:center}
+    @media print{body{margin:10mm}}
+  </style></head><body>
+    <h1>Control físico de maquinaria</h1>
+    <div class="meta"><span><b>Objetivo:</b> ${esc(obj.objetivo)}</span><span><b>Grupo:</b> depósito · control quincenal</span><span><b>Según sistema al:</b> ${hoy} (censo de ${esc(obj.periodo)})</span></div>
+    <table><thead><tr><th></th><th>Tipo</th><th>N°</th><th>Marca / observación</th><th>No está → ¿dónde?</th></tr></thead><tbody>${renglones}</tbody></table>
+    <div class="extra">Máquinas encontradas que NO figuran arriba: _______________________________________________________________</div>
+    <div class="pie"><span class="firma">Controló</span><span class="firma">Capataz</span><span>Fecha: ____ / ____ / ______</span></div>
+    <script>window.print()<\/script></body></html>`;
+  const w=window.open('','_blank');
+  if(!w)return alert('El navegador bloqueó la ventana. Permití pop-ups para imprimir.');
+  w.document.write(html);w.document.close();
 }
 
 /* ── Control: padrón contra censo ─────────────────────────────
@@ -4229,7 +4394,15 @@ function cardMaestro(m,ix){
   if(maestroTab==='objetivos'){
     sub=m.activo?'Activo':'Inactivo';
     const t=m.tipo||'operativo';
-    extra=`<div class="mcard-row"><span>Tipo</span><span class="badge ${t==='operativo'?'b-green':'b-gray'}">${t==='operativo'?'operativo':'imputación'}</span></div>${m.codigo_flexxus?`<div class="mcard-row"><span>Cód. Flexxus</span><b class="mono">${m.codigo_flexxus}</b></div>`:'<div class="mcard-row"><span>Cód. Flexxus</span><b style="color:var(--diesel)">sin cargar</b></div>'}`;
+    // Grupo de stock: define cada cuánto el bot pide el censo (depósito 15
+    // días / privado mensual). Se edita en el modal.
+    const g=m.grupo_stock;
+    const gBadge=g==='deposito'?'<span class="badge b-amber">depósito · 15d</span>'
+      :g==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado · mensual</span>'
+      :'<span class="badge b-gray">sin grupo</span>';
+    extra=`<div class="mcard-row"><span>Tipo</span><span class="badge ${t==='operativo'?'b-green':'b-gray'}">${t==='operativo'?'operativo':'imputación'}</span></div>
+      <div class="mcard-row"><span>Grupo de stock</span>${gBadge}</div>
+      ${m.codigo_flexxus?`<div class="mcard-row"><span>Cód. Flexxus</span><b class="mono">${m.codigo_flexxus}</b></div>`:'<div class="mcard-row"><span>Cód. Flexxus</span><b style="color:var(--diesel)">sin cargar</b></div>'}`;
   }
   if(maestroTab==='capataces'){
     sub=m.objetivos?m.objetivos.nombre:'sin objetivo';
@@ -4323,6 +4496,11 @@ function abrirModalMaestro(m){
     campos+=`<div class="mm-field"><label>Ubicación</label><input id="mm-ubicacion" value="${(m.ubicacion||'').replace(/"/g,'&quot;')}" placeholder="Córdoba, Río Cuarto..."></div>`;
     campos+=`<div class="mm-field"><label>Tipo</label><select id="mm-tipo"><option value="operativo" ${(m.tipo||'operativo')==='operativo'?'selected':''}>Operativo</option><option value="imputacion" ${m.tipo==='imputacion'?'selected':''}>Imputación</option></select></div>`;
     campos+=`<div class="mm-field"><label>Código de centro de costo en Flexxus <span style="font-weight:400;color:var(--tinta-3)">(el que figura en Flexxus, ej: 012 para EPEC)</span></label><input id="mm-cflexxus" value="${(m.codigo_flexxus||'').replace(/"/g,'&quot;')}" placeholder="ej: 012"></div>`;
+    campos+=`<div class="mm-field"><label>Grupo de stock <span style="font-weight:400;color:var(--tinta-3)">(depósito: la máquina sale cada día, control cada 15 días · privado: vive en el objetivo, control mensual)</span></label><select id="mm-grupo-stock">
+      <option value="" ${!m.grupo_stock?'selected':''}>— sin grupo (el bot no le pide solo) —</option>
+      <option value="deposito" ${m.grupo_stock==='deposito'?'selected':''}>Depósito · cada 15 días</option>
+      <option value="privado" ${m.grupo_stock==='privado'?'selected':''}>Privado · 1 vez por mes</option>
+    </select></div>`;
   }
   document.getElementById('mm-campos').innerHTML=campos;
   document.getElementById('mm-acciones').style.display='';  // el modal de stock las oculta
@@ -4383,6 +4561,7 @@ async function guardarMaestro(){
     body.ubicacion=document.getElementById('mm-ubicacion').value.trim()||null;
     body.tipo=document.getElementById('mm-tipo').value||'operativo';
     body.codigo_flexxus=document.getElementById('mm-cflexxus').value.trim()||null;
+    body.grupo_stock=document.getElementById('mm-grupo-stock').value||null;
   }
   try{
     const ruta='/api/maestros/'+maestroTab+(maestroEdit?'/'+maestroEdit.id:'');
