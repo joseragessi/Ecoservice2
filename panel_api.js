@@ -4787,6 +4787,7 @@ router.get('/api/stock/general', auth, async (req, res) => {
       (c.censos_stock_items || []).forEach(i => {
         filas.push({
           objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
+          censo_id: c.id,
           capataz: c.capataces ? c.capataces.nombre : null,
           periodo: c.periodo, respondido_at: c.respondido_at,
           tipo: i.tipo_equipo, cantidad: i.cantidad,
@@ -4798,6 +4799,42 @@ router.get('/api/stock/general', auth, async (req, res) => {
   } catch (err) {
     console.error('stock general:', err);
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
+  }
+});
+
+// Editar los ítems de un censo desde el panel. Reemplaza TODO el listado
+// del censo (mismo mecanismo que usa el bot al guardar): administración es
+// la única que puede corregir o dar de baja — el capataz solo informa.
+router.put('/api/stock/censos/:id/items', auth, async (req, res) => {
+  try {
+    const items = Array.isArray(req.body && req.body.items) ? req.body.items : null;
+    if (!items) return res.status(400).json({ error: 'Faltan los ítems' });
+    const limpios = items
+      .map(i => ({
+        tipo_equipo: String(i.tipo || '').trim(),
+        cantidad: Number(i.cantidad) || 0,
+        numeros: (Array.isArray(i.numeros) ? i.numeros : [])
+          .map(n => String(n).trim()).filter(Boolean),
+        observacion: String(i.observacion || '').trim() || null,
+      }))
+      .filter(i => i.tipo_equipo && i.cantidad > 0);
+    if (!limpios.length) return res.status(422).json({ error: 'El censo no puede quedar vacío: dejá al menos un equipo' });
+
+    const { data: censo, error: e1 } = await supabase.from('censos_stock')
+      .select('id, objetivo_id').eq('id', req.params.id).maybeSingle();
+    if (e1) throw e1;
+    if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
+
+    const { error: e2 } = await supabase.from('censos_stock_items').delete().eq('censo_id', censo.id);
+    if (e2) throw e2;
+    const { error: e3 } = await supabase.from('censos_stock_items')
+      .insert(limpios.map(i => ({ ...i, censo_id: censo.id })));
+    if (e3) throw e3;
+    console.log(`[stock] censo ${censo.id} editado desde el panel: ${limpios.length} tipos`);
+    res.json({ ok: true, items: limpios.length });
+  } catch (err) {
+    console.error('stock editar censo:', err);
+    res.status(500).json({ error: 'No pude guardar los cambios' });
   }
 });
 
