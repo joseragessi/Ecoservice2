@@ -1482,12 +1482,67 @@ async function vStockGeneral(view){
           <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${chips||'<span class="sub">—</span>'}</div></td>
           <td class="sub" style="font-size:12px">${escStk(f.observacion||'')}</td>
           ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${fFecha(f.periodo)}</td>
-          <td rowspan="${fs.length}" style="vertical-align:top">${f.grupo==='deposito'?`<button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico">🖨 Planilla</button>`:''}</td>`:''}
+          <td rowspan="${fs.length}" style="vertical-align:top"><div style="display:flex;flex-direction:column;gap:5px">
+            <button class="mini-btn" onclick="editarStockObjetivo('${f.objetivo_id}')" title="corregir el stock de este objetivo">✏️ Editar</button>
+            ${f.grupo==='deposito'?`<button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico">🖨 Planilla</button>`:''}
+          </div></td>`:''}
         </tr>`;}).join('');
     }).join('')}
     ${!vis.length?'<tr><td colspan="8" class="sub" style="padding:18px">Nada que mostrar con estos filtros.</td></tr>':''}
     </tbody></table>
   </div>`;
+}
+
+/* ── Edición del stock desde el panel ─────────────────────────
+   Administración corrige el censo de un objetivo: cambiar cantidades y
+   números, sacar una máquina (baja real) o sumar una (alta que el capataz
+   no informó). Pisa los ítems del ÚLTIMO censo respondido — el mismo
+   listado que precarga el bot y el que muestra el General. */
+let stkEdit=null;   // { objetivo, censo_id, items:[{tipo,cantidad,numeros,observacion}] }
+function editarStockObjetivo(objetivoId){
+  const filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
+  if(!filas.length||!filas[0].censo_id)return alert('Ese objetivo no tiene censo para editar.');
+  stkEdit={
+    objetivo:filas[0].objetivo, censo_id:filas[0].censo_id,
+    items:filas.map(f=>({tipo:f.tipo,cantidad:f.cantidad,numeros:(f.numeros||[]).slice(),observacion:f.observacion||''})),
+  };
+  pintarEditorStock();
+}
+function pintarEditorStock(){
+  const e=stkEdit;if(!e)return;
+  document.getElementById('mm-titulo').textContent='Editar stock · '+e.objetivo;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:10px">Esto pisa el último censo del objetivo: es lo que va a ver el capataz precargado en el bot y lo que muestra el General. Los números van separados por coma.</div>
+    ${e.items.map((i,ix)=>`
+      <div style="display:grid;grid-template-columns:1.2fr 64px 1.6fr 1.2fr 30px;gap:6px;margin-bottom:6px;align-items:center">
+        <input value="${(i.tipo||'').replace(/"/g,'&quot;')}" placeholder="Tipo" onchange="stkEdit.items[${ix}].tipo=this.value">
+        <input type="number" min="1" value="${i.cantidad}" onchange="stkEdit.items[${ix}].cantidad=this.value">
+        <input value="${(i.numeros||[]).join(', ').replace(/"/g,'&quot;')}" placeholder="N° separados por coma" onchange="stkEdit.items[${ix}].numeros=this.value.split(',').map(x=>x.trim()).filter(Boolean)">
+        <input value="${(i.observacion||'').replace(/"/g,'&quot;')}" placeholder="Observación" onchange="stkEdit.items[${ix}].observacion=this.value">
+        <button class="btn-salir" style="padding:4px 7px;color:var(--rojo)" title="sacar este renglón" onclick="stkEdit.items.splice(${ix},1);pintarEditorStock()">✕</button>
+      </div>`).join('')}
+    <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick="stkEdit.items.push({tipo:'',cantidad:1,numeros:[],observacion:''});pintarEditorStock()">＋ Agregar equipo</button>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();stkEdit=null">Cancelar</button>
+      <button class="btn" onclick="guardarStockEditado()">Guardar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function guardarStockEditado(){
+  const e=stkEdit;if(!e)return;
+  const items=e.items.map(i=>({tipo:String(i.tipo||'').trim(),cantidad:Number(i.cantidad)||0,
+    numeros:i.numeros||[],observacion:String(i.observacion||'').trim()||null}))
+    .filter(i=>i.tipo&&i.cantidad>0);
+  if(!items.length)return alert('Dejá al menos un equipo con tipo y cantidad.');
+  // Aviso si los números no cuadran con la cantidad (se puede guardar igual:
+  // hay equipos sin numerar, pero conviene verlo antes de confirmar)
+  const raros=items.filter(i=>i.numeros.length>i.cantidad);
+  if(raros.length&&!confirm(`Ojo: ${raros.map(i=>i.tipo).join(', ')} tiene más números que cantidad. ¿Guardar igual?`))return;
+  try{
+    await api('/api/stock/censos/'+e.censo_id+'/items',{method:'PUT',body:JSON.stringify({items})});
+    cerrarMaestro();stkEdit=null;stkGen=null;go('stock');
+  }catch(err){alert('No pude guardar: '+(err.message||''));}
 }
 
 async function resolverFaltante(id){
