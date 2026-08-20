@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · ítems editables a Flexxus + export incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · pañol + ítems a Flexxus + export incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1352,7 +1352,7 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['censo','Censo'],['control','Control']];
+const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo'],['control','Control']];
 const STOCK_SUB={objetivo:'Por objetivo',inventario:'Inventario',consolidado:'Consolidado',detalle:'Detalle censado'};
 function tabsStk(){
   const sub=STOCK_SUB[stockTab];
@@ -1368,6 +1368,7 @@ function difStk(d){
 
 async function vStock(view){
   if(stockTab==='general')return vStockGeneral(view);
+  if(stockTab==='panol')return vStockPanol(view);
   if(stockTab==='inventario')return vStockInventario(view);
   if(stockTab==='consolidado')return vStockConsolidado(view);
   if(stockTab==='objetivo')return vStockObjetivos(view);
@@ -1494,6 +1495,160 @@ async function vStockGeneral(view){
     ${!vis.length?'<tr><td colspan="8" class="sub" style="padding:18px">Nada que mostrar con estos filtros.</td></tr>':''}
     </tbody></table>
   </div>`;
+}
+
+/* ── Pañol ────────────────────────────────────────────────────
+   El alta de lo que se guarda en el pañol: herramientas, insumos, todo.
+   Las salidas las registra el pañolero desde la app; acá se ve qué hay,
+   qué está afuera y qué se pasó de fecha. */
+let pnlData=null, pnlTab='items', pnlQ='';
+async function vStockPanol(view){
+  if(!pnlData){
+    view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando el pañol…</div>';
+    try{pnlData=await api('/api/panol');}
+    catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
+  }
+  const items=pnlData.items||[], afuera=pnlData.afuera||[];
+  const dias=f=>f?Math.ceil((new Date(f)-new Date())/86400000):null;
+  const vencidos=afuera.filter(m=>m.retorno_previsto&&dias(m.retorno_previsto)<0);
+  const bajos=items.filter(i=>Number(i.disponible)<=Number(i.minimo||0));
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const vis=items.filter(i=>!pnlQ||norm(i.nombre+' '+(i.codigo||'')+' '+(i.marca||'')+' '+(i.ubicacion||'')).includes(norm(pnlQ)));
+  const itemDe=id=>items.find(x=>x.id===id);
+  const fFecha=f=>f?new Date(f).toLocaleDateString('es-AR'):'—';
+
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Pañol</div>
+    <div class="view-desc">Lo que se guarda y lo que sale · las salidas las registra el pañolero desde la app</div></div>
+    <button class="btn" onclick="pnlNuevo()">+ Nuevo ítem</button></div>
+  ${tabsStk()}
+  <div class="kpis" style="grid-template-columns:repeat(3,minmax(160px,1fr))">
+    <div class="kpi"><div class="kpi-label">En el pañol</div><div class="kpi-val">${items.length}</div><div class="kpi-sub">tipos cargados</div></div>
+    <div class="kpi"><div class="kpi-label">Afuera</div><div class="kpi-val">${afuera.length}</div><div class="kpi-sub">${afuera.length?'sin devolver':'todo en el pañol'}</div></div>
+    <div class="kpi"><div class="kpi-label">Vencidas</div><div class="kpi-val" style="color:${vencidos.length?'var(--rojo)':'inherit'}">${vencidos.length}</div><div class="kpi-sub">pasaron la fecha de vuelta</div></div>
+  </div>
+
+  <div class="toggle-imp" style="margin-bottom:14px">
+    <button class="${pnlTab==='items'?'on':''}" onclick="pnlTab='items';go('stock')">Lo que hay (${items.length})</button>
+    <button class="${pnlTab==='afuera'?'on':''}" onclick="pnlTab='afuera';go('stock')">Afuera (${afuera.length})</button>
+  </div>
+
+  ${pnlTab==='items'?`
+    ${bajos.length?`<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
+      <div class="panel-title" style="color:var(--diesel)">⚠ Stock bajo o agotado</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${bajos.map(i=>`<span class="uni-chip">${escStk(i.nombre)} · ${i.disponible} ${escStk(i.unidad||'u')}</span>`).join('')}</div>
+    </div>`:''}
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px">
+        <div class="panel-title" style="margin:0">Lo que hay en el pañol</div>
+        <input placeholder="Buscar…" value="${escStk(pnlQ)}" onchange="pnlQ=this.value;go('stock')"
+          style="flex:1;max-width:280px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+      </div>
+      <table><thead><tr><th>Ítem</th><th>Categoría</th><th>Código</th><th>Ubicación</th>
+        <th style="text-align:right">Hay</th><th style="text-align:right">Afuera</th><th style="text-align:right">Disponible</th><th></th></tr></thead>
+      <tbody>${vis.map(i=>{
+        const disp=Number(i.disponible)||0, bajo=disp<=Number(i.minimo||0);
+        return `<tr>
+          <td><b>${escStk(i.nombre)}</b>${i.marca?`<div class="sub" style="font-size:11.5px">${escStk(i.marca)}</div>`:''}</td>
+          <td><span class="badge ${i.retornable?'b-green':'b-gray'}">${escStk(i.categoria)}${i.retornable?'':' · consumible'}</span></td>
+          <td class="mono" style="font-size:12px">${escStk(i.codigo||'—')}</td>
+          <td class="sub" style="font-size:12px">${escStk(i.ubicacion||'—')}</td>
+          <td class="mono" style="text-align:right">${i.cantidad} ${escStk(i.unidad||'u')}</td>
+          <td class="mono" style="text-align:right;color:${Number(i.afuera)?'var(--diesel)':'inherit'}">${i.afuera||0}</td>
+          <td class="mono" style="text-align:right;font-weight:600;color:${disp<=0?'var(--rojo)':bajo?'var(--diesel)':'inherit'}">${disp}</td>
+          <td><button class="mini-btn" onclick="pnlEditar('${i.id}')">✏️</button></td></tr>`;}).join('')
+        ||'<tr><td colspan="8" class="sub" style="padding:18px">Todavía no hay nada cargado. Empezá con "+ Nuevo ítem".</td></tr>'}
+      </tbody></table>
+    </div>`:`
+    <div class="panel">
+      <div class="panel-title">Lo que está afuera</div>
+      <table><thead><tr><th>Ítem</th><th style="text-align:right">Cant.</th><th>Objetivo</th><th>Retiró</th><th>Salió</th><th>Vuelve</th><th></th></tr></thead>
+      <tbody>${afuera.map(m=>{
+        const d=dias(m.retorno_previsto), venc=d!=null&&d<0;
+        const it=itemDe(m.item_id);
+        return `<tr>
+          <td><b>${escStk(it?it.nombre:'—')}</b></td>
+          <td class="mono" style="text-align:right">${m.cantidad}</td>
+          <td>${escStk(m.objetivo_nombre||(m.objetivos&&m.objetivos.nombre)||'—')}</td>
+          <td class="sub" style="font-size:12px">${escStk(m.retira||'—')}</td>
+          <td class="mono" style="font-size:11.5px">${fFecha(m.fecha_salida)}</td>
+          <td class="mono" style="font-size:11.5px;color:${venc?'var(--rojo)':d===0?'var(--diesel)':'inherit'}">
+            ${m.retorno_previsto?`${fFecha(m.retorno_previsto)}${venc?` <b>(+${Math.abs(d)}d)</b>`:d===0?' <b>(hoy)</b>':''}`:'sin fecha'}</td>
+          <td><button class="mini-btn" onclick="pnlDevolver('${m.id}')">✓ Volvió</button></td></tr>`;}).join('')
+        ||'<tr><td colspan="7" class="sub" style="padding:18px">No hay nada afuera.</td></tr>'}
+      </tbody></table>
+    </div>`}`;
+}
+
+function pnlNuevo(){pnlAbrirModal({categoria:'herramienta',retornable:true,cantidad:1,unidad:'u',minimo:0});}
+function pnlEditar(id){
+  const it=(pnlData.items||[]).find(x=>x.id===id);
+  if(it)pnlAbrirModal(it);
+}
+let pnlEdit=null;
+function pnlAbrirModal(it){
+  pnlEdit={...it};
+  const inp='width:100%;padding:8px 10px;border:1px solid var(--linea);border-radius:8px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  document.getElementById('mm-titulo').textContent=it.id?'Editar ítem del pañol':'Nuevo ítem del pañol';
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="mm-field"><label>Nombre *</label><input id="pl-nom" value="${escStk(it.nombre||'')}" placeholder="Amoladora, tanza, guantes…" style="${inp}"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="mm-field"><label>Categoría</label><select id="pl-cat" style="${inp}" onchange="pnlCatCambio()">
+        ${['herramienta','insumo','repuesto','otro'].map(c=>`<option value="${c}" ${it.categoria===c?'selected':''}>${c}</option>`).join('')}
+      </select></div>
+      <div class="mm-field"><label>Código / N° interno</label><input id="pl-cod" value="${escStk(it.codigo||'')}" style="${inp}"></div>
+    </div>
+    <div class="mm-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="pl-ret" ${it.retornable!==false?'checked':''} style="width:auto">
+      <span>Vuelve al pañol <span style="font-weight:400;color:var(--tinta-3)">— destildá para lo que se consume (aceite, tanza, guantes)</span></span>
+    </label></div>
+    <div style="display:grid;grid-template-columns:1fr 90px 1fr;gap:8px">
+      <div class="mm-field"><label>Cantidad</label><input id="pl-cant" type="number" step="0.01" value="${it.cantidad!=null?it.cantidad:1}" style="${inp}"></div>
+      <div class="mm-field"><label>Unidad</label><input id="pl-uni" value="${escStk(it.unidad||'u')}" style="${inp}"></div>
+      <div class="mm-field"><label>Avisar bajo</label><input id="pl-min" type="number" step="0.01" value="${it.minimo||0}" style="${inp}"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="mm-field"><label>Marca</label><input id="pl-marca" value="${escStk(it.marca||'')}" style="${inp}"></div>
+      <div class="mm-field"><label>Ubicación</label><input id="pl-ubi" value="${escStk(it.ubicacion||'')}" placeholder="Estante 3, cajón A…" style="${inp}"></div>
+    </div>
+    <div class="mm-field"><label>Notas</label><input id="pl-notas" value="${escStk(it.notas||'')}" style="${inp}"></div>
+    ${it.id?`<div class="mm-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="pl-activo" ${it.activo!==false?'checked':''} style="width:auto"><span>Activo</span></label></div>`:''}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();pnlEdit=null">Cancelar</button>
+      <button class="btn" onclick="pnlGuardar()">Guardar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+  pnlCatCambio();
+}
+/* Un insumo se consume: por defecto no vuelve. Igual se puede forzar. */
+function pnlCatCambio(){
+  const c=document.getElementById('pl-cat'),r=document.getElementById('pl-ret');
+  if(!c||!r||!pnlEdit||pnlEdit.id)return;   // al editar respetamos lo guardado
+  r.checked=c.value!=='insumo';
+}
+async function pnlGuardar(){
+  const g=id=>document.getElementById(id);
+  const body={id:pnlEdit&&pnlEdit.id,
+    nombre:g('pl-nom').value.trim(),categoria:g('pl-cat').value,
+    retornable:g('pl-ret').checked,codigo:g('pl-cod').value.trim(),
+    cantidad:Number(g('pl-cant').value)||0,unidad:g('pl-uni').value.trim()||'u',
+    minimo:Number(g('pl-min').value)||0,marca:g('pl-marca').value.trim(),
+    ubicacion:g('pl-ubi').value.trim(),notas:g('pl-notas').value.trim()};
+  if(g('pl-activo'))body.activo=g('pl-activo').checked;
+  if(!body.nombre)return alert('Poné el nombre del ítem.');
+  try{
+    await api('/api/panol/items',{method:'POST',body:JSON.stringify(body)});
+    cerrarMaestro();pnlEdit=null;pnlData=null;go('stock');
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
+}
+async function pnlDevolver(movId){
+  if(!confirm('¿Registrar que volvió al pañol?'))return;
+  try{
+    await api('/api/panol/movimientos/'+movId+'/devolver',{method:'POST',body:JSON.stringify({recibio:'panel'})});
+    pnlData=null;go('stock');
+  }catch(e){alert('No pude registrarlo: '+(e.message||''));}
 }
 
 /* ── Edición del stock desde el panel ─────────────────────────
