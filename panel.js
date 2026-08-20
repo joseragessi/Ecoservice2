@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · pañol + ítems a Flexxus + export incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · reportes + carga de bateas + reposición';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -286,6 +286,7 @@ function go(v){
   if(v==='compras')vCompras(view);
   if(v==='stock')vStock(view);
   if(v==='movimientos')vMovimientos(view);
+  if(v==='reportes')vReportes(view);
   programarAutoRefresh(v);
 }
 
@@ -939,6 +940,109 @@ async function combRemGuardar(){
 }
 /* ── Módulo Bateas (roll off) ── */
 let viajesDesde='', viajesHasta='';
+/* ── Carga manual de un viaje ─────────────────────────────────
+   El bot ya carga los viajes por WhatsApp, pero el chofer a veces no lo
+   hace o hay que completar días viejos. Un viaje = una fecha + un camión
+   + las paradas con sus bateas; el total se suma solo. */
+let viajeOpc=null, viajeEdit=null;
+async function viajeNuevo(fecha){
+  if(!viajeOpc){
+    try{viajeOpc=await api('/api/viajes/opciones');}
+    catch(e){return alert('No pude traer choferes y camiones: '+(e.message||''));}
+  }
+  viajeEdit={fecha:fecha||new Date().toLocaleDateString('sv-SE'),chofer_id:'',unidad_id:'',
+    paradas:[{objetivo_id:'',objetivo_nombre:'',bateas:1}]};
+  pintarViajeModal();
+}
+function pintarViajeModal(){
+  const v=viajeEdit;if(!v)return;
+  const o=viajeOpc||{choferes:[],unidades:[],objetivos:[]};
+  const inp='width:100%;padding:8px 10px;border:1px solid var(--linea);border-radius:8px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  const total=v.paradas.reduce((a,p)=>a+(Number(p.bateas)||0),0);
+  document.getElementById('mm-titulo').textContent='Cargar viaje de bateas';
+  document.getElementById('mm-campos').innerHTML=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="mm-field"><label>Fecha *</label>
+        <input id="vj-fecha" type="date" value="${v.fecha}" max="${new Date().toLocaleDateString('sv-SE')}" style="${inp}"></div>
+      <div class="mm-field"><label>Camión *</label>
+        <select id="vj-uni" style="${inp}" onchange="viajeEdit.unidad_id=this.value">
+          <option value="">— elegí —</option>
+          ${o.unidades.map(u=>`<option value="${u.id}" ${v.unidad_id===u.id?'selected':''}>${escStk(u.patente||'')}${u.marca_modelo?' · '+escStk(u.marca_modelo):''}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="mm-field"><label>Chofer</label>
+      <select id="vj-chofer" style="${inp}" onchange="viajeChoferCambio()">
+        <option value="">— sin especificar —</option>
+        ${o.choferes.map(c=>`<option value="${c.id}" ${v.chofer_id===c.id?'selected':''}>${escStk(c.nombre)}</option>`).join('')}
+      </select></div>
+
+    <div class="mm-field" style="margin-bottom:4px"><label>Paradas · dónde bajó y cuántas bateas</label></div>
+    <div style="max-height:38vh;overflow-y:auto;margin:0 -4px;padding:0 4px">
+    ${v.paradas.map((p,ix)=>`
+      <div style="display:grid;grid-template-columns:1fr 74px 30px;gap:6px;margin-bottom:6px;align-items:center">
+        <input list="vj-objs" value="${escStk(p.objetivo_nombre)}" placeholder="Objetivo" style="${inp}"
+          onchange="viajeParadaObj(${ix},this.value)">
+        <input type="number" min="1" value="${p.bateas}" title="bateas" style="${inp};text-align:right"
+          onchange="viajeEdit.paradas[${ix}].bateas=Number(this.value)||0;pintarViajeTotal()">
+        <button class="btn-salir" style="padding:5px 0;color:var(--rojo)" onclick="viajeEdit.paradas.splice(${ix},1);pintarViajeModal()">✕</button>
+      </div>`).join('')}
+    </div>
+    <datalist id="vj-objs">${o.objetivos.map(x=>`<option value="${escStk(x.nombre)}">`).join('')}</datalist>
+    <button class="btn-salir" style="padding:5px 10px;font-size:12px;margin-top:2px"
+      onclick="viajeCapturar();viajeEdit.paradas.push({objetivo_id:'',objetivo_nombre:'',bateas:1});pintarViajeModal()">＋ Agregar parada</button>
+    <div id="vj-total" style="margin-top:12px;padding:9px 12px;background:var(--brote-soft);border-radius:9px;font-size:13.5px">
+      Total: <b>${total} batea${total===1?'':'s'}</b> en ${v.paradas.length} parada${v.paradas.length===1?'':'s'}</div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();viajeEdit=null">Cancelar</button>
+      <button class="btn" onclick="viajeGuardar()">Guardar viaje</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+/* El objetivo se escribe con datalist: si coincide con uno de la lista se
+   guarda su id, si no queda el texto (así se puede cargar un lugar nuevo). */
+function viajeParadaObj(ix,valor){
+  const o=viajeOpc||{objetivos:[]};
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+  const m=o.objetivos.find(x=>norm(x.nombre)===norm(valor));
+  viajeEdit.paradas[ix].objetivo_nombre=valor.trim();
+  viajeEdit.paradas[ix].objetivo_id=m?m.id:null;
+}
+function viajeChoferCambio(){
+  const g=x=>document.getElementById(x);
+  const id=g('vj-chofer').value;
+  viajeEdit.chofer_id=id;
+  // Si el chofer tiene camión fijo y todavía no se eligió uno, se completa
+  const o=viajeOpc||{choferes:[]};
+  const c=o.choferes.find(x=>x.id===id);
+  if(c&&c.unidad_id&&!g('vj-uni').value){g('vj-uni').value=c.unidad_id;viajeEdit.unidad_id=c.unidad_id;}
+}
+function pintarViajeTotal(){
+  const t=viajeEdit.paradas.reduce((a,p)=>a+(Number(p.bateas)||0),0);
+  const el=document.getElementById('vj-total');
+  if(el)el.innerHTML=`Total: <b>${t} batea${t===1?'':'s'}</b> en ${viajeEdit.paradas.length} parada${viajeEdit.paradas.length===1?'':'s'}`;
+}
+function viajeCapturar(){
+  const g=x=>document.getElementById(x);
+  if(g('vj-fecha'))viajeEdit.fecha=g('vj-fecha').value;
+  if(g('vj-uni'))viajeEdit.unidad_id=g('vj-uni').value;
+  if(g('vj-chofer'))viajeEdit.chofer_id=g('vj-chofer').value;
+}
+async function viajeGuardar(){
+  viajeCapturar();
+  const v=viajeEdit;
+  if(!v.fecha)return alert('Poné la fecha.');
+  if(!v.unidad_id)return alert('Elegí el camión.');
+  const paradas=v.paradas.filter(p=>p.objetivo_nombre&&Number(p.bateas)>0);
+  if(!paradas.length)return alert('Cargá al menos una parada con bateas.');
+  try{
+    const r=await api('/api/viajes',{method:'POST',body:JSON.stringify({...v,paradas})});
+    cerrarMaestro();viajeEdit=null;
+    toast(`Viaje cargado · ${r.total_bateas} bateas`);
+    go('bateas');
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
+}
+
 async function vBateas(view){
   view.innerHTML='<div class="cargando-v">Cargando…</div>';
   const hoy=new Date().toISOString().slice(0,10);
@@ -953,7 +1057,8 @@ async function vBateas(view){
     const kpi=(label,val,sub)=>`<div class="kpi plain"><div class="kpi-label">${label}</div><div class="kpi-val">${val}</div><div class="kpi-sub">${sub||''}</div></div>`;
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Bateas</div>
-      <div class="view-desc">Traslado de poda en roll off · km, bateas y puntos de bajada por chofer</div></div></div>
+      <div class="view-desc">Traslado de poda en roll off · km, bateas y puntos de bajada por chofer</div></div>
+      <button class="btn" onclick="viajeNuevo()">+ Cargar viaje</button></div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
       <span class="sub">Desde</span><input type="date" value="${desde}" onchange="viajesDesde=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
       <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
@@ -1497,6 +1602,334 @@ async function vStockGeneral(view){
   </div>`;
 }
 
+/* ── Reportes ─────────────────────────────────────────────────
+   Reporte mensual para gerencia: reparaciones, criticidad, tiempos de
+   resolución, reingresos y estado del pañol. Los gráficos son SVG hecho
+   a mano — sin librerías, así imprimen igual en el PDF (una librería por
+   CDN además puede no cargar y dejar el informe sin gráficos). */
+let repMes=null, repDatos=null;
+function mesActualISO(){return new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);}
+function mesNombre(iso){
+  const M=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const [a,m]=String(iso||'').split('-').map(Number);
+  return (m>=1&&m<=12)?`${M[m-1]} de ${a}`:iso;
+}
+/* Barras horizontales. Sirve para rankings (fallas, objetivos, equipos). */
+function svgBarras(datos,opts){
+  const o=Object.assign({ancho:520,alto:null,color:'#159B51',etiqueta:d=>d.nombre,valor:d=>d.cantidad,sufijo:''},opts||{});
+  const d=datos.slice(0,o.max||10);
+  if(!d.length)return '<div class="sub">Sin datos en el período.</div>';
+  const max=Math.max(...d.map(o.valor),1);
+  const fila=26, alto=d.length*fila+6, anchoEtiq=Math.min(190,o.anchoEtiq||170);
+  const util=o.ancho-anchoEtiq-52;
+  return `<svg viewBox="0 0 ${o.ancho} ${alto}" style="width:100%;height:auto;max-height:${alto}px" role="img">
+    ${d.map((x,i)=>{
+      const v=o.valor(x), w=Math.max(2,(v/max)*util), y=i*fila+3;
+      const col=typeof o.color==='function'?o.color(x):o.color;
+      return `<text x="0" y="${y+14}" font-size="12" fill="#4A5A51" font-family="system-ui,sans-serif">${escStk(String(o.etiqueta(x)).slice(0,28))}</text>
+        <rect x="${anchoEtiq}" y="${y+3}" width="${w}" height="15" rx="3" fill="${col}"/>
+        <text x="${anchoEtiq+w+6}" y="${y+15}" font-size="11.5" font-weight="600" fill="#16221C" font-family="ui-monospace,monospace">${v}${o.sufijo}</text>`;
+    }).join('')}
+  </svg>`;
+}
+/* Dona para composiciones (criticidad, categorías del pañol). */
+function svgDona(datos,opts){
+  const o=Object.assign({tam:170,colores:['#DC4A5B','#D98A1F','#3B7DC4','#159B51','#7C5CD6','#8A968E']},opts||{});
+  const tot=datos.reduce((a,d)=>a+d.cantidad,0);
+  if(!tot)return '<div class="sub">Sin datos.</div>';
+  const r=o.tam/2, ri=r*0.58; let ang=-Math.PI/2;
+  const arcos=datos.map((d,i)=>{
+    const frac=d.cantidad/tot, fin=ang+frac*Math.PI*2;
+    const x1=r+r*Math.cos(ang), y1=r+r*Math.sin(ang), x2=r+r*Math.cos(fin), y2=r+r*Math.sin(fin);
+    const xi1=r+ri*Math.cos(fin), yi1=r+ri*Math.sin(fin), xi2=r+ri*Math.cos(ang), yi2=r+ri*Math.sin(ang);
+    const grande=frac>0.5?1:0;
+    ang=fin;
+    // Un solo dato = círculo completo: el arco degenera y no se dibuja
+    if(frac>=0.999)return `<circle cx="${r}" cy="${r}" r="${(r+ri)/2}" fill="none" stroke="${o.colores[i%o.colores.length]}" stroke-width="${r-ri}"/>`;
+    return `<path d="M${x1} ${y1} A${r} ${r} 0 ${grande} 1 ${x2} ${y2} L${xi1} ${yi1} A${ri} ${ri} 0 ${grande} 0 ${xi2} ${yi2} Z" fill="${o.colores[i%o.colores.length]}"/>`;
+  }).join('');
+  return `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <svg viewBox="0 0 ${o.tam} ${o.tam}" style="width:${o.tam}px;height:${o.tam}px;flex-shrink:0">${arcos}
+      <text x="${r}" y="${r-2}" text-anchor="middle" font-size="26" font-weight="700" fill="#16221C" font-family="ui-monospace,monospace">${tot}</text>
+      <text x="${r}" y="${r+14}" text-anchor="middle" font-size="10" fill="#8A968E" font-family="system-ui,sans-serif">${escStk(o.centro||'total')}</text></svg>
+    <div style="font-size:12.5px">${datos.map((d,i)=>`<div style="display:flex;align-items:center;gap:7px;padding:2px 0">
+      <span style="width:11px;height:11px;border-radius:3px;background:${o.colores[i%o.colores.length]};flex-shrink:0"></span>
+      <span>${escStk(d.nombre)}</span>
+      <b style="font-family:ui-monospace,monospace">${d.cantidad}</b>
+      <span style="color:#8A968E">${Math.round(d.cantidad/tot*100)}%</span></div>`).join('')}</div>
+  </div>`;
+}
+const COLOR_PRIO={critico:'#DC4A5B',alta:'#D98A1F',media:'#3B7DC4',baja:'#8A968E'};
+const LABEL_PRIO={critico:'Crítica',alta:'Alta',media:'Media',baja:'Baja'};
+
+/* Bateas por camión: lo del mes, el promedio mensual histórico y el
+   mantenimiento de ese mismo camión. La comparación que importa es
+   "este mes vs su propio promedio" — un camión que hace 40 y otro que
+   hace 90 no son comparables entre sí, sí contra sí mismos. */
+function bloqueBateas(b){
+  if(!b)return '';
+  if(!b.camiones||!b.camiones.length)
+    return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Bateas</div>
+      <div class="sub">No hay viajes cargados en el período.</div></div>`;
+  const conMes=b.camiones.filter(c=>c.bateas_mes>0);
+  const mesNom=x=>{const[a,m]=String(x).split('-');const M=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];return `${M[Number(m)-1]||m} ${String(a).slice(2)}`;};
+  return `<div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Bateas</div>
+    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Bateas del mes</div><div class="kpi-val">${b.total_mes}</div><div class="kpi-sub">${b.viajes_mes} viajes${b.m3_mes?' · '+b.m3_mes+' m³':''}</div></div>
+      <div class="kpi"><div class="kpi-label">Camiones activos</div><div class="kpi-val">${conMes.length}</div><div class="kpi-sub">de ${b.camiones.length} con historia</div></div>
+      <div class="kpi"><div class="kpi-label">Prom. por viaje</div><div class="kpi-val">${b.viajes_mes?Math.round((b.total_mes/b.viajes_mes)*10)/10:0}</div><div class="kpi-sub">bateas por viaje</div></div>
+    </div>
+    ${b.evolucion&&b.evolucion.length>1?`<div style="margin-bottom:14px">
+      <div class="sub" style="font-weight:600;margin-bottom:8px">Últimos meses</div>
+      ${svgBarras(b.evolucion.map(x=>({nombre:mesNom(x.nombre),cantidad:x.cantidad})),{max:6,color:'#3B7DC4',anchoEtiq:80})}
+    </div>`:''}
+    <table><thead><tr><th>Camión</th><th>Chofer</th><th style="text-align:right">Bateas del mes</th>
+      <th style="text-align:right">Viajes</th><th style="text-align:right">Prom. mensual</th><th style="text-align:right">vs su promedio</th>
+      <th style="text-align:right">Mantenimiento</th></tr></thead>
+    <tbody>${b.camiones.map(c=>{
+      const dif=c.prom_mensual?Math.round(((c.bateas_mes/c.prom_mensual)-1)*100):null;
+      const col=dif==null?'inherit':dif<=-20?'var(--rojo)':dif>=20?'var(--brote)':'inherit';
+      return `<tr>
+        <td><b class="mono">${escStk(c.patente)}</b>${c.modelo?`<div class="sub" style="font-size:11.5px">${escStk(c.modelo)}</div>`:''}</td>
+        <td class="sub" style="font-size:12px">${escStk(c.chofer||'—')}</td>
+        <td class="mono" style="text-align:right;font-weight:600">${c.bateas_mes}</td>
+        <td class="mono" style="text-align:right">${c.viajes_mes}</td>
+        <td class="mono" style="text-align:right">${c.prom_mensual}<div class="sub" style="font-size:11px">${c.meses_activo} ${c.meses_activo===1?'mes':'meses'}</div></td>
+        <td class="mono" style="text-align:right;color:${col}">${dif==null?'—':(dif>0?'+':'')+dif+'%'}</td>
+        <td style="text-align:right">${c.mant_cantidad
+          ?`<span class="badge ${c.mant_abiertas?'b-amber':'b-gray'}">${c.mant_cantidad} rep.</span>
+             <div class="sub" style="font-size:11px">${c.mant_dias!=null?c.mant_dias+' d prom':''}${c.mant_parado?' · '+c.mant_parado+' parado':''}${c.mant_abiertas?' · '+c.mant_abiertas+' abierta'+(c.mant_abiertas===1?'':'s'):''}</div>`
+          :'<span class="sub">sin entradas</span>'}</td></tr>`;}).join('')}
+    </tbody></table>
+    <div class="sub" style="font-size:11.5px;margin-top:8px">
+      "vs su promedio" compara las bateas del mes contra el promedio mensual de ese mismo camión: verde si superó el 20%, rojo si quedó 20% abajo. El mantenimiento son las incidencias del mes de ese camión.
+    </div>
+  </div>`;
+}
+
+async function vReportes(view){
+  if(!repMes)repMes=mesActualISO();
+  if(!repDatos||repDatos.__mes!==repMes){
+    view.innerHTML=`<div class="view-head"><div><div class="view-title">Reportes</div>
+      <div class="view-desc">Informe mensual para gerencia</div></div></div><div class="cargando-v">Armando el reporte…</div>`;
+    try{repDatos=await api('/api/reportes/mensual?mes='+repMes);repDatos.__mes=repMes;}
+    catch(e){view.innerHTML=`<div class="view-head"><div><div class="view-title">Reportes</div></div></div>
+      <div class="cargando-v">${escStk(e.message||'No pude armar el reporte')}</div>`;return;}
+  }
+  const d=repDatos, r=d.reparaciones, p=d.panol;
+  // últimos 12 meses para el selector
+  const meses=[];const hoy=new Date();
+  for(let i=0;i<12;i++){const x=new Date(hoy.getFullYear(),hoy.getMonth()-i,1);
+    meses.push(x.toLocaleDateString('sv-SE').slice(0,7));}
+
+  const prioDona=r.por_prioridad.map(x=>({nombre:LABEL_PRIO[x.prioridad]||x.prioridad,cantidad:x.cantidad,__p:x.prioridad}));
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Reportes</div>
+    <div class="view-desc">Informe mensual · ${escStk(mesNombre(d.mes))}</div></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select onchange="repMes=this.value;repDatos=null;go('reportes')" style="padding:7px 11px;border:1px solid var(--linea);border-radius:8px;font-size:13px">
+        ${meses.map(m=>`<option value="${m}" ${m===repMes?'selected':''}>${escStk(mesNombre(m))}</option>`).join('')}
+      </select>
+      <button class="btn" onclick="imprimirReporte()">📄 Exportar PDF</button>
+    </div></div>
+
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+    <div class="kpi"><div class="kpi-label">Reparaciones</div><div class="kpi-val">${r.total}</div>
+      <div class="kpi-sub">${r.finalizadas} finalizadas · ${r.abiertas} abiertas</div></div>
+    <div class="kpi"><div class="kpi-label">Resolución promedio</div><div class="kpi-val">${r.dias_prom}<span style="font-size:15px"> d</span></div>
+      <div class="kpi-sub">mediana ${r.dias_mediana} d · peor ${r.dias_peor} d</div></div>
+    <div class="kpi"><div class="kpi-label">Reingresos</div><div class="kpi-val" style="color:${r.reingresos.porcentaje>10?'var(--rojo)':'inherit'}">${r.reingresos.porcentaje}%</div>
+      <div class="kpi-sub">${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla</div></div>
+    <div class="kpi"><div class="kpi-label">Máquinas paradas</div><div class="kpi-val" style="color:${r.parados?'var(--diesel)':'inherit'}">${r.parados}</div>
+      <div class="kpi-sub">del total del mes</div></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div class="panel"><div class="panel-title">Por criticidad</div>
+      ${svgDona(prioDona,{centro:'incidencias',colores:prioDona.map(x=>COLOR_PRIO[x.__p]||'#8A968E')})}
+      <table style="margin-top:12px"><thead><tr><th>Prioridad</th><th style="text-align:right">Cant.</th><th style="text-align:right">Días prom.</th><th style="text-align:right">Paradas</th></tr></thead>
+      <tbody>${r.por_prioridad.map(x=>`<tr><td><span class="badge" style="background:${COLOR_PRIO[x.prioridad]}22;color:${COLOR_PRIO[x.prioridad]}">${LABEL_PRIO[x.prioridad]||x.prioridad}</span></td>
+        <td class="mono" style="text-align:right">${x.cantidad}</td>
+        <td class="mono" style="text-align:right">${x.dias_prom!=null?x.dias_prom+' d':'—'}</td>
+        <td class="mono" style="text-align:right">${x.parados||''}</td></tr>`).join('')}</tbody></table>
+    </div>
+    <div class="panel"><div class="panel-title">Tipos de falla · de más crítico a menos</div>
+      ${svgBarras(r.por_falla,{max:9,etiqueta:f=>f.falla,valor:f=>f.cantidad,
+        color:f=>f.criticas>0?'#DC4A5B':'#3B7DC4'})}
+      <div class="sub" style="font-size:11.5px;margin-top:6px">En rojo las que tuvieron incidencias críticas o altas.</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div class="panel"><div class="panel-title">Dónde se rompe · por objetivo</div>
+      ${svgBarras(r.por_objetivo,{max:8})}</div>
+    <div class="panel"><div class="panel-title">Qué se rompe · por equipo</div>
+      ${svgBarras(r.por_equipo,{max:8,color:'#7C5CD6'})}</div>
+  </div>
+
+  ${r.reingresos.cantidad?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--rojo)">Reingresos · máquinas que volvieron dentro de los 30 días</div>
+    <table><thead><tr><th>Equipo</th><th>N°</th><th>Falla anterior</th><th>Falla ahora</th><th style="text-align:right">Días</th><th>Reparó antes</th></tr></thead>
+    <tbody>${r.reingresos.detalle.map(x=>`<tr>
+      <td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
+      <td class="sub">${escStk(x.falla_previa||'—')}</td>
+      <td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge b-rojo">misma</span>':''}</td>
+      <td class="mono" style="text-align:right">${x.dias}</td>
+      <td class="sub">${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
+  </div>`:''}
+
+  <div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Tiempo de resolución · las 12 que más tardaron</div>
+    ${svgBarras(r.detalle_tiempos.slice(0,12),{max:12,sufijo:' d',
+      etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
+      color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
+  </div>
+
+  ${bloqueBateas(d.bateas)}
+
+  <div class="panel">
+    <div class="panel-title">Pañol</div>
+    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Ítems</div><div class="kpi-val">${p.items}</div><div class="kpi-sub">${p.unidades} unidades</div></div>
+      <div class="kpi"><div class="kpi-label">Salidas del mes</div><div class="kpi-val">${p.salidas_mes}</div><div class="kpi-sub">${p.afuera} sin devolver</div></div>
+      <div class="kpi"><div class="kpi-label">Bajo mínimo</div><div class="kpi-val" style="color:${p.bajo_minimo?'var(--diesel)':'inherit'}">${p.bajo_minimo}</div><div class="kpi-sub">${p.agotados} agotados</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div><div class="sub" style="font-weight:600;margin-bottom:8px">Lo que más salió</div>
+        ${svgBarras(p.top_consumo,{max:8,color:'#D98A1F'})}</div>
+      <div><div class="sub" style="font-weight:600;margin-bottom:8px">A qué objetivo fue</div>
+        ${svgBarras(p.salidas_por_objetivo,{max:8,color:'#159B51'})}</div>
+    </div>
+  </div>`;
+}
+
+/* PDF: ventana nueva + print(), el usuario elige "Guardar como PDF".
+   Mismo camino que el informe por mecánico — sin librerías externas. */
+function imprimirReporte(){
+  if(!repDatos)return alert('Esperá a que cargue el reporte.');
+  const d=repDatos, r=d.reparaciones, p=d.panol;
+  const prioDona=r.por_prioridad.map(x=>({nombre:LABEL_PRIO[x.prioridad]||x.prioridad,cantidad:x.cantidad,__p:x.prioridad}));
+  const hoy=new Date().toLocaleDateString('es-AR');
+  const kpi=(l,v,s,c)=>`<div class="k"><div class="kl">${l}</div><div class="kv"${c?` style="color:${c}"`:''}>${v}</div><div class="ks">${s||''}</div></div>`;
+  const html=`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Reporte ${escStk(mesNombre(d.mes))} · EcoService</title><style>
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,sans-serif;color:#16221C;margin:0;padding:26px 30px;font-size:12.5px;line-height:1.5}
+    h1{font-size:23px;margin:0 0 2px;letter-spacing:-.4px}
+    h2{font-size:14px;margin:0 0 12px;padding-bottom:6px;border-bottom:2px solid #16221C;letter-spacing:-.2px}
+    .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #159B51;padding-bottom:12px;margin-bottom:20px}
+    .sub{color:#4A5A51;font-size:12px}
+    .mini{color:#8A968E;font-size:11px}
+    .sec{margin-bottom:22px;page-break-inside:avoid}
+    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+    .k{border:1px solid #E6EBE4;border-radius:9px;padding:11px 13px;background:#FBFCFA}
+    .kl{font-size:9.5px;text-transform:uppercase;letter-spacing:1px;color:#8A968E;font-weight:600}
+    .kv{font-family:ui-monospace,monospace;font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-1px}
+    .ks{font-size:11px;color:#4A5A51;margin-top:3px}
+    .dos{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    table{width:100%;border-collapse:collapse;font-size:11.5px}
+    th{text-align:left;font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:#8A968E;padding:6px 8px;border-bottom:1px solid #E6EBE4}
+    td{padding:6px 8px;border-bottom:1px solid #F2F5F0}
+    .mono{font-family:ui-monospace,monospace}
+    .der{text-align:right}
+    .rojo{color:#DC4A5B}
+    .badge{display:inline-block;font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px}
+    .pie{margin-top:26px;padding-top:10px;border-top:1px solid #E6EBE4;font-size:10.5px;color:#8A968E;display:flex;justify-content:space-between}
+    @media print{body{padding:12mm 10mm}.sec{page-break-inside:avoid}}
+  </style></head><body>
+    <div class="cab">
+      <div><h1>Reporte mensual de mantenimiento</h1>
+        <div class="sub">${escStk(mesNombre(d.mes))} · EcoService S.R.L.</div></div>
+      <div class="mini">Emitido el ${hoy}</div>
+    </div>
+
+    <div class="sec">
+      <div class="kpis">
+        ${kpi('Reparaciones',r.total,`${r.finalizadas} finalizadas · ${r.abiertas} abiertas`)}
+        ${kpi('Resolución promedio',r.dias_prom+' d',`mediana ${r.dias_mediana} d · peor ${r.dias_peor} d`)}
+        ${kpi('Reingresos',r.reingresos.porcentaje+'%',`${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla`,r.reingresos.porcentaje>10?'#DC4A5B':'')}
+        ${kpi('Máquinas paradas',r.parados,'del total del mes',r.parados?'#D98A1F':'')}
+      </div>
+    </div>
+
+    <div class="sec dos">
+      <div><h2>Por criticidad</h2>
+        ${svgDona(prioDona,{tam:150,centro:'incidencias',colores:prioDona.map(x=>COLOR_PRIO[x.__p]||'#8A968E')})}
+        <table style="margin-top:10px"><thead><tr><th>Prioridad</th><th class="der">Cant.</th><th class="der">Días prom.</th></tr></thead>
+        <tbody>${r.por_prioridad.map(x=>`<tr><td><span class="badge" style="background:${COLOR_PRIO[x.prioridad]}22;color:${COLOR_PRIO[x.prioridad]}">${LABEL_PRIO[x.prioridad]||x.prioridad}</span></td>
+          <td class="der mono">${x.cantidad}</td><td class="der mono">${x.dias_prom!=null?x.dias_prom+' d':'—'}</td></tr>`).join('')}</tbody></table>
+      </div>
+      <div><h2>Tipos de falla</h2>
+        ${svgBarras(r.por_falla,{ancho:420,max:9,etiqueta:f=>f.falla,valor:f=>f.cantidad,color:f=>f.criticas>0?'#DC4A5B':'#3B7DC4'})}
+        <div class="mini">En rojo las que tuvieron incidencias críticas o altas.</div>
+      </div>
+    </div>
+
+    <div class="sec dos">
+      <div><h2>Por objetivo</h2>${svgBarras(r.por_objetivo,{ancho:420,max:8})}</div>
+      <div><h2>Por tipo de equipo</h2>${svgBarras(r.por_equipo,{ancho:420,max:8,color:'#7C5CD6'})}</div>
+    </div>
+
+    <div class="sec">
+      <h2>Tiempo de resolución · las que más tardaron</h2>
+      ${svgBarras(r.detalle_tiempos.slice(0,12),{ancho:900,max:12,sufijo:' d',anchoEtiq:230,
+        etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
+        color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
+    </div>
+
+    ${r.reingresos.cantidad?`<div class="sec">
+      <h2>Reingresos · volvieron dentro de los 30 días</h2>
+      <table><thead><tr><th>Equipo</th><th>N°</th><th>Falla anterior</th><th>Falla ahora</th><th class="der">Días</th><th>Reparó antes</th></tr></thead>
+      <tbody>${r.reingresos.detalle.map(x=>`<tr><td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
+        <td>${escStk(x.falla_previa||'—')}</td><td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge" style="background:#FCEBED;color:#DC4A5B">misma falla</span>':''}</td>
+        <td class="der mono">${x.dias}</td><td>${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
+      <div class="mini" style="margin-top:6px">El reingreso con la misma falla es el indicador de calidad de la reparación.</div>
+    </div>`:''}
+
+    ${d.bateas&&d.bateas.camiones&&d.bateas.camiones.length?`<div class="sec">
+      <h2>Bateas</h2>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+        ${kpi('Bateas del mes',d.bateas.total_mes,`${d.bateas.viajes_mes} viajes${d.bateas.m3_mes?' · '+d.bateas.m3_mes+' m³':''}`)}
+        ${kpi('Camiones activos',d.bateas.camiones.filter(c=>c.bateas_mes>0).length,`de ${d.bateas.camiones.length} con historia`)}
+        ${kpi('Prom. por viaje',d.bateas.viajes_mes?Math.round((d.bateas.total_mes/d.bateas.viajes_mes)*10)/10:0,'bateas por viaje')}
+      </div>
+      <table><thead><tr><th>Camión</th><th>Chofer</th><th class="der">Bateas mes</th><th class="der">Viajes</th>
+        <th class="der">Prom. mensual</th><th class="der">vs promedio</th><th class="der">Mantenimiento</th></tr></thead>
+      <tbody>${d.bateas.camiones.map(c=>{
+        const dif=c.prom_mensual?Math.round(((c.bateas_mes/c.prom_mensual)-1)*100):null;
+        return `<tr><td class="mono"><b>${escStk(c.patente)}</b>${c.modelo?`<br><span style="font-size:10px;color:#8A968E">${escStk(c.modelo)}</span>`:''}</td>
+          <td>${escStk(c.chofer||'—')}</td>
+          <td class="der mono">${c.bateas_mes}</td><td class="der mono">${c.viajes_mes}</td>
+          <td class="der mono">${c.prom_mensual}</td>
+          <td class="der mono"${dif!=null&&dif<=-20?' class="rojo"':''}>${dif==null?'—':(dif>0?'+':'')+dif+'%'}</td>
+          <td class="der">${c.mant_cantidad?`${c.mant_cantidad} rep.${c.mant_dias!=null?' · '+c.mant_dias+' d':''}`:'—'}</td></tr>`;}).join('')}
+      </tbody></table>
+      <div class="mini" style="margin-top:6px">El promedio mensual toma solo los meses con actividad de cada camión. "vs promedio" compara el mes contra ese promedio propio.</div>
+    </div>`:''}
+
+    <div class="sec">
+      <h2>Pañol</h2>
+      <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+        ${kpi('Ítems en pañol',p.items,p.unidades+' unidades')}
+        ${kpi('Salidas del mes',p.salidas_mes,p.afuera+' sin devolver')}
+        ${kpi('Bajo mínimo',p.bajo_minimo,p.agotados+' agotados',p.bajo_minimo?'#D98A1F':'')}
+        ${kpi('Categorías',p.por_categoria.length,p.por_categoria.map(c=>c.nombre).slice(0,3).join(', '))}
+      </div>
+      <div class="dos">
+        <div><div class="sub" style="font-weight:600;margin-bottom:6px">Lo que más salió</div>
+          ${svgBarras(p.top_consumo,{ancho:420,max:8,color:'#D98A1F'})}</div>
+        <div><div class="sub" style="font-weight:600;margin-bottom:6px">A qué objetivo fue</div>
+          ${svgBarras(p.salidas_por_objetivo,{ancho:420,max:8,color:'#159B51'})}</div>
+      </div>
+    </div>
+
+    <div class="pie"><span>EcoService S.R.L. · Reporte de mantenimiento</span><span>${escStk(mesNombre(d.mes))}</span></div>
+    <script>window.print()<\/script></body></html>`;
+  const w=window.open('','_blank');
+  if(!w)return alert('El navegador bloqueó la ventana. Permití pop-ups para exportar el PDF.');
+  w.document.write(html);w.document.close();
+}
+
 /* ── Pañol ────────────────────────────────────────────────────
    El alta de lo que se guarda en el pañol: herramientas, insumos, todo.
    Las salidas las registra el pañolero desde la app; acá se ve qué hay,
@@ -1540,8 +1973,11 @@ async function vStockPanol(view){
   <div class="toggle-imp" style="margin-bottom:14px">
     <button class="${pnlTab==='items'?'on':''}" onclick="pnlTab='items';go('stock')">Lo que hay (${items.length})</button>
     <button class="${pnlTab==='afuera'?'on':''}" onclick="pnlTab='afuera';go('stock')">Afuera (${afuera.length})</button>
+    <button class="${pnlTab==='comprar'?'on':''}" onclick="pnlTab='comprar';go('stock')">Qué comprar</button>
   </div>
+  ${pnlTab==='comprar'?'<div id="pnl-repo"><div class="cargando-v">Calculando el consumo…</div></div>':''}
 
+  ${pnlTab==='comprar'?(()=>{setTimeout(cargarReposicion,0);return '';})():''}
   ${pnlTab==='items'?`
     ${(()=>{setTimeout(pintarPanol,0);return '';})()}
     ${(()=>{const rev=items.filter(i=>String(i.notas||'').startsWith('REVISAR'));
@@ -1579,7 +2015,7 @@ async function vStockPanol(view){
       <table><thead><tr><th>Ítem</th><th>Categoría</th><th>Código</th><th>Ubicación</th>
         <th style="text-align:right">Hay</th><th style="text-align:right">Afuera</th><th style="text-align:right">Disponible</th><th></th></tr></thead>
       <tbody id="pnl-body">${pnlFilas(vis)}</tbody></table>
-    </div>`:`
+    </div>`:pnlTab==='afuera'?`
     <div class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap">
         <div class="panel-title" style="margin:0">Lo que está afuera</div>
@@ -1608,7 +2044,7 @@ async function vStockPanol(view){
           <td><button class="mini-btn" onclick="pnlDevolver('${m.id}')">✓ Volvió</button></td></tr>`;}).join('')
         ||`<tr><td colspan="7" class="sub" style="padding:18px">${pnlQ||pnlEstado?'Nada con estos filtros.':'No hay nada afuera. Todo está en el pañol.'}</td></tr>`}
       </tbody></table>
-    </div>`}`;
+    </div>`:''}`;
 }
 
 /* Filtro + búsqueda del pañol. Con 80 ítems hace falta llegar rápido a uno.
@@ -1660,6 +2096,138 @@ function pintarPanol(){
       ? `${tot} ítems · ${un} unidades`
       : `${vis.length} de ${tot} ítems · ${un} unidades`;
   }
+}
+
+/* ── Qué comprar · el 80/20 del pañol ─────────────────────────
+   José: "hay niveles de cuándo comprar en bolsas, tanzas, carreteles,
+   tapas — eso el 80% es de ahí, el otro 20% es general". El ABC lo
+   calcula con los movimientos reales: A = las que acumulan el primer
+   80% del consumo. Sobre esas tiene sentido poner punto de pedido. */
+let pnlRepo=null, pnlRepoClase='';
+async function cargarReposicion(){
+  const cont=document.getElementById('pnl-repo');
+  if(!cont)return;
+  if(!pnlRepo){
+    try{pnlRepo=await api('/api/panol/reposicion');}
+    catch(e){cont.innerHTML=`<div class="cargando-v">${escStk(e.message||'No pude calcular')}</div>`;return;}
+  }
+  pintarReposicion();
+}
+function pintarReposicion(){
+  const cont=document.getElementById('pnl-repo');
+  if(!cont||!pnlRepo)return;
+  const R=pnlRepo.resumen||{};
+  const todas=pnlRepo.filas||[];
+  const comprar=todas.filter(f=>f.hay_que_comprar);
+  const vis=(pnlRepoClase?todas.filter(f=>f.clase===pnlRepoClase):todas)
+    .slice().sort((a,b)=>Number(b.consumo_90d)-Number(a.consumo_90d));
+  const num=v=>v==null?'—':(Math.round(Number(v)*100)/100);
+  const badgeClase=c=>c==='A'?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">A · alta rotación</span>'
+    :c==='B'?'<span class="badge b-amber">B</span>'
+    :c==='C'?'<span class="badge b-gray">C</span>'
+    :'<span class="badge b-gray" style="opacity:.6">sin movimiento</span>';
+
+  cont.innerHTML=`
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+    <div class="kpi"><div class="kpi-label">Hay que comprar</div><div class="kpi-val" style="color:${comprar.length?'var(--rojo)':'inherit'}">${comprar.length}</div><div class="kpi-sub">llegaron al punto de pedido</div></div>
+    <div class="kpi"><div class="kpi-label">Clase A</div><div class="kpi-val">${R.A||0}</div><div class="kpi-sub">son el 80% del consumo</div></div>
+    <div class="kpi"><div class="kpi-label">Clase B y C</div><div class="kpi-val">${(R.B||0)+(R.C||0)}</div><div class="kpi-sub">el 20% restante</div></div>
+    <div class="kpi"><div class="kpi-label">Sin movimiento</div><div class="kpi-val">${R.sin_movimiento||0}</div><div class="kpi-sub">no salieron en 90 días</div></div>
+  </div>
+
+  ${comprar.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--rojo);display:flex;justify-content:space-between;align-items:center">
+      <span>🛒 Lista de compra</span>
+      <button class="btn-salir" style="padding:5px 10px;font-size:11.5px" onclick="copiarListaCompra()">📋 Copiar</button></div>
+    <table><thead><tr><th>Ítem</th><th>Clase</th><th style="text-align:right">Disponible</th><th style="text-align:right">Punto de pedido</th><th style="text-align:right">Pedir</th><th style="text-align:right">Alcanza</th></tr></thead>
+    <tbody>${comprar.map(f=>`<tr>
+      <td><b>${escStk(f.nombre)}</b>${f.marca?`<div class="sub" style="font-size:11.5px">${escStk(f.marca)}</div>`:''}</td>
+      <td>${badgeClase(f.clase)}</td>
+      <td class="mono" style="text-align:right;color:var(--rojo);font-weight:600">${num(f.disponible)} ${escStk(f.unidad||'u')}</td>
+      <td class="mono" style="text-align:right">${f.punto_pedido!=null?num(f.punto_pedido):`<span class="sub">mín ${num(f.minimo)}</span>`}</td>
+      <td class="mono" style="text-align:right">${f.cantidad_compra!=null?num(f.cantidad_compra):'<span class="sub">—</span>'}</td>
+      <td class="mono" style="text-align:right">${f.cobertura_dias!=null?f.cobertura_dias+' d':'—'}</td></tr>`).join('')}</tbody></table>
+  </div>`:'<div class="panel" style="margin-bottom:14px"><div class="sub">Nada llegó al punto de pedido. Todo con stock.</div></div>'}
+
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap">
+      <div class="panel-title" style="margin:0">Consumo de los últimos 90 días</div>
+      <select onchange="pnlRepoClase=this.value;pintarReposicion()" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+        <option value="">Todas (${todas.length})</option>
+        <option value="A" ${pnlRepoClase==='A'?'selected':''}>Solo clase A (${R.A||0})</option>
+        <option value="B" ${pnlRepoClase==='B'?'selected':''}>Solo clase B (${R.B||0})</option>
+        <option value="C" ${pnlRepoClase==='C'?'selected':''}>Solo clase C (${R.C||0})</option>
+        <option value="sin movimiento" ${pnlRepoClase==='sin movimiento'?'selected':''}>Sin movimiento (${R.sin_movimiento||0})</option>
+      </select>
+    </div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">
+      La clase la calcula el sistema con las salidas reales: <b>A</b> son las que acumulan el primer 80% del consumo — ahí conviene tener punto de pedido. El resto se mira de vez en cuando.
+    </div>
+    <table><thead><tr><th>Ítem</th><th>Clase</th><th style="text-align:right">Salió 90d</th><th style="text-align:right">Por mes</th>
+      <th style="text-align:right">Disponible</th><th style="text-align:right">Alcanza</th><th style="text-align:right">Punto de pedido</th><th></th></tr></thead>
+    <tbody>${vis.map(f=>{
+      const cob=f.cobertura_dias;
+      return `<tr${f.hay_que_comprar?' style="background:var(--rojo-soft)"':''}>
+      <td><b>${escStk(f.nombre)}</b></td>
+      <td>${badgeClase(f.clase)}</td>
+      <td class="mono" style="text-align:right">${num(f.consumo_90d)}</td>
+      <td class="mono" style="text-align:right">${num(f.consumo_mes)}</td>
+      <td class="mono" style="text-align:right">${num(f.disponible)} ${escStk(f.unidad||'u')}</td>
+      <td class="mono" style="text-align:right;color:${cob!=null&&cob<15?'var(--rojo)':cob!=null&&cob<30?'var(--diesel)':'inherit'}">${cob!=null?cob+' d':'—'}</td>
+      <td class="mono" style="text-align:right">${f.punto_pedido!=null?num(f.punto_pedido)
+        :f.sugerido?`<span class="sub" title="sugerido según el consumo">~${f.sugerido}</span>`:'<span class="sub">—</span>'}</td>
+      <td><button class="mini-btn" onclick="pnlNivel('${f.id}')" title="definir cuándo comprar">⚙</button></td></tr>`;}).join('')
+      ||'<tr><td colspan="8" class="sub" style="padding:18px">Nada con ese filtro.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+function copiarListaCompra(){
+  const comprar=(pnlRepo&&pnlRepo.filas||[]).filter(f=>f.hay_que_comprar);
+  const txt='LISTA DE COMPRA · PAÑOL\n'+new Date().toLocaleDateString('es-AR')+'\n\n'+
+    comprar.map(f=>`• ${f.nombre}: pedir ${f.cantidad_compra!=null?f.cantidad_compra:(f.sugerido||'?')} ${f.unidad||'u'} (quedan ${f.disponible})`).join('\n');
+  navigator.clipboard.writeText(txt).then(()=>toast('Lista copiada'),()=>alert(txt));
+}
+/* Definir el punto de pedido de un ítem. Se propone el consumo de un mes
+   y medio, pero lo decide el usuario: el sistema no sabe cuánto tarda el
+   proveedor. */
+function pnlNivel(id){
+  const f=(pnlRepo&&pnlRepo.filas||[]).find(x=>x.id===id);
+  if(!f)return;
+  const inp='width:100%;padding:8px 10px;border:1px solid var(--linea);border-radius:8px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  document.getElementById('mm-titulo').textContent='Cuándo comprar · '+f.nombre;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">
+      Sale <b>${Math.round(Number(f.consumo_mes)*100)/100} ${escStk(f.unidad||'u')}</b> por mes en promedio (últimos 90 días).
+      ${f.cobertura_dias!=null?`Con lo que hay alcanza para <b>${f.cobertura_dias} días</b>.`:''}
+    </div>
+    <div class="mm-field"><label>Comprar cuando el disponible llegue a</label>
+      <input id="pl-pp" type="number" step="0.01" value="${f.punto_pedido!=null?f.punto_pedido:(f.sugerido||'')}" placeholder="${f.sugerido||''}" style="${inp}">
+      ${f.sugerido?`<div class="sub" style="font-size:11.5px;margin-top:4px">Sugerido ${f.sugerido} — un mes y medio de consumo. Subilo si el proveedor tarda.</div>`:''}
+    </div>
+    <div class="mm-field"><label>Cuánto pedir cada vez</label>
+      <input id="pl-cc" type="number" step="0.01" value="${f.cantidad_compra!=null?f.cantidad_compra:''}" style="${inp}"></div>
+    <div class="mm-field"><label>Proveedor habitual</label>
+      <input id="pl-prov" value="${escStk(f.proveedor||'')}" style="${inp}"></div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" onclick="pnlGuardarNivel('${f.id}')">Guardar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function pnlGuardarNivel(id){
+  const g=x=>document.getElementById(x);
+  const f=(pnlRepo&&pnlRepo.filas||[]).find(x=>x.id===id);
+  if(!f)return;
+  const v=x=>{const e=g(x);return e&&e.value!==''?Number(e.value):null;};
+  try{
+    await api('/api/panol/items',{method:'POST',body:JSON.stringify({
+      id, nombre:f.nombre, categoria:f.categoria, retornable:f.retornable,
+      cantidad:f.cantidad, unidad:f.unidad,
+      punto_pedido:v('pl-pp'), cantidad_compra:v('pl-cc'),
+      proveedor:g('pl-prov')?g('pl-prov').value.trim():null})});
+    cerrarMaestro();pnlRepo=null;pnlData=null;go('stock');
+  }catch(e){alert('No pude guardar: '+(e.message||''));}
 }
 
 function pnlNuevo(){pnlAbrirModal({categoria:'herramienta',retornable:true,cantidad:1,unidad:'u',minimo:0});}
