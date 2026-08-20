@@ -208,6 +208,7 @@ async function cargar(){
 function render(){
   if(rol==='capataz')return renderCombustibleCapataz();
   // Pañol y mecánicos también cargan combustible: mismo flujo del supervisor
+  if(supVista==='panol'&&(rol==='panol'||rol==='supervisor'))return renderPanolStock();
   if(supVista==='combustible'&&(rol==='panol'||rol==='mecanico'||!rol||rol==='supervisor'))return renderCombustibleSup();
   if(tab==='referente'&&(rol==='mecanico'||rol==='panol'))return renderReferente();
   if(rol==='panol')return renderPanol();
@@ -289,7 +290,8 @@ async function guardarAlta(btn){
 
 /* ── Supervisor: incidencias por objetivo a cargo ── */
 let supObjAbierto=null, supIncAbierta=null;
-let supVista='incidencias';   // 'incidencias' | 'combustible'
+let supVista='incidencias';   // 'incidencias' | 'combustible' | 'panol'
+let pnStock=null, pnObjetivos=[], pnTab='stock', pnSalida=null, pnDevolver=null, pnBuscar='';
 let cbPaso='foto';            // 'foto' | 'tipos' | 'repartir'
 let cbData=null;              // datos leídos del remito
 let cbObjetivos=[];           // objetivos para el buscador
@@ -691,6 +693,213 @@ async function capGuardar(){
 }
 
 /* ── Combustible supervisor: foto → IA lee tipos → repartir → guardar ── */
+/* ── Pañol · lo que hay y lo que sale ────────────────────────────────
+   Regla del negocio: una herramienta no sale sin decir a qué objetivo va
+   y cuándo vuelve. Los insumos se consumen y no vuelven. */
+async function abrirPanol(){
+  supVista='panol';pnTab='stock';pnSalida=null;pnDevolver=null;pnBuscar='';
+  pnStock=null;render();
+  try{
+    pnStock=await api('/api/app/panol/stock');
+    if(!pnObjetivos.length)pnObjetivos=await api('/api/app/supervisor/objetivos');
+  }catch(e){pnStock={__error:e.message||'No pude cargar el pañol'};}
+  render();
+}
+function cerrarPanol(){supVista='incidencias';pnSalida=null;pnDevolver=null;cargar();}
+
+function pnDias(f){if(!f)return null;const d=Math.ceil((new Date(f)-new Date())/86400000);return d;}
+function pnEsc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+
+function renderPanolStock(){
+  $('kpis').innerHTML='';$('tabs').innerHTML='';
+  const volver=`<button class="btn-volver" onclick="cerrarPanol()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Volver</button>`;
+  if(!pnStock)return $('lista').innerHTML=volver+'<div class="vacio">Cargando el pañol…</div>';
+  if(pnStock.__error)return $('lista').innerHTML=volver+`<div class="vacio">${pnEsc(pnStock.__error)}</div>`;
+  if(pnSalida)return renderPanolSalida();
+  if(pnDevolver)return renderPanolDevolver();
+
+  const items=pnStock.items||[], afuera=pnStock.afuera||[];
+  const vencidos=afuera.filter(m=>m.retorno_previsto&&pnDias(m.retorno_previsto)<0);
+  const q=pnBuscar.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const vis=items.filter(i=>!q||(i.nombre+' '+(i.codigo||'')+' '+(i.marca||'')+' '+(i.ubicacion||''))
+    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(q));
+
+  $('lista').innerHTML=volver+`
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <div class="tab ${pnTab==='stock'?'on':''}" onclick="pnTab='stock';render()">🧰 En el pañol (${items.length})</div>
+    <div class="tab ${pnTab==='afuera'?'on':''}" onclick="pnTab='afuera';render()">📤 Afuera (${afuera.length})${vencidos.length?` <span style="color:var(--rojo)">⚠${vencidos.length}</span>`:''}</div>
+  </div>
+  ${pnTab==='stock'?`
+    <input value="${pnEsc(pnBuscar)}" placeholder="Buscar herramienta, código, marca…" onchange="pnBuscar=this.value;render()"
+      style="width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:14px;margin-bottom:10px">
+    ${vis.length?vis.map(cardPanolItem).join(''):'<div class="vacio">No hay nada con esa búsqueda.</div>'}
+  `:`
+    ${afuera.length?afuera.map(cardPanolAfuera).join(''):'<div class="vacio">No hay nada afuera. Todo está en el pañol.</div>'}
+  `}`;
+}
+
+function cardPanolItem(i){
+  const disp=Number(i.disponible)||0, af=Number(i.afuera)||0;
+  const bajo=disp<=Number(i.minimo||0);
+  const color=disp<=0?'var(--rojo)':bajo?'var(--diesel)':'var(--brote)';
+  return `<div class="card"><div class="card-top" style="align-items:center">
+    <div class="txt">
+      <div style="font-weight:600">${pnEsc(i.nombre)}${i.codigo?` <span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--tinta-3)">N° ${pnEsc(i.codigo)}</span>`:''}</div>
+      <div style="font-size:12px;color:var(--tinta-2);margin-top:2px">
+        ${pnEsc(i.marca||'')}${i.marca&&i.ubicacion?' · ':''}${i.ubicacion?'📍 '+pnEsc(i.ubicacion):''}
+        ${i.retornable?'':' · <b>consumible</b>'}
+      </div>
+      <div style="font-size:13px;margin-top:5px">
+        <b style="color:${color}">${disp}</b> <span style="color:var(--tinta-3)">${pnEsc(i.unidad||'u')} disponible${disp===1?'':'s'}</span>
+        ${af>0?` · <span style="color:var(--diesel)">${af} afuera</span>`:''}
+        ${bajo&&disp>0?' · <span style="color:var(--diesel)">stock bajo</span>':''}
+      </div>
+    </div>
+    <button onclick="pnAbrirSalida('${i.id}')" ${disp<=0?'disabled':''}
+      style="padding:9px 14px;border:none;border-radius:10px;background:${disp<=0?'var(--linea)':'var(--brote)'};color:${disp<=0?'var(--tinta-3)':'#fff'};font-family:inherit;font-size:13px;font-weight:600;cursor:${disp<=0?'default':'pointer'};white-space:nowrap">Sacar</button>
+  </div></div>`;
+}
+
+function cardPanolAfuera(m){
+  const d=pnDias(m.retorno_previsto);
+  const venc=d!=null&&d<0;
+  const hoy=d===0;
+  const it=(pnStock.items||[]).find(x=>x.id===m.item_id);
+  return `<div class="card" style="${venc?'border-left:3px solid var(--rojo)':hoy?'border-left:3px solid var(--diesel)':''}">
+    <div class="card-top" style="align-items:center">
+    <div class="txt">
+      <div style="font-weight:600">${m.cantidad}× ${pnEsc(it?it.nombre:'—')}</div>
+      <div style="font-size:12.5px;color:var(--tinta-2);margin-top:3px">
+        📍 ${pnEsc(m.objetivo_nombre||(m.objetivos&&m.objetivos.nombre)||'sin objetivo')}
+        ${m.retira?' · 👤 '+pnEsc(m.retira):''}
+      </div>
+      <div style="font-size:12.5px;margin-top:4px;color:${venc?'var(--rojo)':hoy?'var(--diesel)':'var(--tinta-2)'}">
+        ${m.retorno_previsto
+          ?(venc?`⚠ tenía que volver hace ${Math.abs(d)} día${Math.abs(d)===1?'':'s'}`
+            :hoy?'⏰ vuelve hoy'
+            :`vuelve en ${d} día${d===1?'':'s'}`)
+          :'sin fecha de retorno'}
+      </div>
+    </div>
+    <button onclick="pnAbrirDevolver('${m.id}')"
+      style="padding:9px 14px;border:none;border-radius:10px;background:var(--brote);color:#fff;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Volvió</button>
+  </div></div>`;
+}
+
+function pnAbrirSalida(itemId){
+  const it=(pnStock.items||[]).find(x=>x.id===itemId);
+  if(!it)return;
+  const hoy=new Date();hoy.setDate(hoy.getDate()+1);
+  pnSalida={item:it,cantidad:1,objetivo_id:'',retira:'',
+    retorno_previsto:it.retornable?hoy.toISOString().slice(0,10):'',nota:''};
+  render();
+}
+function renderPanolSalida(){
+  const s=pnSalida,it=s.item;
+  const inp='width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:15px;box-sizing:border-box';
+  const lbl='display:block;font-size:12px;font-weight:600;color:var(--tinta-2);margin:12px 0 5px';
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="pnSalida=null;render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Cancelar</button>
+    <div class="card" style="padding:16px">
+      <div style="font-size:17px;font-weight:700">${pnEsc(it.nombre)}</div>
+      <div style="font-size:12.5px;color:var(--tinta-2);margin-top:3px">
+        ${it.disponible} ${pnEsc(it.unidad||'u')} disponible${Number(it.disponible)===1?'':'s'}
+        ${it.retornable?'':' · <b>consumible: no vuelve</b>'}</div>
+
+      <label style="${lbl}">¿Cuántas salen?</label>
+      <input id="pn-cant" type="number" min="1" max="${it.disponible}" value="${s.cantidad}" style="${inp}">
+
+      <label style="${lbl}">¿A qué objetivo va? *</label>
+      <select id="pn-obj" style="${inp}">
+        <option value="">— elegí el objetivo —</option>
+        ${pnObjetivos.map(o=>`<option value="${o.id}">${pnEsc(o.nombre)}</option>`).join('')}
+      </select>
+
+      <label style="${lbl}">¿Quién se la lleva?</label>
+      <input id="pn-retira" placeholder="Nombre del que retira" style="${inp}">
+
+      ${it.retornable?`
+      <label style="${lbl}">¿Cuándo vuelve? *</label>
+      <input id="pn-retorno" type="date" value="${s.retorno_previsto}" min="${new Date().toISOString().slice(0,10)}" style="${inp}">
+      <div style="font-size:11.5px;color:var(--tinta-3);margin-top:4px">Sin esta fecha no se puede registrar la salida.</div>
+      `:''}
+
+      <label style="${lbl}">Nota (opcional)</label>
+      <input id="pn-nota" placeholder="Para qué, detalle…" style="${inp}">
+
+      <button onclick="pnGuardarSalida()" id="pn-btn"
+        style="width:100%;margin-top:16px;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">
+        Registrar salida</button>
+    </div>`;
+}
+async function pnGuardarSalida(){
+  const g=id=>document.getElementById(id);
+  const s=pnSalida;if(!s)return;
+  const body={item_id:s.item.id,cantidad:Number(g('pn-cant').value)||1,
+    objetivo_id:g('pn-obj').value,retira:g('pn-retira').value.trim(),
+    retorno_previsto:g('pn-retorno')?g('pn-retorno').value:null,
+    nota:g('pn-nota').value.trim()};
+  if(!body.objetivo_id)return alert('Elegí a qué objetivo va.');
+  if(s.item.retornable&&!body.retorno_previsto)return alert('Poné cuándo vuelve.');
+  const btn=g('pn-btn');btn.disabled=true;btn.textContent='Registrando…';
+  try{
+    await api('/api/app/panol/salida',{method:'POST',body:JSON.stringify(body)});
+    pnSalida=null;
+    pnStock=await api('/api/app/panol/stock');
+    render();
+  }catch(e){
+    alert(e.message||'No pude registrar la salida');
+    btn.disabled=false;btn.textContent='Registrar salida';
+  }
+}
+
+function pnAbrirDevolver(movId){
+  const m=(pnStock.afuera||[]).find(x=>x.id===movId);
+  if(!m)return;
+  pnDevolver=m;render();
+}
+function renderPanolDevolver(){
+  const m=pnDevolver;
+  const it=(pnStock.items||[]).find(x=>x.id===m.item_id);
+  const inp='width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:15px;box-sizing:border-box';
+  const lbl='display:block;font-size:12px;font-weight:600;color:var(--tinta-2);margin:12px 0 5px';
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="pnDevolver=null;render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Cancelar</button>
+    <div class="card" style="padding:16px">
+      <div style="font-size:17px;font-weight:700">${m.cantidad}× ${pnEsc(it?it.nombre:'—')}</div>
+      <div style="font-size:12.5px;color:var(--tinta-2);margin-top:3px">
+        Salió a ${pnEsc(m.objetivo_nombre||'—')}${m.retira?' con '+pnEsc(m.retira):''}</div>
+
+      <label style="${lbl}">¿Volvieron todas?</label>
+      <input id="pn-falta" type="number" min="0" max="${m.cantidad}" value="0" style="${inp}">
+      <div style="font-size:11.5px;color:var(--tinta-3);margin-top:4px">
+        Cuántas NO volvieron (rotas, perdidas). Se descuentan del pañol.</div>
+
+      <label style="${lbl}">Nota (opcional)</label>
+      <input id="pn-dnota" placeholder="Estado en que volvió…" style="${inp}">
+
+      <button onclick="pnGuardarDevolucion()" id="pn-dbtn"
+        style="width:100%;margin-top:16px;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">
+        Registrar devolución</button>
+    </div>`;
+}
+async function pnGuardarDevolucion(){
+  const g=id=>document.getElementById(id);
+  const m=pnDevolver;if(!m)return;
+  const btn=g('pn-dbtn');btn.disabled=true;btn.textContent='Registrando…';
+  try{
+    await api('/api/app/panol/devolver',{method:'POST',body:JSON.stringify({
+      movimiento_id:m.id,no_volvieron:Number(g('pn-falta').value)||0,
+      nota:g('pn-dnota').value.trim()})});
+    pnDevolver=null;
+    pnStock=await api('/api/app/panol/stock');
+    render();
+  }catch(e){
+    alert(e.message||'No pude registrar la devolución');
+    btn.disabled=false;btn.textContent='Registrar devolución';
+  }
+}
+
 async function abrirCombustible(){
   supVista='combustible';cbPaso='foto';cbData=null;cbReparto={gasoil:[],super:[]};
   if(!cbObjetivos.length){try{cbObjetivos=await api('/api/app/supervisor/objetivos');}catch(e){cbObjetivos=[];}}
@@ -1137,6 +1346,7 @@ function renderPanol(){
     <div class="kpi green"><div class="v">${ent.length}</div><div class="l">Entregados</div></div>`;
   $('tabs').innerHTML=[['pendientes','Pendientes',pend.length],['entregados','Entregados',ent.length]]
     .map(([k,l,n])=>`<div class="tab ${tab===k?'on':''}" onclick="tab='${k}';abierta=null;render()">${l} (${n})</div>`).join('')
+    +`<div class="tab" onclick="abrirPanol()">🧰 Pañol</div>`
     +`<div class="tab" onclick="abrirCombustible()">⛽ Combustible</div>`;
   const lista=tab==='entregados'?ent:pend;
   $('lista').innerHTML=lista.length?lista.map(cardPedido).join('')
