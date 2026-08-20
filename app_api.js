@@ -963,6 +963,69 @@ router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (re
   }
 });
 
+// Registrar un INGRESO al pañol. No todo es salida: llega una compra,
+// aparece algo que estaba perdido, o el conteo real no coincide con el
+// sistema. Cada ingreso queda con su motivo para poder auditarlo después.
+const MOTIVOS_INGRESO = ['compra', 'devolucion', 'aparecio', 'ajuste', 'otro'];
+router.post('/api/app/panol/ingreso', authApp(['panol', 'supervisor']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const cant = b.cantidad == null || b.cantidad === '' ? 0 : Number(b.cantidad);
+    if (!(cant > 0)) return res.status(422).json({ error: 'La cantidad tiene que ser mayor a cero' });
+    const motivo = MOTIVOS_INGRESO.includes(b.motivo) ? b.motivo : 'otro';
+    const quien = req.app_user ? req.app_user.nombre : null;
+
+    let item;
+    if (b.item_id) {
+      const { data, error } = await supabase.from('panol_items').select('*').eq('id', b.item_id).maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(404).json({ error: 'No encontré ese ítem' });
+      item = data;
+    } else {
+      // Ítem nuevo: algo que llegó al pañol y no estaba en el sistema
+      const nombre = String(b.nombre || '').trim();
+      if (!nombre) return res.status(422).json({ error: 'Poné el nombre de lo que entra' });
+      const categoria = ['herramienta', 'insumo', 'repuesto', 'otro'].includes(b.categoria) ? b.categoria : 'herramienta';
+      const { data, error } = await supabase.from('panol_items').insert({
+        nombre, categoria,
+        retornable: b.retornable != null ? !!b.retornable : categoria !== 'insumo',
+        cantidad: 0,   // la cantidad la pone el movimiento de abajo
+        unidad: String(b.unidad || 'u').trim() || 'u',
+        codigo: String(b.codigo || '').trim() || null,
+        marca: String(b.marca || '').trim() || null,
+        ubicacion: String(b.ubicacion || '').trim() || null,
+        notas: `Dado de alta desde la app por ${quien || 'el pañolero'}`,
+      }).select().single();
+      if (error) throw error;
+      item = data;
+      console.log(`[panol] ítem nuevo desde la app: ${nombre} (${categoria})`);
+    }
+
+    // El ingreso queda registrado como movimiento — así el historial cuenta
+    // de dónde salió cada unidad que hay en el pañol.
+    const { error: eMov } = await supabase.from('panol_movimientos').insert({
+      item_id: item.id, tipo: 'ingreso', cantidad: cant,
+      objetivo_id: b.objetivo_id || null,
+      objetivo_nombre: b.objetivo_nombre || null,
+      retira: String(b.de_quien || '').trim() || null,   // de quién/dónde viene
+      entrego: quien,
+      estado: 'ingresado',
+      nota: [motivo, String(b.nota || '').trim()].filter(Boolean).join(' · '),
+    });
+    if (eMov) throw eMov;
+
+    const nueva = Math.round((Number(item.cantidad) + cant) * 100) / 100;
+    const { error: eUp } = await supabase.from('panol_items').update({ cantidad: nueva }).eq('id', item.id);
+    if (eUp) throw eUp;
+
+    console.log(`[panol] ingreso: +${cant} ${item.nombre} (${motivo}) por ${quien || '?'} → quedan ${nueva}`);
+    res.json({ ok: true, item: item.nombre, cantidad: nueva });
+  } catch (err) {
+    console.error('[app] panol ingreso:', err);
+    res.status(500).json({ error: 'No pude registrar el ingreso' });
+  }
+});
+
 // Registrar la devolución
 router.post('/api/app/panol/devolver', authApp(['panol', 'supervisor']), async (req, res) => {
   try {
