@@ -291,7 +291,7 @@ async function guardarAlta(btn){
 /* ── Supervisor: incidencias por objetivo a cargo ── */
 let supObjAbierto=null, supIncAbierta=null;
 let supVista='incidencias';   // 'incidencias' | 'combustible' | 'panol'
-let pnStock=null, pnObjetivos=[], pnTab='stock', pnSalida=null, pnDevolver=null, pnBuscar='';
+let pnStock=null, pnObjetivos=[], pnTab='stock', pnSalida=null, pnDevolver=null, pnBuscar='', pnIngreso=null;
 let cbPaso='foto';            // 'foto' | 'tipos' | 'repartir'
 let cbData=null;              // datos leídos del remito
 let cbObjetivos=[];           // objetivos para el buscador
@@ -717,6 +717,7 @@ function renderPanolStock(){
   if(pnStock.__error)return $('lista').innerHTML=volver+`<div class="vacio">${pnEsc(pnStock.__error)}</div>`;
   if(pnSalida)return renderPanolSalida();
   if(pnDevolver)return renderPanolDevolver();
+  if(pnIngreso)return renderPanolIngreso();
 
   const items=pnStock.items||[], afuera=pnStock.afuera||[];
   const vencidos=afuera.filter(m=>m.retorno_previsto&&pnDias(m.retorno_previsto)<0);
@@ -725,6 +726,8 @@ function renderPanolStock(){
     .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(q));
 
   $('lista').innerHTML=volver+`
+  <button onclick="pnAbrirIngreso()" style="width:100%;padding:12px;margin-bottom:10px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-family:inherit;font-size:14.5px;font-weight:600;cursor:pointer">
+    ＋ Ingresar al pañol</button>
   <div style="display:flex;gap:8px;margin-bottom:10px">
     <div class="tab ${pnTab==='stock'?'on':''}" onclick="pnTab='stock';render()">🧰 En el pañol (${items.length})</div>
     <div class="tab ${pnTab==='afuera'?'on':''}" onclick="pnTab='afuera';render()">📤 Afuera (${afuera.length})${vencidos.length?` <span style="color:var(--rojo)">⚠${vencidos.length}</span>`:''}</div>
@@ -850,6 +853,125 @@ async function pnGuardarSalida(){
   }catch(e){
     alert(e.message||'No pude registrar la salida');
     btn.disabled=false;btn.textContent='Registrar salida';
+  }
+}
+
+/* ── Ingreso al pañol ────────────────────────────────────────
+   No todo es salida: llega una compra, aparece algo perdido, o el conteo
+   real no coincide. El motivo queda registrado para poder auditarlo. */
+const PN_MOTIVOS=[
+  ['compra','🧾 Llegó una compra'],
+  ['devolucion','↩️ Devolución de un objetivo'],
+  ['aparecio','🔍 Apareció / estaba perdido'],
+  ['ajuste','⚖️ Ajuste de conteo'],
+  ['otro','Otro'],
+];
+function pnAbrirIngreso(){
+  pnIngreso={paso:'que',item:null,nuevo:false,cantidad:1,motivo:'compra',de_quien:'',nota:'',
+    nombre:'',categoria:'herramienta',unidad:'u',marca:'',ubicacion:'',buscar:''};
+  render();
+}
+function renderPanolIngreso(){
+  const g=pnIngreso;
+  const inp='width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:15px;box-sizing:border-box';
+  const lbl='display:block;font-size:12px;font-weight:600;color:var(--tinta-2);margin:12px 0 5px';
+  const volver=`<button class="btn-volver" onclick="pnIngreso=null;render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Cancelar</button>`;
+
+  // Paso 1: qué entra — algo que ya está en el pañol, o algo nuevo
+  if(g.paso==='que'){
+    const q=g.buscar.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const vis=(pnStock.items||[]).filter(i=>!q||(i.nombre+' '+(i.codigo||'')+' '+(i.marca||''))
+      .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(q)).slice(0,25);
+    return $('lista').innerHTML=volver+`
+      <div style="font-size:17px;font-weight:700;margin-bottom:4px">¿Qué entra al pañol?</div>
+      <div style="font-size:12.5px;color:var(--tinta-2);margin-bottom:12px">Elegí de la lista si ya existe, o cargalo como nuevo.</div>
+      <input value="${pnEsc(g.buscar)}" placeholder="Buscar en el pañol…" oninput="pnIngreso.buscar=this.value;render()" style="${inp};margin-bottom:10px">
+      <button onclick="pnIngreso.nuevo=true;pnIngreso.paso='datos';render()"
+        style="width:100%;padding:12px;margin-bottom:12px;border:1.5px dashed var(--brote);border-radius:12px;background:var(--brote-soft);color:var(--brote-2);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer">
+        ＋ Es algo que no está en el pañol</button>
+      ${vis.map(i=>`<div class="card" onclick="pnIngreso.item=${JSON.stringify(i).replace(/"/g,'&quot;')};pnIngreso.paso='datos';render()" style="cursor:pointer">
+        <div class="card-top"><div class="txt">
+          <div style="font-weight:600">${pnEsc(i.nombre)}${i.codigo?` <span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--tinta-3)">N° ${pnEsc(i.codigo)}</span>`:''}</div>
+          <div style="font-size:12px;color:var(--tinta-2);margin-top:2px">Hay ${i.cantidad} ${pnEsc(i.unidad||'u')}${i.ubicacion?' · 📍 '+pnEsc(i.ubicacion):''}</div>
+        </div></div></div>`).join('')||'<div class="vacio">Nada con esa búsqueda. Podés cargarlo como nuevo.</div>'}`;
+  }
+
+  // Paso 2: cuánto y por qué
+  const nom=g.nuevo?'(nuevo)':g.item.nombre;
+  return $('lista').innerHTML=volver+`
+    <div class="card" style="padding:16px">
+      <div style="font-size:17px;font-weight:700">${g.nuevo?'Ítem nuevo':pnEsc(nom)}</div>
+      ${g.nuevo?'':`<div style="font-size:12.5px;color:var(--tinta-2);margin-top:3px">Hay ${g.item.cantidad} ${pnEsc(g.item.unidad||'u')} · quedarían <b id="pn-queda">${(Number(g.item.cantidad)||0)+1}</b></div>`}
+
+      ${g.nuevo?`
+        <label style="${lbl}">¿Qué es? *</label>
+        <input id="pi-nombre" placeholder="Amoladora, tanza, filtro…" style="${inp}">
+        <div style="display:grid;grid-template-columns:1fr 90px;gap:8px">
+          <div><label style="${lbl}">Categoría</label>
+            <select id="pi-cat" style="${inp}">
+              <option value="herramienta">herramienta (vuelve)</option>
+              <option value="insumo">insumo (se consume)</option>
+              <option value="repuesto">repuesto</option>
+              <option value="otro">otro</option>
+            </select></div>
+          <div><label style="${lbl}">Unidad</label><input id="pi-uni" value="u" style="${inp}"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><label style="${lbl}">Marca</label><input id="pi-marca" style="${inp}"></div>
+          <div><label style="${lbl}">Dónde va</label><input id="pi-ubi" placeholder="Estante 3…" style="${inp}"></div>
+        </div>
+      `:''}
+
+      <label style="${lbl}">¿Cuántas entran? *</label>
+      <input id="pi-cant" type="number" min="1" step="0.01" value="${g.cantidad}" style="${inp}"
+        oninput="pnIngresoQueda(this.value)">
+
+      <label style="${lbl}">¿Por qué entra?</label>
+      <select id="pi-motivo" style="${inp}">
+        ${PN_MOTIVOS.map(([v,t])=>`<option value="${v}" ${g.motivo===v?'selected':''}>${t}</option>`).join('')}
+      </select>
+
+      <label style="${lbl}">¿De dónde viene? (opcional)</label>
+      <input id="pi-dequien" placeholder="Proveedor, objetivo, quién lo trajo…" style="${inp}">
+
+      <label style="${lbl}">Nota (opcional)</label>
+      <input id="pi-nota" placeholder="Detalle, N° de remito…" style="${inp}">
+
+      <button onclick="pnGuardarIngreso()" id="pi-btn"
+        style="width:100%;margin-top:16px;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">
+        Registrar ingreso</button>
+    </div>`;
+}
+/* Muestra en vivo con cuántas queda el pañol tras el ingreso. */
+function pnIngresoQueda(v){
+  const g=pnIngreso;if(!g||g.nuevo)return;
+  const el=document.getElementById('pn-queda');
+  if(el)el.textContent=Math.round(((Number(g.item.cantidad)||0)+(Number(v)||0))*100)/100;
+}
+async function pnGuardarIngreso(){
+  const g=pnIngreso;if(!g)return;
+  const G=id=>document.getElementById(id);
+  const cant=Number(G('pi-cant').value)||0;
+  if(!(cant>0))return alert('Poné cuántas entran.');
+  const body={cantidad:cant,motivo:G('pi-motivo').value,
+    de_quien:G('pi-dequien').value.trim(),nota:G('pi-nota').value.trim()};
+  if(g.nuevo){
+    const nombre=G('pi-nombre').value.trim();
+    if(!nombre)return alert('Poné qué es lo que entra.');
+    Object.assign(body,{nombre,categoria:G('pi-cat').value,unidad:G('pi-uni').value.trim()||'u',
+      marca:G('pi-marca').value.trim(),ubicacion:G('pi-ubi').value.trim()});
+  }else body.item_id=g.item.id;
+
+  const btn=G('pi-btn');btn.disabled=true;btn.textContent='Registrando…';
+  try{
+    const r=await api('/api/app/panol/ingreso',{method:'POST',body:JSON.stringify(body)});
+    pnIngreso=null;
+    pnStock=await api('/api/app/panol/stock');
+    render();
+    alert(`✓ ${r.item}: quedan ${r.cantidad}`);
+  }catch(e){
+    alert(e.message||'No pude registrar el ingreso');
+    btn.disabled=false;btn.textContent='Registrar ingreso';
   }
 }
 
