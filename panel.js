@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-18 · stock: general + grupos + planilla + faltantes';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · ítems editables a Flexxus + export incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -77,7 +77,7 @@ let objetivos = [];
 let insumosData = [], facturasData = [], repData = [], mecanicos = [];
 let filtroIns = '', combMes = '';
 let insumoEntrega = null;   // pedido en el modal de entrega
-let repFEstado = '', repFPrio = '', repFMec = '';
+let repFEstado = '', repFPrio = '', repFMec = '', repFObj = '';
 
 /* Estados y colores de reparaciones */
 const EST_REP = ['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
@@ -2587,6 +2587,49 @@ function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
   ${localStorage.getItem('eco_admin')==='1'?`<button class="${repTab==='performance'?'on':''}" onclick="repTab='performance';go('reparaciones')">Performance</button>`:''}
 </div>`;}
 
+/* Exporta a CSV lo que se está viendo (respeta los filtros: estado,
+   prioridad, mecánico, objetivo). Pensado para "finalizadas por objetivo":
+   se filtra Finalizadas + el objetivo y sale la planilla de ese objetivo.
+   Excel en español lee CSV con ; y coma decimal. */
+function exportarIncidencias(){
+  const filas=window._repFiltrada||[];
+  if(!filas.length)return alert('No hay incidencias para exportar con estos filtros.');
+  const dias=(a,b)=>{if(!a||!b)return '';const d=(new Date(b)-new Date(a))/86400000;return d>=0?Math.ceil(d):'';};
+  const fecha=v=>v?new Date(v).toLocaleDateString('es-AR'):'';
+  const q=v=>{const t=String(v==null?'':v).replace(/"/g,'""').replace(/[\r\n]+/g,' ');return /[;"]/.test(t)?`"${t}"`:t;};
+  // Campos según el select real de /api/reparaciones: tipo_equipo,
+  // numero_unidad, tipo_falla y comentarios_incidencias.
+  const cab=['Objetivo','Equipo','N° unidad','Falla','Descripción','Prioridad','Tipo','Estado',
+    'Capataz','Mecánico','Alta','Finalizada','Días en taller','Equipo parado','Repuestos','Lo que hizo el taller'];
+  const lineas=[cab.join(';')];
+  filas.forEach(r=>{
+    const obs=(r.comentarios_incidencias||[])
+      .slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))
+      .map(c=>`${c.mecanico_nombre?c.mecanico_nombre+': ':''}${c.texto||''}`).filter(Boolean).join(' · ');
+    const rep=(r.repuestos_taller||[]).map(x=>{
+      const its=Array.isArray(x.items)?x.items:[];
+      return its.map(i=>`${i.cantidad||1}× ${i.item||i.nombre||''}`).join(', ');
+    }).filter(Boolean).join(' · ');
+    lineas.push([
+      r.objetivos?r.objetivos.nombre:'',
+      r.equipos&&r.equipos.nombre?r.equipos.nombre:(r.tipo_equipo||''),
+      r.numero_unidad||'', r.tipo_falla||'',
+      r.descripcion||'', r.prioridad||'', r.tipo_mant||'correctivo', r.estado||'',
+      r.capataces?r.capataces.nombre:'', r.mecanicos?r.mecanicos.nombre:'',
+      fecha(r.created_at), fecha(r.fecha_finalizado),
+      dias(r.created_at,r.fecha_finalizado||new Date().toISOString()),
+      r.equipo_parado?'SÍ':'', rep, obs,
+    ].map(q).join(';'));
+  });
+  const est=repFEstado==='finalizado'?'finalizadas':(repFEstado||'activas');
+  const obj=repFObj?'_'+repFObj.toLowerCase().replace(/[^a-z0-9]+/gi,'-').slice(0,28):'';
+  const blob=new Blob(['\ufeff'+lineas.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`incidencias_${est}${obj}_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast(`${filas.length} incidencia${filas.length===1?'':'s'} exportada${filas.length===1?'':'s'}`);
+}
+
 /* ── Reparaciones · Performance (SOLO ADMIN): ranking para el bono ──
    Cada mecánico suma puntos por trabajo ponderado por dificultad; la calidad
    (reincidencia) no suma puntos: HABILITA o bloquea el bono. El detalle de
@@ -3687,7 +3730,8 @@ function renderReparaciones(view){
              : repData.filter(r=>r.estado!=='finalizado');
   const filtrada=base.filter(r=>
     (!repFPrio||r.prioridad===repFPrio)&&
-    (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec)));
+    (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
+    (!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj)));
   const resumen={critico:cnt('prioridad','critico'),alta:cnt('prioridad','alta'),media:cnt('prioridad','media'),baja:cnt('prioridad','baja')};
 
   const activas=repData.filter(r=>r.estado!=='finalizado').length;
@@ -3695,6 +3739,13 @@ function renderReparaciones(view){
     .map(([v,l,c])=>`<div class="frow ${repFEstado===v?'on':''}" onclick="repFEstado='${v}';renderReparaciones(document.getElementById('view'))"><span>${l}</span><span class="fc">${c}</span></div>`).join('');
   const fPrio=[['critico','Crítico','#DC4A5B'],['alta','Alta','#D98A1F'],['media','Media','#3B7DC4'],['baja','Baja','#159B51']]
     .map(([v,l,c])=>`<div class="frow ${repFPrio===v?'on':''}" onclick="repFPrio='${repFPrio===v?'':v}';renderReparaciones(document.getElementById('view'))"><span class="pdot" style="background:${c}"></span><span>${l}</span><span class="fc">${resumen[v]}</span></div>`).join('');
+  // Filtro por objetivo: se cuenta sobre la MISMA base que el filtro de
+  // estado, así al mirar "Finalizadas" los números son de finalizadas.
+  const objCount={};
+  base.forEach(r=>{const o=r.objetivos&&r.objetivos.nombre;if(o)objCount[o]=(objCount[o]||0)+1;});
+  const fObj=Object.keys(objCount).sort().map(o=>
+    `<div class="frow ${repFObj===o?'on':''}" onclick="repFObj='${repFObj===o?'':o.replace(/'/g,"\\'")}';renderReparaciones(document.getElementById('view'))"><span>${o}</span><span class="fc">${objCount[o]}</span></div>`).join('')
+    ||'<div class="sub" style="font-size:11.5px;padding:4px 2px">sin objetivos en esta vista</div>';
   const mecCount={}; repData.forEach(r=>{if(r.mecanico_id)mecCount[r.mecanico_id]=(mecCount[r.mecanico_id]||0)+1;});
   const fMec=[...mecanicos.map(m=>`<div class="frow ${repFMec===m.id?'on':''}" onclick="repFMec='${repFMec===m.id?'':m.id}';renderReparaciones(document.getElementById('view'))"><span>${m.nombre}</span><span class="fc">${mecCount[m.id]||0}</span></div>`).join(''),
     `<div class="frow ${repFMec==='__sin'?'on':''}" onclick="repFMec='${repFMec==='__sin'?'':'__sin'}';renderReparaciones(document.getElementById('view'))"><span>Sin asignar</span><span class="fc">${repData.filter(r=>!r.mecanico_id).length}</span></div>`].join('');
@@ -3718,6 +3769,7 @@ function renderReparaciones(view){
       <div style="display:flex;gap:14px;font-size:12px;align-items:center" class="mono">
         <span style="color:#DC4A5B">● ${resumen.critico} crítico</span><span style="color:#D98A1F">● ${resumen.alta} alta</span>
         <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span>
+        <button class="btn-salir" style="font-family:'Sora'" onclick="exportarIncidencias()" title="descarga lo que estás viendo, con los filtros aplicados">⬇ Exportar</button>
         <button class="btn" style="font-family:'Sora'" onclick="repAltaToggle()">+ Nueva incidencia</button></div></div>
     ${tabsRep()}
     ${repAltaOpen?repAltaForm():''}
@@ -3726,6 +3778,7 @@ function renderReparaciones(view){
         <div class="fgroup-t">Estado</div>${fEstado}
         <div class="fgroup-t">Prioridad</div>${fPrio}
         <div class="fgroup-t">Mecánico</div>${fMec}
+        <div class="fgroup-t">Objetivo</div>${fObj}
       </div>
       <div class="tablewrap"><table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Unidad</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
         <tbody id="rep-body">${filas||'<tr><td colspan="8"><div class="empty"><div>No hay incidencias con estos filtros.</div></div></td></tr>'}</tbody></table></div>
@@ -6377,11 +6430,15 @@ function vComprasDetalle(view){
       return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Cant.</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th>${perItem?'<th style="width:260px">Imputación</th>':''}</tr></thead>
       <tbody>${items.map((i,ix)=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
         const cant=Number(i.cantidad)||1;
-        return `<tr><td>${i.descripcion||'—'}</td>
+        return `<tr><td>${ed
+          ?`<input id="ei-desc-${ix}" value="${String(i.descripcion||'').replace(/"/g,'&quot;')}" style="width:100%;font-size:12px;padding:4px 6px">`
+          :(i.descripcion||'—')}</td>
         <td class="num">${ed
           ?`<input id="ei-cant-${ix}" type="number" min="1" step="1" value="${cant}" style="width:58px;font-size:12px;padding:4px 6px;text-align:right">`
           :`<span class="mono">${cant}</span>`}</td>
-        <td class="num money">${money(n)}</td>
+        <td class="num money">${ed
+          ?`<input id="ei-neto-${ix}" type="number" step="0.01" value="${n}" style="width:110px;font-size:12px;padding:4px 6px;text-align:right" onchange="comprasItemCambio()">`
+          :money(n)}</td>
         <td class="num money sub">${money(v)}</td>
         <td class="num money">${money(n+v)}</td>
         ${perItem?`<td>${selObj(ix)}${selUni(ix)}</td>`:''}</tr>`;}).join('')}
@@ -6389,7 +6446,12 @@ function vComprasDetalle(view){
         <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
         <td class="num money"><b>${money(ivaFact)}</b></td>
         <td class="num money"><b>${money(bruto)}</b></td>${perItem?'<td></td>':''}</tr></tbody></table>
-      ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}`;
+      ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}
+      <div id="ec-aviso-items" style="margin-top:8px;font-size:12px">${(()=>{
+        const dif=Math.round((netoItems-(Number(inv.total_sin_iva)||0))*100)/100;
+        if(Math.abs(dif)<0.02)return '';
+        return `<span style="color:var(--rojo)">⚠ Los ítems suman ${money(netoItems)} y el neto dice ${money(inv.total_sin_iva||0)} (diferencia ${money(Math.abs(dif))}). Al imputar mando el NETO, reescalando los ítems. Corregí el que esté mal.</span>`;
+      })()}</div>`;
     })()}
   </div>`;
   if(inv.comprobante&&inv.comprobante.ruta)cargarVisorComprobante(inv.id);
@@ -6397,6 +6459,21 @@ function vComprasDetalle(view){
     // Adelanta el trabajo pesado de Flexxus mientras el usuario mira la factura
     if(!(inv.flexxus&&inv.flexxus.ok))precargarFlexxus(inv.id,String(inv.letra||'').toUpperCase()||null);}
 }
+/* Recalcula en vivo el aviso de "los ítems no cierran con el neto". */
+function comprasItemCambio(){
+  const inv=comprasVer;if(!inv)return;
+  const g=id=>document.getElementById(id);
+  let suma=0;
+  (inv.items||[]).forEach((_,ix)=>{const n=g('ei-neto-'+ix);if(n)suma+=Number(n.value)||0;});
+  suma=Math.round(suma*100)/100;
+  const neto=Number((g('ec-neto')||{}).value||inv.total_sin_iva)||0;
+  const av=g('ec-aviso-items');if(!av)return;
+  const dif=Math.round((suma-neto)*100)/100;
+  av.innerHTML=Math.abs(dif)<0.02
+    ?'<span style="color:var(--brote)">✓ Los ítems cierran con el neto.</span>'
+    :`<span style="color:var(--rojo)">⚠ Los ítems suman ${money(suma)} y el neto dice ${money(neto)} (diferencia ${money(Math.abs(dif))}). Al imputar mando el NETO, reescalando los ítems.</span>`;
+}
+
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
 // lo que el usuario venía editando para no perderlo.
 function comprasSetEditMode(modo){
@@ -6410,6 +6487,14 @@ function comprasSetEditMode(modo){
     inv.total_sin_iva=Number(g('ec-neto').value)||0;
     inv.total_iva=Number(g('ec-iva').value)||0;
   }
+  // Los ítems también son editables: si no se capturan, Flexxus recibe la
+  // lectura vieja del OCR aunque el neto esté corregido.
+  (inv.items||[]).forEach((it,ix)=>{
+    const d=g('ei-desc-'+ix),nn=g('ei-neto-'+ix),c=g('ei-cant-'+ix);
+    if(d)it.descripcion=d.value.trim()||it.descripcion;
+    if(nn&&nn.value!=='')it.monto_sin_iva=Number(nn.value)||0;
+    if(c&&c.value!=='')it.cantidad=Number(c.value)||1;
+  });
   // Guardar también la imputación del modo que estábamos dejando
   if(comprasEditMode==='total'&&g('ec-obj')){
     inv.totalAssign={objetivo:g('ec-obj').value,unidad:g('ec-uni')?g('ec-uni').value:'',
@@ -6569,11 +6654,16 @@ async function guardarEdicionCompra(){
     total_iva:Number(g('ec-iva').value)||0,
     assignmentMode:comprasEditMode,
   };
-  // Cantidades por ítem (la cantidad va a Flexxus junto al total del renglón)
+  // Ítems editados: descripción, cantidad Y MONTO. El monto faltaba, así que
+  // una corrección del neto no llegaba al detalle y Flexxus imputaba el
+  // importe viejo del OCR (caso RAGAGLIA: $27.722,02 en vez de $33.466,23).
   if((inv.items||[]).length){
     body.items=(inv.items||[]).map((it,ix)=>{
-      const c=g('ei-cant-'+ix);
-      return {...it,cantidad:c?Math.max(1,Math.round(Number(c.value)||1)):(Number(it.cantidad)||1)};
+      const c=g('ei-cant-'+ix),d=g('ei-desc-'+ix),n=g('ei-neto-'+ix);
+      return {...it,
+        descripcion:d?(d.value.trim()||it.descripcion):it.descripcion,
+        cantidad:c?Math.max(1,Math.round(Number(c.value)||1)):(Number(it.cantidad)||1),
+        monto_sin_iva:(n&&n.value!=='')?Number(n.value)||0:(Number(it.monto_sin_iva)||0)};
     });
   }
   if(comprasEditMode==='per-item'){
