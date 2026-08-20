@@ -895,6 +895,109 @@ router.get('/api/app/supervisor/insumos', authApp('supervisor'), async (req, res
   }
 });
 
+// ── Pañol · lo que hay y lo que sale ──────────────────────────
+// El pañolero ve el stock del pañol y registra salidas. Regla del negocio:
+// una herramienta no sale sin decir A DÓNDE va y CUÁNDO vuelve.
+router.get('/api/app/panol/stock', authApp(['panol', 'supervisor']), async (req, res) => {
+  try {
+    const [items, afuera] = await Promise.all([
+      supabase.from('panol_disponible').select('*').order('nombre'),
+      supabase.from('panol_movimientos').select('*, objetivos(nombre)')
+        .eq('estado', 'afuera').order('retorno_previsto'),
+    ]);
+    if (items.error) throw items.error;
+    res.json({ items: items.data || [], afuera: afuera.data || [] });
+  } catch (err) {
+    console.error('[app] panol stock:', err);
+    res.status(500).json({ error: 'No pude cargar el pañol' });
+  }
+});
+
+// Registrar una salida
+router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const { data: item, error: e1 } = await supabase.from('panol_disponible')
+      .select('*').eq('id', b.item_id).maybeSingle();
+    if (e1) throw e1;
+    if (!item) return res.status(404).json({ error: 'No encontré ese ítem' });
+
+    // OJO: `Number(0) || 1` daría 1 y dejaría pasar una salida de cero.
+    const cant = b.cantidad == null || b.cantidad === '' ? 1 : Number(b.cantidad);
+    if (!(cant > 0)) return res.status(422).json({ error: 'La cantidad tiene que ser mayor a cero' });
+    if (cant > Number(item.disponible)) {
+      return res.status(422).json({ error: `Solo hay ${item.disponible} ${item.unidad || 'u'} disponibles de ${item.nombre}` });
+    }
+    if (!b.objetivo_id) return res.status(422).json({ error: 'Decí a qué objetivo va' });
+    // La fecha de retorno es obligatoria para lo que vuelve: es el corazón
+    // del control. Sin fecha no hay forma de saber que algo está vencido.
+    if (item.retornable && !b.retorno_previsto) {
+      return res.status(422).json({ error: 'Poné cuándo vuelve' });
+    }
+
+    const { data: obj } = await supabase.from('objetivos').select('nombre').eq('id', b.objetivo_id).maybeSingle();
+    const { data, error } = await supabase.from('panol_movimientos').insert({
+      item_id: item.id, tipo: 'salida', cantidad: cant,
+      objetivo_id: b.objetivo_id, objetivo_nombre: obj ? obj.nombre : null,
+      retira: String(b.retira || '').trim() || null,
+      entrego: req.app_user ? req.app_user.nombre : null,
+      retorno_previsto: item.retornable ? b.retorno_previsto : null,
+      // Un consumible sale y no vuelve: nace cerrado.
+      estado: item.retornable ? 'afuera' : 'consumido',
+      fecha_devolucion: item.retornable ? null : new Date().toISOString(),
+      nota: String(b.nota || '').trim() || null,
+    }).select().single();
+    if (error) throw error;
+
+    // Un consumible se descuenta del stock; una herramienta prestada no
+    // (sigue siendo del pañol, solo que está afuera).
+    if (!item.retornable) {
+      await supabase.from('panol_items')
+        .update({ cantidad: Math.max(0, Number(item.cantidad) - cant) }).eq('id', item.id);
+    }
+    console.log(`[panol] salida: ${cant} ${item.nombre} → ${obj ? obj.nombre : '?'} (${item.retornable ? 'vuelve ' + b.retorno_previsto : 'consumido'})`);
+    res.json({ ok: true, movimiento: data });
+  } catch (err) {
+    console.error('[app] panol salida:', err);
+    res.status(500).json({ error: 'No pude registrar la salida' });
+  }
+});
+
+// Registrar la devolución
+router.post('/api/app/panol/devolver', authApp(['panol', 'supervisor']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const { data: mov, error: e1 } = await supabase.from('panol_movimientos')
+      .select('*').eq('id', b.movimiento_id).maybeSingle();
+    if (e1) throw e1;
+    if (!mov) return res.status(404).json({ error: 'No encontré esa salida' });
+    if (mov.estado !== 'afuera') return res.status(422).json({ error: 'Esa salida ya está cerrada' });
+
+    const { error } = await supabase.from('panol_movimientos').update({
+      estado: 'devuelto', fecha_devolucion: new Date().toISOString(),
+      recibio: req.app_user ? req.app_user.nombre : null,
+      nota_devolucion: String(b.nota || '').trim() || null,
+    }).eq('id', mov.id);
+    if (error) throw error;
+
+    // Si vuelve rota o incompleta se descuenta del pañol: el stock tiene que
+    // reflejar lo que hay de verdad.
+    const perdidas = Number(b.no_volvieron) || 0;
+    if (perdidas > 0) {
+      const { data: it } = await supabase.from('panol_items').select('cantidad').eq('id', mov.item_id).maybeSingle();
+      if (it) {
+        await supabase.from('panol_items')
+          .update({ cantidad: Math.max(0, Number(it.cantidad) - perdidas) }).eq('id', mov.item_id);
+        console.log(`[panol] ⚠ ${perdidas} no volvieron del movimiento ${mov.id}`);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[app] panol devolver:', err);
+    res.status(500).json({ error: 'No pude registrar la devolución' });
+  }
+});
+
 router.get('/api/app/supervisor/objetivos', authApp(['supervisor', 'panol', 'mecanico']), async (req, res) => {
   try {
     const { data } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
