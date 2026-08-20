@@ -4759,6 +4759,88 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
   }
 });
 
+// ── Pañol ─────────────────────────────────────────────────────
+// Lo que se guarda en el pañol y lo que sale a cada objetivo. El alta y la
+// corrección se hacen desde el panel; las salidas y devoluciones las
+// registra el pañolero desde la app.
+router.get('/api/panol', auth, async (req, res) => {
+  try {
+    const [items, movs] = await Promise.all([
+      supabase.from('panol_disponible').select('*').order('nombre'),
+      supabase.from('panol_movimientos').select('*, objetivos(nombre)')
+        .eq('estado', 'afuera').order('retorno_previsto'),
+    ]);
+    if (items.error) throw items.error;
+    res.json({ items: items.data || [], afuera: movs.data || [] });
+  } catch (err) {
+    console.error('panol:', err);
+    res.status(500).json({ error: 'No pude cargar el pañol (¿corriste panol.sql?)' });
+  }
+});
+
+// Alta y edición de un ítem del pañol
+router.post('/api/panol/items', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fila = {
+      nombre: String(b.nombre || '').trim(),
+      categoria: ['herramienta', 'insumo', 'repuesto', 'otro'].includes(b.categoria) ? b.categoria : 'herramienta',
+      // Los insumos se consumen: no vuelven. Las herramientas sí.
+      retornable: b.retornable != null ? !!b.retornable : b.categoria !== 'insumo',
+      codigo: String(b.codigo || '').trim() || null,
+      marca: String(b.marca || '').trim() || null,
+      cantidad: Number(b.cantidad) || 0,
+      unidad: String(b.unidad || 'u').trim() || 'u',
+      ubicacion: String(b.ubicacion || '').trim() || null,
+      minimo: Number(b.minimo) || 0,
+      notas: String(b.notas || '').trim() || null,
+      activo: b.activo !== false,
+    };
+    if (!fila.nombre) return res.status(422).json({ error: 'Falta el nombre' });
+    if (fila.cantidad < 0) return res.status(422).json({ error: 'La cantidad no puede ser negativa' });
+
+    if (b.id) {
+      const { error } = await supabase.from('panol_items').update(fila).eq('id', b.id);
+      if (error) throw error;
+      return res.json({ ok: true, id: b.id });
+    }
+    const { data, error } = await supabase.from('panol_items').insert(fila).select().single();
+    if (error) throw error;
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    console.error('panol item:', err);
+    res.status(500).json({ error: 'No pude guardar el ítem' });
+  }
+});
+
+// Historial de movimientos de un ítem
+router.get('/api/panol/items/:id/movimientos', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('panol_movimientos')
+      .select('*, objetivos(nombre)').eq('item_id', req.params.id)
+      .order('fecha_salida', { ascending: false }).limit(60);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: 'No pude traer el historial' });
+  }
+});
+
+// Devolución desde el panel (por si el pañolero no la registró)
+router.post('/api/panol/movimientos/:id/devolver', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('panol_movimientos').update({
+      estado: 'devuelto', fecha_devolucion: new Date().toISOString(),
+      recibio: String((req.body && req.body.recibio) || 'panel').trim(),
+      nota_devolucion: String((req.body && req.body.nota) || '').trim() || null,
+    }).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude registrar la devolución' });
+  }
+});
+
 // ── Stock · General ───────────────────────────────────────────
 // La pregunta "¿cuántas motoguadañas tenemos y dónde?" contestada en una
 // sola llamada: el último censo respondido de CADA objetivo (sea del mes
