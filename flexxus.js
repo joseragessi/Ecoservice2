@@ -385,10 +385,35 @@ async function imputarFactura(f, letra, opts = {}) {
       }))
     : [{ codigoarticulo: '*', descripcion: ('Factura ' + (f.numero_factura || 's/n') + ' — ' + (f.proveedor || '')).slice(0, 200), cantidad: 1, preciototal: Math.round(neto * 100) / 100 }];
 
-  // Ajuste por redondeo: que la suma de productos cierre exacto con el neto
-  const sumaProd = productos.reduce((s, p) => s + p.preciototal, 0);
+  // EL NETO MANDA sobre los ítems. El neto es lo que el usuario ve y corrige
+  // en el panel; los ítems vienen del OCR y pueden haber quedado con la
+  // lectura vieja. Si no cierran, se prorratea la diferencia entre los ítems
+  // en proporción a su monto — así Flexxus recibe exactamente el importe que
+  // el usuario aprobó, no el que leyó el modelo.
+  // (Caso real: RAGAGLIA 00140-00000110 se imputó por $27.722,02 cuando la
+  //  factura decía $33.466,23 — el neto estaba corregido, el ítem no.)
+  const sumaProd = Math.round(productos.reduce((s, p) => s + p.preciototal, 0) * 100) / 100;
   const ajuste = Math.round((neto - sumaProd) * 100) / 100;
-  if (Math.abs(ajuste) >= 0.01 && Math.abs(ajuste) < 1) productos[productos.length - 1].preciototal += ajuste;
+  if (Math.abs(ajuste) >= 0.01) {
+    if (Math.abs(ajuste) < 1) {
+      productos[productos.length - 1].preciototal =
+        Math.round((productos[productos.length - 1].preciototal + ajuste) * 100) / 100;
+    } else if (sumaProd > 0) {
+      // Diferencia real: se reparte proporcional y el resto por mayor resto
+      let acum = 0;
+      productos.forEach((p, ix) => {
+        if (ix === productos.length - 1) {
+          p.preciototal = Math.round((neto - acum) * 100) / 100;
+        } else {
+          p.preciototal = Math.round((p.preciototal / sumaProd) * neto * 100) / 100;
+          acum += p.preciototal;
+        }
+      });
+      console.log(`[flexxus] ítems reescalados: sumaban ${sumaProd} y el neto es ${neto} — mando el neto`);
+    } else {
+      productos.push({ codigoarticulo: '*', descripcion: 'Ajuste al neto de la factura', cantidad: 1, preciototal: ajuste });
+    }
+  }
   // Bonificaciones y otros conceptos no-percepción: líneas de concepto libre
   otrosLibres.forEach(o => productos.push({
     codigoarticulo: '*',
