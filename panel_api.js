@@ -933,6 +933,71 @@ function normObjetivo(s) {
 // ── Corregir el objetivo de una parada de bateas ──────────────
 // El chofer escribe libre por WhatsApp; acá se reasigna contra la lista real.
 // Con recordar=true el texto queda como alias y la próxima matchea solo.
+// Cargar un viaje a mano desde el panel. El bot lo carga por WhatsApp,
+// pero cuando el chofer no lo hizo (o hay que cargar días viejos) tiene
+// que poder hacerse desde acá.
+router.post('/api/viajes', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(b.fecha)) {
+      return res.status(422).json({ error: 'Falta la fecha (o el formato no es AAAA-MM-DD)' });
+    }
+    if (!b.unidad_id) return res.status(422).json({ error: 'Elegí el camión' });
+    const paradas = (Array.isArray(b.paradas) ? b.paradas : [])
+      .map(p => ({
+        objetivo_id: p.objetivo_id || null,
+        objetivo_nombre: String(p.objetivo_nombre || '').trim(),
+        bateas: Number(p.bateas) || 0,
+      }))
+      .filter(p => p.objetivo_nombre && p.bateas > 0);
+    if (!paradas.length) return res.status(422).json({ error: 'Cargá al menos una parada con bateas' });
+
+    const total = paradas.reduce((a, p) => a + p.bateas, 0);
+    const { data: uni } = await supabase.from('unidades').select('patente').eq('id', b.unidad_id).maybeSingle();
+
+    const fila = {
+      chofer_id: b.chofer_id || null,
+      unidad_id: b.unidad_id,
+      patente_raw: uni ? uni.patente : null,
+      fecha: b.fecha,
+      paradas,
+      total_bateas: total,
+      puntos_bajada: paradas.length,
+    };
+    // `capataz_id` existe en la tabla y lo usa el dashboard: se completa
+    // con el mismo chofer para que los dos caminos vean lo mismo.
+    if (b.chofer_id) fila.capataz_id = b.chofer_id;
+
+    if (b.id) {
+      const { error } = await supabase.from('viajes_bateas').update(fila).eq('id', b.id);
+      if (error) throw error;
+      console.log(`[viajes] editado desde el panel: ${b.fecha} · ${total} bateas`);
+      return res.json({ ok: true, id: b.id, total_bateas: total });
+    }
+    const { data, error } = await supabase.from('viajes_bateas').insert(fila).select().single();
+    if (error) throw error;
+    console.log(`[viajes] cargado desde el panel: ${b.fecha} · ${uni ? uni.patente : '?'} · ${total} bateas en ${paradas.length} paradas`);
+    res.json({ ok: true, id: data.id, total_bateas: total });
+  } catch (err) {
+    console.error('viaje manual:', err);
+    res.status(500).json({ error: 'No pude guardar el viaje: ' + (err.message || '') });
+  }
+});
+
+// Choferes y camiones para el alta manual
+router.get('/api/viajes/opciones', auth, async (req, res) => {
+  try {
+    const [ch, un, ob] = await Promise.all([
+      supabase.from('capataces').select('id, nombre, unidad_id').eq('activo', true).order('nombre'),
+      supabase.from('unidades').select('id, patente, marca_modelo').eq('activo', true).order('patente'),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre'),
+    ]);
+    res.json({ choferes: ch.data || [], unidades: un.data || [], objetivos: ob.data || [] });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude traer las opciones' });
+  }
+});
+
 router.post('/api/viajes/:id/parada', auth, async (req, res) => {
   try {
     const { idx, objetivo_id, recordar } = req.body || {};
@@ -4795,6 +4860,10 @@ router.post('/api/panol/items', auth, async (req, res) => {
       minimo: Number(b.minimo) || 0,
       notas: String(b.notas || '').trim() || null,
       activo: b.activo !== false,
+      // Niveles de reposición: null = no se controla (no es lo mismo que 0)
+      punto_pedido: b.punto_pedido == null || b.punto_pedido === '' ? null : Number(b.punto_pedido),
+      cantidad_compra: b.cantidad_compra == null || b.cantidad_compra === '' ? null : Number(b.cantidad_compra),
+      proveedor: String(b.proveedor || '').trim() || null,
     };
     if (!fila.nombre) return res.status(422).json({ error: 'Falta el nombre' });
     if (fila.cantidad < 0) return res.status(422).json({ error: 'La cantidad no puede ser negativa' });
@@ -4863,6 +4932,322 @@ router.post('/api/panol/movimientos/:id/devolver', auth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: 'No pude registrar la devolución' });
+  }
+});
+
+// ── Pañol · reposición (el 80/20) ─────────────────────────────
+// Unas pocas cosas se llevan casi todo el movimiento (bolsas, tanza,
+// carreteles, tapas). El ABC las separa solo, con los movimientos reales:
+// A = las que acumulan el primer 80% del consumo, B hasta el 95%, C el
+// resto. Sobre las A tiene sentido poner punto de pedido; sobre las C no.
+router.get('/api/panol/reposicion', auth, async (req, res) => {
+  try {
+    const [cons, disp] = await Promise.all([
+      supabase.from('panol_consumo').select('*'),
+      supabase.from('panol_disponible').select('id, disponible, afuera, minimo, retornable, ubicacion, marca'),
+    ]);
+    if (cons.error) throw cons.error;
+    const dispPorId = {};
+    (disp.data || []).forEach(d => { dispPorId[d.id] = d; });
+
+    const filas = (cons.data || []).map(c => ({ ...c, ...(dispPorId[c.id] || {}) }));
+    // ABC por consumo acumulado
+    const conConsumo = filas.filter(f => Number(f.consumo_90d) > 0)
+      .sort((a, b) => Number(b.consumo_90d) - Number(a.consumo_90d));
+    const total = conConsumo.reduce((a, f) => a + Number(f.consumo_90d), 0);
+    let acum = 0;
+    conConsumo.forEach(f => {
+      acum += Number(f.consumo_90d);
+      const pct = total ? acum / total : 0;
+      f.clase = pct <= 0.8 ? 'A' : pct <= 0.95 ? 'B' : 'C';
+      f.pct_acum = Math.round(pct * 1000) / 10;
+    });
+    filas.filter(f => !f.clase).forEach(f => { f.clase = 'sin movimiento'; });
+
+    // Sugerencia de punto de pedido: consumo de un mes + medio mes de
+    // colchón, redondeado para arriba. Es una propuesta, se edita a mano.
+    filas.forEach(f => {
+      const cm = Number(f.consumo_mes) || 0;
+      f.sugerido = cm > 0 ? Math.ceil(cm * 1.5) : null;
+      const d = Number(f.disponible);
+      const pp = f.punto_pedido != null ? Number(f.punto_pedido) : null;
+      f.hay_que_comprar = pp != null ? d <= pp : (Number(f.minimo) > 0 && d <= Number(f.minimo));
+      f.cobertura_dias = cm > 0 ? Math.round((d / cm) * 30) : null;
+    });
+    res.json({
+      filas,
+      total_consumo: total,
+      resumen: {
+        A: filas.filter(f => f.clase === 'A').length,
+        B: filas.filter(f => f.clase === 'B').length,
+        C: filas.filter(f => f.clase === 'C').length,
+        sin_movimiento: filas.filter(f => f.clase === 'sin movimiento').length,
+        comprar: filas.filter(f => f.hay_que_comprar).length,
+      },
+    });
+  } catch (err) {
+    console.error('panol reposicion:', err);
+    res.status(500).json({ error: 'No pude calcular la reposición (¿corriste panol_reposicion.sql?)' });
+  }
+});
+
+// ── Reporte mensual para gerencia ─────────────────────────────
+// Todo lo que necesita el informe en UNA llamada: reparaciones del mes,
+// criticidad, tiempos de resolución, reingresos y estado del pañol.
+router.get('/api/reportes/mensual', auth, async (req, res) => {
+  try {
+    const mes = /^\d{4}-\d{2}$/.test(String(req.query.mes || '')) ? req.query.mes
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+    const desde = `${mes}-01T00:00:00`;
+    const [a, m] = mes.split('-').map(Number);
+    const hasta = new Date(Date.UTC(a, m, 1)).toISOString();
+    // Para reingresos se miran también los 60 días previos: una máquina
+    // que volvió este mes pudo haberse reparado el mes pasado.
+    const desdePrevio = new Date(Date.UTC(a, m - 3, 1)).toISOString();
+
+    // Para el promedio mensual por camión se necesita el histórico entero,
+    // no solo el mes: el promedio de un mes contra sí mismo no dice nada.
+    const [inc, prev, panolItems, panolMovs, bateasHist, unidades] = await Promise.all([
+      supabase.from('incidencias')
+        .select('*, objetivos(nombre), mecanicos(nombre), capataces(nombre)')
+        .gte('created_at', desde).lt('created_at', hasta),
+      supabase.from('incidencias')
+        .select('id, tipo_equipo, numero_unidad, tipo_falla, fecha_finalizado, mecanico_id, mecanicos(nombre)')
+        .gte('created_at', desdePrevio).lt('created_at', hasta),
+      supabase.from('panol_disponible').select('*').then(r => r, () => ({ data: [] })),
+      supabase.from('panol_movimientos').select('*').gte('fecha_salida', desde).lt('fecha_salida', hasta)
+        .then(r => r, () => ({ data: [] })),
+      supabase.from('viajes_bateas')
+        .select('*, unidades(patente, marca_modelo), capataces(nombre)')
+        .neq('estado', 'anulado').lt('fecha', hasta.slice(0, 10))
+        .then(r => r, () => ({ data: [] })),
+      supabase.from('unidades').select('id, patente, marca_modelo, tipo_rodado')
+        .then(r => r, () => ({ data: [] })),
+    ]);
+    if (inc.error) throw inc.error;
+    const filas = inc.data || [];
+
+    const dias = (ini, fin) => {
+      if (!ini || !fin) return null;
+      const d = (new Date(fin) - new Date(ini)) / 86400000;
+      return d >= 0 ? d : null;
+    };
+    const finalizadas = filas.filter(r => r.estado === 'finalizado' && r.fecha_finalizado);
+    const tiempos = finalizadas.map(r => dias(r.created_at, r.fecha_finalizado)).filter(x => x != null);
+    const prom = tiempos.length ? tiempos.reduce((s, x) => s + x, 0) / tiempos.length : 0;
+    const orden = tiempos.slice().sort((x, y) => x - y);
+    const mediana = orden.length ? (orden.length % 2 ? orden[(orden.length - 1) / 2]
+      : (orden[orden.length / 2 - 1] + orden[orden.length / 2]) / 2) : 0;
+
+    // Por criticidad, de más a menos
+    const ORDEN_PRIO = ['critico', 'alta', 'media', 'baja'];
+    const porPrioridad = ORDEN_PRIO.map(p => {
+      const del = filas.filter(r => String(r.prioridad || '').toLowerCase() === p);
+      const t = del.filter(r => r.estado === 'finalizado' && r.fecha_finalizado)
+        .map(r => dias(r.created_at, r.fecha_finalizado)).filter(x => x != null);
+      return {
+        prioridad: p, cantidad: del.length,
+        finalizadas: del.filter(r => r.estado === 'finalizado').length,
+        parados: del.filter(r => r.equipo_parado).length,
+        dias_prom: t.length ? Math.round((t.reduce((s, x) => s + x, 0) / t.length) * 10) / 10 : null,
+      };
+    }).filter(x => x.cantidad);
+
+    // Tipos de falla, de más frecuente a menos, con su tiempo
+    const porFalla = {};
+    filas.forEach(r => {
+      const k = r.tipo_falla || 'Sin especificar';
+      if (!porFalla[k]) porFalla[k] = { falla: k, cantidad: 0, criticas: 0, tiempos: [] };
+      porFalla[k].cantidad++;
+      if (['critico', 'alta'].includes(String(r.prioridad || '').toLowerCase())) porFalla[k].criticas++;
+      const t = dias(r.created_at, r.fecha_finalizado);
+      if (t != null) porFalla[k].tiempos.push(t);
+    });
+    const fallas = Object.values(porFalla).map(f => ({
+      falla: f.falla, cantidad: f.cantidad, criticas: f.criticas,
+      dias_prom: f.tiempos.length ? Math.round((f.tiempos.reduce((s, x) => s + x, 0) / f.tiempos.length) * 10) / 10 : null,
+    })).sort((x, y) => y.criticas - x.criticas || y.cantidad - x.cantidad);
+
+    // REINGRESOS: misma unidad que vuelve dentro de los 30 días de una
+    // finalización anterior. Es el indicador de calidad de la reparación.
+    const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const previas = (prev.data || []).filter(r => r.fecha_finalizado);
+    const reingresos = [];
+    filas.forEach(r => {
+      const u = norm(r.numero_unidad);
+      if (!u || u === 'sn') return;
+      const base = previas.filter(p => p.id !== r.id && norm(p.numero_unidad) === u
+        && new Date(p.fecha_finalizado) < new Date(r.created_at)
+        && (new Date(r.created_at) - new Date(p.fecha_finalizado)) / 86400000 <= 30);
+      if (base.length) {
+        const b = base.sort((x, y) => new Date(y.fecha_finalizado) - new Date(x.fecha_finalizado))[0];
+        reingresos.push({
+          unidad: r.numero_unidad, equipo: r.tipo_equipo,
+          falla_previa: b.tipo_falla, falla_ahora: r.tipo_falla,
+          dias: Math.round((new Date(r.created_at) - new Date(b.fecha_finalizado)) / 86400000),
+          mecanico: b.mecanicos ? b.mecanicos.nombre : null,
+          misma_falla: norm(b.tipo_falla) === norm(r.tipo_falla),
+        });
+      }
+    });
+
+    const cuenta = (arr, f) => {
+      const m2 = {};
+      arr.forEach(r => { const k = f(r) || '—'; m2[k] = (m2[k] || 0) + 1; });
+      return Object.entries(m2).map(([k, v]) => ({ nombre: k, cantidad: v }))
+        .sort((x, y) => y.cantidad - x.cantidad);
+    };
+
+    // ── BATEAS ────────────────────────────────────────────────
+    // OJO: viajes_bateas NO tiene m3_total ni objetivo_id. Los m³ se
+    // calculan con la constante de siempre y los objetivos viven en el
+    // jsonb `paradas` (cada parada es {objetivo_nombre, bateas}).
+    const M3_BATEA_REP = 14;
+    const bateasPorObjetivo = (viajes) => {
+      const m2 = {};
+      viajes.forEach(v => {
+        (Array.isArray(v.paradas) ? v.paradas : []).forEach(pr => {
+          const k = pr.objetivo_nombre || '—';
+          m2[k] = (m2[k] || 0) + (Number(pr.bateas) || 0);
+        });
+      });
+      return Object.entries(m2).map(([k, v]) => ({ nombre: k, cantidad: v }))
+        .sort((x, y) => y.cantidad - x.cantidad);
+    };
+
+    // Por camión: las del mes, el promedio mensual histórico y el
+    // mantenimiento de ese mismo camión (las reparaciones se cruzan por
+    // patente normalizada contra numero_unidad, que es texto libre).
+    const bat = bateasHist.data || [];
+    const delMes = bat.filter(v => String(v.fecha || '').slice(0, 7) === mes);
+    const normPat = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const uni = {};
+    (unidades.data || []).forEach(u => { uni[u.id] = u; });
+
+    const porCamion = {};
+    bat.forEach(v => {
+      const k = v.unidad_id || 'sin-unidad';
+      const u = v.unidades || uni[v.unidad_id] || {};
+      if (!porCamion[k]) porCamion[k] = {
+        unidad_id: v.unidad_id, patente: u.patente || 'sin patente',
+        modelo: u.marca_modelo || null,
+        bateas_mes: 0, viajes_mes: 0, m3_mes: 0,
+        bateas_hist: 0, meses: {}, choferes: {},
+      };
+      const c = porCamion[k];
+      const nb = Number(v.total_bateas) || 0;
+      const mesV = String(v.fecha || '').slice(0, 7);
+      c.bateas_hist += nb;
+      c.meses[mesV] = (c.meses[mesV] || 0) + nb;
+      if (mesV === mes) {
+        c.bateas_mes += nb;
+        c.viajes_mes++;
+        c.m3_mes += (Number(v.total_bateas) || 0) * M3_BATEA_REP;
+        const ch = v.capataces ? v.capataces.nombre : null;
+        if (ch) c.choferes[ch] = (c.choferes[ch] || 0) + nb;
+      }
+    });
+
+    // Mantenimiento de cada camión: incidencias del mes cuya numero_unidad
+    // coincide con la patente (o con el código de la unidad)
+    const camiones = Object.values(porCamion).map(c => {
+      const mesesCon = Object.keys(c.meses).length;
+      const repa = filas.filter(r => {
+        const n = normPat(r.numero_unidad);
+        return n && (n === normPat(c.patente) || (c.modelo && n === normPat(c.modelo)));
+      });
+      const tRepa = repa.filter(r => r.fecha_finalizado)
+        .map(r => dias(r.created_at, r.fecha_finalizado)).filter(x => x != null);
+      const chofer = Object.entries(c.choferes).sort((x, y) => y[1] - x[1])[0];
+      return {
+        patente: c.patente, modelo: c.modelo,
+        bateas_mes: c.bateas_mes, viajes_mes: c.viajes_mes,
+        m3_mes: Math.round(c.m3_mes * 10) / 10,
+        prom_viaje: c.viajes_mes ? Math.round((c.bateas_mes / c.viajes_mes) * 10) / 10 : 0,
+        // Promedio mensual histórico: solo cuentan los meses CON actividad,
+        // si no un camión que arrancó hace poco queda castigado
+        prom_mensual: mesesCon ? Math.round((c.bateas_hist / mesesCon) * 10) / 10 : 0,
+        meses_activo: mesesCon,
+        bateas_hist: c.bateas_hist,
+        chofer: chofer ? chofer[0] : null,
+        mant_cantidad: repa.length,
+        mant_parado: repa.filter(r => r.equipo_parado).length,
+        mant_dias: tRepa.length ? Math.round((tRepa.reduce((s, x) => s + x, 0) / tRepa.length) * 10) / 10 : null,
+        mant_abiertas: repa.filter(r => r.estado !== 'finalizado').length,
+      };
+    }).sort((x, y) => y.bateas_mes - x.bateas_mes);
+
+    const totalBateasMes = delMes.reduce((a, v) => a + (Number(v.total_bateas) || 0), 0);
+    // Evolución de los últimos 6 meses, para el gráfico
+    const evoMeses = {};
+    bat.forEach(v => {
+      const k = String(v.fecha || '').slice(0, 7);
+      if (k) evoMeses[k] = (evoMeses[k] || 0) + (Number(v.total_bateas) || 0);
+    });
+    const evolucion = Object.entries(evoMeses).sort((a2, b2) => a2[0].localeCompare(b2[0]))
+      .slice(-6).map(([k, v]) => ({ nombre: k, cantidad: v }));
+
+    const items = panolItems.data || [];
+    const movs = panolMovs.data || [];
+    res.json({
+      mes,
+      bateas: {
+        total_mes: totalBateasMes,
+        viajes_mes: delMes.length,
+        m3_mes: totalBateasMes * M3_BATEA_REP,
+        camiones,
+        evolucion,
+        por_objetivo: bateasPorObjetivo(delMes),
+      },
+      reparaciones: {
+        total: filas.length,
+        finalizadas: finalizadas.length,
+        abiertas: filas.filter(r => r.estado !== 'finalizado').length,
+        parados: filas.filter(r => r.equipo_parado).length,
+        preventivas: filas.filter(r => r.tipo_mant === 'preventivo').length,
+        dias_prom: Math.round(prom * 10) / 10,
+        dias_mediana: Math.round(mediana * 10) / 10,
+        dias_peor: tiempos.length ? Math.round(Math.max(...tiempos) * 10) / 10 : 0,
+        por_prioridad: porPrioridad,
+        por_falla: fallas,
+        por_objetivo: cuenta(filas, r => r.objetivos && r.objetivos.nombre),
+        por_equipo: cuenta(filas, r => r.tipo_equipo),
+        por_mecanico: cuenta(filas.filter(r => r.estado === 'finalizado'), r => r.mecanicos && r.mecanicos.nombre),
+        reingresos: {
+          cantidad: reingresos.length,
+          porcentaje: filas.length ? Math.round((reingresos.length / filas.length) * 1000) / 10 : 0,
+          misma_falla: reingresos.filter(r => r.misma_falla).length,
+          detalle: reingresos.sort((x, y) => x.dias - y.dias).slice(0, 15),
+        },
+        detalle_tiempos: finalizadas.map(r => ({
+          equipo: r.tipo_equipo, unidad: r.numero_unidad, falla: r.tipo_falla,
+          prioridad: r.prioridad, objetivo: r.objetivos ? r.objetivos.nombre : null,
+          mecanico: r.mecanicos ? r.mecanicos.nombre : null,
+          dias: Math.round(dias(r.created_at, r.fecha_finalizado) * 10) / 10,
+        })).sort((x, y) => y.dias - x.dias),
+      },
+      panol: {
+        items: items.length,
+        unidades: items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0),
+        afuera: items.reduce((a, i) => a + (Number(i.afuera) || 0), 0),
+        bajo_minimo: items.filter(i => Number(i.minimo) > 0 && Number(i.disponible) <= Number(i.minimo)).length,
+        agotados: items.filter(i => Number(i.disponible) <= 0).length,
+        por_categoria: cuenta(items, i => i.categoria),
+        salidas_mes: movs.length,
+        salidas_por_objetivo: cuenta(movs, m2 => m2.objetivo_nombre),
+        top_consumo: Object.values(movs.reduce((acc, m2) => {
+          const it = items.find(i => i.id === m2.item_id);
+          const k = it ? it.nombre : 'otro';
+          if (!acc[k]) acc[k] = { nombre: k, cantidad: 0, salidas: 0 };
+          acc[k].cantidad += Number(m2.cantidad) || 0;
+          acc[k].salidas++;
+          return acc;
+        }, {})).sort((x, y) => y.cantidad - x.cantidad).slice(0, 12),
+      },
+    });
+  } catch (err) {
+    console.error('reporte mensual:', err);
+    res.status(500).json({ error: 'No pude armar el reporte: ' + (err.message || '') });
   }
 });
 
