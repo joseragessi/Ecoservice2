@@ -4829,13 +4829,17 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
 // registra el pañolero desde la app.
 router.get('/api/panol', auth, async (req, res) => {
   try {
-    const [items, movs] = await Promise.all([
+    const [items, movs, hist] = await Promise.all([
       supabase.from('panol_disponible').select('*').order('nombre'),
       supabase.from('panol_movimientos').select('*, objetivos(nombre)')
         .eq('estado', 'afuera').order('retorno_previsto'),
+      // Últimos movimientos de todo tipo: sin esto los ingresos que carga
+      // el pañolero no se pueden auditar desde el panel.
+      supabase.from('panol_movimientos').select('*, objetivos(nombre)')
+        .order('created_at', { ascending: false }).limit(120),
     ]);
     if (items.error) throw items.error;
-    res.json({ items: items.data || [], afuera: movs.data || [] });
+    res.json({ items: items.data || [], afuera: movs.data || [], movimientos: hist.data || [] });
   } catch (err) {
     console.error('panol:', err);
     res.status(500).json({ error: 'No pude cargar el pañol (¿corriste panol.sql?)' });
