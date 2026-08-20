@@ -1501,7 +1501,7 @@ async function vStockGeneral(view){
    El alta de lo que se guarda en el pañol: herramientas, insumos, todo.
    Las salidas las registra el pañolero desde la app; acá se ve qué hay,
    qué está afuera y qué se pasó de fecha. */
-let pnlData=null, pnlTab='items', pnlQ='';
+let pnlData=null, pnlTab='items', pnlQ='', pnlCat='', pnlEstado='';
 async function vStockPanol(view){
   if(!pnlData){
     view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando el pañol…</div>';
@@ -1512,10 +1512,19 @@ async function vStockPanol(view){
   const dias=f=>f?Math.ceil((new Date(f)-new Date())/86400000):null;
   const vencidos=afuera.filter(m=>m.retorno_previsto&&dias(m.retorno_previsto)<0);
   const bajos=items.filter(i=>Number(i.disponible)<=Number(i.minimo||0));
-  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const vis=items.filter(i=>!pnlQ||norm(i.nombre+' '+(i.codigo||'')+' '+(i.marca||'')+' '+(i.ubicacion||'')).includes(norm(pnlQ)));
+  const vis=pnlFiltrar(items);
   const itemDe=id=>items.find(x=>x.id===id);
   const fFecha=f=>f?new Date(f).toLocaleDateString('es-AR'):'—';
+  // Lo que está afuera también se filtra: por vencidas y por texto (ítem,
+  // objetivo o quién retiró).
+  const normA=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const afueraVis=afuera.filter(m=>{
+    if(pnlEstado==='vencidas'&&!(m.retorno_previsto&&dias(m.retorno_previsto)<0))return false;
+    if(!pnlQ)return true;
+    const it=itemDe(m.item_id);
+    const blob=normA(`${it?it.nombre:''} ${m.objetivo_nombre||''} ${m.retira||''}`);
+    return normA(pnlQ).split(/\s+/).filter(Boolean).every(w=>blob.includes(w));
+  });
 
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Pañol</div>
@@ -1534,6 +1543,7 @@ async function vStockPanol(view){
   </div>
 
   ${pnlTab==='items'?`
+    ${(()=>{setTimeout(pintarPanol,0);return '';})()}
     ${(()=>{const rev=items.filter(i=>String(i.notas||'').startsWith('REVISAR'));
       return rev.length?`<div class="panel" style="border-left:3px solid var(--azul);margin-bottom:14px">
         <div class="panel-title" style="color:var(--azul)">📋 ${rev.length} ítem${rev.length===1?'':'s'} de la carga inicial para revisar</div>
@@ -1544,35 +1554,47 @@ async function vStockPanol(view){
       <div style="display:flex;gap:6px;flex-wrap:wrap">${bajos.map(i=>`<span class="uni-chip">${escStk(i.nombre)} · ${i.disponible} ${escStk(i.unidad||'u')}</span>`).join('')}</div>
     </div>`:''}
     <div class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap">
         <div class="panel-title" style="margin:0">Lo que hay en el pañol</div>
-        <input placeholder="Buscar…" value="${escStk(pnlQ)}" onchange="pnlQ=this.value;go('stock')"
-          style="flex:1;max-width:280px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select onchange="pnlCat=this.value;pintarPanol()" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+            <option value="">Todas las categorías</option>
+            ${['herramienta','insumo','repuesto','otro'].map(c=>{
+              const n=items.filter(i=>i.categoria===c).length;
+              return n?`<option value="${c}" ${pnlCat===c?'selected':''}>${c} (${n})</option>`:'';}).join('')}
+          </select>
+          <select onchange="pnlEstado=this.value;pintarPanol()" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+            <option value="">Todos</option>
+            <option value="bajo" ${pnlEstado==='bajo'?'selected':''}>Stock bajo o agotado (${bajos.length})</option>
+            <option value="revisar" ${pnlEstado==='revisar'?'selected':''}>Para revisar (${items.filter(i=>String(i.notas||'').startsWith('REVISAR')).length})</option>
+            <option value="afuera" ${pnlEstado==='afuera'?'selected':''}>Con unidades afuera (${items.filter(i=>Number(i.afuera)>0).length})</option>
+            <option value="vuelve" ${pnlEstado==='vuelve'?'selected':''}>Solo lo que vuelve (${items.filter(i=>i.retornable).length})</option>
+          </select>
+          <input id="pnl-q" placeholder="Buscar nombre, código, marca, ubicación…" value="${escStk(pnlQ)}" oninput="pnlQ=this.value;pintarPanol()"
+            style="width:250px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+          ${pnlQ||pnlCat||pnlEstado?`<button class="btn-salir" style="padding:5px 9px;font-size:11.5px" onclick="pnlQ='';pnlCat='';pnlEstado='';go('stock')">✕ limpiar</button>`:''}
+        </div>
       </div>
+      <div class="sub" id="pnl-cuenta" style="font-size:12px;margin-bottom:8px"></div>
       <table><thead><tr><th>Ítem</th><th>Categoría</th><th>Código</th><th>Ubicación</th>
         <th style="text-align:right">Hay</th><th style="text-align:right">Afuera</th><th style="text-align:right">Disponible</th><th></th></tr></thead>
-      <tbody>${vis.map(i=>{
-        const disp=Number(i.disponible)||0, bajo=disp<=Number(i.minimo||0);
-        return `<tr>
-          <td><b>${escStk(i.nombre)}</b>${i.marca?`<div class="sub" style="font-size:11.5px">${escStk(i.marca)}</div>`:''}
-            ${String(i.notas||'').startsWith('REVISAR')?`<div style="font-size:11px;color:var(--diesel);margin-top:2px">⚠ ${escStk(i.notas.replace(/^REVISAR:\s*/,''))}</div>`:''}</td>
-          <td><span class="badge ${i.retornable?'b-green':'b-gray'}">${escStk(i.categoria)}${i.retornable?'':' · consumible'}</span></td>
-          <td class="mono" style="font-size:12px">${escStk(i.codigo||'—')}</td>
-          <td class="sub" style="font-size:12px">${escStk(i.ubicacion||'—')}</td>
-          <td class="mono" style="text-align:right">${i.cantidad} ${escStk(i.unidad||'u')}</td>
-          <td class="mono" style="text-align:right;color:${Number(i.afuera)?'var(--diesel)':'inherit'}">${i.afuera||0}</td>
-          <td class="mono" style="text-align:right;font-weight:600;color:${disp<=0?'var(--rojo)':bajo?'var(--diesel)':'inherit'}">${disp}</td>
-          <td><div style="display:flex;gap:4px">
-            <button class="mini-btn" onclick="pnlEditar('${i.id}')" title="modificar">✏️</button>
-            <button class="mini-btn" style="color:var(--rojo)" onclick="pnlBorrar('${i.id}')" title="eliminar">🗑</button>
-          </div></td></tr>`;}).join('')
-        ||'<tr><td colspan="8" class="sub" style="padding:18px">Todavía no hay nada cargado. Empezá con "+ Nuevo ítem".</td></tr>'}
-      </tbody></table>
+      <tbody id="pnl-body">${pnlFilas(vis)}</tbody></table>
     </div>`:`
     <div class="panel">
-      <div class="panel-title">Lo que está afuera</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap">
+        <div class="panel-title" style="margin:0">Lo que está afuera</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select onchange="pnlEstado=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+            <option value="">Todas</option>
+            <option value="vencidas" ${pnlEstado==='vencidas'?'selected':''}>Solo vencidas (${vencidos.length})</option>
+          </select>
+          <input placeholder="Buscar ítem, objetivo, quién retiró…" value="${escStk(pnlQ)}" oninput="pnlQ=this.value;clearTimeout(window.__pnlT);window.__pnlT=setTimeout(()=>go('stock'),350)"
+            style="width:250px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+          ${pnlQ||pnlEstado?`<button class="btn-salir" style="padding:5px 9px;font-size:11.5px" onclick="pnlQ='';pnlEstado='';go('stock')">✕</button>`:''}
+        </div>
+      </div>
       <table><thead><tr><th>Ítem</th><th style="text-align:right">Cant.</th><th>Objetivo</th><th>Retiró</th><th>Salió</th><th>Vuelve</th><th></th></tr></thead>
-      <tbody>${afuera.map(m=>{
+      <tbody>${afueraVis.map(m=>{
         const d=dias(m.retorno_previsto), venc=d!=null&&d<0;
         const it=itemDe(m.item_id);
         return `<tr>
@@ -1584,9 +1606,60 @@ async function vStockPanol(view){
           <td class="mono" style="font-size:11.5px;color:${venc?'var(--rojo)':d===0?'var(--diesel)':'inherit'}">
             ${m.retorno_previsto?`${fFecha(m.retorno_previsto)}${venc?` <b>(+${Math.abs(d)}d)</b>`:d===0?' <b>(hoy)</b>':''}`:'sin fecha'}</td>
           <td><button class="mini-btn" onclick="pnlDevolver('${m.id}')">✓ Volvió</button></td></tr>`;}).join('')
-        ||'<tr><td colspan="7" class="sub" style="padding:18px">No hay nada afuera.</td></tr>'}
+        ||`<tr><td colspan="7" class="sub" style="padding:18px">${pnlQ||pnlEstado?'Nada con estos filtros.':'No hay nada afuera. Todo está en el pañol.'}</td></tr>`}
       </tbody></table>
     </div>`}`;
+}
+
+/* Filtro + búsqueda del pañol. Con 80 ítems hace falta llegar rápido a uno.
+   El buscador entra por nombre, código, marca y ubicación. */
+function pnlFiltrar(items){
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const q=norm(pnlQ).split(/\s+/).filter(Boolean);   // varias palabras = todas tienen que estar
+  return (items||[]).filter(i=>{
+    if(pnlCat&&i.categoria!==pnlCat)return false;
+    if(pnlEstado==='bajo'&&!(Number(i.disponible)<=Number(i.minimo||0)))return false;
+    if(pnlEstado==='revisar'&&!String(i.notas||'').startsWith('REVISAR'))return false;
+    if(pnlEstado==='afuera'&&!(Number(i.afuera)>0))return false;
+    if(pnlEstado==='vuelve'&&!i.retornable)return false;
+    if(!q.length)return true;
+    const blob=norm(`${i.nombre} ${i.codigo||''} ${i.marca||''} ${i.ubicacion||''} ${i.categoria||''} ${i.notas||''}`);
+    return q.every(w=>blob.includes(w));
+  });
+}
+function pnlFilas(vis){
+  if(!vis.length)return '<tr><td colspan="8" class="sub" style="padding:18px">Nada con estos filtros.</td></tr>';
+  return vis.map(i=>{
+    const disp=Number(i.disponible)||0, bajo=disp<=Number(i.minimo||0);
+    return `<tr>
+      <td><b>${escStk(i.nombre)}</b>${i.marca?`<div class="sub" style="font-size:11.5px">${escStk(i.marca)}</div>`:''}
+        ${String(i.notas||'').startsWith('REVISAR')?`<div style="font-size:11px;color:var(--diesel);margin-top:2px">⚠ ${escStk(i.notas.replace(/^REVISAR:\s*/,''))}</div>`:''}</td>
+      <td><span class="badge ${i.retornable?'b-green':'b-gray'}">${escStk(i.categoria)}${i.retornable?'':' · consumible'}</span></td>
+      <td class="mono" style="font-size:12px">${escStk(i.codigo||'—')}</td>
+      <td class="sub" style="font-size:12px">${escStk(i.ubicacion||'—')}</td>
+      <td class="mono" style="text-align:right">${i.cantidad} ${escStk(i.unidad||'u')}</td>
+      <td class="mono" style="text-align:right;color:${Number(i.afuera)?'var(--diesel)':'inherit'}">${i.afuera||0}</td>
+      <td class="mono" style="text-align:right;font-weight:600;color:${disp<=0?'var(--rojo)':bajo?'var(--diesel)':'inherit'}">${disp}</td>
+      <td><div style="display:flex;gap:4px">
+        <button class="mini-btn" onclick="pnlEditar('${i.id}')" title="modificar">✏️</button>
+        <button class="mini-btn" style="color:var(--rojo)" onclick="pnlBorrar('${i.id}')" title="eliminar">🗑</button>
+      </div></td></tr>`;}).join('');
+}
+/* Repinta SOLO el tbody: si re-renderizara la vista entera, el input pierde
+   el foco y no se puede escribir de corrido. */
+function pintarPanol(){
+  const tb=document.getElementById('pnl-body');
+  if(!tb||!pnlData)return;
+  const vis=pnlFiltrar(pnlData.items||[]);
+  tb.innerHTML=pnlFilas(vis);
+  const c=document.getElementById('pnl-cuenta');
+  if(c){
+    const tot=(pnlData.items||[]).length;
+    const un=vis.reduce((a,i)=>a+(Number(i.cantidad)||0),0);
+    c.textContent=vis.length===tot
+      ? `${tot} ítems · ${un} unidades`
+      : `${vis.length} de ${tot} ítems · ${un} unidades`;
+  }
 }
 
 function pnlNuevo(){pnlAbrirModal({categoria:'herramienta',retornable:true,cantidad:1,unidad:'u',minimo:0});}
