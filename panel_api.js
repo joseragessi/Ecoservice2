@@ -246,7 +246,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       supabase.from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo'),
       supabaseCompras.from('facturas').select('*'),
       supabase.from('repuestos_taller').select('id, estado, nota_precio, estado_desde, created_at'),
-      supabase.from('viajes_bateas').select('fecha, total_bateas, capataz_id, unidad_id').neq('estado', 'anulado'),
+      supabase.from('viajes_bateas').select('fecha, total_bateas, chofer_id, unidad_id').neq('estado', 'anulado'),
     ]);
 
     const facturas = fact.data || [], insumos = ins.data || [], cargas = carg.data || [];
@@ -964,9 +964,8 @@ router.post('/api/viajes', auth, async (req, res) => {
       total_bateas: total,
       puntos_bajada: paradas.length,
     };
-    // `capataz_id` existe en la tabla y lo usa el dashboard: se completa
-    // con el mismo chofer para que los dos caminos vean lo mismo.
-    if (b.chofer_id) fila.capataz_id = b.chofer_id;
+    // OJO: viajes_bateas NO tiene `capataz_id` — solo `chofer_id`. El
+    // select del dashboard la nombra pero la columna no existe.
 
     if (b.id) {
       const { error } = await supabase.from('viajes_bateas').update(fila).eq('id', b.id);
@@ -5007,7 +5006,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
     // Para el promedio mensual por camión se necesita el histórico entero,
     // no solo el mes: el promedio de un mes contra sí mismo no dice nada.
-    const [inc, prev, panolItems, panolMovs, bateasHist, unidades] = await Promise.all([
+    const [inc, prev, panolItems, panolMovs, bateasHist, unidades, paradasHoy] = await Promise.all([
       supabase.from('incidencias')
         .select('*, objetivos(nombre), mecanicos(nombre), capataces(nombre)')
         .gte('created_at', desde).lt('created_at', hasta),
@@ -5023,6 +5022,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         .then(r => r, () => ({ data: [] })),
       supabase.from('unidades').select('id, patente, marca_modelo, tipo_rodado')
         .then(r => r, () => ({ data: [] })),
+      // Paradas AHORA: todas las abiertas con equipo_parado, sin filtro de
+      // mes — una máquina parada desde julio sigue parada hoy.
+      supabase.from('incidencias')
+        .select('id, tipo_equipo, numero_unidad, prioridad, created_at, objetivos(nombre)')
+        .eq('equipo_parado', true).neq('estado', 'finalizado'),
     ]);
     if (inc.error) throw inc.error;
     const filas = inc.data || [];
@@ -5203,7 +5207,13 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         total: filas.length,
         finalizadas: finalizadas.length,
         abiertas: filas.filter(r => r.estado !== 'finalizado').length,
-        parados: filas.filter(r => r.equipo_parado).length,
+        parados: filas.filter(r => r.equipo_parado).length,   // del mes
+        parados_ahora: (paradasHoy.data || []).length,        // a la fecha
+        parados_detalle: (paradasHoy.data || []).map(r => ({
+          equipo: r.tipo_equipo, unidad: r.numero_unidad, prioridad: r.prioridad,
+          objetivo: r.objetivos ? r.objetivos.nombre : null,
+          dias: Math.ceil((Date.now() - new Date(r.created_at)) / 86400000),
+        })).sort((a2, b2) => b2.dias - a2.dias),
         preventivas: filas.filter(r => r.tipo_mant === 'preventivo').length,
         dias_prom: Math.round(prom * 10) / 10,
         dias_mediana: Math.round(mediana * 10) / 10,
