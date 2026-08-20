@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · fix bateas + paradas hoy';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · ingresos al pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1989,12 +1989,17 @@ async function vStockPanol(view){
     <div class="kpi"><div class="kpi-label">En el pañol</div><div class="kpi-val">${items.length}</div><div class="kpi-sub">tipos cargados</div></div>
     <div class="kpi"><div class="kpi-label">Afuera</div><div class="kpi-val">${afuera.length}</div><div class="kpi-sub">${afuera.length?'sin devolver':'todo en el pañol'}</div></div>
     <div class="kpi"><div class="kpi-label">Vencidas</div><div class="kpi-val" style="color:${vencidos.length?'var(--rojo)':'inherit'}">${vencidos.length}</div><div class="kpi-sub">pasaron la fecha de vuelta</div></div>
+    ${(()=>{const ing=(pnlData.movimientos||[]).filter(m=>m.tipo==='ingreso');
+      const mesAct=new Date().toISOString().slice(0,7);
+      const delMes=ing.filter(m=>String(m.created_at||'').slice(0,7)===mesAct);
+      return `<div class="kpi"><div class="kpi-label">Ingresos del mes</div><div class="kpi-val">${delMes.length}</div><div class="kpi-sub">${ing.length} en total</div></div>`;})()}
   </div>
 
   <div class="toggle-imp" style="margin-bottom:14px">
     <button class="${pnlTab==='items'?'on':''}" onclick="pnlTab='items';go('stock')">Lo que hay (${items.length})</button>
     <button class="${pnlTab==='afuera'?'on':''}" onclick="pnlTab='afuera';go('stock')">Afuera (${afuera.length})</button>
     <button class="${pnlTab==='comprar'?'on':''}" onclick="pnlTab='comprar';go('stock')">Qué comprar</button>
+    <button class="${pnlTab==='movs'?'on':''}" onclick="pnlTab='movs';go('stock')">Movimientos</button>
   </div>
   ${pnlTab==='comprar'?'<div id="pnl-repo"><div class="cargando-v">Calculando el consumo…</div></div>':''}
 
@@ -2064,6 +2069,27 @@ async function vStockPanol(view){
             ${m.retorno_previsto?`${fFecha(m.retorno_previsto)}${venc?` <b>(+${Math.abs(d)}d)</b>`:d===0?' <b>(hoy)</b>':''}`:'sin fecha'}</td>
           <td><button class="mini-btn" onclick="pnlDevolver('${m.id}')">✓ Volvió</button></td></tr>`;}).join('')
         ||`<tr><td colspan="7" class="sub" style="padding:18px">${pnlQ||pnlEstado?'Nada con estos filtros.':'No hay nada afuera. Todo está en el pañol.'}</td></tr>`}
+      </tbody></table>
+    </div>`:pnlTab==='movs'?`
+    <div class="panel">
+      <div class="panel-title">Últimos movimientos <span class="sub" style="font-weight:400">· entradas y salidas del pañol</span></div>
+      <table><thead><tr><th>Cuándo</th><th>Qué</th><th style="text-align:right">Cant.</th><th>Tipo</th><th>Objetivo / origen</th><th>Quién</th><th>Detalle</th></tr></thead>
+      <tbody>${(pnlData.movimientos||[]).map(m=>{
+        const it=itemDe(m.item_id);
+        const esIng=m.tipo==='ingreso';
+        const badge=esIng?'<span class="badge b-green">↓ ingreso</span>'
+          :m.estado==='consumido'?'<span class="badge b-gray">↑ consumido</span>'
+          :m.estado==='devuelto'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">↩ devuelto</span>'
+          :'<span class="badge b-amber">↑ afuera</span>';
+        return `<tr>
+          <td class="mono" style="font-size:11.5px">${fFecha(m.created_at||m.fecha_salida)}</td>
+          <td><b>${escStk(it?it.nombre:'—')}</b></td>
+          <td class="mono" style="text-align:right;color:${esIng?'var(--brote)':'inherit'}">${esIng?'+':'−'}${m.cantidad}</td>
+          <td>${badge}</td>
+          <td class="sub" style="font-size:12px">${escStk(m.objetivo_nombre||(m.objetivos&&m.objetivos.nombre)||m.retira||'—')}</td>
+          <td class="sub" style="font-size:12px">${escStk(m.entrego||m.recibio||'—')}</td>
+          <td class="sub" style="font-size:11.5px">${escStk(m.nota||m.nota_devolucion||'')}</td></tr>`;}).join('')
+        ||'<tr><td colspan="7" class="sub" style="padding:18px">Todavía no hay movimientos.</td></tr>'}
       </tbody></table>
     </div>`:''}`;
 }
