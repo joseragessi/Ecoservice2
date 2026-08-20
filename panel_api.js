@@ -4813,6 +4813,31 @@ router.post('/api/panol/items', auth, async (req, res) => {
   }
 });
 
+// Borrar un ítem del pañol. Si tiene movimientos NO se borra: se archiva
+// (activo=false), así no se pierde el historial de a dónde fue cada cosa.
+router.delete('/api/panol/items/:id', auth, async (req, res) => {
+  try {
+    const { data: movs, error: e1 } = await supabase.from('panol_movimientos')
+      .select('id, estado').eq('item_id', req.params.id);
+    if (e1) throw e1;
+    const afuera = (movs || []).filter(m => m.estado === 'afuera').length;
+    if (afuera) {
+      return res.status(422).json({ error: `No puedo borrarlo: hay ${afuera} afuera sin devolver` });
+    }
+    if ((movs || []).length) {
+      const { error } = await supabase.from('panol_items').update({ activo: false }).eq('id', req.params.id);
+      if (error) throw error;
+      return res.json({ ok: true, archivado: true, movimientos: movs.length });
+    }
+    const { error } = await supabase.from('panol_items').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true, archivado: false });
+  } catch (err) {
+    console.error('panol borrar:', err);
+    res.status(500).json({ error: 'No pude borrar el ítem' });
+  }
+});
+
 // Historial de movimientos de un ítem
 router.get('/api/panol/items/:id/movimientos', auth, async (req, res) => {
   try {
