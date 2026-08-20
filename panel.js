@@ -1534,6 +1534,11 @@ async function vStockPanol(view){
   </div>
 
   ${pnlTab==='items'?`
+    ${(()=>{const rev=items.filter(i=>String(i.notas||'').startsWith('REVISAR'));
+      return rev.length?`<div class="panel" style="border-left:3px solid var(--azul);margin-bottom:14px">
+        <div class="panel-title" style="color:var(--azul)">📋 ${rev.length} ítem${rev.length===1?'':'s'} de la carga inicial para revisar</div>
+        <div class="sub" style="font-size:12.5px">Se cargaron con lo que se entendió del cuaderno. Editá cada uno y borrá la nota cuando esté confirmado.</div>
+      </div>`:'';})()}
     ${bajos.length?`<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
       <div class="panel-title" style="color:var(--diesel)">⚠ Stock bajo o agotado</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">${bajos.map(i=>`<span class="uni-chip">${escStk(i.nombre)} · ${i.disponible} ${escStk(i.unidad||'u')}</span>`).join('')}</div>
@@ -1549,14 +1554,18 @@ async function vStockPanol(view){
       <tbody>${vis.map(i=>{
         const disp=Number(i.disponible)||0, bajo=disp<=Number(i.minimo||0);
         return `<tr>
-          <td><b>${escStk(i.nombre)}</b>${i.marca?`<div class="sub" style="font-size:11.5px">${escStk(i.marca)}</div>`:''}</td>
+          <td><b>${escStk(i.nombre)}</b>${i.marca?`<div class="sub" style="font-size:11.5px">${escStk(i.marca)}</div>`:''}
+            ${String(i.notas||'').startsWith('REVISAR')?`<div style="font-size:11px;color:var(--diesel);margin-top:2px">⚠ ${escStk(i.notas.replace(/^REVISAR:\s*/,''))}</div>`:''}</td>
           <td><span class="badge ${i.retornable?'b-green':'b-gray'}">${escStk(i.categoria)}${i.retornable?'':' · consumible'}</span></td>
           <td class="mono" style="font-size:12px">${escStk(i.codigo||'—')}</td>
           <td class="sub" style="font-size:12px">${escStk(i.ubicacion||'—')}</td>
           <td class="mono" style="text-align:right">${i.cantidad} ${escStk(i.unidad||'u')}</td>
           <td class="mono" style="text-align:right;color:${Number(i.afuera)?'var(--diesel)':'inherit'}">${i.afuera||0}</td>
           <td class="mono" style="text-align:right;font-weight:600;color:${disp<=0?'var(--rojo)':bajo?'var(--diesel)':'inherit'}">${disp}</td>
-          <td><button class="mini-btn" onclick="pnlEditar('${i.id}')">✏️</button></td></tr>`;}).join('')
+          <td><div style="display:flex;gap:4px">
+            <button class="mini-btn" onclick="pnlEditar('${i.id}')" title="modificar">✏️</button>
+            <button class="mini-btn" style="color:var(--rojo)" onclick="pnlBorrar('${i.id}')" title="eliminar">🗑</button>
+          </div></td></tr>`;}).join('')
         ||'<tr><td colspan="8" class="sub" style="padding:18px">Todavía no hay nada cargado. Empezá con "+ Nuevo ítem".</td></tr>'}
       </tbody></table>
     </div>`:`
@@ -1611,7 +1620,7 @@ function pnlAbrirModal(it){
       <div class="mm-field"><label>Marca</label><input id="pl-marca" value="${escStk(it.marca||'')}" style="${inp}"></div>
       <div class="mm-field"><label>Ubicación</label><input id="pl-ubi" value="${escStk(it.ubicacion||'')}" placeholder="Estante 3, cajón A…" style="${inp}"></div>
     </div>
-    <div class="mm-field"><label>Notas</label><input id="pl-notas" value="${escStk(it.notas||'')}" style="${inp}"></div>
+    <div class="mm-field"><label>Notas ${String(it.notas||'').startsWith('REVISAR')?'<span style="font-weight:400;color:var(--diesel)">— borrá el texto cuando lo confirmes</span>':''}</label><input id="pl-notas" value="${escStk(it.notas||'')}" style="${inp}"></div>
     ${it.id?`<div class="mm-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
       <input type="checkbox" id="pl-activo" ${it.activo!==false?'checked':''} style="width:auto"><span>Activo</span></label></div>`:''}
     <div class="modal-acciones">
@@ -1643,6 +1652,17 @@ async function pnlGuardar(){
     cerrarMaestro();pnlEdit=null;pnlData=null;go('stock');
   }catch(e){alert('No pude guardar: '+(e.message||''));}
 }
+async function pnlBorrar(id){
+  const it=(pnlData.items||[]).find(x=>x.id===id);
+  if(!it)return;
+  if(!confirm(`¿Eliminar "${it.nombre}" del pañol?\n\nSi ya tuvo salidas se archiva en vez de borrarse, para no perder el historial.`))return;
+  try{
+    const r=await api('/api/panol/items/'+id,{method:'DELETE'});
+    pnlData=null;go('stock');
+    toast(r.archivado?`Archivado (tenía ${r.movimientos} movimiento${r.movimientos===1?'':'s'})`:'Eliminado');
+  }catch(e){alert(e.message||'No pude eliminarlo');}
+}
+
 async function pnlDevolver(movId){
   if(!confirm('¿Registrar que volvió al pañol?'))return;
   try{
