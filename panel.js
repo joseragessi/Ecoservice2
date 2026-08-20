@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · reportes + carga de bateas + reposición';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · fix bateas + paradas hoy';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1741,8 +1741,8 @@ async function vReportes(view){
       <div class="kpi-sub">mediana ${r.dias_mediana} d · peor ${r.dias_peor} d</div></div>
     <div class="kpi"><div class="kpi-label">Reingresos</div><div class="kpi-val" style="color:${r.reingresos.porcentaje>10?'var(--rojo)':'inherit'}">${r.reingresos.porcentaje}%</div>
       <div class="kpi-sub">${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla</div></div>
-    <div class="kpi"><div class="kpi-label">Máquinas paradas</div><div class="kpi-val" style="color:${r.parados?'var(--diesel)':'inherit'}">${r.parados}</div>
-      <div class="kpi-sub">del total del mes</div></div>
+    <div class="kpi"><div class="kpi-label">Paradas hoy</div><div class="kpi-val" style="color:${r.parados_ahora?'var(--rojo)':'inherit'}">${r.parados_ahora!=null?r.parados_ahora:'—'}</div>
+      <div class="kpi-sub">${r.parados} estuvieron paradas en el mes</div></div>
   </div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
@@ -1785,6 +1785,18 @@ async function vReportes(view){
       etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
       color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
   </div>
+
+  ${r.parados_detalle&&r.parados_detalle.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--rojo)">⛔ Paradas en este momento (${r.parados_detalle.length})</div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">Máquinas sin poder trabajar hoy, sin importar de qué mes sea la incidencia.</div>
+    <table><thead><tr><th>Equipo</th><th>N°</th><th>Objetivo</th><th>Prioridad</th><th style="text-align:right">Días parada</th></tr></thead>
+    <tbody>${r.parados_detalle.map(x=>`<tr>
+      <td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
+      <td class="sub">${escStk(x.objetivo||'—')}</td>
+      <td><span class="badge" style="background:${COLOR_PRIO[String(x.prioridad||'').toLowerCase()]||'#8A968E'}22;color:${COLOR_PRIO[String(x.prioridad||'').toLowerCase()]||'#8A968E'}">${LABEL_PRIO[String(x.prioridad||'').toLowerCase()]||x.prioridad||'—'}</span></td>
+      <td class="mono" style="text-align:right;color:${x.dias>=7?'var(--rojo)':x.dias>=3?'var(--diesel)':'inherit'}">${x.dias}</td></tr>`).join('')}
+    </tbody></table>
+  </div>`:''}
 
   ${bloqueBateas(d.bateas)}
 
@@ -1848,7 +1860,7 @@ function imprimirReporte(){
         ${kpi('Reparaciones',r.total,`${r.finalizadas} finalizadas · ${r.abiertas} abiertas`)}
         ${kpi('Resolución promedio',r.dias_prom+' d',`mediana ${r.dias_mediana} d · peor ${r.dias_peor} d`)}
         ${kpi('Reingresos',r.reingresos.porcentaje+'%',`${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla`,r.reingresos.porcentaje>10?'#DC4A5B':'')}
-        ${kpi('Máquinas paradas',r.parados,'del total del mes',r.parados?'#D98A1F':'')}
+        ${kpi('Paradas hoy',r.parados_ahora!=null?r.parados_ahora:'—',`${r.parados} estuvieron paradas en el mes`,r.parados_ahora?'#DC4A5B':'')}
       </div>
     </div>
 
@@ -1884,6 +1896,15 @@ function imprimirReporte(){
         <td>${escStk(x.falla_previa||'—')}</td><td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge" style="background:#FCEBED;color:#DC4A5B">misma falla</span>':''}</td>
         <td class="der mono">${x.dias}</td><td>${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
       <div class="mini" style="margin-top:6px">El reingreso con la misma falla es el indicador de calidad de la reparación.</div>
+    </div>`:''}
+
+    ${r.parados_detalle&&r.parados_detalle.length?`<div class="sec">
+      <h2>Paradas en este momento</h2>
+      <table><thead><tr><th>Equipo</th><th>N°</th><th>Objetivo</th><th>Prioridad</th><th class="der">Días parada</th></tr></thead>
+      <tbody>${r.parados_detalle.map(x=>`<tr><td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
+        <td>${escStk(x.objetivo||'—')}</td><td>${LABEL_PRIO[String(x.prioridad||'').toLowerCase()]||x.prioridad||'—'}</td>
+        <td class="der mono"${x.dias>=7?' style="color:#DC4A5B;font-weight:700"':''}>${x.dias}</td></tr>`).join('')}</tbody></table>
+      <div class="mini" style="margin-top:6px">Máquinas sin poder trabajar al momento de emitir el reporte, sin importar de qué mes es la incidencia.</div>
     </div>`:''}
 
     ${d.bateas&&d.bateas.camiones&&d.bateas.camiones.length?`<div class="sec">
