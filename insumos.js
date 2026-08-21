@@ -101,6 +101,56 @@ async function tieneSesionActiva(telefono) {
  * Arranca el flujo de insumos. `resto` es lo que el capataz escribió
  * después de la palabra "insumos" (puede venir vacío).
  */
+/* ── Ventana de pedidos ──────────────────────────────────────────
+   Los pedidos se toman de VIERNES a MIÉRCOLES hasta las 23:00. El
+   jueves está cerrado: es el día en que el pañol arma y compra lo
+   pedido en la semana. Si no hay corte, los pedidos entran mientras se
+   está comprando y nunca se cierra la lista. */
+const DIAS_NOMBRE = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const CIERRA_DIA = 3;    // miércoles
+const CIERRA_HORA = 23;  // a las 23:00
+const REABRE_DIA = 5;    // viernes
+
+function ahoraCba() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
+}
+
+/** ¿Se puede pedir ahora? Devuelve {abierto, motivo, reabre}. */
+function ventanaPedidos(fecha) {
+  const f = fecha || ahoraCba();
+  const dia = f.getDay(), hora = f.getHours();
+  // Jueves entero cerrado
+  if (dia === 4) return { abierto: false, motivo: 'jueves', reabre: 'mañana viernes' };
+  // Miércoles después de las 23
+  if (dia === CIERRA_DIA && hora >= CIERRA_HORA) {
+    return { abierto: false, motivo: 'cerro_miercoles', reabre: 'el viernes' };
+  }
+  return { abierto: true };
+}
+
+/** Cuánto falta para que cierre, para avisar cuando está por terminar. */
+function horasParaCierre(fecha) {
+  const f = fecha || ahoraCba();
+  const dia = f.getDay();
+  // Días hasta el próximo miércoles (0 si hoy es miércoles)
+  let faltan = (CIERRA_DIA - dia + 7) % 7;
+  const cierre = new Date(f);
+  cierre.setDate(cierre.getDate() + faltan);
+  cierre.setHours(CIERRA_HORA, 0, 0, 0);
+  return (cierre - f) / 3600000;
+}
+
+function mensajeCerrado(nombre, v) {
+  const quien = nombre ? ` *${nombre}*` : '';
+  return `🚫 Los pedidos de insumos están cerrados${quien}.\n\n` +
+    (v.motivo === 'jueves'
+      ? `Los jueves no se toman pedidos: es el día en que el pañol prepara y compra lo de la semana.`
+      : `La semana cerró el miércoles a las 23:00.`) +
+    `\n\n📅 Se piden de *viernes a miércoles hasta las 23:00*.\n` +
+    `Volvé a escribir ${v.reabre} y te lo tomo.\n\n` +
+    `_Si es urgente, hablá con administración._`;
+}
+
 async function iniciarInsumos(telefono, resto) {
   const tel = telefono.replace('whatsapp:', '').replace('+', '');
 
@@ -109,6 +159,14 @@ async function iniciarInsumos(telefono, resto) {
     return '❌ Tu número no está registrado en el sistema EcoService. Contactá a administración.';
   }
   const nombre = capataz.nombre.split(' ')[0];
+
+  // Candado de la ventana: se chequea ANTES de pedirle que escriba, para
+  // no hacerlo tipear un pedido que después se le va a rechazar.
+  const v = ventanaPedidos();
+  if (!v.abierto) {
+    console.log(`[insumos] pedido rechazado (${v.motivo}) — ${capataz.nombre}`);
+    return mensajeCerrado(nombre, v);
+  }
 
   // Si no escribió el pedido junto, lo pedimos
   if (!resto || !resto.trim()) {
@@ -156,6 +214,16 @@ async function continuarInsumos(telefono, mensaje) {
   const t = texto.toLowerCase();
   const nombre = sesion.capataz.nombre.split(' ')[0];
 
+  // La ventana también se chequea acá: alguien pudo empezar el pedido a
+  // las 22:55 del miércoles y confirmar a las 23:05. Sin esto, el corte
+  // se esquiva dejando la conversación abierta.
+  const v = ventanaPedidos();
+  if (!v.abierto) {
+    delete sesiones[tel];
+    console.log(`[insumos] pedido cortado por la ventana (${v.motivo}) — ${sesion.capataz.nombre}`);
+    return mensajeCerrado(nombre, v);
+  }
+
   // Estaba esperando que escriba el pedido
   if (sesion.paso === 'esperando_pedido') {
     return await procesarPedidoTexto(tel, sesion.capataz, texto);
@@ -177,7 +245,11 @@ async function continuarInsumos(telefono, mensaje) {
       const pedido = await guardarPedido(sesion);
       delete sesiones[tel];
       if (!pedido) return '⚠️ No pude guardar el pedido. Avisá a administración.';
-      return `✅ Pedido registrado, *${nombre}*. Compras lo va a gestionar.\n\n${resumenPedido(sesion)}`;
+      const faltan = horasParaCierre();
+      const aviso = faltan <= 24
+        ? `\n\n⏰ _Ojo: los pedidos cierran ${faltan <= 1 ? 'en menos de una hora' : 'hoy a las 23:00'}. Después reabren el viernes._`
+        : '';
+      return `✅ Pedido registrado, *${nombre}*. Compras lo va a gestionar.\n\n${resumenPedido(sesion)}${aviso}`;
     }
 
     // Cualquier otra cosa -> es un ajuste: reinterpretar con la IA
@@ -205,6 +277,7 @@ async function continuarInsumos(telefono, mensaje) {
 }
 
 module.exports = {
+  ventanaPedidos, horasParaCierre, mensajeCerrado,
   iniciarInsumos: ses.conPersistencia('insumos', sesiones, iniciarInsumos),
   continuarInsumos: ses.conPersistencia('insumos', sesiones, continuarInsumos),
   tieneSesionActiva,
