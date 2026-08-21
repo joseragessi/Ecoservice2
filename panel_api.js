@@ -5289,7 +5289,18 @@ router.get('/api/stock/general', auth, async (req, res) => {
     const filas = [];
     (objs.data || []).forEach(o => {
       const c = ultimo[o.id];
-      if (!c) return;
+      // Un objetivo NUEVO (o uno que nunca respondió el censo) no tiene
+      // ítems, pero igual tiene que aparecer: si no, no hay dónde cargarle
+      // el stock desde el panel.
+      if (!c) {
+        filas.push({
+          objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
+          censo_id: null, capataz: null, periodo: null, respondido_at: null,
+          tipo: null, cantidad: 0, numeros: [], observacion: null,
+          sin_censo: true,
+        });
+        return;
+      }
       (c.censos_stock_items || []).forEach(i => {
         filas.push({
           objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
@@ -5305,6 +5316,58 @@ router.get('/api/stock/general', auth, async (req, res) => {
   } catch (err) {
     console.error('stock general:', err);
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
+  }
+});
+
+// Cargar el stock de un objetivo que todavía NO tiene censo. Crea el
+// censo del período y le mete los ítems de una: es el camino para dar de
+// alta el stock de un objetivo nuevo desde el panel, sin esperar a que el
+// capataz responda por WhatsApp.
+router.post('/api/stock/censos', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.objetivo_id) return res.status(422).json({ error: 'Falta el objetivo' });
+    const periodo = /^\d{4}-\d{2}$/.test(String(b.periodo || '')) ? b.periodo
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+
+    const items = (Array.isArray(b.items) ? b.items : [])
+      .map(i => ({
+        tipo_equipo: String(i.tipo || '').trim(),
+        cantidad: Number(i.cantidad) || 0,
+        numeros: (Array.isArray(i.numeros) ? i.numeros : []).map(n => String(n).trim()).filter(Boolean),
+        observacion: String(i.observacion || '').trim() || null,
+      }))
+      .filter(i => i.tipo_equipo && i.cantidad > 0);
+    if (!items.length) return res.status(422).json({ error: 'Cargá al menos un equipo' });
+
+    // Si ya existe un censo de ese objetivo y período se reusa, para no
+    // duplicar cuando el capataz respondió mientras tanto.
+    const { data: existe } = await supabase.from('censos_stock')
+      .select('id').eq('objetivo_id', b.objetivo_id).eq('periodo', periodo).maybeSingle();
+
+    let censoId = existe ? existe.id : null;
+    if (!censoId) {
+      const { data: nuevo, error: e1 } = await supabase.from('censos_stock').insert({
+        objetivo_id: b.objetivo_id, periodo,
+        estado: 'respondido', respondido_at: new Date().toISOString(),
+      }).select().single();
+      if (e1) throw e1;
+      censoId = nuevo.id;
+    } else {
+      await supabase.from('censos_stock').update({
+        estado: 'respondido', respondido_at: new Date().toISOString(),
+      }).eq('id', censoId);
+      await supabase.from('censos_stock_items').delete().eq('censo_id', censoId);
+    }
+
+    const { error: e2 } = await supabase.from('censos_stock_items')
+      .insert(items.map(i => ({ ...i, censo_id: censoId })));
+    if (e2) throw e2;
+    console.log(`[stock] censo cargado desde el panel: objetivo ${b.objetivo_id} · ${periodo} · ${items.length} tipos`);
+    res.json({ ok: true, censo_id: censoId, items: items.length });
+  } catch (err) {
+    console.error('stock crear censo:', err);
+    res.status(500).json({ error: 'No pude cargar el stock: ' + (err.message || '') });
   }
 });
 
