@@ -291,7 +291,7 @@ async function guardarAlta(btn){
 /* ── Supervisor: incidencias por objetivo a cargo ── */
 let supObjAbierto=null, supIncAbierta=null;
 let supVista='incidencias';   // 'incidencias' | 'combustible' | 'panol'
-let pnStock=null, pnObjetivos=[], pnTab='stock', pnSalida=null, pnDevolver=null, pnBuscar='', pnIngreso=null;
+let pnStock=null, pnObjetivos=[], pnTab='stock', pnSalida=null, pnDevolver=null, pnBuscar='', pnIngreso=null, pnCat='', pnFiltro='';
 let cbPaso='foto';            // 'foto' | 'tipos' | 'repartir'
 let cbData=null;              // datos leídos del remito
 let cbObjetivos=[];           // objetivos para el buscador
@@ -721,9 +721,8 @@ function renderPanolStock(){
 
   const items=pnStock.items||[], afuera=pnStock.afuera||[];
   const vencidos=afuera.filter(m=>m.retorno_previsto&&pnDias(m.retorno_previsto)<0);
-  const q=pnBuscar.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const vis=items.filter(i=>!q||(i.nombre+' '+(i.codigo||'')+' '+(i.marca||'')+' '+(i.ubicacion||''))
-    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(q));
+  const vis=pnFiltrarItems(items);
+  const afueraVis=pnFiltrarAfuera(afuera,items);
 
   $('lista').innerHTML=volver+`
   <button onclick="pnAbrirIngreso()" style="width:100%;padding:12px;margin-bottom:10px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-family:inherit;font-size:14.5px;font-weight:600;cursor:pointer">
@@ -733,12 +732,68 @@ function renderPanolStock(){
     <div class="tab ${pnTab==='afuera'?'on':''}" onclick="pnTab='afuera';render()">📤 Afuera (${afuera.length})${vencidos.length?` <span style="color:var(--rojo)">⚠${vencidos.length}</span>`:''}</div>
   </div>
   ${pnTab==='stock'?`
-    <input value="${pnEsc(pnBuscar)}" placeholder="Buscar herramienta, código, marca…" onchange="pnBuscar=this.value;render()"
-      style="width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:14px;margin-bottom:10px">
-    ${vis.length?vis.map(cardPanolItem).join(''):'<div class="vacio">No hay nada con esa búsqueda.</div>'}
+    <input value="${pnEsc(pnBuscar)}" placeholder="Buscar herramienta, código, marca…" oninput="pnBuscarCambio(this.value)"
+      style="width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:14px;margin-bottom:8px">
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px;-webkit-overflow-scrolling:touch">
+      ${pnChip('','Todo',items.length)}
+      ${pnChip('bajo','⚠ Poco stock',items.filter(i=>Number(i.disponible)<=Number(i.minimo||0)).length,'var(--diesel)')}
+      ${pnChip('afuera','Con unidades afuera',items.filter(i=>Number(i.afuera)>0).length)}
+      ${['herramienta','insumo','repuesto'].map(c=>pnChip('cat:'+c,c,items.filter(i=>i.categoria===c).length)).join('')}
+    </div>
+    <div id="pn-lista">${vis.length?vis.map(cardPanolItem).join(''):'<div class="vacio">No hay nada con esos filtros.</div>'}</div>
   `:`
-    ${afuera.length?afuera.map(cardPanolAfuera).join(''):'<div class="vacio">No hay nada afuera. Todo está en el pañol.</div>'}
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px">
+      ${pnChipA('','Todo',afuera.length)}
+      ${pnChipA('vencidas','⚠ Vencidas',vencidos.length,'var(--rojo)')}
+      ${pnChipA('hoy','⏰ Vuelven hoy',afuera.filter(m=>pnDias(m.retorno_previsto)===0).length,'var(--diesel)')}
+    </div>
+    <input value="${pnEsc(pnBuscar)}" placeholder="Buscar ítem, objetivo, quién retiró…" oninput="pnBuscarCambio(this.value)"
+      style="width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;font-family:inherit;font-size:14px;margin-bottom:10px">
+    ${afueraVis.length?afueraVis.map(cardPanolAfuera).join(''):'<div class="vacio">'+(pnBuscar||pnFiltro?'Nada con esos filtros.':'No hay nada afuera. Todo está en el pañol.')+'</div>'}
   `}`;
+}
+
+/* Filtros del pañol en la app. Con 80 ítems y el celular en la mano hay
+   que llegar rápido: chips arriba para lo frecuente y buscador libre. */
+function pnNorm(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
+function pnChip(valor,texto,n,color){
+  const on=pnFiltro===valor;
+  return `<button onclick="pnFiltro='${valor}';render()" style="flex-shrink:0;padding:7px 13px;border-radius:20px;border:1px solid ${on?(color||'var(--brote)'):'var(--linea)'};
+    background:${on?(color||'var(--brote)'):'#fff'};color:${on?'#fff':(color||'var(--tinta-2)')};font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">
+    ${texto}${n!=null?` <span style="opacity:.8">${n}</span>`:''}</button>`;
+}
+function pnChipA(valor,texto,n,color){return pnChip(valor,texto,n,color);}
+function pnFiltrarItems(items){
+  const q=pnNorm(pnBuscar).split(/\s+/).filter(Boolean);
+  return (items||[]).filter(i=>{
+    if(pnFiltro==='bajo'&&!(Number(i.disponible)<=Number(i.minimo||0)))return false;
+    if(pnFiltro==='afuera'&&!(Number(i.afuera)>0))return false;
+    if(pnFiltro.startsWith('cat:')&&i.categoria!==pnFiltro.slice(4))return false;
+    if(!q.length)return true;
+    const blob=pnNorm(`${i.nombre} ${i.codigo||''} ${i.marca||''} ${i.ubicacion||''} ${i.categoria||''}`);
+    return q.every(w=>blob.includes(w));
+  });
+}
+function pnFiltrarAfuera(afuera,items){
+  const q=pnNorm(pnBuscar).split(/\s+/).filter(Boolean);
+  return (afuera||[]).filter(m=>{
+    const d=pnDias(m.retorno_previsto);
+    if(pnFiltro==='vencidas'&&!(d!=null&&d<0))return false;
+    if(pnFiltro==='hoy'&&d!==0)return false;
+    if(!q.length)return true;
+    const it=(items||[]).find(x=>x.id===m.item_id);
+    const blob=pnNorm(`${it?it.nombre:''} ${m.objetivo_nombre||''} ${m.retira||''}`);
+    return q.every(w=>blob.includes(w));
+  });
+}
+/* Repinta solo la lista: si re-renderizara todo, el teclado del celular se
+   cierra y el input pierde el foco a cada letra. */
+function pnBuscarCambio(v){
+  pnBuscar=v;
+  const cont=document.getElementById('pn-lista');
+  if(!cont||pnTab!=='stock')return render();
+  const vis=pnFiltrarItems(pnStock.items||[]);
+  cont.innerHTML=vis.length?vis.map(cardPanolItem).join(''):'<div class="vacio">No hay nada con esos filtros.</div>';
 }
 
 function cardPanolItem(i){
