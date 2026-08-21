@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · gráficos de reposición + filtros app';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · alta de stock por objetivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1505,15 +1505,19 @@ async function vStockGeneral(view){
   }
   const filas=stkGen.filas||[], faltantes=stkGen.faltantes||[];
   const F=stkGenF;
-  const tipos=[...new Set(filas.map(f=>f.tipo))].sort();
+  const tipos=[...new Set(filas.map(f=>f.tipo).filter(Boolean))].sort();
   const objetivos=[...new Set(filas.map(f=>f.objetivo))].sort();
   const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const vis=filas.filter(f=>
+    // Los objetivos sin censo se ocultan al filtrar por tipo: no tienen
+    // tipo, y mostrarlos ahí confundiría más que ayudar.
     (!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&
     (!F.grupo||f.grupo===F.grupo)&&
     (!F.q||norm(f.numeros.join(' ')+' '+(f.observacion||'')+' '+f.objetivo+' '+f.tipo).includes(norm(F.q))));
   const total=vis.reduce((a,f)=>a+(Number(f.cantidad)||0),0);
-  const nObjs=new Set(vis.map(f=>f.objetivo)).size;
+  // Los objetivos sin censo no cuentan como "objetivos con equipos"
+  const nObjs=new Set(vis.filter(f=>!f.sin_censo).map(f=>f.objetivo)).size;
+  const nSinCenso=vis.filter(f=>f.sin_censo).length;
   const enDep=vis.filter(f=>f.grupo==='deposito').reduce((a,f)=>a+(Number(f.cantidad)||0),0);
   // faltantes que aplican al filtro actual
   const faltVis=faltantes.filter(fa=>{
@@ -1554,6 +1558,7 @@ async function vStockGeneral(view){
     <div class="kpi"><div class="kpi-label">${F.tipo?escStk(F.tipo):'Equipos'}</div><div class="kpi-val">${total}</div><div class="kpi-sub">en ${nObjs} objetivo${nObjs===1?'':'s'}</div></div>
     <div class="kpi"><div class="kpi-label">En depósito</div><div class="kpi-val">${enDep}</div><div class="kpi-sub">del grupo depósito</div></div>
     <div class="kpi"><div class="kpi-label">Faltantes abiertos</div><div class="kpi-val" style="color:${faltVis.length?'var(--rojo)':'inherit'}">${faltVis.length}</div><div class="kpi-sub">${faltVis.length?'revisar abajo':'sin faltantes'}</div></div>
+    ${nSinCenso?`<div class="kpi"><div class="kpi-label">Sin stock cargado</div><div class="kpi-val" style="color:var(--diesel)">${nSinCenso}</div><div class="kpi-sub">objetivos por cargar</div></div>`:''}
   </div>
 
   ${faltVis.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
@@ -1577,6 +1582,17 @@ async function vStockGeneral(view){
     <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
     ${Object.keys(filasPorObj).sort().map(obj=>{
       const fs=filasPorObj[obj];
+      // Objetivo sin censo: una sola fila que invita a cargarlo
+      if(fs.length===1&&fs[0].sin_censo){
+        const f=fs[0];
+        return `<tr style="background:var(--hueso)">
+          <td style="font-weight:600">${escStk(obj)}</td>
+          <td>${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>'}</td>
+          <td colspan="4" class="sub" style="font-style:italic">Todavía no informó stock</td>
+          <td class="sub" style="font-size:11.5px">—</td>
+          <td><button class="mini-btn" style="color:var(--brote);font-weight:600" onclick="editarStockObjetivo('${f.objetivo_id}')">＋ Cargar stock</button></td>
+        </tr>`;
+      }
       return fs.map((f,ix)=>{
         const chips=(f.numeros||[]).map(n=>{
           const id=padronPorNum[norm(n)];
@@ -2455,18 +2471,25 @@ async function pnlDevolver(movId){
 let stkEdit=null;   // { objetivo, censo_id, items:[{tipo,cantidad,numeros,observacion}] }
 function editarStockObjetivo(objetivoId){
   const filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
-  if(!filas.length||!filas[0].censo_id)return alert('Ese objetivo no tiene censo para editar.');
+  if(!filas.length)return alert('No encontré ese objetivo.');
+  // Un objetivo sin censo (recién creado, o que nunca respondió) arranca
+  // con un renglón vacío: es el alta del stock desde el panel.
+  const sinCenso=!filas[0].censo_id;
   stkEdit={
-    objetivo:filas[0].objetivo, censo_id:filas[0].censo_id,
-    items:filas.map(f=>({tipo:f.tipo,cantidad:f.cantidad,numeros:(f.numeros||[]).slice(),observacion:f.observacion||''})),
+    objetivo:filas[0].objetivo, objetivo_id:objetivoId,
+    censo_id:filas[0].censo_id||null, nuevo:sinCenso,
+    items:sinCenso?[{tipo:'',cantidad:1,numeros:[],observacion:''}]
+      :filas.map(f=>({tipo:f.tipo,cantidad:f.cantidad,numeros:(f.numeros||[]).slice(),observacion:f.observacion||''})),
   };
   pintarEditorStock();
 }
 function pintarEditorStock(){
   const e=stkEdit;if(!e)return;
-  document.getElementById('mm-titulo').textContent='Editar stock · '+e.objetivo;
+  document.getElementById('mm-titulo').textContent=(e.nuevo?'Cargar stock · ':'Editar stock · ')+e.objetivo;
   document.getElementById('mm-campos').innerHTML=`
-    <div class="sub" style="margin-bottom:10px">Esto pisa el último censo del objetivo: es lo que va a ver el capataz precargado en el bot y lo que muestra el General. Los números van separados por coma.</div>
+    <div class="sub" style="margin-bottom:10px">${e.nuevo
+      ?'Este objetivo todavía no informó stock. Lo que cargues acá queda como su censo del mes y es lo que el capataz va a ver precargado en el bot.'
+      :'Esto pisa el último censo del objetivo: es lo que va a ver el capataz precargado en el bot y lo que muestra el General.'} Los números van separados por coma.</div>
     <div style="max-height:52vh;overflow-y:auto;margin:0 -4px;padding:0 4px">
     ${e.items.map((i,ix)=>`
       <div style="border:1px solid var(--linea);border-radius:9px;padding:8px 9px;margin-bottom:7px;background:var(--hueso)">
@@ -2498,8 +2521,14 @@ async function guardarStockEditado(){
   const raros=items.filter(i=>i.numeros.length>i.cantidad);
   if(raros.length&&!confirm(`Ojo: ${raros.map(i=>i.tipo).join(', ')} tiene más números que cantidad. ¿Guardar igual?`))return;
   try{
-    await api('/api/stock/censos/'+e.censo_id+'/items',{method:'PUT',body:JSON.stringify({items})});
+    if(e.censo_id){
+      await api('/api/stock/censos/'+e.censo_id+'/items',{method:'PUT',body:JSON.stringify({items})});
+    }else{
+      // Sin censo previo: se crea el del período con estos ítems
+      await api('/api/stock/censos',{method:'POST',body:JSON.stringify({objetivo_id:e.objetivo_id,items})});
+    }
     cerrarMaestro();stkEdit=null;stkGen=null;go('stock');
+    toast(e.nuevo?'Stock cargado':'Stock actualizado');
   }catch(err){alert('No pude guardar: '+(err.message||''));}
 }
 
