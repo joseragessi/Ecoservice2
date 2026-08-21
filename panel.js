@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · ingresos al pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · ingresos al pañol + sin Control';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1437,7 +1437,7 @@ function selUniAna(key){
 }
 
 /* ===== Stock de maquinaria ===== */
-let stockTab='general'; // 'general' | 'maquinas' | 'censo' | 'control' (+ subvistas de Control)
+let stockTab='general'; // 'general' | 'maquinas' | 'panol' | 'censo'
 let stockPeriodo=null;   // null = período actual
 let stockData=null;      // último GET /api/stock (para el detalle lateral)
 let stockSelId=null;     // censo seleccionado
@@ -1457,14 +1457,12 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo'],['control','Control']];
-const STOCK_SUB={objetivo:'Por objetivo',inventario:'Inventario',consolidado:'Consolidado',detalle:'Detalle censado'};
+const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
+const STOCK_SUB={};   // las subvistas colgaban de Control, que se sacó
 function tabsStk(){
-  const sub=STOCK_SUB[stockTab];
-  return `<div class="toggle-imp" style="margin-bottom:${sub?'8px':'16px'}">
-  ${STOCK_TABS.map(([k,t])=>`<button class="${stockTab===k||(sub&&k==='control')?'on':''}" onclick="stockTab='${k}';go('stock')">${t}</button>`).join('')}
-</div>${sub?`<div class="sub" style="margin-bottom:14px;font-size:12px">Control › <b>${sub}</b>
-  <button class="btn-salir" style="padding:2px 8px;font-size:11px;margin-left:8px" onclick="stockTab='control';go('stock')">← volver</button></div>`:''}`;}
+  return `<div class="toggle-imp" style="margin-bottom:16px">
+  ${STOCK_TABS.map(([k,t])=>`<button class="${stockTab===k?'on':''}" onclick="stockTab='${k}';go('stock')">${t}</button>`).join('')}
+</div>`;}
 function difStk(d){
   if(d==null)return'<span class="sub">—</span>';
   if(d===0)return'<span class="badge b-green">ok</span>';
@@ -1474,12 +1472,13 @@ function difStk(d){
 async function vStock(view){
   if(stockTab==='general')return vStockGeneral(view);
   if(stockTab==='panol')return vStockPanol(view);
-  if(stockTab==='inventario')return vStockInventario(view);
-  if(stockTab==='consolidado')return vStockConsolidado(view);
-  if(stockTab==='objetivo')return vStockObjetivos(view);
-  if(stockTab==='detalle')return vStockDetalle(view);
   if(stockTab==='maquinas')return vMaquinas(view);
-  if(stockTab==='control')return vStockControl(view);
+  // Control y sus subvistas se sacaron: si quedó guardado el tab viejo en
+  // una pestaña abierta, cae al General en vez de mostrar nada.
+  if(['control','inventario','consolidado','objetivo','detalle'].includes(stockTab)){
+    stockTab='general';
+    return vStockGeneral(view);
+  }
   return vStockCenso(view);
 }
 
