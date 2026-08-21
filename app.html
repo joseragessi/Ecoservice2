@@ -208,6 +208,7 @@ async function cargar(){
 function render(){
   if(rol==='capataz')return renderCombustibleCapataz();
   // Pañol y mecánicos también cargan combustible: mismo flujo del supervisor
+  if(entPedido)return renderEntrega();
   if(supVista==='panol'&&(rol==='panol'||rol==='supervisor'))return renderPanolStock();
   if(supVista==='combustible'&&(rol==='panol'||rol==='mecanico'||!rol||rol==='supervisor'))return renderCombustibleSup();
   if(tab==='referente'&&(rol==='mecanico'||rol==='panol'))return renderReferente();
@@ -1827,20 +1828,112 @@ async function comentar(id){
     await cargar();
   }catch(e){toast(e.message);}
 }
+/* ── Entrega de insumos con descuento del pañol ──────────────────
+   Lo que el capataz pide sale del pañol: si no se descuenta, el stock
+   miente y la lista de compra no sirve. Antes de confirmar se muestra
+   qué se va a descontar de cada línea; lo que el sistema no pudo
+   emparejar lo elige el pañolero, y esa elección queda aprendida. */
+let entPedido=null;
 async function entregar(id){
   const p=datos.find(x=>String(x.id)===String(id));if(!p)return;
   const orig=p.pedidos_insumos_items||[];
-  const items=orig.map((i,n)=>({
+  const tildados=orig.map((i,n)=>({
     ck:$('ck-'+id+'-'+n).checked,item:i.item,
     cantidad:($('ct-'+id+'-'+n).value||'').trim()||null,
   })).filter(i=>i.ck).map(({item,cantidad})=>({item,cantidad}));
-  if(orig.length&&!items.length){toast('No tildaste ningún material');return;}
-  if(!confirm('¿Entregar el pedido? Se le avisa al capataz.'))return;
+  if(orig.length&&!tildados.length){toast('No tildaste ningún material');return;}
+
+  toast('Buscando en el pañol…');
+  let vinc={items:[],panol:[]};
+  try{vinc=await api('/api/app/pedidos/'+id+'/panol');}
+  catch(e){/* si falla la vinculación se entrega igual, sin descontar */}
+
+  // Se cruza lo tildado con lo que resolvió el server
+  const filas=tildados.map(t=>{
+    const v=(vinc.items||[]).find(x=>String(x.item).trim()===String(t.item).trim())||{};
+    return {item:t.item,cantidad:t.cantidad,
+      cantidad_num:numDeTexto(t.cantidad),
+      panol_item_id:v.panol_item_id||null,panol_nombre:v.panol_nombre||null,
+      panol_disponible:v.panol_disponible,panol_unidad:v.panol_unidad,
+      via:v.via||null,sugerencias:v.sugerencias||[]};
+  });
+  entPedido={id,filas,panol:vinc.panol||[]};
+  render();
+}
+/* "5", "5 lt", "media docena" → número o null. Lo que no se entiende
+   queda sin descontar en vez de adivinar una cantidad. */
+function numDeTexto(t){
+  const m=String(t==null?'':t).replace(',','.').match(/(\d+(?:\.\d+)?)/);
+  return m?Number(m[1]):null;
+}
+function renderEntrega(){
+  const e=entPedido;
+  const inp='padding:8px 10px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:14px;box-sizing:border-box';
+  $('kpis').innerHTML='';$('tabs').innerHTML='';
+  const conDescuento=e.filas.filter(f=>f.panol_item_id&&f.cantidad_num>0).length;
+  $('lista').innerHTML=`
+    <button class="btn-volver" onclick="entPedido=null;render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:10px;cursor:pointer">← Cancelar</button>
+    <div style="font-size:17px;font-weight:700;margin-bottom:3px">Confirmar entrega</div>
+    <div style="font-size:12.5px;color:var(--tinta-2);margin-bottom:14px">
+      Revisá qué se descuenta del pañol. Lo que no esté en el pañol se entrega igual, sin descontar.</div>
+    ${e.filas.map((f,ix)=>`
+      <div class="card" style="padding:13px">
+        <div style="font-weight:600;font-size:14.5px">${pnEsc(f.item)}${f.cantidad?` <span style="color:var(--tinta-3);font-weight:400">— pidió ${pnEsc(f.cantidad)}</span>`:''}</div>
+        <div style="display:grid;grid-template-columns:1fr 78px;gap:7px;margin-top:9px;align-items:center">
+          <select id="en-it-${ix}" style="${inp};width:100%" onchange="entCambio(${ix},this.value)">
+            <option value="">— no está en el pañol —</option>
+            ${e.panol.map(p=>`<option value="${p.id}" ${f.panol_item_id===p.id?'selected':''}>${pnEsc(p.nombre)} (hay ${p.disponible} ${pnEsc(p.unidad||'u')})</option>`).join('')}
+          </select>
+          <input id="en-ct-${ix}" type="number" min="0" step="0.01" value="${f.cantidad_num!=null?f.cantidad_num:''}" placeholder="cant." style="${inp};width:100%;text-align:right" onchange="entCambio(${ix})">
+        </div>
+        <div id="en-msg-${ix}" style="font-size:11.5px;margin-top:6px">${msgVinculo(f)}</div>
+      </div>`).join('')}
+    <div style="background:var(--brote-soft);border-radius:11px;padding:11px 14px;font-size:13px;margin:12px 0">
+      Se descuentan <b>${conDescuento}</b> de ${e.filas.length} material${e.filas.length===1?'':'es'} del pañol.</div>
+    <button onclick="confirmarEntrega()" id="en-btn"
+      style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">
+      ✓ Entregar y avisar al capataz</button>`;
+}
+function msgVinculo(f){
+  if(!f.panol_item_id)
+    return f.sugerencias&&f.sugerencias.length
+      ? `<span style="color:var(--diesel)">¿Será ${f.sugerencias.map(x=>pnEsc(x.nombre)).join(' o ')}? Elegilo arriba.</span>`
+      : '<span style="color:var(--tinta-3)">No lo encontré en el pañol — se entrega sin descontar.</span>';
+  if(!(f.cantidad_num>0))
+    return '<span style="color:var(--diesel)">Poné la cantidad para descontar.</span>';
+  const queda=f.panol_disponible!=null?Math.round((f.panol_disponible-f.cantidad_num)*100)/100:null;
+  if(queda!=null&&queda<0)
+    return `<span style="color:var(--rojo)">⚠ En el pañol figuran ${f.panol_disponible} ${pnEsc(f.panol_unidad||'u')}. Quedaría en ${queda}.</span>`;
+  return `<span style="color:var(--brote-2)">✓ Descuenta de <b>${pnEsc(f.panol_nombre)}</b>${queda!=null?` · quedan ${queda} ${pnEsc(f.panol_unidad||'u')}`:''}</span>`;
+}
+function entCambio(ix){
+  const e=entPedido,f=e.filas[ix];
+  const sel=document.getElementById('en-it-'+ix),ct=document.getElementById('en-ct-'+ix);
+  f.panol_item_id=sel.value||null;
+  f.cantidad_num=ct.value!==''?Number(ct.value):null;
+  const p=e.panol.find(x=>x.id===f.panol_item_id);
+  f.panol_nombre=p?p.nombre:null;
+  f.panol_disponible=p?Number(p.disponible):null;
+  f.panol_unidad=p?p.unidad:null;
+  const msg=document.getElementById('en-msg-'+ix);
+  if(msg)msg.innerHTML=msgVinculo(f);
+}
+async function confirmarEntrega(){
+  const e=entPedido;if(!e)return;
+  const btn=document.getElementById('en-btn');
+  btn.disabled=true;btn.textContent='Entregando…';
+  const items=e.filas.map(f=>({item:f.item,cantidad:f.cantidad,
+    panol_item_id:f.panol_item_id||null,cantidad_num:f.panol_item_id?f.cantidad_num:null}));
   try{
-    const r=await api('/api/app/pedidos/'+id+'/entregar',{method:'POST',body:JSON.stringify({items})});
-    toast(r._notificado?'Entregado · le avisamos al capataz':'Entregado');
+    const r=await api('/api/app/pedidos/'+e.id+'/entregar',{method:'POST',body:JSON.stringify({items})});
+    const n=(r._descontado||[]).length;
+    entPedido=null;
+    toast(n?`Entregado · ${n} descontado${n===1?'':'s'} del pañol`:(r._notificado?'Entregado · le avisamos al capataz':'Entregado'));
     await cargar();
-  }catch(e){toast(e.message);}
+  }catch(err){
+    toast(err.message||'No pude entregar');
+    btn.disabled=false;btn.textContent='✓ Entregar y avisar al capataz';
+  }
 }
 
 $('in-pass').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
