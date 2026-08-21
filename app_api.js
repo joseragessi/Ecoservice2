@@ -262,7 +262,7 @@ router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, r
       });
       if (msg) notificado = await notificarCapataz(inc.capataces.telefono, msg);
     }
-    res.json({ ...data, _notificado: notificado });
+    res.json({ ...data, _notificado: notificado, _descontado: descuentos });
   } catch (err) {
     console.error('app estado:', err);
     res.status(500).json({ error: 'Error cambiando el estado' });
@@ -1402,21 +1402,162 @@ router.get('/api/app/pedidos', authApp('panol'), async (req, res) => {
 });
 
 // Entrega con ajuste: se entrega lo que realmente sale del depósito.
+// ── Insumos del pedido ↔ ítems del pañol ──────────────────────
+// El capataz pide en criollo ("tanza", "guantes") y el pañol tiene
+// nombres propios ("Tanza 3mm"). Para descontar hay que emparejar los
+// dos. Se resuelve en tres pasos: alias aprendido → nombre igual →
+// parecido por palabras. Lo que no se resuelve lo elige el pañolero, y
+// esa elección queda guardada como alias para la próxima.
+function normIns(t) {
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+// Quita plurales simples para que "guantes" matchee con "guante"
+function raiz(p) { return p.replace(/(es|s)$/, ''); }
+
+// Palabras de relleno que no aportan al emparejado. Sin esto, "guantes de
+// trabajo" contra "Guantes" daba 33% y quedaba sin match.
+const VACIAS = ['de', 'del', 'la', 'el', 'los', 'las', 'para', 'con', 'por', 'y', 'un', 'una', 'x'];
+function tokens(t) {
+  return normIns(t).split(' ').filter(Boolean).filter(p => !VACIAS.includes(p)).map(raiz);
+}
+function parecido(textoPedido, item) {
+  const a = tokens(textoPedido), b = tokens(item.nombre);
+  if (!a.length || !b.length) return 0;
+  const comunes = a.filter(p => b.some(q => q === p
+    || (p.length > 2 && q.startsWith(p)) || (q.length > 2 && p.startsWith(q))));
+  // Se divide por el MÁS CORTO de los dos: si el capataz pidió "guantes de
+  // trabajo" y el ítem se llama "Guantes", el sustantivo coincide y eso
+  // alcanza. Que a uno de los dos le sobren palabras no debería penalizar.
+  return comunes.length / Math.min(a.length, b.length);
+}
+
+async function resolverItemsPanol(items) {
+  const [{ data: panol }, { data: alias }] = await Promise.all([
+    supabase.from('panol_disponible').select('*'),
+    supabase.from('panol_alias').select('*').then(r => r, () => ({ data: [] })),
+  ]);
+  const lista = panol || [];
+  const porAlias = {};
+  (alias || []).forEach(a => { porAlias[a.texto] = a.item_id; });
+
+  return (items || []).map(i => {
+    const txt = normIns(i.item);
+    let itemId = porAlias[txt] || null, via = itemId ? 'alias' : null;
+    if (!itemId) {
+      const exacto = lista.find(p => normIns(p.nombre) === txt);
+      if (exacto) { itemId = exacto.id; via = 'nombre'; }
+    }
+    let sugerencias = [];
+    if (!itemId) {
+      sugerencias = lista.map(p => ({ item: p, score: parecido(i.item, p) }))
+        .filter(x => x.score >= 0.5)
+        .sort((a, b) => b.score - a.score).slice(0, 4)
+        .map(x => ({ id: x.item.id, nombre: x.item.nombre, disponible: x.item.disponible, unidad: x.item.unidad, score: Math.round(x.score * 100) }));
+      if (sugerencias.length === 1 && sugerencias[0].score >= 80) { itemId = sugerencias[0].id; via = 'parecido'; }
+    }
+    const enc = itemId ? lista.find(p => p.id === itemId) : null;
+    return {
+      ...i,
+      panol_item_id: itemId,
+      panol_nombre: enc ? enc.nombre : null,
+      panol_disponible: enc ? Number(enc.disponible) : null,
+      panol_unidad: enc ? enc.unidad : null,
+      via, sugerencias,
+    };
+  });
+}
+
+// Vista previa: qué se va a descontar de cada línea del pedido
+router.get('/api/app/pedidos/:id/panol', authApp(['panol', 'supervisor']), async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('pedidos_insumos')
+      .select('id, pedidos_insumos_items(*)').eq('id', req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'No encontré el pedido' });
+    const resueltos = await resolverItemsPanol(data.pedidos_insumos_items || []);
+    // Además, la lista completa para que el pañolero elija a mano
+    const { data: panol } = await supabase.from('panol_disponible')
+      .select('id, nombre, disponible, unidad, categoria').order('nombre');
+    res.json({ items: resueltos, panol: panol || [] });
+  } catch (err) {
+    console.error('[app] pedido panol:', err);
+    res.status(500).json({ error: 'No pude vincular con el pañol' });
+  }
+});
+
 router.post('/api/app/pedidos/:id/entregar', authApp('panol'), async (req, res) => {
   try {
     const items = Array.isArray((req.body || {}).items) ? req.body.items : null;
+    // Lo que se descontó del pañol, para contarlo en la respuesta
+    const descuentos = [];
     if (items) {
       const limpios = items
         .map(i => ({ pedido_id: req.params.id,
           item: String(i.item || '').trim(),
-          cantidad: i.cantidad ? String(i.cantidad).trim() : null }))
+          cantidad: i.cantidad ? String(i.cantidad).trim() : null,
+          panol_item_id: i.panol_item_id || null,
+          cantidad_num: i.cantidad_num == null || i.cantidad_num === '' ? null : Number(i.cantidad_num),
+          descontado: false }))
         .filter(i => i.item);
+
+      // ── Descontar del pañol lo que se entregó ──────────────────
+      // Los insumos que el capataz pide salen del pañol: si no se
+      // descuentan, el stock miente y la lista de compra no sirve.
+      const objetivoDelPedido = await supabase.from('pedidos_insumos')
+        .select('objetivo_id, objetivos(nombre), capataces(nombre)').eq('id', req.params.id).maybeSingle();
+      const oid = objetivoDelPedido.data ? objetivoDelPedido.data.objetivo_id : null;
+      const onom = objetivoDelPedido.data && objetivoDelPedido.data.objetivos
+        ? objetivoDelPedido.data.objetivos.nombre : null;
+      const quien = req.app_user ? req.app_user.nombre : null;
+
+      for (const fila of limpios) {
+        const cant = Number(fila.cantidad_num);
+        if (!fila.panol_item_id || !(cant > 0)) continue;
+        const { data: it } = await supabase.from('panol_items')
+          .select('id, nombre, cantidad, unidad').eq('id', fila.panol_item_id).maybeSingle();
+        if (!it) continue;
+        // Se descuenta aunque quede en negativo: el pañolero está diciendo
+        // lo que entregó de verdad. Un negativo es la señal de que el
+        // conteo del sistema estaba mal, y hay que verlo, no taparlo.
+        const queda = Math.round((Number(it.cantidad) - cant) * 100) / 100;
+        await supabase.from('panol_items').update({ cantidad: queda }).eq('id', it.id);
+        await supabase.from('panol_movimientos').insert({
+          item_id: it.id, tipo: 'salida', cantidad: cant,
+          objetivo_id: oid, objetivo_nombre: onom,
+          retira: objetivoDelPedido.data && objetivoDelPedido.data.capataces
+            ? objetivoDelPedido.data.capataces.nombre : null,
+          entrego: quien, estado: 'consumido',
+          fecha_devolucion: new Date().toISOString(),
+          nota: `Entrega de pedido de insumos`,
+        });
+        fila.descontado = true;
+        descuentos.push({ nombre: it.nombre, cantidad: cant, queda, unidad: it.unidad });
+        if (queda < 0) console.log(`[panol] ⚠ ${it.nombre} quedó en ${queda}: el conteo del sistema estaba bajo`);
+      }
+
+      // El sistema aprende: lo que el pañolero vinculó a mano queda
+      // guardado para que la próxima se resuelva solo.
+      for (const fila of limpios) {
+        if (!fila.panol_item_id) continue;
+        const txt = normIns(fila.item);
+        if (!txt) continue;
+        try {
+          const { data: ex } = await supabase.from('panol_alias').select('id, veces').eq('texto', txt).maybeSingle();
+          if (ex) await supabase.from('panol_alias').update({ veces: (ex.veces || 1) + 1, item_id: fila.panol_item_id }).eq('id', ex.id);
+          else await supabase.from('panol_alias').insert({ texto: txt, item_id: fila.panol_item_id, creado_por: quien });
+        } catch (e) { /* el alias es una ayuda, no puede frenar la entrega */ }
+      }
+
       const { error: eDel } = await supabase
         .from('pedidos_insumos_items').delete().eq('pedido_id', req.params.id);
       if (eDel) throw eDel;
       if (limpios.length) {
         const { error: eIns } = await supabase.from('pedidos_insumos_items').insert(limpios);
         if (eIns) throw eIns;
+      }
+      if (descuentos.length) {
+        console.log(`[panol] entrega de pedido ${req.params.id}: descontados ${descuentos.map(d => d.cantidad + ' ' + d.nombre).join(', ')}`);
       }
     }
     const { data, error } = await supabase
@@ -1436,7 +1577,7 @@ router.post('/api/app/pedidos/:id/entregar', authApp('panol'), async (req, res) 
         `\nTu pedido de insumos ya está disponible en depósito. ✅\n\n_EcoService · Depósito_`
       );
     }
-    res.json({ ...data, _notificado: notificado });
+    res.json({ ...data, _notificado: notificado, _descontado: descuentos });
   } catch (err) {
     console.error('app entregar:', err);
     res.status(500).json({ error: 'Error entregando el pedido' });
