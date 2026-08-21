@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-20 · ingresos al pañol + sin Control';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-20 · gráficos de reposición + filtros app';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2093,6 +2093,67 @@ async function vStockPanol(view){
     </div>`:''}`;
 }
 
+/* ── Gráficos de reposición ───────────────────────────────────
+   Dos lecturas distintas: el NIVEL dice qué comprar ya, el PARETO dice
+   sobre qué vale la pena poner atención todo el año. */
+
+/* Barra por ítem con la marca del punto de pedido. La barra se dibuja
+   sobre una escala de 2× el punto de pedido, así el punto queda siempre
+   en el medio y se compara de un vistazo aunque las cantidades sean muy
+   distintas (163 carreteles contra 5 litros de aceite). */
+function svgNivel(filas){
+  if(!filas.length)return '<div class="sub">Sin datos.</div>';
+  const ancho=560, fila=30, alto=filas.length*fila+18, etiq=170, util=ancho-etiq-70;
+  return `<svg viewBox="0 0 ${ancho} ${alto}" style="width:100%;height:auto;max-height:${alto}px">
+    ${filas.map((f,i)=>{
+      const pp=f.punto_pedido!=null?Number(f.punto_pedido):(Number(f.minimo)||1);
+      const disp=Number(f.disponible)||0;
+      const esc=pp*2||1;
+      const w=Math.max(2,Math.min(1,disp/esc)*util);
+      const xp=etiq+(pp/esc)*util;
+      const y=i*fila+6;
+      const col=disp<=pp?'#DC4A5B':disp<=pp*1.3?'#D98A1F':'#159B51';
+      return `<text x="0" y="${y+15}" font-size="12" fill="#4A5A51" font-family="system-ui,sans-serif">${escStk(String(f.nombre).slice(0,24))}</text>
+        <rect x="${etiq}" y="${y+3}" width="${util}" height="17" rx="4" fill="#F2F5F0"/>
+        <rect x="${etiq}" y="${y+3}" width="${w}" height="17" rx="4" fill="${col}"/>
+        <line x1="${xp}" y1="${y}" x2="${xp}" y2="${y+23}" stroke="#16221C" stroke-width="1.5" stroke-dasharray="3 2"/>
+        <text x="${etiq+util+7}" y="${y+16}" font-size="11.5" font-weight="600" fill="${col}" font-family="ui-monospace,monospace">${Math.round(disp*10)/10}</text>`;
+    }).join('')}
+    <text x="${etiq}" y="${alto-2}" font-size="10" fill="#8A968E" font-family="system-ui,sans-serif">0</text>
+    <text x="${etiq+util}" y="${alto-2}" font-size="10" fill="#8A968E" text-anchor="end" font-family="system-ui,sans-serif">2× el punto de pedido</text>
+  </svg>`;
+}
+
+/* Pareto: barras de consumo + línea de acumulado con la marca del 80%. */
+function svgPareto(filas,total){
+  if(!filas.length||!total)return '<div class="sub">Sin consumo registrado.</div>';
+  const ancho=620, alto=210, base=alto-42, izq=34, util=ancho-izq-30;
+  const paso=util/filas.length, maxV=Math.max(...filas.map(f=>Number(f.consumo_90d)),1);
+  let acum=0;
+  const puntos=[], barras=filas.map((f,i)=>{
+    const v=Number(f.consumo_90d)||0;
+    acum+=v;
+    const pct=acum/total;
+    const h=Math.max(2,(v/maxV)*(base-24));
+    const x=izq+i*paso+paso*0.15, w=paso*0.7;
+    puntos.push([x+w/2, 18+(1-pct)*(base-24)]);
+    const col=pct<=0.8?'#DC4A5B':pct<=0.95?'#D98A1F':'#8A968E';
+    return `<rect x="${x}" y="${base-h}" width="${w}" height="${h}" rx="3" fill="${col}"/>
+      <text x="${x+w/2}" y="${base-h-4}" font-size="10" text-anchor="middle" fill="#4A5A51" font-family="ui-monospace,monospace">${Math.round(v)}</text>
+      <text x="${x+w/2}" y="${base+13}" font-size="9.5" text-anchor="middle" fill="#8A968E" font-family="system-ui,sans-serif"
+        transform="rotate(-18 ${x+w/2} ${base+13})">${escStk(String(f.nombre).slice(0,13))}</text>`;
+  }).join('');
+  const y80=18+0.2*(base-24);   // el 80% acumulado, medido desde arriba
+  return `<svg viewBox="0 0 ${ancho} ${alto}" style="width:100%;height:auto">
+    <line x1="${izq}" y1="${y80}" x2="${izq+util}" y2="${y80}" stroke="#159B51" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="${izq+util}" y="${y80-5}" font-size="10" text-anchor="end" fill="#159B51" font-family="system-ui,sans-serif">80% del consumo</text>
+    ${barras}
+    <polyline points="${puntos.map(p=>p.join(',')).join(' ')}" fill="none" stroke="#3B7DC4" stroke-width="2"/>
+    ${puntos.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="#3B7DC4"/>`).join('')}
+    <line x1="${izq}" y1="${base}" x2="${izq+util}" y2="${base}" stroke="#E6EBE4"/>
+  </svg>`;
+}
+
 /* Filtro + búsqueda del pañol. Con 80 ítems hace falta llegar rápido a uno.
    El buscador entra por nombre, código, marca y ubicación. */
 function pnlFiltrar(items){
@@ -2173,6 +2234,20 @@ function pintarReposicion(){
     :c==='C'?'<span class="badge b-gray">C</span>'
     :'<span class="badge b-gray" style="opacity:.6">sin movimiento</span>';
 
+  // Gráficos: el Pareto muestra de un vistazo que unas pocas cosas se llevan
+  // casi todo el consumo, y las barras de nivel dónde está cada una respecto
+  // de su punto de compra.
+  const topCons=todas.filter(f=>Number(f.consumo_90d)>0)
+    .sort((a,b)=>Number(b.consumo_90d)-Number(a.consumo_90d)).slice(0,10);
+  const criticos=todas.filter(f=>{
+    const pp=f.punto_pedido!=null?Number(f.punto_pedido):(Number(f.minimo)>0?Number(f.minimo):null);
+    return pp!=null&&Number(f.disponible)<=pp*2;   // ya llegó, o está por llegar
+  }).sort((a,b)=>{
+    const pa=a.punto_pedido!=null?Number(a.punto_pedido):Number(a.minimo)||1;
+    const pb=b.punto_pedido!=null?Number(b.punto_pedido):Number(b.minimo)||1;
+    return (Number(a.disponible)/pa)-(Number(b.disponible)/pb);
+  }).slice(0,12);
+
   cont.innerHTML=`
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
     <div class="kpi"><div class="kpi-label">Hay que comprar</div><div class="kpi-val" style="color:${comprar.length?'var(--rojo)':'inherit'}">${comprar.length}</div><div class="kpi-sub">llegaron al punto de pedido</div></div>
@@ -2194,6 +2269,20 @@ function pintarReposicion(){
       <td class="mono" style="text-align:right">${f.cantidad_compra!=null?num(f.cantidad_compra):'<span class="sub">—</span>'}</td>
       <td class="mono" style="text-align:right">${f.cobertura_dias!=null?f.cobertura_dias+' d':'—'}</td></tr>`).join('')}</tbody></table>
   </div>`:'<div class="panel" style="margin-bottom:14px"><div class="sub">Nada llegó al punto de pedido. Todo con stock.</div></div>'}
+
+  ${criticos.length?`<div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Nivel de stock · qué tan cerca está de tener que comprarse</div>
+    <div class="sub" style="font-size:12px;margin-bottom:12px">
+      La línea punteada es el punto de pedido. Lo que la cruza hacia la izquierda hay que comprarlo.</div>
+    ${svgNivel(criticos)}
+  </div>`:''}
+
+  ${topCons.length>1?`<div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Dónde se va el consumo · últimos 90 días</div>
+    <div class="sub" style="font-size:12px;margin-bottom:12px">
+      Las barras son lo que salió de cada ítem; la línea es el acumulado. Donde la línea llega al 80% termina la clase A.</div>
+    ${svgPareto(topCons,pnlRepo.total_consumo)}
+  </div>`:''}
 
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap">
