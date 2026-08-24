@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · filtro de marca en Stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · reporte por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2022,19 +2022,28 @@ async function vReportes(view){
         <td class="mono" style="text-align:right">${x.dias_prom!=null?x.dias_prom+' d':'—'}</td>
         <td class="mono" style="text-align:right">${x.parados||''}</td></tr>`).join('')}</tbody></table>
     </div>
-    <div class="panel"><div class="panel-title">Tipos de falla · de más crítico a menos</div>
-      ${svgBarras(r.por_falla,{max:9,etiqueta:f=>f.falla,valor:f=>f.cantidad,
-        color:f=>f.criticas>0?'#DC4A5B':'#3B7DC4'})}
-      <div class="sub" style="font-size:11.5px;margin-top:6px">En rojo las que tuvieron incidencias críticas o altas.</div>
+    <div class="panel"><div class="panel-title">Qué atendió el taller · por familia de máquina</div>
+      ${(r.por_familia||[]).length?`
+      <table><thead><tr><th>Familia</th><th style="text-align:right">Repar.</th>
+        <th style="text-align:right">Corr.</th><th style="text-align:right">Prev.</th>
+        <th style="text-align:right">Días prom.</th><th style="text-align:right">Peor</th></tr></thead>
+      <tbody>${r.por_familia.map(x=>`<tr title="${escStk(x.equipos||'')}">
+        <td style="font-weight:500">${escStk(x.familia)}
+          ${x.abiertas?`<div class="sub" style="font-size:10.5px">${x.abiertas} sin cerrar</div>`:''}</td>
+        <td class="mono" style="text-align:right">${x.total}</td>
+        <td class="mono" style="text-align:right">${x.correctivo||'·'}</td>
+        <td class="mono" style="text-align:right;color:${x.preventivo?'var(--brote-2)':'inherit'}">${x.preventivo||'·'}</td>
+        <td class="mono" style="text-align:right">${x.finalizadas?x.dias_prom+' d':'—'}</td>
+        <td class="mono" style="text-align:right;color:${x.dias_peor>=7?'var(--rojo)':'inherit'}">${x.finalizadas?x.dias_peor+' d':'—'}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="sub" style="font-size:11.5px;margin-top:7px">
+        Los días promedio se calculan solo sobre las cerradas. Pasá el mouse por la familia para ver qué equipos incluye.</div>
+      `:'<div class="sub">Sin reparaciones en el período.</div>'}
     </div>
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
-    <div class="panel"><div class="panel-title">Dónde se rompe · por objetivo</div>
-      ${svgBarras(r.por_objetivo,{max:8})}</div>
-    <div class="panel"><div class="panel-title">Qué se rompe · por equipo</div>
-      ${svgBarras(r.por_equipo,{max:8,color:'#7C5CD6'})}</div>
-  </div>
+  <div class="panel" style="margin-bottom:14px"><div class="panel-title">Dónde se rompe · por objetivo</div>
+    ${svgBarras(r.por_objetivo,{max:10})}</div>
 
   ${r.reingresos.cantidad?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
     <div class="panel-title" style="color:var(--rojo)">Reingresos · máquinas que volvieron dentro de los 30 días</div>
@@ -2148,15 +2157,20 @@ function imprimirReporte(){
         <tbody>${r.por_prioridad.map(x=>`<tr><td><span class="badge" style="background:${COLOR_PRIO[x.prioridad]}22;color:${COLOR_PRIO[x.prioridad]}">${LABEL_PRIO[x.prioridad]||x.prioridad}</span></td>
           <td class="der mono">${x.cantidad}</td><td class="der mono">${x.dias_prom!=null?x.dias_prom+' d':'—'}</td></tr>`).join('')}</tbody></table>
       </div>
-      <div><h2>Tipos de falla</h2>
-        ${svgBarras(r.por_falla,{ancho:420,max:9,etiqueta:f=>f.falla,valor:f=>f.cantidad,color:f=>f.criticas>0?'#DC4A5B':'#3B7DC4'})}
-        <div class="mini">En rojo las que tuvieron incidencias críticas o altas.</div>
+      <div><h2>Qué atendió el taller · por familia</h2>
+        ${(r.por_familia||[]).length?`<table><thead><tr><th>Familia</th><th class="der">Repar.</th>
+          <th class="der">Corr.</th><th class="der">Prev.</th><th class="der">Días prom.</th><th class="der">Peor</th></tr></thead>
+        <tbody>${r.por_familia.map(x=>`<tr><td>${escStk(x.familia)}</td>
+          <td class="der mono">${x.total}</td><td class="der mono">${x.correctivo||'·'}</td>
+          <td class="der mono">${x.preventivo||'·'}</td>
+          <td class="der mono">${x.finalizadas?x.dias_prom+' d':'—'}</td>
+          <td class="der mono">${x.finalizadas?x.dias_peor+' d':'—'}</td></tr>`).join('')}</tbody></table>
+        <div class="mini">Días promedio calculados solo sobre las cerradas.</div>`:'<div class="mini">Sin reparaciones.</div>'}
       </div>
     </div>
 
-    <div class="sec dos">
-      <div><h2>Por objetivo</h2>${svgBarras(r.por_objetivo,{ancho:420,max:8})}</div>
-      <div><h2>Por tipo de equipo</h2>${svgBarras(r.por_equipo,{ancho:420,max:8,color:'#7C5CD6'})}</div>
+    <div class="sec">
+      <h2>Por objetivo</h2>${svgBarras(r.por_objetivo,{ancho:880,max:10})}
     </div>
 
     <div class="sec">
