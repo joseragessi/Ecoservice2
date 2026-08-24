@@ -5223,6 +5223,29 @@ router.get('/api/panol/reposicion', auth, async (req, res) => {
 // ── Reporte mensual para gerencia ─────────────────────────────
 // Todo lo que necesita el informe en UNA llamada: reparaciones del mes,
 // criticidad, tiempos de resolución, reingresos y estado del pañol.
+/* Agrupa los tipos de equipo en FAMILIAS de taller: lo que importa no es
+   el nombre exacto que escribió el capataz sino qué clase de trabajo es.
+   El orden importa — "Mini tractor" contiene "tractor", así que las reglas
+   específicas van antes que las generales. */
+const FAMILIAS_EQUIPO = [
+  [/hidro\s*gr|hidrogr/i,                          'Hidro grúas'],
+  [/camion(?!eta)|volcador|batea|chasis/i,         'Camiones'],
+  [/camioneta|toyota|hilux|amarok|ranger|utilitar/i, 'Camionetas y utilitarios'],
+  [/mini\s*tractor|giro\s*cero|tractor|desmalez|retro|pala\s*cargad/i, 'Tractores y viales'],
+  [/carro|remolque|acoplad|trailer|batea/i,        'Carros y remolques'],
+  [/motoguada|motosierra|sopladora|bordead|extensible|pertiga|hidrolavad|cortadora|motobomb/i, 'Máquinas 2 tiempos'],
+  [/sisterna|cisterna|tanque|generador|compresor/i, 'Equipos fijos'],
+];
+function familiaEquipo(tipo) {
+  const raw = String(tipo || '').trim();
+  if (!raw) return 'Sin clasificar';
+  // SIN ACENTOS antes de comparar: "Camión" no matcheaba /camion/ y caía en
+  // Otros; lo mismo pasaría con "grúa" y "pértiga".
+  const t = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const [re, nombre] of FAMILIAS_EQUIPO) if (re.test(t)) return nombre;
+  return 'Otros';
+}
+
 router.get('/api/reportes/mensual', auth, async (req, res) => {
   try {
     const mes = /^\d{4}-\d{2}$/.test(String(req.query.mes || '')) ? req.query.mes
@@ -5464,6 +5487,39 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         por_falla: fallas,
         por_objetivo: cuenta(reparaciones, r => r.objetivos && r.objetivos.nombre),
         por_equipo: cuenta(reparaciones, r => r.tipo_equipo),
+        // Cuántas de cada FAMILIA se repararon y cuánto tardaron. La pregunta
+        // real no es "cuántas motoguadañas se rompieron" sino "cuánto me
+        // ocupa el taller cada familia": una hidro grúa no se compara con
+        // una 2T. Van correctivo y preventivo por separado porque un
+        // preventivo de 2 h y una reparación de 3 días no son lo mismo.
+        por_familia: (() => {
+          const fam = {};
+          reparaciones.forEach(r => {
+            const f = familiaEquipo(r.tipo_equipo);
+            fam[f] = fam[f] || { familia: f, total: 0, finalizadas: 0, abiertas: 0,
+              correctivo: 0, preventivo: 0, parados: 0, tiempos: [], equipos: {} };
+            const x = fam[f];
+            x.total++;
+            if (r.tipo_mant === 'preventivo') x.preventivo++; else x.correctivo++;
+            if (r.equipo_parado) x.parados++;
+            if (r.tipo_equipo) x.equipos[r.tipo_equipo] = (x.equipos[r.tipo_equipo] || 0) + 1;
+            if (r.estado === 'finalizado' && r.fecha_finalizado) {
+              x.finalizadas++;
+              x.tiempos.push(Math.max(0, (new Date(r.fecha_finalizado) - new Date(r.created_at)) / 86400000));
+            } else x.abiertas++;
+          });
+          return Object.values(fam).map(x => {
+            const t = x.tiempos.sort((a2, b2) => a2 - b2);
+            const prom2 = t.length ? t.reduce((a2, n) => a2 + n, 0) / t.length : 0;
+            return {
+              familia: x.familia, total: x.total, finalizadas: x.finalizadas, abiertas: x.abiertas,
+              correctivo: x.correctivo, preventivo: x.preventivo, parados: x.parados,
+              dias_prom: Math.round(prom2 * 10) / 10,
+              dias_peor: t.length ? Math.round(t[t.length - 1] * 10) / 10 : 0,
+              equipos: Object.entries(x.equipos).sort((a2, b2) => b2[1] - a2[1]).map(([k, v]) => `${k} (${v})`).join(' · '),
+            };
+          }).sort((a2, b2) => b2.total - a2.total);
+        })(),
         por_mecanico: cuenta(finalizadas, r => r.mecanicos && r.mecanicos.nombre),
         reingresos: {
           cantidad: reingresos.length,
