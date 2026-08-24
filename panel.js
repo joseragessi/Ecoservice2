@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · plan en preventivas en curso';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · plan por máquina';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -6022,20 +6022,20 @@ function renderPreventivo(){
           const eidx=EST_REP.indexOf(i.estado);
           // Se busca la unidad de esta preventiva para mostrar (y cargar) su
           // frecuencia acá mismo: es donde uno se pregunta cuándo se repite.
-          const u=pvUnidadDe(i);
+          const pl=pvPlanDe(i);
           return `<tr>
           <td style="font-weight:500;cursor:pointer" onclick="repTab='resumen';go('reparaciones')">${i.tipo_equipo||'—'}</td>
           <td>${i.numero_unidad?`<span class="uni-num">${i.numero_unidad}</span>`:'—'}</td>
           <td>${i.mecanicos?i.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
           <td><span class="badge ${eidx>=0?'est-'+eidx:'b-gray'}">${EST_REP_LABEL[eidx]||i.estado}</span></td>
           <td class="sub mono">${hace(i.created_at)}</td>
-          <td>${u&&u.plan_propio
-            ? `<span class="mono" style="font-size:12px">cada ${u.intervalo} días${u.habiles?' hábiles':''}</span>`
-            : u&&u.intervalo
-              ? `<span class="sub mono" style="font-size:11.5px">cada ${u.intervalo} días<div style="font-size:10.5px">del tipo</div></span>`
-              : '<span class="sub" style="font-size:11.5px;color:var(--diesel)">sin frecuencia</span>'}</td>
-          <td>${u?`<button class="mini-btn" onclick="event.stopPropagation();pvPlan('${u.id}')">🗓 ${u.plan_propio?'Editar plan':'Programar'}</button>`
-            :'<span class="sub" style="font-size:11px">—</span>'}</td></tr>`;}).join('')}</tbody>
+          <td>${pl
+            ? `<span class="mono" style="font-size:12px">cada ${pl.intervalo_dias} días${pl.habiles?' hábiles':''}</span>
+               ${pl.proximo?`<div class="sub" style="font-size:10.5px">próximo ${fechaAR(pl.proximo)}</div>`:''}`
+            : '<span class="sub" style="font-size:11.5px;color:var(--diesel)">sin frecuencia</span>'}</td>
+          <td><button class="mini-btn" style="${pl?'':'color:var(--brote);font-weight:600'}"
+            onclick="event.stopPropagation();pvPlanMaq('${String(i.tipo_equipo||'').replace(/'/g,"\\'")}','${String(i.numero_unidad||'').replace(/'/g,"\\'")}')">
+            🗓 ${pl?'Editar plan':'Programar'}</button></td></tr>`;}).join('')}</tbody>
       </table></div>
     </div>`:''}
     <div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
@@ -6077,11 +6077,100 @@ function pvProximo(ultimo,intervalo,habiles){
 /* Cruza una incidencia preventiva con su unidad del semáforo. La
    incidencia guarda `numero_unidad` como texto, así que se compara
    normalizado contra código y patente. */
-function pvUnidadDe(inc){
-  const n=t=>String(t||'').toLowerCase().replace(/[^a-z0-9]/g,'');
-  const clave=n(inc.numero_unidad);
-  if(!clave)return null;
-  return (pvData&&pvData.rodados||[]).find(r=>n(r.codigo)===clave||n(r.patente)===clave)||null;
+function pvNormU(t){
+  return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/^\s*(numero|num|nro|unidad|interno|n[°ºo]|n)\s*\.?\s*/,'')
+    .replace(/[^a-z0-9]/g,'')||'sn';
+}
+/* Busca el PLAN de una máquina. Antes buscaba en los rodados del semáforo
+   y por eso la Hidro grúa G1 quedaba sin botón: no es un rodado. Los
+   planes son independientes — cualquier equipo puede tener el suyo. */
+function pvPlanDe(inc){
+  const eq=String(inc.tipo_equipo||'').toLowerCase().trim();
+  const un=pvNormU(inc.numero_unidad);
+  return (pvData&&pvData.planes||[]).find(p=>
+    String(p.equipo||'').toLowerCase().trim()===eq&&p.unidad_norm===un)||null;
+}
+
+/* Modal del plan de CUALQUIER máquina — no depende de la tabla unidades. */
+let pvPlanM=null;
+function pvPlanMaq(equipo,unidad){
+  const existente=(pvData&&pvData.planes||[]).find(p=>
+    String(p.equipo||'').toLowerCase().trim()===String(equipo||'').toLowerCase().trim()
+    &&p.unidad_norm===pvNormU(unidad));
+  pvPlanM=existente?{...existente}:{equipo,unidad,intervalo_dias:'',habiles:true,
+    desde:new Date().toLocaleDateString('sv-SE'),ultimo:null,mecanico_id:null,tarea:'',activo:true};
+  pintarPvPlanM();
+}
+function pintarPvPlanM(){
+  const p=pvPlanM;if(!p)return;
+  const inp='width:100%;padding:9px 11px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  document.getElementById('mm-titulo').textContent=(p.id?'Editar plan · ':'Programar preventivo · ')+
+    (p.equipo||'')+(p.unidad?' · '+p.unidad:'');
+  document.getElementById('mm-campos').innerHTML=`
+    <div style="display:grid;grid-template-columns:110px 1fr;gap:8px">
+      <div class="mm-field"><label>Cada</label>
+        <input id="pm-dias" type="number" min="1" value="${p.intervalo_dias||''}" placeholder="30" style="${inp}" oninput="pvPlanMPreview()"></div>
+      <div class="mm-field"><label>Contando</label>
+        <select id="pm-hab" style="${inp}" onchange="pvPlanMPreview()">
+          <option value="1" ${p.habiles!==false?'selected':''}>días hábiles (sin sábado ni domingo)</option>
+          <option value="0" ${p.habiles===false?'selected':''}>días corridos</option>
+        </select></div>
+    </div>
+    <div class="mm-field"><label>Último service (o desde cuándo contar)</label>
+      <input id="pm-desde" type="date" value="${String(p.ultimo||p.desde||new Date().toLocaleDateString('sv-SE')).slice(0,10)}" style="${inp}" oninput="pvPlanMPreview()"></div>
+    <div id="pm-preview" style="background:var(--brote-soft);border-radius:9px;padding:10px 13px;font-size:13px;margin:10px 0"></div>
+    <div class="mm-field"><label>Mecánico que suele hacerlo</label>
+      <select id="pm-mec" style="${inp}">
+        <option value="">— elegir al generar la orden —</option>
+        ${(mecanicos||[]).map(m=>`<option value="${m.id}" ${p.mecanico_id===m.id?'selected':''}>${escStk(m.nombre)}</option>`).join('')}
+      </select></div>
+    <div class="mm-field"><label>Qué incluye el service</label>
+      <textarea id="pm-tarea" placeholder="ej: cambio de aceite y filtros, engrase, control de mangueras"
+        style="${inp};min-height:60px">${escStk(p.tarea||'')}</textarea></div>
+    <div class="modal-acciones" style="justify-content:space-between">
+      ${p.id?`<button class="btn-salir" style="color:var(--rojo)" onclick="pvPlanMBorrar('${p.id}')">Quitar plan</button>`:'<span></span>'}
+      <div style="display:flex;gap:8px">
+        <button class="btn-salir" onclick="cerrarMaestro();pvPlanM=null">Cancelar</button>
+        <button class="btn" onclick="pvPlanMGuardar()">Guardar</button>
+      </div>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+  pvPlanMPreview();
+}
+function pvPlanMPreview(){
+  const g=x=>document.getElementById(x),el=g('pm-preview');if(!el)return;
+  const dias=Number(g('pm-dias').value)||0, hab=g('pm-hab').value==='1', desde=g('pm-desde').value;
+  if(!dias||!desde){el.innerHTML='<span class="sub">Cargá la frecuencia para ver cuándo cae el próximo.</span>';return;}
+  const px=pvProximo(desde,dias,hab);if(!px){el.innerHTML='<span class="sub">Revisá la fecha.</span>';return;}
+  const corridos=Math.round((px-new Date(desde))/86400000);
+  const D=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  el.innerHTML=`Próximo service: <b>${D[px.getDay()]} ${px.toLocaleDateString('es-AR')}</b>
+    <div class="sub" style="font-size:12px;margin-top:3px">
+      ${hab?`${dias} días hábiles = <b>${corridos} días corridos</b>`:`${dias} días corridos`}
+      ${px.getDay()===5&&!hab?' · adelantado al viernes':''}</div>`;
+}
+async function pvPlanMGuardar(){
+  const g=x=>document.getElementById(x);
+  const dias=Number(g('pm-dias').value)||0;
+  if(!dias){toast('Poné cada cuántos días','error');return;}
+  try{
+    await api('/api/reparaciones/preventivo/plan-maquina',{method:'POST',body:JSON.stringify({
+      equipo:pvPlanM.equipo, unidad:pvPlanM.unidad, intervalo_dias:dias,
+      habiles:g('pm-hab').value==='1', ultimo:g('pm-desde').value||null, desde:g('pm-desde').value||null,
+      mecanico_id:g('pm-mec').value||null, tarea:g('pm-tarea').value.trim(), activo:true})});
+    cerrarMaestro();pvPlanM=null;pvData=null;go('reparaciones');
+    toast('Plan guardado');
+  }catch(e){toast('No pude guardar: '+(e.message||''),'error');}
+}
+async function pvPlanMBorrar(id){
+  if(!await uiConfirm('La máquina deja de tener frecuencia programada.','¿Quitar el plan?',{ok:'Quitar'}))return;
+  try{
+    await api('/api/reparaciones/preventivo/plan-maquina/'+id,{method:'DELETE'});
+    cerrarMaestro();pvPlanM=null;pvData=null;go('reparaciones');
+    toast('Plan quitado');
+  }catch(e){toast('No pude: '+(e.message||''),'error');}
 }
 
 let pvPlanU=null;
