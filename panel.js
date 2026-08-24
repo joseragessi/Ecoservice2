@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · cierre sin reparar (panel)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · trazabilidad + filtros en indicadores';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -82,6 +82,14 @@ let repFEstado = '', repFPrio = '', repFMec = '', repFObj = '';
 /* Estados y colores de reparaciones */
 const EST_REP = ['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
 const EST_REP_LABEL = ['Pendiente','Diagnóstico','Esp. repuestos','En reparación','Finalizado'];
+// Etiquetas cortas del motivo de cierre, para la columna Estado de la lista
+const MOTIVO_CIERRE_CORTO = {
+  no_ingreso: 'no ingresó',
+  resuelto_en_campo: 'resuelta en campo',
+  sin_falla: 'sin falla',
+  duplicado: 'repetida',
+  otro: 'sin reparar',
+};
 const PRIO_BADGE = {critico:'b-red',alta:'b-amber',media:'b-blue',baja:'b-green'};
 // Badge de prioridad con jerarquía visual real: el crítico tiene que saltar a
 // la cara en una lista con 44 "alta". Crítico = rojo pleno + ●, alta = ámbar
@@ -3561,6 +3569,8 @@ async function reenviarStock(id){
 /* ===== Reparaciones ===== */
 /* ===== Reparaciones · Indicadores ===== */
 let repTab='resumen', repIndPer='', repIndMec='';   // repIndMec: filtro por mecánico en Indicadores
+let repIndObj='', repIndPrio='', repIndQ='';        // filtros de Indicadores: objetivo, criticidad, búsqueda
+let repTrz=null;                                    // incidencia abierta en el detalle de trazabilidad
 
 // Barras genéricas para paneles de indicadores
 function barsGen(lista,color,fmt){
@@ -4491,8 +4501,21 @@ async function vRepInd(view){
   const hoyMs=Date.now();
   // Filtro por mecánico: aplica a "Qué atender hoy" y "Trabado ahora"
   const mecsAbiertas=[...new Set(todas.filter(r=>r.estado!=='finalizado').map(r=>r.mecanicos?r.mecanicos.nombre:'Sin asignar'))].sort();
+  const objsAbiertas=[...new Set(todas.filter(r=>r.estado!=='finalizado').map(r=>r.objetivos?r.objetivos.nombre:'Sin objetivo'))].sort();
+  // El buscador entra por equipo, unidad, descripción, falla, objetivo,
+  // mecánico y capataz: cualquier cosa que uno recuerde de la incidencia.
+  const qInd=repIndQ.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(/\s+/).filter(Boolean);
+  const matchInd=r=>{
+    if(!qInd.length)return true;
+    const blob=`${r.tipo_equipo||''} ${r.equipos?r.equipos.nombre:''} ${r.numero_unidad||''} ${r.descripcion||''} ${r.tipo_falla||''} ${r.objetivos?r.objetivos.nombre:''} ${r.mecanicos?r.mecanicos.nombre:''} ${r.capataces?r.capataces.nombre:''}`
+      .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    return qInd.every(w=>blob.includes(w));
+  };
   const abiertas=todas.filter(r=>r.estado!=='finalizado')
-    .filter(r=>!repIndMec||(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===repIndMec).map(r=>{
+    .filter(r=>!repIndMec||(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===repIndMec)
+    .filter(r=>!repIndObj||(r.objetivos?r.objetivos.nombre:'Sin objetivo')===repIndObj)
+    .filter(r=>!repIndPrio||(repIndPrio==='parada'?r.equipo_parado:String(r.prioridad||'').toLowerCase()===repIndPrio))
+    .filter(matchInd).map(r=>{
     const dAb=diasEntre(r.created_at,new Date().toISOString());
     const dEst=diasEntre(fechaEstado(r),new Date().toISOString());
     return {r,dAb:dAb!=null?dAb:0,dEst:dEst!=null?dEst:0};
@@ -4505,7 +4528,7 @@ async function vRepInd(view){
     const prio=r.prioridad==='critico'?'<span class="badge" style="background:#FCEBED;color:#A32D2D">crítico</span>'
       :r.prioridad==='alta'?'<span class="badge b-amber">alta</span>'
       :`<span class="badge b-gray">${r.prioridad||'—'}</span>`;
-    return `<tr class="fila">
+    return `<tr class="fila" onclick="abrirTrazabilidad('${r.id}')" style="cursor:pointer" title="ver la trazabilidad">
       <td><div style="font-weight:600">${r.tipo_equipo||(r.equipos?r.equipos.nombre:'—')}</div>
         <div class="sub" style="font-size:11px;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.descripcion||r.falla||''}</div></td>
       <td><span class="uni-num">${r.numero_unidad||'—'}</span></td>
@@ -4595,11 +4618,29 @@ async function vRepInd(view){
   ${tabsRep()}
   <div class="grid" style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:18px">
     <div class="panel"><div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <span>Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas${repIndMec?' de '+repIndMec:''} · paradas y críticas primero</span></span>
-      <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndMec=this.value;go('reparaciones')">
-        <option value="">Todos los mecánicos</option>
-        ${mecsAbiertas.map(m=>`<option value="${m.replace(/"/g,'&quot;')}" ${repIndMec===m?'selected':''}>${m}</option>`).join('')}
-      </select></div>
+      <span>Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas · paradas y críticas primero</span></span>
+      ${repIndMec||repIndObj||repIndPrio||repIndQ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="repIndMec='';repIndObj='';repIndPrio='';repIndQ='';go('reparaciones')">✕ limpiar filtros</button>`:''}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndMec=this.value;go('reparaciones')">
+          <option value="">Todos los mecánicos</option>
+          ${mecsAbiertas.map(m=>`<option value="${m.replace(/"/g,'&quot;')}" ${repIndMec===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+        <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndObj=this.value;go('reparaciones')">
+          <option value="">Todos los objetivos</option>
+          ${objsAbiertas.map(o=>`<option value="${o.replace(/"/g,'&quot;')}" ${repIndObj===o?'selected':''}>${o}</option>`).join('')}
+        </select>
+        <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndPrio=this.value;go('reparaciones')">
+          <option value="">Toda criticidad</option>
+          <option value="parada" ${repIndPrio==='parada'?'selected':''}>⛔ Solo máquinas paradas</option>
+          <option value="critico" ${repIndPrio==='critico'?'selected':''}>Crítica</option>
+          <option value="alta" ${repIndPrio==='alta'?'selected':''}>Alta</option>
+          <option value="media" ${repIndPrio==='media'?'selected':''}>Media</option>
+          <option value="baja" ${repIndPrio==='baja'?'selected':''}>Baja</option>
+        </select>
+        <input id="ind-q" class="busca" style="flex:1;min-width:170px;font-size:12px;padding:5px 9px"
+          placeholder="Buscar equipo, unidad, falla, objetivo…" value="${escStk(repIndQ)}" oninput="indBuscar(this.value)">
+      </div>
       ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">En este estado</th><th class="num">Abierta hace</th><th>Mecánico</th></tr></thead>
       <tbody>${tablaAbiertas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay máquinas abiertas 🎉</div>'}
     </div>
@@ -4758,7 +4799,10 @@ function renderReparaciones(view){
       <td>${r.objetivos?r.objetivos.nombre:'—'}</td>
       <td>${r.capataces?r.capataces.nombre:'—'}</td>
       <td>${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
-      <td><span class="badge ${idx>=0?'est-'+idx:'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span>${r.reclamada?'<div style="margin-top:4px"><span class="badge" style="background:var(--diesel-soft);color:#854F0B;font-size:10px">⏰ reclamada</span></div>':''}</td>
+      <td><span class="badge ${idx>=0?'est-'+idx:'b-gray'}">${EST_REP_LABEL[idx]||r.estado}</span>${r.reclamada?'<div style="margin-top:4px"><span class="badge" style="background:var(--diesel-soft);color:#854F0B;font-size:10px">⏰ reclamada</span></div>':''}${
+        // Una cerrada sin reparar no es lo mismo que una reparada: se
+        // distingue en la lista, sin tener que abrir el detalle.
+        r.motivo_cierre?`<div style="margin-top:4px" title="${escStk(r.nota_cierre||'')}"><span class="badge" style="background:var(--diesel-soft);color:#854F0B;font-size:10px">📭 ${escStk(MOTIVO_CIERRE_CORTO[r.motivo_cierre]||'sin reparar')}</span></div>`:''}</td>
       <td class="mono sub">${hace(r.created_at)}</td></tr>`;}).join('');
 
   view.innerHTML=`
@@ -5000,6 +5044,127 @@ async function agregarObsRep(id,ix){
     else{repData=null;go('reparaciones');}
   }catch(e){repData=null;go('reparaciones');}
 }
+/* ── Trazabilidad de una incidencia ──────────────────────────────
+   Toda la vida del ticket en una línea de tiempo: cuándo se reportó,
+   cuánto estuvo en cada etapa, qué dijo el taller, qué repuestos se
+   pidieron y cómo se cerró. La pregunta que contesta es "¿dónde se
+   fueron los 13 días?" — y el que más tarda casi nunca es el que uno
+   cree. */
+const TRZ_ETAPAS=[
+  ['created_at','Reportada','#8A968E','📝'],
+  ['fecha_diagnostico','Diagnóstico','#3B7DC4','🔍'],
+  ['fecha_espera_repuestos','Esperando repuestos','#D98A1F','⏳'],
+  ['fecha_en_reparacion','En reparación','#7C5CD6','🛠'],
+  ['fecha_finalizado','Cerrada','#159B51','✅'],
+];
+function indBuscar(v){
+  // Se re-renderiza entero, así que hay que devolver el foco al input
+  repIndQ=v;
+  go('reparaciones');
+  setTimeout(()=>{const i=document.getElementById('ind-q');
+    if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);
+}
+function abrirTrazabilidad(id){
+  const r=(repData||[]).find(x=>String(x.id)===String(id))
+    ||(window._repFiltrada||[]).find(x=>String(x.id)===String(id));
+  if(!r)return toast('No encontré esa incidencia','error');
+  repTrz=r;
+  pintarTrazabilidad();
+}
+function pintarTrazabilidad(){
+  const r=repTrz;if(!r)return;
+  const hoy=new Date();
+  // Se arman los hitos que REALMENTE tienen fecha: si una etapa se salteó
+  // (pasó de pendiente a reparación), no se inventa.
+  const hitos=TRZ_ETAPAS.map(([campo,etiqueta,color,icono])=>({campo,etiqueta,color,icono,fecha:r[campo]}))
+    .filter(h=>h.fecha);
+  // Duración de cada etapa = hasta el próximo hito (o hasta hoy si es la última y sigue abierta)
+  const abierta=r.estado!=='finalizado';
+  hitos.forEach((h,i)=>{
+    const sig=hitos[i+1];
+    const fin=sig?new Date(sig.fecha):(abierta?hoy:null);
+    h.dias=fin?Math.max(0,(fin-new Date(h.fecha))/86400000):null;
+    h.enCurso=!sig&&abierta;
+  });
+  const totalDias=hitos.length?((abierta?hoy:new Date(r.fecha_finalizado||hoy))-new Date(r.created_at))/86400000:0;
+  const masLarga=hitos.filter(h=>h.dias!=null).sort((a,b)=>b.dias-a.dias)[0];
+
+  const coms=(r.comentarios_incidencias||[]).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  const rps=(r.repuestos_taller||[]);
+  const eq=`${r.tipo_equipo||(r.equipos?r.equipos.nombre:'Equipo')}${r.numero_unidad?' · N° '+r.numero_unidad:''}`;
+
+  document.getElementById('mm-titulo').textContent='Trazabilidad · '+eq;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      ${r.objetivos?`<span>📍 ${escStk(r.objetivos.nombre)}</span>`:''}
+      ${r.capataces?`<span>· reportó ${escStk(r.capataces.nombre)}</span>`:''}
+      ${r.mecanicos?`<span>· 👨‍🔧 ${escStk(r.mecanicos.nombre)}</span>`:''}
+      ${r.equipo_parado?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">⛔ parada</span>':''}
+      <span class="badge ${r.prioridad==='critico'?'b-rojo':r.prioridad==='alta'?'b-amber':'b-gray'}">${escStk(r.prioridad||'—')}</span>
+    </div>
+
+    <div style="background:var(--hueso);border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13px">
+      <b>${Math.ceil(totalDias)} días</b> ${abierta?'abierta hasta hoy':'de punta a punta'}
+      ${masLarga&&masLarga.dias>=1?` · la etapa más larga fue <b style="color:${masLarga.color}">${masLarga.etiqueta}</b> con ${Math.round(masLarga.dias*10)/10} d`:''}
+    </div>
+
+    <div class="field-l" style="margin-bottom:10px">Línea de tiempo</div>
+    <div style="position:relative;padding-left:26px">
+      <div style="position:absolute;left:8px;top:6px;bottom:16px;width:2px;background:var(--linea)"></div>
+      ${hitos.map(h=>`
+        <div style="position:relative;margin-bottom:14px">
+          <div style="position:absolute;left:-25px;top:1px;width:18px;height:18px;border-radius:50%;background:${h.color};display:flex;align-items:center;justify-content:center;font-size:10px">${h.icono}</div>
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <b style="font-size:13.5px;color:${h.color}">${h.etiqueta}</b>
+            <span class="mono sub" style="font-size:11.5px">${fFechaHora(h.fecha)}</span>
+          </div>
+          ${h.dias!=null?`<div class="sub" style="font-size:12px">
+            ${h.enCurso?`<span style="color:var(--diesel)">acá está hace <b>${Math.round(h.dias*10)/10} d</b></span>`
+              :`estuvo <b>${Math.round(h.dias*10)/10} d</b> en esta etapa`}</div>`:''}
+        </div>`).join('')}
+      ${abierta&&!hitos.some(h=>h.enCurso)?`<div style="position:relative">
+        <div style="position:absolute;left:-25px;top:1px;width:18px;height:18px;border-radius:50%;border:2px dashed var(--linea)"></div>
+        <div class="sub" style="font-size:12.5px">Sigue abierta</div></div>`:''}
+    </div>
+
+    ${r.motivo_cierre?`<div style="background:var(--diesel-soft);border-left:3px solid var(--diesel);border-radius:8px;padding:10px 13px;margin:14px 0;font-size:12.5px">
+      <b style="color:var(--diesel)">📭 Cerrada sin reparar · ${MOTIVO_CIERRE_LABEL[r.motivo_cierre]||r.motivo_cierre}</b>
+      ${r.nota_cierre?`<div style="margin-top:4px;font-style:italic">"${escStk(r.nota_cierre)}"</div>`:''}
+      ${r.cerrado_por?`<div class="sub" style="font-size:11.5px;margin-top:3px">— ${escStk(r.cerrado_por)}</div>`:''}
+    </div>`:''}
+
+    <div class="field-l" style="margin:14px 0 6px">Lo que reportó el capataz</div>
+    <div class="sub" style="font-size:12.5px;background:var(--papel);border-radius:8px;padding:9px 12px">${escStk(r.descripcion||r.tipo_falla||'Sin descripción')}</div>
+
+    <div class="field-l" style="margin:14px 0 6px">Lo que dijo el taller (${coms.length})</div>
+    ${coms.length?coms.map(c=>`<div style="border-left:2px solid var(--linea);padding:3px 0 3px 10px;margin-bottom:7px;font-size:12.5px">
+      ${escStk(c.texto)}
+      <div class="sub" style="font-size:11px;margin-top:2px">${escStk(c.mecanico_nombre||'—')} · ${fFechaHora(c.created_at)}</div>
+    </div>`).join(''):'<div class="sub" style="font-size:12.5px">Sin observaciones cargadas.</div>'}
+
+    ${rps.length?`<div class="field-l" style="margin:14px 0 6px">Repuestos</div>
+    ${rps.map(p=>`<div style="border:1px solid var(--linea);border-radius:8px;padding:9px 12px;margin-bottom:7px;font-size:12.5px">
+      <div style="display:flex;justify-content:space-between;gap:8px">
+        <b>${p.items?p.items.length:0} ítem${(p.items&&p.items.length)===1?'':'s'}</b>
+        <span class="badge b-gray">${escStk(p.estado||'')}</span></div>
+      ${(p.items||[]).map(i=>`<div class="sub" style="font-size:12px;display:flex;justify-content:space-between;gap:8px">
+        <span>x${i.cantidad||1} ${escStk(i.descripcion)}</span>
+        ${i.proveedor||i.precio!=null?`<span style="white-space:nowrap">${i.proveedor?escStk(i.proveedor):''}${i.precio!=null?' · '+money(i.precio*(Number(i.cantidad)||1)):''}</span>`:''}</div>`).join('')}
+      <div class="sub" style="font-size:11px;margin-top:3px">pedido ${fFechaHora(p.created_at)}${p.entregado_at?` · entregado ${fFechaHora(p.entregado_at)}`:''}</div>
+    </div>`).join('')}`:''}
+
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();repTrz=null">Cerrar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+function fFechaHora(f){
+  if(!f)return '—';
+  const d=new Date(f);
+  return d.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+}
+
 /* ── Cerrar sin reparar (desde el panel) ─────────────────────────
    El mismo cierre que hace el mecánico desde la app, pero para José.
    El capataz recibe el aviso igual. */
