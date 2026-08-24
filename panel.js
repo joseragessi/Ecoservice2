@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · aviso de preventivos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · preventivo por unidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -186,6 +186,7 @@ async function entrar(){
    cada rodado trae `estado` (vencido | por_vencer | al_dia | …) y
    `restan` en días. No hace falta nada nuevo en la base. */
 let prevAviso=null;                       // {vencidos, porVencer, nuevos}
+let prevRodados=[];                       // los rodados tal cual vienen del server
 const PREV_VISTOS='eco_prev_vistos';      // {id: estado} de la última vez
 const PREV_SILENCIO='eco_prev_silencio';  // firma del set silenciado
 
@@ -197,7 +198,13 @@ async function chequearPreventivos(){
   let d;
   try{d=await api('/api/reparaciones/preventivo');}
   catch(e){return;}   // si falla, no se muestra nada: es un aviso, no una función crítica
-  const rodados=(d.rodados||[]).filter(r=>r.estado==='vencido'||r.estado==='por_vencer');
+  // Entran los vencidos y los que vencen dentro de 3 días — el aviso tiene
+  // que llegar con tiempo de organizar el taller, no el día que venció.
+  const AVISO_DIAS=3;
+  const rodados=(d.rodados||[]).filter(r=>
+    r.estado==='vencido'||(r.restan!=null&&r.restan<=AVISO_DIAS));
+  // Se guardan los mecánicos sugeridos para el generador del popup
+  prevRodados=rodados;
   if(!rodados.length){
     prevAviso=null;pintarCampana();
     localStorage.removeItem(PREV_SILENCIO);
@@ -260,7 +267,9 @@ function abrirPopupPreventivos(manual){
         ${venc
           ? `<span class="badge b-rojo">vencido${dias!=null&&dias<0?` hace ${Math.abs(dias)} d`:''}</span>`
           : `<span class="badge b-amber">${dias===0?'vence hoy':`en ${dias} d`}</span>`}
-        ${r.incidencia_abierta?`<div class="sub" style="font-size:10.5px;margin-top:3px">ya está en taller</div>`:''}
+        ${r.incidencia_abierta
+          ? `<div class="sub" style="font-size:10.5px;margin-top:3px">ya está en taller</div>`
+          : `<button class="mini-btn" style="margin-top:5px;color:var(--brote-2);font-weight:600" onclick="prevGenerar('${r.id}')">+ Generar orden</button>`}
       </div>
     </div>`;
   };
@@ -289,6 +298,59 @@ function abrirPopupPreventivos(manual){
     </div>`;
   document.getElementById('mm-acciones').style.display='none';
   document.getElementById('mm-bg').classList.add('abierto');
+}
+
+/* Generar la orden desde el popup. José elige el mecánico ANTES de
+   crearla: una orden sin dueño en el Resumen no la agarra nadie. */
+function prevGenerar(unidadId){
+  const r=(prevRodados||[]).find(x=>x.id===unidadId);
+  if(!r)return;
+  const inp='width:100%;padding:9px 11px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  document.getElementById('mm-titulo').textContent='Generar orden de preventivo';
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">
+      <b style="color:var(--tinta);font-size:14px">${escStk(r.tipo_label||r.tipo||'Equipo')} · ${escStk(r.codigo||r.patente||'S/N')}</b>
+      <div style="margin-top:3px">${r.estado==='vencido'
+        ?`<span style="color:var(--rojo)">Vencido${r.restan!=null&&r.restan<0?` hace ${Math.abs(r.restan)} días`:''}</span>`
+        :`Vence ${r.restan===0?'hoy':`en ${r.restan} días`}`}
+        ${r.proximo?` · ${fechaAR(r.proximo)}`:''}</div>
+    </div>
+    <div class="mm-field"><label>Mecánico que lo va a hacer *</label>
+      <select id="pg-mec" style="${inp}">
+        <option value="">— elegí —</option>
+        ${(mecanicos||[]).map(m=>`<option value="${m.id}" ${r.prev_mecanico_id===m.id?'selected':''}>${escStk(m.nombre)}</option>`).join('')}
+      </select>
+      ${r.prev_mecanico?`<div class="sub" style="font-size:11.5px;margin-top:3px">Suele hacerlo ${escStk(r.prev_mecanico)}</div>`:''}</div>
+    <div class="mm-field"><label>Prioridad</label>
+      <select id="pg-prio" style="${inp}">
+        <option value="baja">Baja</option>
+        <option value="media" selected>Media</option>
+        <option value="alta">Alta</option>
+      </select></div>
+    ${r.prev_tarea?`<div class="sub" style="font-size:12.5px;background:var(--papel);border-radius:8px;padding:9px 12px;margin-top:6px">
+      <b>Qué incluye:</b> ${escStk(r.prev_tarea)}</div>`:''}
+    <div class="sub" style="font-size:11.5px;margin-top:8px">La orden aparece en Reparaciones → Resumen como cualquier otra incidencia.</div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();abrirPopupPreventivos(true)">← Volver</button>
+      <button class="btn" onclick="prevGenerarConfirmar('${r.id}')">Generar orden</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function prevGenerarConfirmar(unidadId){
+  const g=x=>document.getElementById(x);
+  const mec=g('pg-mec')?g('pg-mec').value:'';
+  if(!mec){toast('Elegí el mecánico','error');return;}
+  const r=(prevRodados||[]).find(x=>x.id===unidadId)||{};
+  try{
+    await api('/api/reparaciones/preventivo/generar',{method:'POST',body:JSON.stringify({
+      unidad_id:unidadId, mecanico_id:mec, prioridad:g('pg-prio').value,
+      vence:r.proximo?String(r.proximo).slice(0,10):null})});
+    cerrarMaestro();
+    toast('Orden generada · ya está en Reparaciones');
+    repData=null;pvData=null;
+    await chequearPreventivos();   // se recalcula: ese ya no debe figurar
+  }catch(e){toast('No pude generar: '+(e.message||''),'error');}
 }
 
 /* Al cerrar se guarda lo visto: así lo de hoy no vuelve a contar como
@@ -5889,15 +5951,17 @@ function renderPreventivo(){
     const [bl,bs]=PV_BADGE[r.estado]||PV_BADGE.sin_config;
     const ident=r.codigo?`<span class="uni-num">${r.codigo}</span>`:`<span class="mono" style="font-weight:600;font-size:12px">${r.patente||'—'}</span>`;
     const nom=(r.codigo||r.patente||'').replace(/'/g,'');
-    const acciones=r.intervalo?`<div style="display:flex;gap:5px;justify-content:flex-end">
-        ${(r.estado==='vencido'||r.estado==='por_vencer')&&!r.incidencia_abierta?`<button class="mini-btn" onclick="pvAlta('${r.id}','${nom}')">+ Preventivo</button>`:''}
-        <button class="mini-btn" title="Marcar service realizado hoy" onclick="pvRealizado('${r.id}','${nom}')">✓ Realizado</button>
-        <button class="mini-btn" title="Correr el vencimiento" onclick="pvReprogramar('${r.id}','${nom}')">↻</button>
-      </div>`:'';
+    const acciones=`<div style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
+        ${r.intervalo&&(r.estado==='vencido'||r.estado==='por_vencer')&&!r.incidencia_abierta?`<button class="mini-btn" onclick="pvAlta('${r.id}','${nom}')">+ Preventivo</button>`:''}
+        <button class="mini-btn" title="Frecuencia propia de esta unidad" onclick="pvPlan('${r.id}')">🗓 Plan</button>
+        ${r.intervalo?`<button class="mini-btn" title="Marcar service realizado hoy" onclick="pvRealizado('${r.id}','${nom}')">✓ Realizado</button>
+        <button class="mini-btn" title="Correr el vencimiento" onclick="pvReprogramar('${r.id}','${nom}')">↻</button>`:''}
+      </div>`;
     return `<tr>
       <td><div style="font-weight:500">${r.tipo_label}</div><div class="sub">${r.marca_modelo||''}</div></td>
       <td>${ident}${r.codigo&&r.patente?`<div class="sub mono" style="margin-top:3px">${r.patente}</div>`:''}</td>
-      <td><span class="sub mono" style="font-size:11px">cada ${r.intervalo||'—'} días</span></td>
+      <td><span class="sub mono" style="font-size:11px">cada ${r.intervalo||'—'} días${r.plan_propio&&r.habiles?' hábiles':''}</span>
+        ${r.plan_propio?'<div style="margin-top:3px"><span class="badge" style="background:#EDE7FB;color:#5B3FB8;font-size:9.5px">plan propio</span></div>':''}</td>
       <td class="mono" style="font-size:12px">${r.ultimo?fechaAR(r.ultimo):'—'}</td>
       <td>${prog}</td>
       <td><span class="badge" style="${bs}">${bl}</span>${r.incidencia_abierta?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">🔧 en taller · ${(EST_REP_LABEL[EST_REP.indexOf(r.incidencia_abierta)]||r.incidencia_abierta)}</span></div>`:''}${r.reprogramado?`<div style="margin-top:4px"><span class="badge" style="background:var(--azul-soft);color:var(--azul);font-size:10px">↻ al ${fechaAR(r.proximo)}</span></div>`:''}</td>
@@ -5978,6 +6042,127 @@ function renderPreventivo(){
       <div style="display:grid;grid-template-columns:repeat(8,1fr);padding:14px 16px 16px">${proj}</div>
     </div>`;
 }
+/* ── Plan de preventivo de UNA unidad ────────────────────────────
+   La frecuencia propia manda sobre el intervalo del tipo. Se cuenta en
+   días HÁBILES por defecto (sin sábados ni domingos) y, si la fecha cae
+   fin de semana, se adelanta al viernes: el taller no trabaja el finde
+   y adelantar es más seguro que atrasar. */
+function pvSumarHabiles(desde,n){
+  const d=new Date(desde);let q=Math.max(0,Math.round(n));
+  while(q>0){d.setDate(d.getDate()+1);const w=d.getDay();if(w!==0&&w!==6)q--;}
+  return d;
+}
+function pvADiaHabil(f){
+  const d=new Date(f),w=d.getDay();
+  if(w===6)d.setDate(d.getDate()-1);else if(w===0)d.setDate(d.getDate()-2);
+  return d;
+}
+function pvProximo(ultimo,intervalo,habiles){
+  if(!ultimo||!intervalo)return null;
+  const base=new Date(ultimo);if(isNaN(base))return null;
+  return pvADiaHabil(habiles?pvSumarHabiles(base,intervalo):new Date(base.getTime()+intervalo*86400000));
+}
+let pvPlanU=null;
+function pvPlan(id){
+  const r=(pvData&&pvData.rodados||[]).find(x=>x.id===id);
+  if(!r)return;
+  pvPlanU={...r};
+  pintarPvPlan();
+}
+function pintarPvPlan(){
+  const r=pvPlanU;if(!r)return;
+  const inp='width:100%;padding:9px 11px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  const base=r.ultimo||r.prev_desde||new Date().toLocaleDateString('sv-SE');
+  document.getElementById('mm-titulo').textContent='Plan de preventivo · '+(r.codigo||r.patente||r.tipo_label);
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">${escStk(r.tipo_label||'')}${r.marca_modelo?' · '+escStk(r.marca_modelo):''}
+      ${r.intervalo&&!r.plan_propio?`<div style="margin-top:4px">Hoy usa el intervalo del tipo: <b>cada ${r.intervalo} días corridos</b></div>`:''}</div>
+
+    <div style="display:grid;grid-template-columns:110px 1fr;gap:8px">
+      <div class="mm-field"><label>Cada</label>
+        <input id="pv-dias" type="number" min="1" value="${r.plan_propio?r.intervalo:''}" placeholder="${r.intervalo||30}" style="${inp}" oninput="pvPlanPreview()"></div>
+      <div class="mm-field"><label>Contando</label>
+        <select id="pv-hab" style="${inp}" onchange="pvPlanPreview()">
+          <option value="1" ${r.habiles!==false?'selected':''}>días hábiles (sin sábado ni domingo)</option>
+          <option value="0" ${r.habiles===false?'selected':''}>días corridos</option>
+        </select></div>
+    </div>
+
+    <div class="mm-field"><label>Contar desde</label>
+      <input id="pv-desde" type="date" value="${String(base).slice(0,10)}" style="${inp}" oninput="pvPlanPreview()">
+      <div class="sub" style="font-size:11.5px;margin-top:3px">${r.ultimo?'Último service registrado: '+fechaAR(r.ultimo):'Esta unidad no tiene service registrado'}</div></div>
+
+    <div id="pv-preview" style="background:var(--brote-soft);border-radius:9px;padding:10px 13px;font-size:13px;margin:10px 0"></div>
+
+    <div class="mm-field"><label>Mecánico que suele hacerlo</label>
+      <select id="pv-mec" style="${inp}">
+        <option value="">— elegir al generar la orden —</option>
+        ${(mecanicos||[]).map(m=>`<option value="${m.id}" ${r.prev_mecanico_id===m.id?'selected':''}>${escStk(m.nombre)}</option>`).join('')}
+      </select></div>
+
+    <div class="mm-field"><label>Qué incluye el service (opcional)</label>
+      <textarea id="pv-tarea" placeholder="ej: cambio de aceite y filtros, engrase, control de correas"
+        style="${inp};min-height:60px">${escStk(r.prev_tarea||'')}</textarea>
+      <div class="sub" style="font-size:11.5px;margin-top:3px">Va como descripción de la orden cuando se genere.</div></div>
+
+    <label class="sub" style="display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;margin-top:6px">
+      <input type="checkbox" id="pv-activo" ${r.prev_activo!==false?'checked':''} style="accent-color:var(--brote)">
+      Esta unidad entra en el plan de preventivo
+    </label>
+
+    <div class="modal-acciones" style="justify-content:space-between">
+      <button class="btn-salir" style="color:var(--rojo)" onclick="pvPlanBorrar()">Quitar plan propio</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn-salir" onclick="cerrarMaestro();pvPlanU=null">Cancelar</button>
+        <button class="btn" onclick="pvPlanGuardar()">Guardar</button>
+      </div>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+  pvPlanPreview();
+}
+/* La fecha resultante EN VIVO. Es lo más importante del modal: contar en
+   hábiles estira bastante (40 hábiles ≈ 56 corridos) y hay que verlo
+   antes de guardar, no descubrirlo después. */
+function pvPlanPreview(){
+  const g=x=>document.getElementById(x);
+  const el=g('pv-preview');if(!el)return;
+  const dias=Number(g('pv-dias').value)||0;
+  const hab=g('pv-hab').value==='1';
+  const desde=g('pv-desde').value;
+  if(!dias||!desde){el.innerHTML='<span class="sub">Cargá la frecuencia para ver cuándo caería el próximo.</span>';return;}
+  const px=pvProximo(desde,dias,hab);
+  if(!px){el.innerHTML='<span class="sub">Revisá la fecha.</span>';return;}
+  const corridos=Math.round((px-new Date(desde))/86400000);
+  const D=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  el.innerHTML=`Próximo service: <b>${D[px.getDay()]} ${px.toLocaleDateString('es-AR')}</b>
+    <div class="sub" style="font-size:12px;margin-top:3px">
+      ${hab?`${dias} días hábiles = <b>${corridos} días corridos</b>`:`${dias} días corridos`}
+      ${px.getDay()===5?' · adelantado al viernes para no caer fin de semana':''}</div>`;
+}
+async function pvPlanGuardar(){
+  const g=x=>document.getElementById(x);
+  const dias=Number(g('pv-dias').value)||null;
+  if(!dias){toast('Poné cada cuántos días','error');return;}
+  try{
+    await api('/api/reparaciones/preventivo/plan',{method:'POST',body:JSON.stringify({
+      unidad_id:pvPlanU.id, intervalo_dias:dias, habiles:g('pv-hab').value==='1',
+      desde:g('pv-desde').value||null, mecanico_id:g('pv-mec').value||null,
+      tarea:g('pv-tarea').value.trim(), activo:g('pv-activo').checked})});
+    cerrarMaestro();pvPlanU=null;pvData=null;go('reparaciones');
+    toast('Plan guardado');
+  }catch(e){toast('No pude guardar: '+(e.message||''),'error');}
+}
+async function pvPlanBorrar(){
+  if(!await uiConfirm('La unidad vuelve a usar el intervalo de su tipo de rodado.','¿Quitar el plan propio?',{ok:'Quitar'}))return;
+  try{
+    await api('/api/reparaciones/preventivo/plan',{method:'POST',body:JSON.stringify({
+      unidad_id:pvPlanU.id, intervalo_dias:null})});
+    cerrarMaestro();pvPlanU=null;pvData=null;go('reparaciones');
+    toast('Plan quitado');
+  }catch(e){toast('No pude: '+(e.message||''),'error');}
+}
+
 async function pvAlta(id,nombre){
   if(!await uiConfirm('Se crea una incidencia preventiva pendiente para '+nombre+' (sin asignar, prioridad baja).','Dar de alta preventivo',{ok:'Dar de alta'}))return;
   try{await api('/api/reparaciones/preventivo/alta',{method:'POST',body:JSON.stringify({unidad_id:id})});
