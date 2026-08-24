@@ -4932,7 +4932,14 @@ async function repRepGuardar(id,ix){
     r.repuestos_taller=(r.repuestos_taller||[]).filter(x=>x.id!==nuevo.id&&x.estado==='entregado');
     r.repuestos_taller.push(nuevo);
     selRep(ix);
-    toast(cotiza?'Pedido cotizado ✓ — esperando aprobación en Compras':'Pedido guardado ✓');
+    // El estado lo decide el server (cotizado solo si TODOS los ítems
+    // tienen proveedor y precio), así que el mensaje se lee de la respuesta
+    // en vez de recalcularlo acá.
+    const cot=items.filter(i=>i.proveedor&&i.precio).length;
+    toast(nuevo&&nuevo.estado==='cotizado'
+      ? 'Pedido cotizado ✓ — esperando aprobación en Compras'
+      : cot ? `Pedido guardado ✓ — ${cot} de ${items.length} cotizado${cot===1?'':'s'}`
+            : 'Pedido guardado ✓');
   }catch(e){toast('No pude guardar: '+e.message,'error');}
 }
 async function agregarObsRep(id,ix){
