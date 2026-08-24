@@ -1854,6 +1854,31 @@ router.get('/api/services', auth, async (req, res) => {
   }
 });
 
+// Borrar una planilla de service. Se cargan por foto + IA desde la app, así
+// que una mal leída o repetida tenía que quedar para siempre. Queda el log
+// con quién la borró y de qué unidad era.
+router.delete('/api/services/:id', auth, async (req, res) => {
+  try {
+    const { data: sv, error: eS } = await supabase
+      .from('services_unidades').select('id, data, mecanico_nombre')
+      .eq('id', req.params.id).maybeSingle();
+    if (eS) throw eS;
+    if (!sv) return res.status(404).json({ error: 'No encontré ese service' });
+
+    const { error: eD } = await supabase
+      .from('services_unidades').delete().eq('id', sv.id);
+    if (eD) throw eD;
+
+    const d = sv.data || {};
+    console.log(`[services] planilla ${sv.id} borrada · ${d.unidad || d.patente || 's/unidad'} · ` +
+      `${d.fecha_service || 's/fecha'} · cargada por ${sv.mecanico_nombre || d.mecanico || '?'} · por ${req.usuario || '?'}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('borrar service:', err);
+    res.status(500).json({ error: 'No pude borrar el service' });
+  }
+});
+
 // PIN de súper admin para la vista Performance (ranking del bono). Los
 // mecánicos SÍ entran al panel, así que ocultar el botón no alcanza: la vista
 // exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
