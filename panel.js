@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · filtros de taller y marca';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · marcas en Stock General';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1699,7 +1699,7 @@ async function vStock(view){
    pantalla: el último censo respondido de cada objetivo, con grupo,
    números, marca y los faltantes abiertos. Cada N° abre la ficha de la
    máquina si está en el padrón. */
-let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:''};
+let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:'',marca:''};
 async function vStockGeneral(view){
   if(!stkGen){
     view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando…</div>';
@@ -1725,12 +1725,16 @@ async function vStockGeneral(view){
     // tipo, y mostrarlos ahí confundiría más que ayudar.
     (!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&
     (!F.grupo||f.grupo===F.grupo)&&
+    (!F.marca||((f.marcas||{})[F.marca]||0)>0)&&
     (!F.q||norm(f.numeros.join(' ')+' '+(f.observacion||'')+' '+f.objetivo+' '+f.tipo).includes(norm(F.q))));
-  const total=vis.reduce((a,f)=>a+(Number(f.cantidad)||0),0);
+  // Con el filtro de marca puesto, el total cuenta SOLO las de esa marca —
+  // si no, una línea de 5 motoguadañas con 2 Stihl sumaría 5.
+  const cantDe=f=>F.marca?((f.marcas||{})[F.marca]||0):(Number(f.cantidad)||0);
+  const total=vis.reduce((a,f)=>a+cantDe(f),0);
   // Los objetivos sin censo no cuentan como "objetivos con equipos"
   const nObjs=new Set(vis.filter(f=>!f.sin_censo).map(f=>f.objetivo)).size;
   const nSinCenso=vis.filter(f=>f.sin_censo).length;
-  const enDep=vis.filter(f=>f.grupo==='deposito').reduce((a,f)=>a+(Number(f.cantidad)||0),0);
+  const enDep=vis.filter(f=>f.grupo==='deposito').reduce((a,f)=>a+cantDe(f),0);
   // faltantes que aplican al filtro actual
   const faltVis=faltantes.filter(fa=>{
     const fila=filas.find(f=>f.objetivo_id===fa.objetivo_id);
@@ -1761,6 +1765,17 @@ async function vStockGeneral(view){
       <option value="deposito" ${F.grupo==='deposito'?'selected':''}>Depósito</option>
       <option value="privado" ${F.grupo==='privado'?'selected':''}>Privado</option>
     </select>
+    <select onchange="stkGenF.marca=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+      <option value="">Todas las marcas</option>
+      ${(()=>{
+        // Marcas del universo ya filtrado por tipo/objetivo/grupo, para que
+        // el número de cada opción sea el que se ve al elegirla.
+        const univ=filas.filter(f=>(!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&(!F.grupo||f.grupo===F.grupo));
+        const c={};univ.forEach(f=>Object.entries(f.marcas||{}).forEach(([k,n])=>{if(k!=='__sin')c[k]=(c[k]||0)+n;}));
+        return Object.keys(c).sort((a,b)=>c[b]-c[a])
+          .map(k=>`<option value="${escStk(k)}" ${F.marca===k?'selected':''}>${escStk(k)} · ${c[k]}</option>`).join('');
+      })()}
+    </select>
     <input placeholder="Buscar N°, marca, texto…" value="${escStk(F.q)}" onchange="stkGenF.q=this.value;go('stock')"
       style="flex:1;min-width:150px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
     <button class="btn-salir" style="padding:6px 10px;font-size:11.5px" onclick="stkGen=null;go('stock')">↻</button>
@@ -1786,6 +1801,61 @@ async function vStockGeneral(view){
         <td class="sub" style="font-size:12px">hace ${dias} d</td>
         <td><button class="mini-btn" onclick="resolverFaltante('${fa.id}')">✓ Resolver</button></td></tr>`;}).join('')}
     </tbody></table></div>`:''}
+
+  ${(()=>{
+    /* Cuánto hay de cada tipo y de cada marca. La marca NO está en el censo:
+       se resuelve cruzando el número de máquina contra el padrón. Por eso
+       hay una columna "sin identificar" — son números que no están cargados
+       en el padrón, y ese número es la medida de cuán confiable es el resto. */
+    const univ=filas.filter(f=>f.tipo&&(!F.objetivo||f.objetivo===F.objetivo)&&(!F.grupo||f.grupo===F.grupo));
+    if(!univ.length)return '';
+    const porTipo={}, totM={};
+    univ.forEach(f=>{
+      const t=f.tipo;
+      porTipo[t]=porTipo[t]||{__total:0};
+      const mk=f.marcas||{};
+      const conMarca=Object.values(mk).reduce((a,n)=>a+n,0);
+      Object.entries(mk).forEach(([k,n])=>{porTipo[t][k]=(porTipo[t][k]||0)+n;totM[k]=(totM[k]||0)+n;});
+      // Si la línea tiene más cantidad que números identificados, la
+      // diferencia va a "sin identificar": el capataz censó 5 pero cargó 3 números.
+      const resto=Math.max(0,(Number(f.cantidad)||0)-conMarca);
+      if(resto){porTipo[t].__sin=(porTipo[t].__sin||0)+resto;totM.__sin=(totM.__sin||0)+resto;}
+      porTipo[t].__total+=Math.max(Number(f.cantidad)||0,conMarca);
+    });
+    const marcas=Object.keys(totM).filter(k=>k!=='__sin').sort((a,b)=>totM[b]-totM[a]);
+    const cols=marcas.slice(0,5), otras=marcas.slice(5);
+    const sinId=totM.__sin||0;
+    const tipos2=Object.keys(porTipo).sort((a,b)=>porTipo[b].__total-porTipo[a].__total);
+    const totalGen=tipos2.reduce((a,t)=>a+porTipo[t].__total,0);
+    const cel=(t,k)=>{const n=porTipo[t][k]||0;return `<td style="text-align:right;${n?'':'color:var(--tinta-3)'}">${n||'·'}</td>`;};
+    return `<div class="panel" style="margin-bottom:14px">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+        <span>Cuánto hay de cada cosa <span class="sub" style="font-weight:400">· tipo y marca</span></span>
+        <span class="sub" style="font-size:11.5px;font-weight:400">tocá una fila para filtrar por ese tipo</span>
+      </div>
+      <table><thead><tr><th>Tipo</th>
+        ${cols.map(k=>`<th style="text-align:right">${escStk(k)}</th>`).join('')}
+        ${otras.length?'<th style="text-align:right">Otras</th>':''}
+        ${sinId?'<th style="text-align:right">Sin identificar</th>':''}
+        <th style="text-align:right">Total</th></tr></thead>
+      <tbody>
+        ${tipos2.map(t=>`<tr style="cursor:pointer" onclick="stkGenF.tipo='${escStk(t).replace(/'/g,"\\'")}';stkGenF.marca='';go('stock')">
+          <td style="font-weight:500">${escStk(t)}</td>
+          ${cols.map(k=>cel(t,k)).join('')}
+          ${otras.length?`<td style="text-align:right">${otras.reduce((a,k)=>a+(porTipo[t][k]||0),0)||'·'}</td>`:''}
+          ${sinId?cel(t,'__sin'):''}
+          <td style="text-align:right;font-weight:700">${porTipo[t].__total}</td></tr>`).join('')}
+        <tr style="border-top:2px solid var(--linea)">
+          <td style="font-weight:700">Total</td>
+          ${cols.map(k=>`<td style="text-align:right;font-weight:700">${totM[k]}</td>`).join('')}
+          ${otras.length?`<td style="text-align:right;font-weight:700">${otras.reduce((a,k)=>a+totM[k],0)}</td>`:''}
+          ${sinId?`<td style="text-align:right;font-weight:700">${sinId}</td>`:''}
+          <td style="text-align:right;font-weight:800">${totalGen}</td></tr>
+      </tbody></table>
+      ${sinId?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
+        ⚠ ${sinId} de ${totalGen} equipos sin identificar: el censo no cargó su número, o el número no está en el padrón de Máquinas. La marca se resuelve cruzando ese número — cuanto más bajo este valor, más confiable el cuadro.</div>`:''}
+    </div>`;
+  })()}
 
   <div class="panel">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
