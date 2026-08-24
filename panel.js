@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · alta de preventivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · plan en preventivas en curso';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -6003,8 +6003,7 @@ function renderPreventivo(){
     <div class="view-head"><div><div class="view-title">Reparaciones · Preventivo</div>
       <div class="view-desc">Mantenimiento programado por tiempo de los rodados</div></div>
       <div class="spacer"></div>
-      <button class="btn" onclick="pvNuevo()">+ Nuevo preventivo</button>
-      <button class="btn-salir" onclick="pvCfgOpen=!pvCfgOpen;renderPreventivo()">⚙ Intervalos</button></div>
+      <button class="btn" onclick="pvCfgOpen=!pvCfgOpen;renderPreventivo()">⚙ Intervalos</button></div>
     ${tabsRep()}
     ${cfgHtml}
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
@@ -6018,13 +6017,25 @@ function renderPreventivo(){
         <b style="font-size:13.5px">Preventivas en curso</b>
         <span class="sub" style="font-size:11.5px">Incidencias preventivas abiertas · al finalizarlas arranca el contador de la unidad</span></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Equipo</th><th>Unidad</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
-        <tbody>${pvData.en_curso.map(i=>{const eidx=EST_REP.indexOf(i.estado);return `<tr style="cursor:pointer" onclick="repTab='resumen';go('reparaciones')">
-          <td style="font-weight:500">${i.tipo_equipo||'—'}</td>
+        <thead><tr><th>Equipo</th><th>Unidad</th><th>Mecánico</th><th>Estado</th><th>Hace</th><th>Cada cuánto</th><th></th></tr></thead>
+        <tbody>${pvData.en_curso.map(i=>{
+          const eidx=EST_REP.indexOf(i.estado);
+          // Se busca la unidad de esta preventiva para mostrar (y cargar) su
+          // frecuencia acá mismo: es donde uno se pregunta cuándo se repite.
+          const u=pvUnidadDe(i);
+          return `<tr>
+          <td style="font-weight:500;cursor:pointer" onclick="repTab='resumen';go('reparaciones')">${i.tipo_equipo||'—'}</td>
           <td>${i.numero_unidad?`<span class="uni-num">${i.numero_unidad}</span>`:'—'}</td>
           <td>${i.mecanicos?i.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
           <td><span class="badge ${eidx>=0?'est-'+eidx:'b-gray'}">${EST_REP_LABEL[eidx]||i.estado}</span></td>
-          <td class="sub mono">${hace(i.created_at)}</td></tr>`;}).join('')}</tbody>
+          <td class="sub mono">${hace(i.created_at)}</td>
+          <td>${u&&u.plan_propio
+            ? `<span class="mono" style="font-size:12px">cada ${u.intervalo} días${u.habiles?' hábiles':''}</span>`
+            : u&&u.intervalo
+              ? `<span class="sub mono" style="font-size:11.5px">cada ${u.intervalo} días<div style="font-size:10.5px">del tipo</div></span>`
+              : '<span class="sub" style="font-size:11.5px;color:var(--diesel)">sin frecuencia</span>'}</td>
+          <td>${u?`<button class="mini-btn" onclick="event.stopPropagation();pvPlan('${u.id}')">🗓 ${u.plan_propio?'Editar plan':'Programar'}</button>`
+            :'<span class="sub" style="font-size:11px">—</span>'}</td></tr>`;}).join('')}</tbody>
       </table></div>
     </div>`:''}
     <div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
@@ -6063,38 +6074,14 @@ function pvProximo(ultimo,intervalo,habiles){
   const base=new Date(ultimo);if(isNaN(base))return null;
   return pvADiaHabil(habiles?pvSumarHabiles(base,intervalo):new Date(base.getTime()+intervalo*86400000));
 }
-/* Alta de un preventivo nuevo: elegís la unidad de una lista y cargás la
-   frecuencia. Es el mismo modal del plan, pero arrancando por elegir. */
-function pvNuevo(){
-  const rs=(pvData&&pvData.rodados||[]);
-  const sinPlan=rs.filter(r=>!r.plan_propio), conPlan=rs.filter(r=>r.plan_propio);
-  const inp='width:100%;padding:9px 11px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
-  document.getElementById('mm-titulo').textContent='Nuevo preventivo';
-  document.getElementById('mm-campos').innerHTML=`
-    <div class="sub" style="margin-bottom:12px">Elegí la unidad y después cargás cada cuántos días.</div>
-    <div class="mm-field"><label>Unidad *</label>
-      <select id="pv-nueva" style="${inp}">
-        <option value="">— elegí la unidad —</option>
-        ${sinPlan.length?`<optgroup label="Sin plan propio">
-          ${sinPlan.map(r=>`<option value="${r.id}">${escStk(r.tipo_label||r.tipo)} · ${escStk(r.codigo||r.patente||'S/N')}${r.marca_modelo?' — '+escStk(r.marca_modelo):''}</option>`).join('')}
-        </optgroup>`:''}
-        ${conPlan.length?`<optgroup label="Ya tienen plan (se edita)">
-          ${conPlan.map(r=>`<option value="${r.id}">${escStk(r.tipo_label||r.tipo)} · ${escStk(r.codigo||r.patente||'S/N')} — cada ${r.intervalo} días${r.habiles?' hábiles':''}</option>`).join('')}
-        </optgroup>`:''}
-      </select></div>
-    ${!rs.length?`<div class="sub" style="background:var(--diesel-soft);border-radius:9px;padding:10px 13px;font-size:12.5px">
-      No hay unidades con tipo de rodado asignado. Cargalas en Maestros → Unidades.</div>`:''}
-    <div class="modal-acciones">
-      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
-      <button class="btn" onclick="pvNuevoSeguir()">Continuar →</button>
-    </div>`;
-  document.getElementById('mm-acciones').style.display='none';
-  document.getElementById('mm-bg').classList.add('abierto');
-}
-function pvNuevoSeguir(){
-  const v=(document.getElementById('pv-nueva')||{}).value;
-  if(!v){toast('Elegí la unidad','error');return;}
-  pvPlan(v);
+/* Cruza una incidencia preventiva con su unidad del semáforo. La
+   incidencia guarda `numero_unidad` como texto, así que se compara
+   normalizado contra código y patente. */
+function pvUnidadDe(inc){
+  const n=t=>String(t||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const clave=n(inc.numero_unidad);
+  if(!clave)return null;
+  return (pvData&&pvData.rodados||[]).find(r=>n(r.codigo)===clave||n(r.patente)===clave)||null;
 }
 
 let pvPlanU=null;
