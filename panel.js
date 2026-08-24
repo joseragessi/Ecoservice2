@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · preventivo por unidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · alta de preventivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -6003,7 +6003,8 @@ function renderPreventivo(){
     <div class="view-head"><div><div class="view-title">Reparaciones · Preventivo</div>
       <div class="view-desc">Mantenimiento programado por tiempo de los rodados</div></div>
       <div class="spacer"></div>
-      <button class="btn" onclick="pvCfgOpen=!pvCfgOpen;renderPreventivo()">⚙ Intervalos</button></div>
+      <button class="btn" onclick="pvNuevo()">+ Nuevo preventivo</button>
+      <button class="btn-salir" onclick="pvCfgOpen=!pvCfgOpen;renderPreventivo()">⚙ Intervalos</button></div>
     ${tabsRep()}
     ${cfgHtml}
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
@@ -6062,6 +6063,40 @@ function pvProximo(ultimo,intervalo,habiles){
   const base=new Date(ultimo);if(isNaN(base))return null;
   return pvADiaHabil(habiles?pvSumarHabiles(base,intervalo):new Date(base.getTime()+intervalo*86400000));
 }
+/* Alta de un preventivo nuevo: elegís la unidad de una lista y cargás la
+   frecuencia. Es el mismo modal del plan, pero arrancando por elegir. */
+function pvNuevo(){
+  const rs=(pvData&&pvData.rodados||[]);
+  const sinPlan=rs.filter(r=>!r.plan_propio), conPlan=rs.filter(r=>r.plan_propio);
+  const inp='width:100%;padding:9px 11px;border:1px solid var(--linea);border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box';
+  document.getElementById('mm-titulo').textContent='Nuevo preventivo';
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">Elegí la unidad y después cargás cada cuántos días.</div>
+    <div class="mm-field"><label>Unidad *</label>
+      <select id="pv-nueva" style="${inp}">
+        <option value="">— elegí la unidad —</option>
+        ${sinPlan.length?`<optgroup label="Sin plan propio">
+          ${sinPlan.map(r=>`<option value="${r.id}">${escStk(r.tipo_label||r.tipo)} · ${escStk(r.codigo||r.patente||'S/N')}${r.marca_modelo?' — '+escStk(r.marca_modelo):''}</option>`).join('')}
+        </optgroup>`:''}
+        ${conPlan.length?`<optgroup label="Ya tienen plan (se edita)">
+          ${conPlan.map(r=>`<option value="${r.id}">${escStk(r.tipo_label||r.tipo)} · ${escStk(r.codigo||r.patente||'S/N')} — cada ${r.intervalo} días${r.habiles?' hábiles':''}</option>`).join('')}
+        </optgroup>`:''}
+      </select></div>
+    ${!rs.length?`<div class="sub" style="background:var(--diesel-soft);border-radius:9px;padding:10px 13px;font-size:12.5px">
+      No hay unidades con tipo de rodado asignado. Cargalas en Maestros → Unidades.</div>`:''}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
+      <button class="btn" onclick="pvNuevoSeguir()">Continuar →</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+function pvNuevoSeguir(){
+  const v=(document.getElementById('pv-nueva')||{}).value;
+  if(!v){toast('Elegí la unidad','error');return;}
+  pvPlan(v);
+}
+
 let pvPlanU=null;
 function pvPlan(id){
   const r=(pvData&&pvData.rodados||[]).find(x=>x.id===id);
