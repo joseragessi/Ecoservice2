@@ -138,4 +138,42 @@ function mensajeEstadoIncidencia(estado, { equipo, unidad, mecanico, comentario 
   }
 }
 
-module.exports = { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia };
+/* Cierre sin que la máquina haya entrado al taller. El tono importa: no
+   es un reto al capataz, es un aviso de que la incidencia se cierra y de
+   que si el problema sigue, hay que reportarla de nuevo. */
+const MOTIVOS_CIERRE = {
+  no_ingreso: {
+    titulo: '📭 *Incidencia cerrada · el equipo no llegó al taller*',
+    cuerpo: 'La reparación se cerró porque el equipo nunca ingresó al taller.',
+  },
+  resuelto_en_campo: {
+    titulo: '✅ *Incidencia cerrada · se resolvió en el objetivo*',
+    cuerpo: 'Se cerró porque la falla se resolvió en el lugar, sin pasar por el taller.',
+  },
+  sin_falla: {
+    titulo: '🔎 *Incidencia cerrada · no se encontró la falla*',
+    cuerpo: 'Se revisó el equipo y no se encontró la falla reportada.',
+  },
+  duplicado: {
+    titulo: '📄 *Incidencia cerrada · estaba repetida*',
+    cuerpo: 'Ya había otro reporte abierto por la misma falla, así que se unificaron.',
+  },
+  otro: {
+    titulo: '📁 *Incidencia cerrada*',
+    cuerpo: 'La incidencia se cerró sin pasar por reparación.',
+  },
+};
+
+function mensajeCierreSinReparar(motivo, { equipo, unidad, mecanico, nota, falla }) {
+  const m = MOTIVOS_CIERRE[motivo] || MOTIVOS_CIERRE.otro;
+  const cab = `🔧 Equipo: ${equipo || '—'}\n` +
+              (unidad ? `🔢 Unidad: ${unidad}\n` : '') +
+              (falla ? `⚠️ Falla reportada: ${falla}\n` : '') +
+              (mecanico ? `👨‍🔧 Cerró: ${mecanico}\n` : '');
+  const notaTxt = nota ? `\n💬 Nota del taller:\n_"${nota}"_\n` : '';
+  return `${m.titulo}\n\n${cab}\n${m.cuerpo}${notaTxt}\n` +
+    `_Si el equipo sigue con la falla, reportalo de nuevo y coordinamos el ingreso._\n` +
+    `\n_EcoService · Taller_`;
+}
+
+module.exports = { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia, mensajeCierreSinReparar, MOTIVOS_CIERRE };
