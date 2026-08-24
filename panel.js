@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · trazabilidad + filtros en indicadores';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · trazabilidad de finalizadas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3570,6 +3570,7 @@ async function reenviarStock(id){
 /* ===== Reparaciones · Indicadores ===== */
 let repTab='resumen', repIndPer='', repIndMec='';   // repIndMec: filtro por mecánico en Indicadores
 let repIndObj='', repIndPrio='', repIndQ='';        // filtros de Indicadores: objetivo, criticidad, búsqueda
+let repIndEst='abiertas';                           // abiertas | finalizadas | todas
 let repTrz=null;                                    // incidencia abierta en el detalle de trazabilidad
 
 // Barras genéricas para paneles de indicadores
@@ -4500,8 +4501,13 @@ async function vRepInd(view){
   const fechaEstado=r=>({diagnostico:r.fecha_diagnostico,esperando_repuestos:r.fecha_espera_repuestos,en_reparacion:r.fecha_en_reparacion}[r.estado])||r.created_at;
   const hoyMs=Date.now();
   // Filtro por mecánico: aplica a "Qué atender hoy" y "Trabado ahora"
-  const mecsAbiertas=[...new Set(todas.filter(r=>r.estado!=='finalizado').map(r=>r.mecanicos?r.mecanicos.nombre:'Sin asignar'))].sort();
-  const objsAbiertas=[...new Set(todas.filter(r=>r.estado!=='finalizado').map(r=>r.objetivos?r.objetivos.nombre:'Sin objetivo'))].sort();
+  const mecsAbiertas=[...new Set(todas.map(r=>r.mecanicos?r.mecanicos.nombre:'Sin asignar'))].sort();
+  // La base cambia según el filtro: para ver la trazabilidad de una
+  // reparación TERMINADA hay que poder listarla, no solo las abiertas.
+  const baseInd=repIndEst==='finalizadas'?todas.filter(r=>r.estado==='finalizado')
+    :repIndEst==='todas'?todas
+    :todas.filter(r=>r.estado!=='finalizado');
+  const objsAbiertas=[...new Set(baseInd.map(r=>r.objetivos?r.objetivos.nombre:'Sin objetivo'))].sort();
   // El buscador entra por equipo, unidad, descripción, falla, objetivo,
   // mecánico y capataz: cualquier cosa que uno recuerde de la incidencia.
   const qInd=repIndQ.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(/\s+/).filter(Boolean);
@@ -4511,18 +4517,27 @@ async function vRepInd(view){
       .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
     return qInd.every(w=>blob.includes(w));
   };
-  const abiertas=todas.filter(r=>r.estado!=='finalizado')
+  const abiertas=baseInd
     .filter(r=>!repIndMec||(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===repIndMec)
     .filter(r=>!repIndObj||(r.objetivos?r.objetivos.nombre:'Sin objetivo')===repIndObj)
     .filter(r=>!repIndPrio||(repIndPrio==='parada'?r.equipo_parado:String(r.prioridad||'').toLowerCase()===repIndPrio))
     .filter(matchInd).map(r=>{
-    const dAb=diasEntre(r.created_at,new Date().toISOString());
-    const dEst=diasEntre(fechaEstado(r),new Date().toISOString());
+    // En una finalizada los días se cuentan hasta el CIERRE, no hasta hoy:
+    // si no, una reparación de enero figuraría como "abierta hace 200 días".
+    const fin=r.estado==='finalizado'&&r.fecha_finalizado?r.fecha_finalizado:new Date().toISOString();
+    const dAb=diasEntre(r.created_at,fin);
+    const dEst=diasEntre(fechaEstado(r),fin);
     return {r,dAb:dAb!=null?dAb:0,dEst:dEst!=null?dEst:0};
   });
   // Orden de ataque: parada > prioridad > días abierta
   const PESO_PRIO={critico:3,alta:2,media:1,baja:0};
-  abiertas.sort((a,b)=>((b.r.equipo_parado?1:0)-(a.r.equipo_parado?1:0))||((PESO_PRIO[b.r.prioridad]||0)-(PESO_PRIO[a.r.prioridad]||0))||(b.dAb-a.dAb));
+  // Abiertas: se ordenan por urgencia (parada > prioridad > días).
+  // Finalizadas: por fecha de cierre, las últimas primero — lo urgente ya pasó.
+  if(repIndEst==='finalizadas'){
+    abiertas.sort((a,b)=>new Date(b.r.fecha_finalizado||0)-new Date(a.r.fecha_finalizado||0));
+  }else{
+    abiertas.sort((a,b)=>((b.r.equipo_parado?1:0)-(a.r.equipo_parado?1:0))||((PESO_PRIO[b.r.prioridad]||0)-(PESO_PRIO[a.r.prioridad]||0))||(b.dAb-a.dAb));
+  }
   const colDias=d=>d>=7?'color:#A32D2D;font-weight:700':d>=3?'color:#854F0B;font-weight:600':'';
   const tablaAbiertas=abiertas.map(({r,dAb,dEst})=>{
     const prio=r.prioridad==='critico'?'<span class="badge" style="background:#FCEBED;color:#A32D2D">crítico</span>'
@@ -4533,9 +4548,13 @@ async function vRepInd(view){
         <div class="sub" style="font-size:11px;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.descripcion||r.falla||''}</div></td>
       <td><span class="uni-num">${r.numero_unidad||'—'}</span></td>
       <td>${prio}${r.equipo_parado?'<div class="badge" style="background:#FCEBED;color:#A32D2D;font-size:9.5px;margin-top:3px">⛔ parada</div>':''}</td>
-      <td>${ETIQ_EST[r.estado]||r.estado}</td>
-      <td class="num mono" style="${colDias(dEst)}">${Math.ceil(dEst)} d</td>
-      <td class="num mono" style="${colDias(dAb)}">${Math.ceil(dAb)} d</td>
+      <td>${r.estado==='finalizado'
+        ?(r.motivo_cierre
+          ?`<span class="badge b-amber" style="font-size:10px">📭 ${escStk(MOTIVO_CIERRE_CORTO[r.motivo_cierre]||'sin reparar')}</span>`
+          :'<span class="badge b-green" style="font-size:10px">✓ finalizada</span>')
+        :(ETIQ_EST[r.estado]||r.estado)}</td>
+      <td class="num mono" style="${r.estado==='finalizado'?'':colDias(dEst)}">${r.estado==='finalizado'?(r.fecha_finalizado?fechaAR(r.fecha_finalizado):'—'):Math.ceil(dEst)+' d'}</td>
+      <td class="num mono" style="${r.estado==='finalizado'?'':colDias(dAb)}">${Math.ceil(dAb)} d</td>
       <td style="font-size:12px">${r.mecanicos?r.mecanicos.nombre:'<span class="sub">sin asignar</span>'}</td>
     </tr>`;}).join('');
 
@@ -4618,10 +4637,16 @@ async function vRepInd(view){
   ${tabsRep()}
   <div class="grid" style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:18px">
     <div class="panel"><div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <span>Qué atender hoy <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} abiertas · paradas y críticas primero</span></span>
+      <span>${repIndEst==='finalizadas'?'Reparaciones terminadas':repIndEst==='todas'?'Todas las reparaciones':'Qué atender hoy'}
+        <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} ${repIndEst==='finalizadas'?'finalizadas · las últimas primero':repIndEst==='todas'?'en total':'abiertas · paradas y críticas primero'} · tocá una fila para ver su trazabilidad</span></span>
       ${repIndMec||repIndObj||repIndPrio||repIndQ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="repIndMec='';repIndObj='';repIndPrio='';repIndQ='';go('reparaciones')">✕ limpiar filtros</button>`:''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndEst=this.value;go('reparaciones')">
+          <option value="abiertas" ${repIndEst==='abiertas'?'selected':''}>Abiertas</option>
+          <option value="finalizadas" ${repIndEst==='finalizadas'?'selected':''}>Finalizadas</option>
+          <option value="todas" ${repIndEst==='todas'?'selected':''}>Todas</option>
+        </select>
         <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndMec=this.value;go('reparaciones')">
           <option value="">Todos los mecánicos</option>
           ${mecsAbiertas.map(m=>`<option value="${m.replace(/"/g,'&quot;')}" ${repIndMec===m?'selected':''}>${m}</option>`).join('')}
@@ -4641,8 +4666,8 @@ async function vRepInd(view){
         <input id="ind-q" class="busca" style="flex:1;min-width:170px;font-size:12px;padding:5px 9px"
           placeholder="Buscar equipo, unidad, falla, objetivo…" value="${escStk(repIndQ)}" oninput="indBuscar(this.value)">
       </div>
-      ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">En este estado</th><th class="num">Abierta hace</th><th>Mecánico</th></tr></thead>
-      <tbody>${tablaAbiertas}</tbody></table>`:'<div class="sub" style="padding:12px 0">No hay máquinas abiertas 🎉</div>'}
+      ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">${repIndEst==='finalizadas'?'Cerró el':'En este estado'}</th><th class="num">${repIndEst==='finalizadas'?'Tardó':'Abierta hace'}</th><th>Mecánico</th></tr></thead>
+      <tbody>${tablaAbiertas}</tbody></table>`:`<div class="sub" style="padding:12px 0">${repIndMec||repIndObj||repIndPrio||repIndQ?'Nada con esos filtros.':(repIndEst==='finalizadas'?'Todavía no hay reparaciones terminadas.':'No hay máquinas abiertas 🎉')}</div>`}
     </div>
     <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}
       ${(()=>{  // Máquinas con más de 7 días abiertas: lo que ya no puede esperar
@@ -4650,7 +4675,7 @@ async function vRepInd(view){
         if(!viejas.length)return '';
         return `<div class="divider" style="margin:12px 0 8px"></div>
         <div class="field-l" style="margin-bottom:6px;color:#A32D2D">⏰ Más de 7 días abiertas (${viejas.length})</div>
-        ${viejas.map(({r,dAb})=>`<div style="padding:6px 0;border-bottom:1px dashed var(--linea);font-size:12px">
+        ${viejas.map(({r,dAb})=>`<div onclick="abrirTrazabilidad('${r.id}')" style="padding:6px 0;border-bottom:1px dashed var(--linea);font-size:12px;cursor:pointer" title="ver la trazabilidad">
           <div style="display:flex;justify-content:space-between;gap:8px">
             <b style="font-weight:600">${r.tipo_equipo||'—'} ${r.numero_unidad||''}</b>
             <b class="mono" style="color:#A32D2D;white-space:nowrap">${Math.ceil(dAb)} d</b></div>
