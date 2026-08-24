@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-24 · trazabilidad por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-24 · trazabilidad por familia + services';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4646,6 +4646,10 @@ async function rtVerArchivo(id,tipo){
 
 /* ── Reparaciones · Services (planillas cargadas por foto desde la app) ── */
 let svPanelData=null, svPanelSel=null;
+// Filtros de la lista de services. Viven fuera de la función para sobrevivir
+// al repintado de la lista (el buscador NO vuelve a pintar la vista entera:
+// si lo hiciera, el input perdería el foco a cada letra).
+let svFiltroUni='', svFiltroMec='', svBusca='';
 async function vRepServices(view){
   view.innerHTML=tabsRep()+'<div class="cargando-v">Cargando…</div>';
   try{
@@ -4664,18 +4668,91 @@ async function vRepServices(view){
       <div class="kpi plain"><div class="kpi-label">Último service</div><div class="kpi-val" style="font-size:16px">${svs[0]?fechaAR((svs[0].data||{}).fecha_service)||fechaAR(svs[0].created_at):'—'}</div><div class="kpi-sub">${svs[0]?((svs[0].data||{}).unidad||''):''}</div></div>
     </div>
     <div class="split">
-      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Unidad / Patente</th><th>Km/Hs service</th><th>Próximo service</th><th>Mecánico</th></tr></thead>
-      <tbody>${svs.length?svs.map(s=>{const d=s.data||{};return `<tr onclick="selSvPanel('${s.id}',this)" style="cursor:pointer;${svPanelSel===s.id?'outline:2px solid var(--brote)':''}">
-        <td class="mono">${fechaAR(d.fecha_service)||fechaAR(s.created_at)}</td>
-        <td style="font-weight:600">${d.unidad||d.patente||'—'}${d.patente&&d.unidad?`<div class="sub mono">${d.patente}</div>`:''}</td>
-        <td class="mono">${d.km_horas||'—'}</td>
-        <td class="mono">${d.proximo_service||'—'}</td>
-        <td>${s.mecanico_nombre||d.mecanico||'—'}</td>
-      </tr>`;}).join(''):'<tr><td colspan="5"><div class="sub" style="padding:14px">Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).</div></td></tr>'}</tbody></table></div>
+      <div>
+      <div class="panel" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="sv-q" placeholder="Buscar unidad, patente, repuesto, tarea…" value="${escStk(svBusca)}"
+          oninput="svBusca=this.value;pintarSvLista()"
+          style="flex:1;min-width:200px;padding:7px 11px;border:1px solid var(--linea);border-radius:8px;font-size:13px">
+        <select onchange="svFiltroUni=this.value;pintarSvLista()" style="padding:7px 11px;border:1px solid var(--linea);border-radius:8px;font-size:13px">
+          <option value="">Todas las unidades</option>
+          ${Object.keys(porUni).sort().map(u=>`<option value="${escStk(u)}" ${svFiltroUni===u?'selected':''}>${escStk(u)} (${porUni[u].length})</option>`).join('')}
+        </select>
+        <select onchange="svFiltroMec=this.value;pintarSvLista()" style="padding:7px 11px;border:1px solid var(--linea);border-radius:8px;font-size:13px">
+          <option value="">Todos los mecánicos</option>
+          ${[...new Set(svs.map(s=>s.mecanico_nombre||(s.data||{}).mecanico||'—'))].sort().map(m=>`<option value="${escStk(m)}" ${svFiltroMec===m?'selected':''}>${escStk(m)}</option>`).join('')}
+        </select>
+        <button class="btn ghost" onclick="svFiltroUni='';svFiltroMec='';svBusca='';go('reparaciones')">Limpiar</button>
+      </div>
+      <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Unidad / Patente</th><th>Km/Hs service</th><th>Próximo service</th><th>Mecánico</th><th></th></tr></thead>
+      <tbody id="sv-tbody"></tbody></table></div>
+      <div class="sub" id="sv-cuenta" style="font-size:11.5px;margin-top:6px"></div>
+      </div>
       <div class="side" id="sv-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg><div>Elegí un service<br>para ver el detalle</div></div></div>
     </div>`;
+    pintarSvLista();
     if(svPanelSel)pintarSvSide();
   }catch(e){view.innerHTML=tabsRep()+`<div class="cargando-v">No pude cargar los services. ${e.message||''}</div>`;}
+}
+/* Repinta SOLO el cuerpo de la tabla. El buscador escribe acá y no en la
+   vista entera, así el input no pierde el foco mientras se tipea. */
+function svFiltrados(){
+  const q=(svBusca||'').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return (svPanelData||[]).filter(s=>{
+    const d=s.data||{};
+    const uni=d.unidad||d.patente||'—';
+    const mec=s.mecanico_nombre||d.mecanico||'—';
+    if(svFiltroUni&&uni!==svFiltroUni)return false;
+    if(svFiltroMec&&mec!==svFiltroMec)return false;
+    if(!q)return true;
+    // Se busca también adentro de tareas y repuestos: es donde está lo que
+    // uno recuerda ("el que le cambiaron la bujía"), no en el encabezado.
+    const heno=[uni,d.patente,d.unidad,mec,d.marca_modelo,d.tipo_unidad,
+      d.km_horas,d.proximo_service,d.observaciones,d.fecha_service,
+      ...(d.tareas||[]).map(t=>`${t.tarea||''} ${t.repuestos||''}`),
+      ...(d.repuestos_entregados||[]).map(r=>`${r.repuesto||''} ${r.marca||''} ${r.codigo||''}`),
+    ].join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    return heno.includes(q);
+  });
+}
+function pintarSvLista(){
+  const tb=document.getElementById('sv-tbody');if(!tb)return;
+  const fs=svFiltrados(), total=(svPanelData||[]).length;
+  tb.innerHTML=fs.length?fs.map(s=>{const d=s.data||{};return `<tr onclick="selSvPanel('${s.id}',this)" style="cursor:pointer;${svPanelSel===s.id?'outline:2px solid var(--brote)':''}">
+    <td class="mono">${fechaAR(d.fecha_service)||fechaAR(s.created_at)}</td>
+    <td style="font-weight:600">${escStk(d.unidad||d.patente||'—')}${d.patente&&d.unidad?`<div class="sub mono">${escStk(d.patente)}</div>`:''}</td>
+    <td class="mono">${escStk(d.km_horas||'—')}</td>
+    <td class="mono">${escStk(d.proximo_service||'—')}</td>
+    <td>${escStk(s.mecanico_nombre||d.mecanico||'—')}</td>
+    <td style="text-align:right"><button class="mini-btn" title="Eliminar este service"
+      onclick="event.stopPropagation();svBorrar('${s.id}')">🗑</button></td>
+  </tr>`;}).join('')
+    :`<tr><td colspan="6"><div class="sub" style="padding:14px">${total
+      ?'Ningún service con ese filtro.'
+      :'Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).'}</div></td></tr>`;
+  const c=document.getElementById('sv-cuenta');
+  if(c)c.textContent=fs.length===total?`${total} service${total===1?'':'s'}`:`${fs.length} de ${total} services`;
+}
+/* Borrar una planilla mal cargada. Se cargan por foto + IA, así que una mal
+   leída o repetida no tenía forma de salir. Pide confirmación con la unidad y
+   la fecha a la vista, porque el id no le dice nada a nadie. */
+async function svBorrar(id){
+  const s=(svPanelData||[]).find(x=>x.id===id);if(!s)return;
+  const d=s.data||{};
+  const quien=s.mecanico_nombre||d.mecanico||'—';
+  if(!confirm(`¿Eliminar el service de ${d.unidad||d.patente||'sin unidad'}`+
+    ` del ${fechaAR(d.fecha_service)||fechaAR(s.created_at)} (cargado por ${quien})?\n\nNo se puede deshacer.`))return;
+  try{
+    await api('/api/services/'+id,{method:'DELETE'});
+    svPanelData=(svPanelData||[]).filter(x=>x.id!==id);
+    if(svPanelSel===id){
+      svPanelSel=null;
+      const side=document.getElementById('sv-side');
+      if(side)side.innerHTML='<div class="empty"><div>Elegí un service<br>para ver el detalle</div></div>';
+    }
+    toast('Service eliminado');
+    go('reparaciones');   // recalcula los KPIs y las opciones de los filtros
+  }catch(e){toast(e.message||'No pude eliminar el service','error');}
 }
 // PDF del pedido de repuestos de un service (para mandarle al proveedor):
 // solo los repuestos, con marca, cantidad y código. Mismo estilo que los
