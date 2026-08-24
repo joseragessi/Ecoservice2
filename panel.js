@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · filtro por fecha de cierre';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · ingreso al taller';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -5139,8 +5139,24 @@ function selRep(ix){
   // Junto al avance normal va el cierre SIN REPARAR: muchas incidencias se
   // reportan y el equipo nunca baja al taller. Cerrarlas como "finalizado"
   // las contaría como reparaciones hechas.
+  // EL INGRESO AL TALLER va antes que todo: mientras la máquina no llegó,
+  // el reloj del taller no corre. Separarlo es lo que permite distinguir
+  // "tarda el traslado" de "tarda el taller".
+  const espera=r.fecha_ingreso_taller?Math.max(0,Math.round((new Date(r.fecha_ingreso_taller)-new Date(r.created_at))/86400000)):null;
+  const bloqueIngreso=r.fecha_ingreso_taller
+    ?`<div style="background:var(--brote-soft);border-radius:9px;padding:10px 13px;margin-top:12px;font-size:12.5px;color:var(--brote-2)">
+        ✓ Ingresó el ${new Date(r.fecha_ingreso_taller).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}${r.ingreso_por?' · lo recibió '+escStk(r.ingreso_por):''}
+        <div style="margin-top:2px">${espera?`Esperó ${espera} día${espera===1?'':'s'} desde que la reportaron`:'Entró el mismo día del reporte'}</div>
+      </div>`
+    :`<div style="background:var(--azul-soft);border-radius:9px;padding:10px 13px;margin-top:12px;font-size:12.5px;color:var(--azul)">
+        <b>La máquina todavía no llegó al taller</b>
+        <div style="margin-top:2px">Reportada ${hace(r.created_at)}. El reloj del taller arranca cuando entra.</div>
+      </div>
+      <button class="btn" style="width:100%;justify-content:center;margin-top:9px;background:var(--azul)" onclick="ingresoTaller('${r.id}')">⇥ Dar ingreso al taller</button>`;
+
   const btnAvanzar=idx<4
-    ?`<button class="btn" style="width:100%;justify-content:center;margin-top:14px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>
+    ?`${bloqueIngreso}
+      ${r.fecha_ingreso_taller?`<button class="btn" style="width:100%;justify-content:center;margin-top:12px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>`:''}
       <button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;color:var(--diesel);border-color:#E8D5A8" onclick="cerrarSinRepararPanel('${r.id}')">📭 Cerrar sin reparar</button>`
     :(r.motivo_cierre
       ?`<div class="badge b-amber" style="width:100%;justify-content:center;margin-top:14px;padding:9px">📭 Cerrada sin reparar · ${MOTIVO_CIERRE_LABEL[r.motivo_cierre]||r.motivo_cierre}</div>
@@ -5474,6 +5490,7 @@ function verHistorialMaquina(clave){
    cree. */
 const TRZ_ETAPAS=[
   ['created_at','Reportada','#8A968E','📝'],
+  ['fecha_ingreso_taller','Ingresó al taller','#2471A3','⇥'],
   ['fecha_diagnostico','Diagnóstico','#3B7DC4','🔍'],
   ['fecha_espera_repuestos','Esperando repuestos','#D98A1F','⏳'],
   ['fecha_en_reparacion','En reparación','#7C5CD6','🛠'],
@@ -5606,6 +5623,17 @@ const MOTIVO_CIERRE_OPC=[
   ['otro','📁 Otro motivo',''],
 ];
 let cierreRep=null;
+async function ingresoTaller(id){
+  const r=(repData||[]).find(x=>String(x.id)===String(id))||{};
+  const nom=`${r.tipo_equipo||'Equipo'} ${r.numero_unidad||''}`.trim();
+  if(!await uiConfirm(`Se registra que ${nom} entró al taller ahora. Desde este momento corre el tiempo del taller.`,'¿Dar ingreso al taller?',{ok:'Sí, ingresó'}))return;
+  try{
+    const res=await api(`/api/reparaciones/${id}/ingreso-taller`,{method:'POST',body:JSON.stringify({})});
+    toast(res.espera_dias?`Ingreso registrado ✓ — esperó ${res.espera_dias} día${res.espera_dias===1?'':'s'}`:'Ingreso registrado ✓');
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude registrar el ingreso: '+(e.message||''),'error');}
+}
+
 function cerrarSinRepararPanel(id){
   const r=(window._repFiltrada||[]).find(x=>String(x.id)===String(id));
   if(!r)return;
