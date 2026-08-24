@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · plan por máquina';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · filtro por fecha de cierre';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3774,6 +3774,7 @@ async function reenviarStock(id){
 let repTab='resumen', repIndPer='', repIndMec='';   // repIndMec: filtro por mecánico en Indicadores
 let repIndObj='', repIndPrio='', repIndQ='';        // filtros de Indicadores: objetivo, criticidad, búsqueda
 let repIndEst='abiertas';                           // abiertas | finalizadas | todas
+let repIndD1='', repIndD2='';                       // rango de fechas de cierre
 let repTrz=null;                                    // incidencia abierta en el detalle de trazabilidad
 
 // Barras genéricas para paneles de indicadores
@@ -4710,9 +4711,19 @@ async function vRepInd(view){
   const mecsAbiertas=[...new Set(todas.map(r=>r.mecanicos?r.mecanicos.nombre:'Sin asignar'))].sort();
   // La base cambia según el filtro: para ver la trazabilidad de una
   // reparación TERMINADA hay que poder listarla, no solo las abiertas.
-  const baseInd=repIndEst==='finalizadas'?todas.filter(r=>r.estado==='finalizado')
-    :repIndEst==='todas'?todas
-    :todas.filter(r=>r.estado!=='finalizado');
+  // Atajos de fecha sobre las finalizadas: "hoy" es el caso más pedido
+  // (¿qué salió del taller hoy?), y el rango libre para lo demás.
+  const hoyISO=new Date().toLocaleDateString('sv-SE');
+  const cerroEn=(r,d1,d2)=>{
+    if(!r.fecha_finalizado)return false;
+    const f=String(r.fecha_finalizado).slice(0,10);
+    return (!d1||f>=d1)&&(!d2||f<=d2);
+  };
+  let baseInd;
+  if(repIndEst==='hoy')            baseInd=todas.filter(r=>r.estado==='finalizado'&&cerroEn(r,hoyISO,hoyISO));
+  else if(repIndEst==='finalizadas')baseInd=todas.filter(r=>r.estado==='finalizado'&&cerroEn(r,repIndD1,repIndD2));
+  else if(repIndEst==='todas')      baseInd=todas;
+  else                              baseInd=todas.filter(r=>r.estado!=='finalizado');
   const objsAbiertas=[...new Set(baseInd.map(r=>r.objetivos?r.objetivos.nombre:'Sin objetivo'))].sort();
   // El buscador entra por equipo, unidad, descripción, falla, objetivo,
   // mecánico y capataz: cualquier cosa que uno recuerde de la incidencia.
@@ -4739,7 +4750,7 @@ async function vRepInd(view){
   const PESO_PRIO={critico:3,alta:2,media:1,baja:0};
   // Abiertas: se ordenan por urgencia (parada > prioridad > días).
   // Finalizadas: por fecha de cierre, las últimas primero — lo urgente ya pasó.
-  if(repIndEst==='finalizadas'){
+  if(repIndEst==='finalizadas'||repIndEst==='hoy'){
     abiertas.sort((a,b)=>new Date(b.r.fecha_finalizado||0)-new Date(a.r.fecha_finalizado||0));
   }else{
     abiertas.sort((a,b)=>((b.r.equipo_parado?1:0)-(a.r.equipo_parado?1:0))||((PESO_PRIO[b.r.prioridad]||0)-(PESO_PRIO[a.r.prioridad]||0))||(b.dAb-a.dAb));
@@ -4843,16 +4854,29 @@ async function vRepInd(view){
   ${tabsRep()}
   <div class="grid" style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:18px">
     <div class="panel"><div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <span>${repIndEst==='finalizadas'?'Reparaciones terminadas':repIndEst==='todas'?'Todas las reparaciones':'Qué atender hoy'}
-        <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} ${repIndEst==='finalizadas'?'finalizadas · las últimas primero':repIndEst==='todas'?'en total':'abiertas · paradas y críticas primero'} · tocá una fila para ver su trazabilidad</span></span>
+      <span>${repIndEst==='hoy'?'Terminadas hoy':repIndEst==='finalizadas'?'Reparaciones terminadas':repIndEst==='todas'?'Todas las reparaciones':'Qué atender hoy'}
+        <span class="sub" style="font-weight:400;font-size:11px">· ${abiertas.length} ${
+          repIndEst==='hoy'?'salieron del taller hoy'
+          :repIndEst==='finalizadas'?(repIndD1||repIndD2?`en el rango elegido`:'finalizadas · las últimas primero')
+          :repIndEst==='todas'?'en total':'abiertas · paradas y críticas primero'} · tocá una fila para ver su trazabilidad</span></span>
       ${repIndMec||repIndObj||repIndPrio||repIndQ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="repIndMec='';repIndObj='';repIndPrio='';repIndQ='';go('reparaciones')">✕ limpiar filtros</button>`:''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
         <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndEst=this.value;go('reparaciones')">
           <option value="abiertas" ${repIndEst==='abiertas'?'selected':''}>Abiertas</option>
-          <option value="finalizadas" ${repIndEst==='finalizadas'?'selected':''}>Finalizadas</option>
+          <option value="hoy" ${repIndEst==='hoy'?'selected':''}>✓ Finalizadas hoy</option>
+          <option value="finalizadas" ${repIndEst==='finalizadas'?'selected':''}>Finalizadas · elegir fechas</option>
           <option value="todas" ${repIndEst==='todas'?'selected':''}>Todas</option>
         </select>
+        ${repIndEst==='finalizadas'?`
+          <span class="sub" style="font-size:12px;align-self:center">del</span>
+          <input type="date" class="busca" style="width:auto;font-size:12px;padding:5px 8px" value="${repIndD1}" max="${hoyISO}"
+            onchange="repIndD1=this.value;go('reparaciones')">
+          <span class="sub" style="font-size:12px;align-self:center">al</span>
+          <input type="date" class="busca" style="width:auto;font-size:12px;padding:5px 8px" value="${repIndD2}" max="${hoyISO}"
+            onchange="repIndD2=this.value;go('reparaciones')">
+          ${repIndD1||repIndD2?`<button class="btn ghost" style="padding:4px 9px;font-size:11.5px" onclick="repIndD1='';repIndD2='';go('reparaciones')">✕ fechas</button>`:''}
+        `:''}
         <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repIndMec=this.value;go('reparaciones')">
           <option value="">Todos los mecánicos</option>
           ${mecsAbiertas.map(m=>`<option value="${m.replace(/"/g,'&quot;')}" ${repIndMec===m?'selected':''}>${m}</option>`).join('')}
@@ -4872,8 +4896,8 @@ async function vRepInd(view){
         <input id="ind-q" class="busca" style="flex:1;min-width:170px;font-size:12px;padding:5px 9px"
           placeholder="Buscar equipo, unidad, falla, objetivo…" value="${escStk(repIndQ)}" oninput="indBuscar(this.value)">
       </div>
-      ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">${repIndEst==='finalizadas'?'Cerró el':'En este estado'}</th><th class="num">${repIndEst==='finalizadas'?'Tardó':'Abierta hace'}</th><th>Mecánico</th></tr></thead>
-      <tbody>${tablaAbiertas}</tbody></table>`:`<div class="sub" style="padding:12px 0">${repIndMec||repIndObj||repIndPrio||repIndQ?'Nada con esos filtros.':(repIndEst==='finalizadas'?'Todavía no hay reparaciones terminadas.':'No hay máquinas abiertas 🎉')}</div>`}
+      ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">${repIndEst==='finalizadas'||repIndEst==='hoy'?'Cerró el':'En este estado'}</th><th class="num">${repIndEst==='finalizadas'||repIndEst==='hoy'?'Tardó':'Abierta hace'}</th><th>Mecánico</th></tr></thead>
+      <tbody>${tablaAbiertas}</tbody></table>`:`<div class="sub" style="padding:12px 0">${repIndMec||repIndObj||repIndPrio||repIndQ?'Nada con esos filtros.':(repIndEst==='hoy'?'Todavía no se terminó ninguna hoy.':repIndEst==='finalizadas'?(repIndD1||repIndD2?'Ninguna se cerró en esas fechas.':'Todavía no hay reparaciones terminadas.'):'No hay máquinas abiertas 🎉')}</div>`}
       ${bloqueHistorialMaquinas(todas)}
     </div>
     <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}
