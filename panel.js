@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · cierre sin reparar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · cierre sin reparar (panel)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4803,7 +4803,16 @@ function selRep(ix){
   const coms=(r.comentarios_incidencias||[]).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
   const comHTML=coms.length?coms.map(c=>`<div class="obs" style="margin-bottom:8px"><b>${c.mecanico_nombre||'Mecánico'}:</b> ${c.texto}<div class="sub mono" style="margin-top:4px">${new Date(c.created_at).toLocaleString('es-AR')}</div></div>`).join(''):'<div class="sub">Sin observaciones aún.</div>';
   const selMec=`<select class="reasign" id="rep-mec"><option value="">— sin asignar —</option>${mecanicos.map(m=>`<option value="${m.id}" ${r.mecanico_id===m.id?'selected':''}>${m.nombre}${m.habilidades?' — '+m.habilidades.join(', '):''}</option>`).join('')}</select>`;
-  const btnAvanzar=idx<4?`<button class="btn" style="width:100%;justify-content:center;margin-top:14px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>`:'<div class="badge b-green" style="width:100%;justify-content:center;margin-top:14px;padding:9px">✓ Finalizado</div>';
+  // Junto al avance normal va el cierre SIN REPARAR: muchas incidencias se
+  // reportan y el equipo nunca baja al taller. Cerrarlas como "finalizado"
+  // las contaría como reparaciones hechas.
+  const btnAvanzar=idx<4
+    ?`<button class="btn" style="width:100%;justify-content:center;margin-top:14px" onclick="avanzarRep('${r.id}','${EST_REP[idx+1]}')">Avanzar a ${EST_REP_LABEL[idx+1]} →</button>
+      <button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;color:var(--diesel);border-color:#E8D5A8" onclick="cerrarSinRepararPanel('${r.id}')">📭 Cerrar sin reparar</button>`
+    :(r.motivo_cierre
+      ?`<div class="badge b-amber" style="width:100%;justify-content:center;margin-top:14px;padding:9px">📭 Cerrada sin reparar · ${MOTIVO_CIERRE_LABEL[r.motivo_cierre]||r.motivo_cierre}</div>
+        ${r.nota_cierre?`<div class="sub" style="font-size:12px;margin-top:6px;padding:8px 11px;background:var(--diesel-soft);border-radius:8px;font-style:italic">💬 "${escStk(r.nota_cierre)}"${r.cerrado_por?' — '+escStk(r.cerrado_por):''}</div>`:''}`
+      :'<div class="badge b-green" style="width:100%;justify-content:center;margin-top:14px;padding:9px">✓ Finalizado</div>');
   document.getElementById('rep-side').innerHTML=`
     <div class="side-id">INCIDENCIA${r.equipo_parado?' · EQUIPO PARADO':''}</div>
     <div class="side-title">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}</div>
@@ -4991,6 +5000,69 @@ async function agregarObsRep(id,ix){
     else{repData=null;go('reparaciones');}
   }catch(e){repData=null;go('reparaciones');}
 }
+/* ── Cerrar sin reparar (desde el panel) ─────────────────────────
+   El mismo cierre que hace el mecánico desde la app, pero para José.
+   El capataz recibe el aviso igual. */
+const MOTIVO_CIERRE_LABEL={
+  no_ingreso:'el equipo no llegó al taller',
+  resuelto_en_campo:'se resolvió en el objetivo',
+  sin_falla:'no se encontró la falla',
+  duplicado:'estaba repetida',
+  otro:'otro motivo',
+};
+const MOTIVO_CIERRE_OPC=[
+  ['no_ingreso','📭 Nunca llegó al taller','La reportaron pero el equipo no bajó'],
+  ['resuelto_en_campo','🔧 Se arregló en el objetivo','Se resolvió ahí, sin taller'],
+  ['sin_falla','🔎 No se encontró la falla','Se revisó y estaba bien'],
+  ['duplicado','📄 Estaba repetida','Ya había otro reporte igual'],
+  ['otro','📁 Otro motivo',''],
+];
+let cierreRep=null;
+function cerrarSinRepararPanel(id){
+  const r=(window._repFiltrada||[]).find(x=>String(x.id)===String(id));
+  if(!r)return;
+  cierreRep={id,motivo:'no_ingreso',
+    equipo:(r.equipos&&r.equipos.nombre)||r.tipo_equipo||'Equipo',
+    unidad:r.numero_unidad,capataz:r.capataces?r.capataces.nombre:null};
+  pintarCierreRep();
+}
+function pintarCierreRep(){
+  const c=cierreRep;if(!c)return;
+  document.getElementById('mm-titulo').textContent='Cerrar sin reparar';
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">${escStk(c.equipo)}${c.unidad?' · N° '+escStk(c.unidad):''}${c.capataz?` — lo reportó ${escStk(c.capataz)}`:''}</div>
+    <div class="field-l" style="margin-bottom:7px">¿Por qué se cierra?</div>
+    ${MOTIVO_CIERRE_OPC.map(([v,t,d])=>`
+      <div onclick="cierreRep.motivo='${v}';pintarCierreRep()" style="display:flex;align-items:flex-start;gap:9px;padding:9px 12px;margin-bottom:5px;border:1.5px solid ${c.motivo===v?'var(--brote)':'var(--linea)'};border-radius:10px;background:${c.motivo===v?'var(--brote-soft)':'#fff'};cursor:pointer">
+        <div style="width:15px;height:15px;border-radius:50%;border:2px solid ${c.motivo===v?'var(--brote)':'var(--linea)'};flex-shrink:0;margin-top:2px;display:flex;align-items:center;justify-content:center">
+          ${c.motivo===v?'<div style="width:7px;height:7px;border-radius:50%;background:var(--brote)"></div>':''}</div>
+        <div><div style="font-size:13.5px;font-weight:600">${t}</div>
+          ${d?`<div class="sub" style="font-size:11.5px">${d}</div>`:''}</div>
+      </div>`).join('')}
+    <div class="mm-field" style="margin-top:12px"><label>Nota para el capataz *</label>
+      <textarea id="cr-nota" placeholder="Ej: se avisó tres veces y la máquina nunca bajó al taller."
+        style="width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:13px;min-height:70px"></textarea>
+      <div class="sub" style="font-size:11.5px;margin-top:4px">Le llega por WhatsApp junto con el motivo.</div></div>
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();cierreRep=null">Cancelar</button>
+      <button class="btn" onclick="confirmarCierreRep()">📭 Cerrar y avisar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+async function confirmarCierreRep(){
+  const c=cierreRep;if(!c)return;
+  const nota=((document.getElementById('cr-nota')||{}).value||'').trim();
+  if(nota.length<5){toast('Escribí la nota para el capataz: qué pasó con el equipo','error');return;}
+  try{
+    const r=await api('/api/reparaciones/'+c.id+'/cerrar-sin-reparar',
+      {method:'POST',body:JSON.stringify({motivo:c.motivo,nota})});
+    cerrarMaestro();cierreRep=null;
+    toast(r._notificado?'Cerrada · le avisamos al capataz':'Cerrada sin reparar');
+    repData=null;go('reparaciones');
+  }catch(e){toast('No pude cerrar: '+(e.message||''),'error');}
+}
+
 async function avanzarRep(id,estado){
   try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({estado})});await vReparaciones(document.getElementById('view'));refrescarContadores();}
   catch(e){alert('No pude avanzar: '+e.message);}
