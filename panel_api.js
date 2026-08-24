@@ -5497,12 +5497,37 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           reparaciones.forEach(r => {
             const f = familiaEquipo(r.tipo_equipo);
             fam[f] = fam[f] || { familia: f, total: 0, finalizadas: 0, abiertas: 0,
-              correctivo: 0, preventivo: 0, parados: 0, tiempos: [], equipos: {} };
+              correctivo: 0, preventivo: 0, parados: 0, tiempos: [], equipos: {}, items: [] };
             const x = fam[f];
             x.total++;
             if (r.tipo_mant === 'preventivo') x.preventivo++; else x.correctivo++;
             if (r.equipo_parado) x.parados++;
             if (r.tipo_equipo) x.equipos[r.tipo_equipo] = (x.equipos[r.tipo_equipo] || 0) + 1;
+            // Trazabilidad: una línea por incidencia, para poder abrir la
+            // familia y ver de dónde sale cada número. Los días de una abierta
+            // se cuentan contra hoy; los de una cerrada, contra el cierre.
+            const dFin = r.estado === 'finalizado' && r.fecha_finalizado
+              ? dias(r.created_at, r.fecha_finalizado) : null;
+            x.items.push({
+              id: r.id,
+              fecha: r.created_at,
+              equipo: r.tipo_equipo || null,
+              unidad: r.numero_unidad || null,
+              objetivo: r.objetivos ? r.objetivos.nombre : null,
+              capataz: r.capataces ? r.capataces.nombre : null,
+              mecanico: r.mecanicos ? r.mecanicos.nombre : null,
+              falla: r.tipo_falla || null,
+              descripcion: r.descripcion || null,
+              estado: r.estado,
+              prioridad: r.prioridad,
+              tipo_mant: r.tipo_mant || 'correctivo',
+              parado: !!r.equipo_parado,
+              ingreso_taller: r.fecha_ingreso_taller || null,
+              fecha_finalizado: r.fecha_finalizado || null,
+              dias: dFin != null ? Math.round(dFin * 10) / 10 : null,
+              dias_abierta: dFin == null
+                ? Math.round(((Date.now() - new Date(r.created_at)) / 86400000) * 10) / 10 : null,
+            });
             if (r.estado === 'finalizado' && r.fecha_finalizado) {
               x.finalizadas++;
               x.tiempos.push(Math.max(0, (new Date(r.fecha_finalizado) - new Date(r.created_at)) / 86400000));
@@ -5517,6 +5542,12 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
               dias_prom: Math.round(prom2 * 10) / 10,
               dias_peor: t.length ? Math.round(t[t.length - 1] * 10) / 10 : 0,
               equipos: Object.entries(x.equipos).sort((a2, b2) => b2[1] - a2[1]).map(([k, v]) => `${k} (${v})`).join(' · '),
+              // Abiertas primero (es lo que se mira), después por fecha.
+              detalle: x.items.sort((p, q) => {
+                const ap = p.dias == null ? 0 : 1, aq = q.dias == null ? 0 : 1;
+                if (ap !== aq) return ap - aq;
+                return new Date(q.fecha) - new Date(p.fecha);
+              }),
             };
           }).sort((a2, b2) => b2.total - a2.total);
         })(),
