@@ -1262,7 +1262,23 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
         ).estado : null,
       };
     });
-    res.json({ config: cfgR.data || [], rodados, en_curso: abiertasR.data || [] });
+    // Los planes son independientes de `unidades`: cubren cualquier máquina
+    // (hidro grúas, motoguadañas), no solo los rodados del semáforo.
+    let planes = [];
+    try {
+      const hoyD = new Date();
+      const { data: pl } = await supabase.from('preventivo_planes').select('*, mecanicos(nombre)').eq('activo', true);
+      planes = (pl || []).map(p => {
+        const px = p.proximo ? new Date(p.proximo)
+          : proximoPreventivo(p.ultimo || p.desde, p.intervalo_dias, p.habiles);
+        const restan = px ? Math.ceil((px.getTime() - hoyD.getTime()) / 86400000) : null;
+        return { ...p, proximo: px ? px.toISOString().slice(0, 10) : null, restan,
+          estado: restan == null ? 'sin_service' : restan <= 0 ? 'vencido' : restan <= 3 ? 'por_vencer' : 'al_dia',
+          mecanico: p.mecanicos ? p.mecanicos.nombre : null };
+      });
+    } catch (e) { /* si la tabla todavía no existe, el resto sigue andando */ }
+
+    res.json({ config: cfgR.data || [], rodados, en_curso: abiertasR.data || [], planes });
   } catch (err) {
     console.error('preventivo:', err);
     res.status(500).json({ error: 'Error cargando el preventivo' });
@@ -1270,6 +1286,77 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
 });
 
 // Guardar los intervalos por tipo
+// Alta / edición del plan de CUALQUIER máquina. Se identifica por equipo +
+// número, igual que las incidencias, así no depende de la tabla unidades.
+function normUnidadPlan(t) {
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/^\s*(numero|num|nro|unidad|interno|n[°ºo]|n)\s*\.?\s*/, '')
+    .replace(/[^a-z0-9]/g, '') || 'sn';
+}
+router.post('/api/reparaciones/preventivo/plan-maquina', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const equipo = String(b.equipo || '').trim();
+    if (!equipo) return res.status(422).json({ error: 'Falta el equipo' });
+    const dias = Number(b.intervalo_dias);
+    if (!(dias > 0)) return res.status(422).json({ error: 'La frecuencia tiene que ser mayor a cero' });
+
+    const habiles = b.habiles !== false;
+    const desde = b.desde || null;
+    const ultimo = b.ultimo || null;
+    const px = proximoPreventivo(ultimo || desde, dias, habiles);
+
+    const fila = {
+      equipo, unidad: String(b.unidad || '').trim() || null,
+      unidad_norm: normUnidadPlan(b.unidad),
+      intervalo_dias: dias, habiles, desde, ultimo,
+      proximo: px ? px.toISOString().slice(0, 10) : null,
+      mecanico_id: b.mecanico_id || null,
+      tarea: String(b.tarea || '').trim() || null,
+      objetivo_id: b.objetivo_id || null,
+      activo: b.activo !== false,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await supabase.from('preventivo_planes')
+      .upsert(fila, { onConflict: 'equipo,unidad_norm' }).select().single();
+    if (error) throw error;
+    console.log(`[preventivo] plan ${equipo} ${fila.unidad || ''}: cada ${dias} días${habiles ? ' hábiles' : ''} · próximo ${fila.proximo || '—'}`);
+    res.json({ ok: true, plan: data });
+  } catch (err) {
+    console.error('preventivo plan-maquina:', err);
+    res.status(500).json({ error: 'No pude guardar el plan: ' + (err.message || '') });
+  }
+});
+
+// Marcar el service hecho: corre el próximo vencimiento
+router.post('/api/reparaciones/preventivo/plan-maquina/:id/realizado', auth, async (req, res) => {
+  try {
+    const { data: p, error: e0 } = await supabase.from('preventivo_planes')
+      .select('*').eq('id', req.params.id).maybeSingle();
+    if (e0 || !p) return res.status(404).json({ error: 'Plan inexistente' });
+    const hoy = (req.body || {}).fecha || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' });
+    const px = proximoPreventivo(hoy, p.intervalo_dias, p.habiles);
+    const { data, error } = await supabase.from('preventivo_planes').update({
+      ultimo: hoy, proximo: px ? px.toISOString().slice(0, 10) : null, updated_at: new Date().toISOString(),
+    }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ ok: true, plan: data });
+  } catch (err) {
+    console.error('preventivo realizado:', err);
+    res.status(500).json({ error: 'No pude actualizar el plan' });
+  }
+});
+
+router.delete('/api/reparaciones/preventivo/plan-maquina/:id', auth, async (req, res) => {
+  try {
+    const { error } = await supabase.from('preventivo_planes').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'No pude borrar el plan' });
+  }
+});
+
 // Alta / edición del plan de preventivo de UNA unidad. La frecuencia se
 // carga en días y puede contarse en hábiles (sin fines de semana).
 router.post('/api/reparaciones/preventivo/plan', auth, async (req, res) => {
