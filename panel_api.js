@@ -1128,6 +1128,40 @@ router.get('/api/reparaciones', auth, async (req, res) => {
 // ── Preventivo (rodados) ──────────────────────────────────────
 // Mantenimiento programado por tiempo. Solo rodados: la unidad del maestro
 // tiene `tipo_rodado` y cada tipo un intervalo en días (preventivo_config).
+//
+// DESDE EL 21-ago cada UNIDAD puede tener su propia frecuencia y esa MANDA
+// sobre la del tipo; la del tipo queda como valor por defecto.
+
+/* Suma días SALTEANDO sábados y domingos: "cada 40 días hábiles" son 8
+   semanas de trabajo, no 40 corridos (que serían menos de 6 semanas). */
+function sumarHabiles(desde, n) {
+  const d = new Date(desde);
+  let quedan = Math.max(0, Math.round(n));
+  while (quedan > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) quedan--;
+  }
+  return d;
+}
+/* Si la fecha cae fin de semana se ADELANTA al viernes: el taller no
+   trabaja sábado ni domingo, y adelantar es más seguro que atrasar —
+   la máquina no arranca el lunes ya vencida. */
+function aDiaHabil(f) {
+  const d = new Date(f);
+  const dow = d.getDay();
+  if (dow === 6) d.setDate(d.getDate() - 1);
+  else if (dow === 0) d.setDate(d.getDate() - 2);
+  return d;
+}
+function proximoPreventivo(ultimo, intervalo, habiles) {
+  if (!ultimo || !intervalo) return null;
+  const base = new Date(ultimo);
+  if (isNaN(base)) return null;
+  const bruto = habiles ? sumarHabiles(base, intervalo)
+    : new Date(base.getTime() + intervalo * 86400000);
+  return aDiaHabil(bruto);
+}
 // El "último service" sale de services_unidades (planillas) o de la última
 // incidencia preventiva finalizada, lo que sea más nuevo.
 const ROD_LABEL = { camioneta: 'Camioneta', tractor: 'Tractor', desmalezadora: 'Desmalezadora', mini_tractor: 'Mini tractor', giro_cero: 'Giro cero' };
@@ -1151,7 +1185,7 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
   try {
     const [cfgR, uniR, servR, prevR, abiertasR] = await Promise.all([
       supabase.from('preventivo_config').select('*'),
-      supabase.from('unidades').select('id, codigo, patente, marca_modelo, responsable, tipo_rodado, prev_pospuesto_hasta, prev_pospuesto_at')
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, responsable, tipo_rodado, prev_pospuesto_hasta, prev_pospuesto_at, prev_intervalo_dias, prev_habiles, prev_desde, prev_mecanico_id, prev_tarea, prev_activo, mecanicos:prev_mecanico_id(nombre)')
         .eq('activo', true).not('tipo_rodado', 'is', null),
       supabase.from('services_unidades').select('data, created_at'),
       supabase.from('incidencias').select('numero_unidad, fecha_finalizado')
@@ -1181,7 +1215,10 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
     const hoy = Date.now();
     const rodados = (uniR.data || []).map(u => {
       const c = cfg[u.tipo_rodado] || null;
-      const intervalo = c && c.activo !== false ? c.intervalo_dias : null;
+      // La frecuencia de la UNIDAD manda; la del tipo es el valor por defecto
+      const propio = u.prev_activo !== false && u.prev_intervalo_dias > 0 ? Number(u.prev_intervalo_dias) : null;
+      const intervalo = propio || (c && c.activo !== false ? c.intervalo_dias : null);
+      const habiles = propio ? u.prev_habiles !== false : false;   // el del tipo sigue siendo en corridos
       const f = ult[normUni(u.codigo)] || ult[normUni(u.patente)] || null;
       const dias = f ? Math.floor((hoy - f.getTime()) / 86400000) : null;
 
@@ -1195,6 +1232,13 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
         const ph = new Date(u.prev_pospuesto_hasta);
         if (vigente && !isNaN(ph) && (!proximo || ph > proximo)) { proximo = ph; reprogramado = true; }
       }
+      // Si la unidad tiene plan propio, el próximo se recalcula salteando
+      // fines de semana y corriendo la fecha si cae sábado o domingo.
+      if (propio) {
+        const base = f || (u.prev_desde ? new Date(u.prev_desde) : null);
+        const px = proximoPreventivo(base, propio, habiles);
+        if (px && (!proximo || !reprogramado)) proximo = px;
+      }
       const restan = proximo ? Math.ceil((proximo.getTime() - hoy) / 86400000) : null;
 
       let estado = 'sin_config';
@@ -1206,6 +1250,10 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
         id: u.id, tipo: u.tipo_rodado, tipo_label: ROD_LABEL[u.tipo_rodado] || u.tipo_rodado,
         codigo: u.codigo, patente: u.patente, marca_modelo: u.marca_modelo,
         intervalo, ultimo: f ? f.toISOString() : null, dias, restan, reprogramado, estado,
+        plan_propio: !!propio, habiles, prev_desde: u.prev_desde || null,
+        prev_tarea: u.prev_tarea || null, prev_activo: u.prev_activo !== false,
+        prev_mecanico_id: u.prev_mecanico_id || null,
+        prev_mecanico: u.mecanicos ? u.mecanicos.nombre : null,
         proximo: proximo ? proximo.toISOString() : null,
         incidencia_abierta: (abiertasR.data || []).find(i =>
           normUni(i.numero_unidad) && (normUni(i.numero_unidad) === normUni(u.codigo) || normUni(i.numero_unidad) === normUni(u.patente))
@@ -1222,6 +1270,75 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
 });
 
 // Guardar los intervalos por tipo
+// Alta / edición del plan de preventivo de UNA unidad. La frecuencia se
+// carga en días y puede contarse en hábiles (sin fines de semana).
+router.post('/api/reparaciones/preventivo/plan', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.unidad_id) return res.status(422).json({ error: 'Falta la unidad' });
+    const dias = b.intervalo_dias == null || b.intervalo_dias === '' ? null : Number(b.intervalo_dias);
+    if (dias != null && !(dias > 0)) return res.status(422).json({ error: 'La frecuencia tiene que ser mayor a cero' });
+
+    const patch = {
+      prev_intervalo_dias: dias,
+      prev_habiles: b.habiles !== false,
+      prev_desde: b.desde || null,
+      prev_mecanico_id: b.mecanico_id || null,
+      prev_tarea: String(b.tarea || '').trim() || null,
+      prev_activo: b.activo !== false,
+    };
+    const { data, error } = await supabase.from('unidades').update(patch).eq('id', b.unidad_id).select().single();
+    if (error) throw error;
+    console.log(`[preventivo] plan ${dias ? dias + (patch.prev_habiles ? ' días hábiles' : ' días corridos') : 'sin frecuencia propia'} · unidad ${data.codigo || data.patente || b.unidad_id}`);
+    res.json({ ok: true, unidad: data });
+  } catch (err) {
+    console.error('preventivo plan:', err);
+    res.status(500).json({ error: 'No pude guardar el plan: ' + (err.message || '') });
+  }
+});
+
+// Generar la ORDEN de trabajo del preventivo. José elige el mecánico ANTES
+// de crearla, así no aparece una incidencia sin dueño en el Resumen.
+router.post('/api/reparaciones/preventivo/generar', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.unidad_id) return res.status(422).json({ error: 'Falta la unidad' });
+    if (!b.mecanico_id) return res.status(422).json({ error: 'Elegí el mecánico que lo va a hacer' });
+
+    const { data: u, error: e0 } = await supabase.from('unidades')
+      .select('*').eq('id', b.unidad_id).maybeSingle();
+    if (e0 || !u) return res.status(404).json({ error: 'Unidad inexistente' });
+
+    const vence = b.vence || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' });
+    // No generar dos veces la orden del mismo vencimiento
+    const { data: yaHay } = await supabase.from('incidencias')
+      .select('id').eq('preventivo_unidad_id', b.unidad_id).eq('preventivo_vence', vence)
+      .neq('estado', 'finalizado').maybeSingle();
+    if (yaHay) return res.status(409).json({ error: 'Ese preventivo ya tiene una orden abierta' });
+
+    const equipo = ROD_LABEL[u.tipo_rodado] || u.tipo_rodado || 'Equipo';
+    const { data, error } = await supabase.from('incidencias').insert({
+      tipo_equipo: equipo,
+      numero_unidad: u.codigo || u.patente || null,
+      tipo_falla: 'Preventivo',
+      tipo_mant: 'preventivo',
+      descripcion: u.prev_tarea || `Service preventivo programado de ${equipo} ${u.codigo || u.patente || ''}`.trim(),
+      prioridad: b.prioridad || 'media',
+      estado: 'pendiente',
+      mecanico_id: b.mecanico_id,
+      equipo_parado: false,
+      preventivo_unidad_id: u.id,
+      preventivo_vence: vence,
+    }).select('*, mecanicos(nombre)').single();
+    if (error) throw error;
+    console.log(`[preventivo] orden generada: ${equipo} ${u.codigo || u.patente || ''} · vence ${vence} · ${data.mecanicos ? data.mecanicos.nombre : ''}`);
+    res.json({ ok: true, incidencia: data });
+  } catch (err) {
+    console.error('preventivo generar:', err);
+    res.status(500).json({ error: 'No pude generar la orden: ' + (err.message || '') });
+  }
+});
+
 router.post('/api/reparaciones/preventivo/config', auth, async (req, res) => {
   try {
     const tipos = Array.isArray((req.body || {}).tipos) ? req.body.tipos : [];
