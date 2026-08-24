@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · buscador en Reparaciones';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · aviso de preventivos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -175,8 +175,144 @@ async function entrar(){
     iniciar();
   }catch(e){err.textContent='No pude conectar. Reintentá.';}
 }
+/* ── Aviso de preventivos ────────────────────────────────────────
+   Al entrar al panel aparece un popup con los preventivos que se
+   vencieron o están por vencer. La regla importa más que el diseño: si
+   apareciera todos los días con lo mismo, en dos semanas se cierra sin
+   leer. Por eso solo salta cuando hay algo NUEVO respecto de la última
+   vez, o algo vencido. La campanita queda siempre disponible.
+
+   Todo sale del endpoint que ya existe (/api/reparaciones/preventivo):
+   cada rodado trae `estado` (vencido | por_vencer | al_dia | …) y
+   `restan` en días. No hace falta nada nuevo en la base. */
+let prevAviso=null;                       // {vencidos, porVencer, nuevos}
+const PREV_VISTOS='eco_prev_vistos';      // {id: estado} de la última vez
+const PREV_SILENCIO='eco_prev_silencio';  // firma del set silenciado
+
+function prevClave(r){return `${r.id}:${r.estado}`;}
+function prevFirma(lista){return lista.map(prevClave).sort().join('|');}
+
+/* Se piden los preventivos y se decide si corresponde molestar. */
+async function chequearPreventivos(){
+  let d;
+  try{d=await api('/api/reparaciones/preventivo');}
+  catch(e){return;}   // si falla, no se muestra nada: es un aviso, no una función crítica
+  const rodados=(d.rodados||[]).filter(r=>r.estado==='vencido'||r.estado==='por_vencer');
+  if(!rodados.length){
+    prevAviso=null;pintarCampana();
+    localStorage.removeItem(PREV_SILENCIO);
+    return;
+  }
+  // Qué es NUEVO: un rodado que antes no estaba en la lista, o que empeoró
+  // (pasó de por_vencer a vencido). Así el aviso es información, no ruido.
+  let vistos={};
+  try{vistos=JSON.parse(localStorage.getItem(PREV_VISTOS)||'{}');}catch(e){}
+  const nuevos=rodados.filter(r=>vistos[r.id]!==r.estado);
+  const vencidos=rodados.filter(r=>r.estado==='vencido');
+
+  prevAviso={
+    todos:rodados.sort((a,b)=>(a.restan==null?9999:a.restan)-(b.restan==null?9999:b.restan)),
+    nuevos, vencidos,
+    porVencer:rodados.filter(r=>r.estado==='por_vencer'),
+  };
+  pintarCampana();
+
+  // El popup salta si hay algo nuevo o algo vencido… salvo que José haya
+  // pedido silencio para EXACTAMENTE este conjunto (si aparece uno más,
+  // el silencio se rompe solo).
+  const firma=prevFirma(rodados);
+  if(localStorage.getItem(PREV_SILENCIO)===firma)return;
+  if(nuevos.length||vencidos.length)abrirPopupPreventivos();
+}
+
+function pintarCampana(){
+  const cont=document.getElementById('prev-campana');
+  if(!cont)return;
+  if(!prevAviso||!prevAviso.todos.length){cont.innerHTML='';return;}
+  const n=prevAviso.todos.length, hayVenc=prevAviso.vencidos.length>0;
+  cont.innerHTML=`<button onclick="abrirPopupPreventivos(true)" title="Preventivos que vencen o vencieron"
+    style="position:relative;display:inline-flex;align-items:center;gap:6px;background:none;border:1px solid var(--linea);border-radius:9px;padding:6px 11px;font-family:inherit;font-size:12.5px;cursor:pointer;color:var(--tinta-2)">
+    🗓 <span>Preventivos</span>
+    <span style="position:absolute;top:-6px;right:-6px;background:${hayVenc?'var(--rojo)':'var(--diesel)'};color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;font-family:ui-monospace,monospace">${n}</span>
+  </button>`;
+}
+
+function abrirPopupPreventivos(manual){
+  const a=prevAviso;if(!a||!a.todos.length)return;
+  const fila=r=>{
+    const venc=r.estado==='vencido';
+    const dias=r.restan==null?null:r.restan;
+    const nuevo=a.nuevos.some(x=>x.id===r.id);
+    const col=venc?'var(--rojo)':'var(--diesel)';
+    const fondo=venc?'var(--rojo-soft)':'var(--diesel-soft)';
+    return `<div style="border:1px solid var(--linea);border-left:3px solid ${col};background:${fondo};border-radius:10px;padding:10px 13px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start">
+      <div style="font-size:17px;flex-shrink:0">${venc?'🔴':'🟠'}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13.5px">${escStk(r.tipo_label||r.tipo||'Equipo')}
+          <span class="uni-num">${escStk(r.codigo||r.patente||'S/N')}</span>
+          ${nuevo?'<span class="badge" style="background:#EDE7FB;color:#5B3FB8;font-size:10px">nuevo</span>':''}</div>
+        <div class="sub" style="font-size:12px">${escStk(r.marca_modelo||'')}${r.intervalo?` · service cada ${r.intervalo} días`:''}</div>
+        <div class="sub" style="font-size:11.5px;margin-top:2px">
+          ${r.ultimo?`Último service: ${fechaAR(r.ultimo)}${r.dias!=null?` · hace ${r.dias} días`:''}`:'Sin service registrado'}
+          ${r.reprogramado?' · <b>reprogramado</b>':''}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        ${venc
+          ? `<span class="badge b-rojo">vencido${dias!=null&&dias<0?` hace ${Math.abs(dias)} d`:''}</span>`
+          : `<span class="badge b-amber">${dias===0?'vence hoy':`en ${dias} d`}</span>`}
+        ${r.incidencia_abierta?`<div class="sub" style="font-size:10.5px;margin-top:3px">ya está en taller</div>`:''}
+      </div>
+    </div>`;
+  };
+  const muestra=a.todos.slice(0,5), resto=a.todos.length-muestra.length;
+
+  document.getElementById('mm-titulo').innerHTML=`🗓 Preventivos
+    <span style="background:var(--violeta,#7C5CD6);color:#fff;font-size:11px;font-weight:700;border-radius:20px;padding:2px 9px;font-family:ui-monospace,monospace;margin-left:6px">${a.todos.length}</span>`;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="sub" style="margin-bottom:12px">
+      ${a.vencidos.length?`<b style="color:var(--rojo)">${a.vencidos.length} vencido${a.vencidos.length===1?'':'s'}</b>`:''}
+      ${a.vencidos.length&&a.porVencer.length?' · ':''}
+      ${a.porVencer.length?`${a.porVencer.length} por vencer`:''}
+      ${a.nuevos.length?` · <b style="color:#5B3FB8">${a.nuevos.length} desde tu última entrada</b>`:''}
+    </div>
+    ${muestra.map(fila).join('')}
+    ${resto>0?`<div class="sub" style="font-size:12.5px;text-align:center;padding:6px 0">y ${resto} más — vas a verlos todos en Reparaciones → Preventivo</div>`:''}
+    <div class="modal-acciones" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <label class="sub" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="prev-silencio" style="accent-color:var(--brote)">
+        No mostrar hasta que aparezca otro
+      </label>
+      <div style="display:flex;gap:8px">
+        <button class="btn-salir" onclick="cerrarPopupPreventivos()">Después</button>
+        <button class="btn" onclick="cerrarPopupPreventivos();repTab='preventivo';go('reparaciones')">Ver preventivos →</button>
+      </div>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+
+/* Al cerrar se guarda lo visto: así lo de hoy no vuelve a contar como
+   nuevo mañana, pero lo que empeore sí. */
+function cerrarPopupPreventivos(){
+  const a=prevAviso;
+  if(a){
+    const vistos={};
+    a.todos.forEach(r=>{vistos[r.id]=r.estado;});
+    try{localStorage.setItem(PREV_VISTOS,JSON.stringify(vistos));}catch(e){}
+    const chk=document.getElementById('prev-silencio');
+    if(chk&&chk.checked){
+      try{localStorage.setItem(PREV_SILENCIO,prevFirma(a.todos));}catch(e){}
+    }else{
+      localStorage.removeItem(PREV_SILENCIO);
+    }
+    a.nuevos=[];pintarCampana();
+  }
+  cerrarMaestro();
+}
+
 function salir(){
   token=null; ['eco_token','eco_user','eco_mods','eco_admin'].forEach(k=>localStorage.removeItem(k));
+  prevAviso=null;   // el aviso se recalcula en el próximo ingreso
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').classList.add('show');
 }
@@ -214,6 +350,10 @@ async function iniciar(){
   const orden=['dashboard','compras','insumos','combustible','bateas','reparaciones','stock','maestros'];
   go(orden.find(puedeVer)||'dashboard');
   refrescarContadores();
+  // El aviso de preventivos va DESPUÉS de pintar la vista: si saltara antes,
+  // el popup aparecería sobre una pantalla en blanco. Solo para quien ve
+  // Reparaciones — al resto no le sirve de nada.
+  if(puedeVer('reparaciones'))setTimeout(chequearPreventivos,600);
 }
 async function refrescarContadores(){
   try{
