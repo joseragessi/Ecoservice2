@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · trazabilidad de finalizadas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · repuestos solo en Compras';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3588,12 +3588,15 @@ function barsGen(lista,color,fmt){
 function mesDe(iso){return String(iso||'').slice(0,7)||'sin fecha';}
 function diasEntre(a,b){if(!a||!b)return null;const d=(new Date(b)-new Date(a))/86400000;return d>=0?d:null;}
 
-function tabsRep(){return `<div class="toggle-imp" style="margin-bottom:16px">
+function tabsRep(){
+  // El circuito de repuestos se mudó a Compras→Repuestos (21-ago): si algún
+  // navegador tenía guardada esa pestaña, cae al resumen.
+  if(repTab==='repuestos')repTab='resumen';
+  return `<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${repTab==='resumen'?'on':''}" onclick="repTab='resumen';go('reparaciones')">Resumen</button>
   <button class="${repTab==='services'?'on':''}" onclick="repTab='services';go('reparaciones')">Services</button>
   <button class="${repTab==='preventivo'?'on':''}" onclick="repTab='preventivo';go('reparaciones')">Preventivo</button>
   <button class="${repTab==='indicadores'?'on':''}" onclick="repTab='indicadores';go('reparaciones')">Indicadores</button>
-  <button class="${repTab==='repuestos'?'on':''}" onclick="repTab='repuestos';go('reparaciones')">Repuestos</button>
   ${localStorage.getItem('eco_admin')==='1'?`<button class="${repTab==='performance'?'on':''}" onclick="repTab='performance';go('reparaciones')">Performance</button>`:''}
 </div>`;}
 
@@ -4668,6 +4671,7 @@ async function vRepInd(view){
       </div>
       ${abiertas.length?`<table style="font-size:12px"><thead><tr><th>Equipo</th><th>Unidad</th><th>Prioridad</th><th>Estado</th><th class="num">${repIndEst==='finalizadas'?'Cerró el':'En este estado'}</th><th class="num">${repIndEst==='finalizadas'?'Tardó':'Abierta hace'}</th><th>Mecánico</th></tr></thead>
       <tbody>${tablaAbiertas}</tbody></table>`:`<div class="sub" style="padding:12px 0">${repIndMec||repIndObj||repIndPrio||repIndQ?'Nada con esos filtros.':(repIndEst==='finalizadas'?'Todavía no hay reparaciones terminadas.':'No hay máquinas abiertas 🎉')}</div>`}
+      ${bloqueHistorialMaquinas(todas)}
     </div>
     <div class="panel"><div class="panel-title">Trabado ahora <span class="sub" style="font-weight:400;font-size:11px">· abiertas por etapa y hace cuánto</span></div>${htmlTrabas}
       ${(()=>{  // Máquinas con más de 7 días abiertas: lo que ya no puede esperar
@@ -4727,7 +4731,8 @@ async function vReparaciones(view){
     if(repTab==='preventivo'){vRepPreventivo(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
     if(repTab==='performance'){if(localStorage.getItem('eco_admin')==='1'){vRepPerf(view);return;}repTab='resumen';}
-    if(repTab==='repuestos'){vRepRepuestos(view);return;}
+    // Repuestos se mudó a Compras→Repuestos: vRepRepuestos queda sin acceso
+    // (no se borró, por si hace falta volver).
     renderReparaciones(view);
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar las reparaciones.</div>`;}
 }
@@ -5069,6 +5074,139 @@ async function agregarObsRep(id,ix){
     else{repData=null;go('reparaciones');}
   }catch(e){repData=null;go('reparaciones');}
 }
+/* ── Historial por máquina ───────────────────────────────────────
+   El nivel de arriba de la trazabilidad: no "qué pasó con este ticket"
+   sino "qué viene pasando con esta máquina". Una motoguadaña que entró
+   6 veces en 3 meses es una decisión de reposición, no de taller. */
+let repMaqFiltro='abiertas', repMaqQ='', repMaqSel=null;
+function claveMaquina(r){
+  // equipo + unidad normalizados: "AE 466 VW" y "ae466vw" son la misma máquina.
+  // OJO con los prefijos: el capataz escribe "45", "N° 45" o "nro 45" para la
+  // misma unidad — sin sacarlos, la máquina aparece tres veces en el historial.
+  const eq=String(r.tipo_equipo||(r.equipos?r.equipos.nombre:'')||'—')
+    .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+  const un=String(r.numero_unidad||'').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    // El orden importa: las alternativas largas van PRIMERO, si no "n" come
+    // la N de "nro" y deja "ro45"
+    .replace(/^\s*(numero|num|nro|unidad|interno|n[°ºo]|n)\s*\.?\s*/,'')
+    .replace(/[^a-z0-9]/g,'')||'sn';
+  return eq+'|'+un;
+}
+function agruparMaquinas(lista){
+  const m={};
+  (lista||[]).forEach(r=>{
+    const k=claveMaquina(r);
+    if(!m[k])m[k]={clave:k,equipo:r.tipo_equipo||(r.equipos?r.equipos.nombre:'—'),
+      unidad:r.numero_unidad||'S/N',objetivo:r.objetivos?r.objetivos.nombre:null,incidencias:[]};
+    m[k].incidencias.push(r);
+    // El objetivo más reciente manda: la máquina puede haber cambiado de obra
+    if(!m[k].objetivo&&r.objetivos)m[k].objetivo=r.objetivos.nombre;
+  });
+  return Object.values(m).map(x=>{
+    x.incidencias.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    const abiertas=x.incidencias.filter(r=>r.estado!=='finalizado');
+    const cerradas=x.incidencias.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado&&!r.motivo_cierre);
+    const diasTaller=cerradas.reduce((a,r)=>a+Math.max(0,(new Date(r.fecha_finalizado)-new Date(r.created_at))/86400000),0);
+    return {...x,
+      total:x.incidencias.length,
+      abiertas:abiertas.length,
+      parada:abiertas.some(r=>r.equipo_parado),
+      sinReparar:x.incidencias.filter(r=>r.motivo_cierre).length,
+      ultima:x.incidencias[0],
+      dias_taller:Math.round(diasTaller*10)/10,
+      prom_dias:cerradas.length?Math.round((diasTaller/cerradas.length)*10)/10:null,
+    };
+  }).sort((a,b)=>(b.abiertas-a.abiertas)||(b.total-a.total));
+}
+function repMaqBuscar(v){
+  repMaqQ=v;go('reparaciones');
+  setTimeout(()=>{const i=document.getElementById('maq-q');
+    if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);
+}
+function bloqueHistorialMaquinas(todas){
+  const maqs=agruparMaquinas(todas);
+  const q=repMaqQ.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(/\s+/).filter(Boolean);
+  const vis=maqs
+    .filter(m=>repMaqFiltro==='todas'||(repMaqFiltro==='abiertas'?m.abiertas>0:(repMaqFiltro==='paradas'?m.parada:m.abiertas===0)))
+    .filter(m=>!q.length||q.every(w=>`${m.equipo} ${m.unidad} ${m.objetivo||''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(w)));
+  const conAbierta=maqs.filter(m=>m.abiertas>0).length;
+  return `<div class="panel" style="margin-top:14px">
+    <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Historial por máquina <span class="sub" style="font-weight:400;font-size:11px">· ${maqs.length} máquinas pasaron por el taller · tocá una para ver todas sus entradas</span></span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      <select class="busca" style="width:auto;font-size:12px;padding:5px 8px" onchange="repMaqFiltro=this.value;go('reparaciones')">
+        <option value="abiertas" ${repMaqFiltro==='abiertas'?'selected':''}>Con reparación abierta (${conAbierta})</option>
+        <option value="paradas" ${repMaqFiltro==='paradas'?'selected':''}>⛔ Paradas ahora (${maqs.filter(m=>m.parada).length})</option>
+        <option value="cerradas" ${repMaqFiltro==='cerradas'?'selected':''}>Al día (${maqs.length-conAbierta})</option>
+        <option value="todas" ${repMaqFiltro==='todas'?'selected':''}>Todas (${maqs.length})</option>
+      </select>
+      <input id="maq-q" class="busca" style="flex:1;min-width:160px;font-size:12px;padding:5px 9px"
+        placeholder="Buscar máquina, unidad u objetivo…" value="${escStk(repMaqQ)}" oninput="repMaqBuscar(this.value)">
+    </div>
+    ${vis.length?`<table style="font-size:12px"><thead><tr>
+      <th>Máquina</th><th>Unidad</th><th>Objetivo</th><th class="num">Entradas</th>
+      <th class="num">Días en taller</th><th class="num">Prom.</th><th>Última</th><th>Estado</th></tr></thead>
+      <tbody>${vis.map(m=>`<tr class="fila" onclick="verHistorialMaquina('${m.clave}')" style="cursor:pointer" title="ver el historial completo">
+        <td style="font-weight:600">${escStk(m.equipo)}</td>
+        <td><span class="uni-num">${escStk(m.unidad)}</span></td>
+        <td class="sub" style="font-size:11.5px">${escStk(m.objetivo||'—')}</td>
+        <td class="num mono" style="${m.total>=4?'color:#A32D2D;font-weight:700':m.total>=3?'color:#854F0B;font-weight:600':''}">${m.total}</td>
+        <td class="num mono">${m.dias_taller||'—'}</td>
+        <td class="num mono">${m.prom_dias!=null?m.prom_dias+' d':'—'}</td>
+        <td class="sub" style="font-size:11.5px">${fechaAR(m.ultima.created_at)}</td>
+        <td>${m.parada?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:10px">⛔ parada</span>'
+          :m.abiertas?`<span class="badge b-amber" style="font-size:10px">${m.abiertas} abierta${m.abiertas===1?'':'s'}</span>`
+          :'<span class="badge b-green" style="font-size:10px">al día</span>'}</td>
+      </tr>`).join('')}</tbody></table>
+      <div class="sub" style="font-size:11.5px;margin-top:8px">
+        En rojo las máquinas con 4 o más entradas: ahí conviene preguntarse si sigue siendo negocio repararla.</div>`
+      :`<div class="sub" style="padding:12px 0">${repMaqQ?'Nada con esa búsqueda.':'Sin máquinas en este filtro.'}</div>`}
+  </div>`;
+}
+function verHistorialMaquina(clave){
+  const m=agruparMaquinas(repData||[]).find(x=>x.clave===clave);
+  if(!m)return toast('No encontré esa máquina','error');
+  repMaqSel=m;
+  const inc=m.incidencias;
+  document.getElementById('mm-titulo').textContent='Historial · '+m.equipo+' · N° '+m.unidad;
+  document.getElementById('mm-campos').innerHTML=`
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Entradas</div><div class="kpi-val" style="font-size:22px">${m.total}</div></div>
+      <div class="kpi"><div class="kpi-label">Días en taller</div><div class="kpi-val" style="font-size:22px">${m.dias_taller||0}</div></div>
+      <div class="kpi"><div class="kpi-label">Promedio</div><div class="kpi-val" style="font-size:22px">${m.prom_dias!=null?m.prom_dias:'—'}<span style="font-size:13px"> d</span></div></div>
+      <div class="kpi"><div class="kpi-label">Sin reparar</div><div class="kpi-val" style="font-size:22px;color:${m.sinReparar?'var(--diesel)':'inherit'}">${m.sinReparar}</div></div>
+    </div>
+    ${m.objetivo?`<div class="sub" style="margin-bottom:12px">📍 ${escStk(m.objetivo)}</div>`:''}
+    ${m.total>=4?`<div style="background:var(--rojo-soft);border-radius:9px;padding:10px 13px;margin-bottom:12px;font-size:12.5px">
+      <b style="color:var(--rojo)">${m.total} entradas al taller.</b> Con ${m.dias_taller} días acumulados fuera de servicio, vale comparar contra lo que cuesta una unidad nueva.</div>`:''}
+    <div class="field-l" style="margin-bottom:8px">Cada entrada al taller</div>
+    ${inc.map(r=>{
+      const cerrada=r.estado==='finalizado';
+      const d=cerrada&&r.fecha_finalizado?Math.ceil((new Date(r.fecha_finalizado)-new Date(r.created_at))/86400000)
+        :Math.ceil((Date.now()-new Date(r.created_at))/86400000);
+      return `<div onclick="abrirTrazabilidad('${r.id}')" style="border:1px solid var(--linea);border-radius:9px;padding:10px 13px;margin-bottom:7px;cursor:pointer" title="ver la trazabilidad de esta entrada">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">
+          <b style="font-size:13px">${fechaAR(r.created_at)}${cerrada&&r.fecha_finalizado?' → '+fechaAR(r.fecha_finalizado):''}</b>
+          <span class="mono ${d>=7?'':''}" style="font-size:12px;${d>=7?'color:#A32D2D;font-weight:700':''}">${d} d</span>
+        </div>
+        <div class="sub" style="font-size:12px;margin-top:2px">${escStk((r.descripcion||r.tipo_falla||'Sin descripción').slice(0,110))}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;align-items:center">
+          ${r.motivo_cierre?`<span class="badge b-amber" style="font-size:10px">📭 ${escStk(MOTIVO_CIERRE_CORTO[r.motivo_cierre]||'sin reparar')}</span>`
+            :cerrada?'<span class="badge b-green" style="font-size:10px">✓ reparada</span>'
+            :`<span class="badge b-gray" style="font-size:10px">${escStk(EST_REP_LABEL[EST_REP.indexOf(r.estado)]||r.estado)}</span>`}
+          ${r.equipo_parado?'<span class="badge" style="background:#FCEBED;color:#A32D2D;font-size:10px">⛔ parada</span>':''}
+          <span class="sub" style="font-size:11px">${r.mecanicos?escStk(r.mecanicos.nombre):'sin asignar'}</span>
+        </div>
+      </div>`;}).join('')}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="cerrarMaestro();repMaqSel=null">Cerrar</button>
+    </div>`;
+  document.getElementById('mm-acciones').style.display='none';
+  document.getElementById('mm-bg').classList.add('abierto');
+}
+
 /* ── Trazabilidad de una incidencia ──────────────────────────────
    Toda la vida del ticket en una línea de tiempo: cuándo se reportó,
    cuánto estuvo en cada etapa, qué dijo el taller, qué repuestos se
@@ -5179,6 +5317,7 @@ function pintarTrazabilidad(){
     </div>`).join('')}`:''}
 
     <div class="modal-acciones">
+      <button class="btn ghost" onclick="verHistorialMaquina('${claveMaquina(r)}')">📋 Historial de esta máquina</button>
       <button class="btn-salir" onclick="cerrarMaestro();repTrz=null">Cerrar</button>
     </div>`;
   document.getElementById('mm-acciones').style.display='none';
@@ -6634,6 +6773,10 @@ function renderRtEnCurso(){
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--linea);font-size:12.5px">
           <span class="sub">Parcial · faltan ${its.length-cot.length}</span>
           <span>Cotizado hasta ahora <b class="mono">${money(total)}</b></span></div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="rtAprobarParcial('${p.id}')">✓ Aprobar lo cotizado</button>
+          <button class="btn-salir" style="padding:7px 14px;font-size:12.5px" onclick="rtObservar('${p.id}')">Observar ↩</button>
+        </div>
       </div>`;}).join('')}
   </div>`;
 }
@@ -6673,6 +6816,30 @@ function renderRtAprobacion(){
     <div class="sub" style="font-size:11px">"Observar" devuelve el pedido al Referente con tu comentario (vuelve a en cotización).</div>
   </div>`;
 }
+/* Aprobar un pedido al que todavía le faltan precios. Pasa igual a "a
+   comprar": lo cotizado se compra ya y lo que falta se resuelve sobre la
+   marcha. Esperar a tener los 4 precios puede dejar una máquina parada
+   por un tornillo. */
+async function rtAprobarParcial(id){
+  const p=(rtData||[]).find(x=>String(x.id)===String(id));
+  if(!p)return;
+  const its=p.items||[];
+  const cot=its.filter(i=>i.precio!=null&&i.proveedor);
+  const faltan=its.length-cot.length;
+  const total=cot.reduce((a,i)=>a+i.precio*(Number(i.cantidad)||1),0);
+  const detalle=cot.map(i=>`• ${i.descripcion} — ${i.proveedor} ${money(i.precio*(Number(i.cantidad)||1))}`).join('\n');
+  const sinCot=its.filter(i=>!(i.precio!=null&&i.proveedor)).map(i=>`• ${i.descripcion}`).join('\n');
+  if(!await uiConfirm(
+    `Se aprueban ${cot.length} de ${its.length} por ${money(total)}:\n${detalle}`+
+    (faltan?`\n\nQuedan sin precio (se compran igual, se cotizan sobre la marcha):\n${sinCot}`:''),
+    '¿Aprobar lo cotizado?',{ok:'✓ Aprobar'}))return;
+  try{
+    await api('/api/compras/repuestos/'+id+'/estado',{method:'POST',body:JSON.stringify({estado:'a_comprar'})});
+    rtData=await api('/api/compras/repuestos');renderRt();
+    toast(faltan?`Aprobado · ${faltan} sin cotizar van igual`:'Aprobado · pasa a comprar');
+  }catch(e){toast('No pude aprobar: '+(e.message||''),'error');}
+}
+
 async function rtAprobar(id){
   const p=(rtData||[]).find(x=>String(x.id)===String(id))||{};
   if(!await uiConfirm('Nota: '+(p.nota_proveedor||'—')+' · '+money(p.nota_precio||0)+' · '+(p.nota_plazo||'—')+'\n\nAl aprobar pasa a A COMPRAR y Compras la ejecuta.','¿Aprobar la compra?',{ok:'✓ Aprobar'}))return;
