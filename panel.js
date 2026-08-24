@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · reporte por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-24 · trazabilidad por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2027,17 +2027,20 @@ async function vReportes(view){
       <table><thead><tr><th>Familia</th><th style="text-align:right">Repar.</th>
         <th style="text-align:right">Corr.</th><th style="text-align:right">Prev.</th>
         <th style="text-align:right">Días prom.</th><th style="text-align:right">Peor</th></tr></thead>
-      <tbody>${r.por_familia.map(x=>`<tr title="${escStk(x.equipos||'')}">
-        <td style="font-weight:500">${escStk(x.familia)}
-          ${x.abiertas?`<div class="sub" style="font-size:10.5px">${x.abiertas} sin cerrar</div>`:''}</td>
+      <tbody>${r.por_familia.map((x,i)=>`<tr title="${escStk(x.equipos||'')}" style="cursor:pointer" onclick="repFamToggle(${i})">
+        <td style="font-weight:500"><span id="repfamc-${i}" class="sub" style="font-size:10px">▸</span> ${escStk(x.familia)}
+          ${x.abiertas?`<div class="sub" style="font-size:10.5px;padding-left:13px">${x.abiertas} sin cerrar</div>`:''}</td>
         <td class="mono" style="text-align:right">${x.total}</td>
         <td class="mono" style="text-align:right">${x.correctivo||'·'}</td>
         <td class="mono" style="text-align:right;color:${x.preventivo?'var(--brote-2)':'inherit'}">${x.preventivo||'·'}</td>
         <td class="mono" style="text-align:right">${x.finalizadas?x.dias_prom+' d':'—'}</td>
-        <td class="mono" style="text-align:right;color:${x.dias_peor>=7?'var(--rojo)':'inherit'}">${x.finalizadas?x.dias_peor+' d':'—'}</td></tr>`).join('')}
+        <td class="mono" style="text-align:right;color:${x.dias_peor>=7?'var(--rojo)':'inherit'}">${x.finalizadas?x.dias_peor+' d':'—'}</td></tr>
+        <tr id="repfam-${i}" style="display:none"><td colspan="6" style="padding:0;background:var(--fondo-2,#FBFCFA)">
+          ${repFamDetalle(x)}
+        </td></tr>`).join('')}
       </tbody></table>
       <div class="sub" style="font-size:11.5px;margin-top:7px">
-        Los días promedio se calculan solo sobre las cerradas. Pasá el mouse por la familia para ver qué equipos incluye.</div>
+        Los días promedio se calculan solo sobre las cerradas. Tocá una familia para ver una por una las incidencias que hay detrás.</div>
       `:'<div class="sub">Sin reparaciones en el período.</div>'}
     </div>
   </div>
@@ -2104,6 +2107,46 @@ async function vReportes(view){
 
 /* PDF: ventana nueva + print(), el usuario elige "Guardar como PDF".
    Mismo camino que el informe por mecánico — sin librerías externas. */
+/* Trazabilidad del bloque "por familia": la lista cruda de incidencias que
+   forman cada número de la fila. Mismo universo que la tabla — las cerradas
+   sin reparar quedan afuera, igual que en los totales. Solo pantalla: el PDF
+   se arma aparte en imprimirReporte(). */
+function repFamDetalle(x){
+  const det=x.detalle||[];
+  if(!det.length)return '<div class="sub" style="padding:12px 14px">Sin incidencias.</div>';
+  const estadoTxt=d=>{
+    const i=EST_REP.indexOf(d.estado);
+    return i>=0?EST_REP_LABEL[i]:cap(d.estado||'');
+  };
+  return `<div style="padding:10px 12px 12px">
+    <table style="font-size:12px"><thead><tr>
+      <th>Fecha</th><th>Equipo · unidad</th><th>Objetivo</th><th>Falla</th>
+      <th>Mecánico</th><th>Estado</th><th style="text-align:right">Días</th></tr></thead>
+    <tbody>${det.map(d=>`<tr>
+      <td class="mono" style="white-space:nowrap">${fechaAR(d.fecha)}</td>
+      <td><b>${escStk(d.equipo||'—')}</b>${d.unidad?` <span class="mono sub">${escStk(d.unidad)}</span>`:''}
+        ${d.tipo_mant==='preventivo'?'<span class="badge b-green" style="margin-left:4px">prev</span>':''}
+        ${d.parado?'<span class="badge b-red" style="margin-left:4px">parado</span>':''}</td>
+      <td class="sub">${escStk(d.objetivo||'—')}</td>
+      <td class="sub">${escStk(d.falla||'—')}</td>
+      <td class="sub">${escStk(d.mecanico||'—')}</td>
+      <td><span class="badge ${PRIO_BADGE[d.prioridad]||'b-gray'}">${LABEL_PRIO[d.prioridad]||d.prioridad||'—'}</span>
+        <div class="sub" style="font-size:10.5px">${escStk(estadoTxt(d))}</div></td>
+      <td class="mono" style="text-align:right;white-space:nowrap">${d.dias!=null
+        ?d.dias+' d'
+        :`<span style="color:var(--rojo)">${d.dias_abierta} d</span><div class="sub" style="font-size:10.5px">abierta</div>`}</td>
+    </tr>`).join('')}</tbody></table>
+    <div class="sub" style="font-size:11px;margin-top:6px">
+      ${det.length} incidencia${det.length===1?'':'s'}. Las abiertas cuentan los días contra hoy${
+        det.some(d=>!d.ingreso_taller&&d.dias==null)?' — algunas todavía no tienen ingreso al taller marcado, así que esos días incluyen el traslado.':'.'}</div>
+  </div>`;
+}
+function repFamToggle(i){
+  const tr=document.getElementById('repfam-'+i);if(!tr)return;
+  const abierto=tr.style.display!=='none';
+  tr.style.display=abierto?'none':'';
+  const c=document.getElementById('repfamc-'+i);if(c)c.textContent=abierto?'▸':'▾';
+}
 function imprimirReporte(){
   if(!repDatos)return alert('Esperá a que cargue el reporte.');
   const d=repDatos, r=d.reparaciones, p=d.panol;
