@@ -5509,15 +5509,52 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 // que sea), con su grupo, los números informados y los faltantes abiertos.
 router.get('/api/stock/general', auth, async (req, res) => {
   try {
-    const [objs, censos, faltantes] = await Promise.all([
+    const [objs, censos, faltantes, padron] = await Promise.all([
       supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true),
       supabase.from('censos_stock')
         .select('id, periodo, objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
         .eq('estado', 'respondido').order('periodo', { ascending: false }),
       supabase.from('stock_faltantes').select('*').eq('estado', 'abierto')
         .then(r => r, () => ({ data: [] })),   // si la tabla no existe aún, sin faltantes
+      // El censo NO guarda la marca — solo tipo, cantidad y números. Pero el
+      // PADRÓN sí la tiene, y el censo trae los números de máquina: cruzando
+      // por número se le puede poner marca a cada equipo censado.
+      supabase.from('maquinas').select('codigo_interno, codigo_norm, tipo_equipo, marca')
+        .then(r => r, () => ({ data: [] })),
     ]);
     if (objs.error) throw objs.error;
+
+    /* Índice del padrón por número normalizado. Se guarda por tipo+número y
+       también por número solo: el tipo del censo ("Motoguadaña") y el del
+       padrón no siempre se escriben igual, así que el número solo sirve de
+       respaldo cuando no hay ambigüedad. */
+    /* El capataz escribe el número de mil formas: "22", "N° 22", "Nro 22",
+       "unidad 22". Sin sacar el prefijo, normCodigo deja la "n" pegada y el
+       cruce no encuentra nada. Las alternativas largas van PRIMERO. */
+    const numSuelto = v => normCodigo(String(v || '').toLowerCase()
+      .replace(/^\s*(numero|num|nro|unidad|interno|n[°ºo]|n)\s*\.?\s*/, ''));
+    const porTipoNum = {}, porNum = {};
+    (padron.data || []).forEach(m => {
+      const n = numSuelto(m.codigo_interno) || m.codigo_norm;
+      if (!n || !m.marca) return;
+      const t = String(m.tipo_equipo || '').toLowerCase().trim();
+      porTipoNum[`${t}|${n}`] = m.marca;
+      if (porNum[n] === undefined) porNum[n] = m.marca;
+      else if (porNum[n] !== m.marca) porNum[n] = null;   // número repetido con marcas distintas → no adivinar
+    });
+    /* Devuelve el recuento de marcas de una línea del censo:
+       {Stihl: 3, Husqvarna: 1, __sin: 1} */
+    const marcasDe = (tipo, numeros) => {
+      const out = {};
+      const t = String(tipo || '').toLowerCase().trim();
+      (numeros || []).forEach(num => {
+        const n = numSuelto(num);
+        const marca = porTipoNum[`${t}|${n}`] || porNum[n] || null;
+        const k = marca || '__sin';
+        out[k] = (out[k] || 0) + 1;
+      });
+      return out;
+    };
     if (censos.error) throw censos.error;
 
     // Último censo respondido por objetivo (vienen ordenados desc)
@@ -5547,10 +5584,11 @@ router.get('/api/stock/general', auth, async (req, res) => {
           periodo: c.periodo, respondido_at: c.respondido_at,
           tipo: i.tipo_equipo, cantidad: i.cantidad,
           numeros: i.numeros || [], observacion: i.observacion || null,
+          marcas: marcasDe(i.tipo_equipo, i.numeros),
         });
       });
     });
-    res.json({ filas, faltantes: faltantes.data || [] });
+    res.json({ filas, faltantes: faltantes.data || [], padron_marcas: !!(padron.data || []).length });
   } catch (err) {
     console.error('stock general:', err);
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
