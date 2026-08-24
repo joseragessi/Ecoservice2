@@ -5613,6 +5613,44 @@ router.post('/api/stock/censos', auth, async (req, res) => {
 // Mismo cierre que hace el mecánico desde la app, pero desde el panel: el
 // caso típico es que el capataz reportó y la máquina nunca bajó.
 const MOTIVOS_SIN_REPARAR_PANEL = ['no_ingreso', 'resuelto_en_campo', 'sin_falla', 'duplicado', 'otro'];
+// Dar el INGRESO al taller: el momento en que la máquina llega de verdad.
+// Separa la espera del traslado (que no es del taller) de lo que tarda el
+// taller una vez que la tiene.
+router.post('/api/reparaciones/:id/ingreso-taller', auth, async (req, res) => {
+  try {
+    const { data: inc, error: e0 } = await supabase.from('incidencias')
+      .select('id, estado, tipo_equipo, numero_unidad, created_at, fecha_ingreso_taller')
+      .eq('id', req.params.id).maybeSingle();
+    if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
+    if (inc.fecha_ingreso_taller) return res.status(409).json({ error: 'Ya tenía el ingreso registrado' });
+    if (inc.estado === 'finalizado') return res.status(409).json({ error: 'Esta reparación ya está cerrada' });
+
+    const ahora = new Date().toISOString();
+    const quien = (req.body || {}).por || req.usuario || 'panel';
+    const patch = { fecha_ingreso_taller: ahora, ingreso_por: quien };
+    // Si seguía en 'pendiente', el ingreso la mueve a diagnóstico: ya está
+    // en manos del taller. Si el mecánico la avanzó antes, se respeta.
+    if (inc.estado === 'pendiente') { patch.estado = 'diagnostico'; patch.fecha_diagnostico = ahora; }
+
+    const { data, error } = await supabase.from('incidencias').update(patch)
+      .eq('id', req.params.id).select('*, mecanicos(nombre), objetivos(nombre), capataces(nombre)').single();
+    if (error) throw error;
+
+    const espera = Math.max(0, Math.round((new Date(ahora) - new Date(inc.created_at)) / 86400000));
+    await supabase.from('comentarios_incidencias').insert({
+      incidencia_id: inc.id,
+      mecanico_nombre: quien,
+      texto: `[Ingresó al taller] Recibida por ${quien}${espera ? ` · esperó ${espera} día${espera === 1 ? '' : 's'} desde el reporte` : ' · el mismo día del reporte'}`,
+    }).then(() => {}, () => {});   // el comentario es informativo, no bloquea
+
+    console.log(`[taller] ingreso ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} · esperó ${espera} d`);
+    res.json({ ok: true, incidencia: data, espera_dias: espera });
+  } catch (err) {
+    console.error('ingreso taller:', err);
+    res.status(500).json({ error: 'No pude registrar el ingreso: ' + (err.message || '') });
+  }
+});
+
 router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) => {
   try {
     const b = req.body || {};
