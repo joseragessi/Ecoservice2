@@ -153,6 +153,7 @@ router.get('/api/app/mis-incidencias', authApp('mecanico'), async (req, res) => 
     const { data, error } = await supabase
       .from('incidencias')
       .select('id, estado, prioridad, descripcion, created_at, fecha_finalizado, numero_unidad, tipo_equipo, tipo_mant, ' +
+              'fecha_ingreso_taller, ingreso_por, motivo_cierre, nota_cierre, ' +
               'equipos(nombre,tipo,codigo), objetivos(nombre), capataces(nombre,telefono), ' +
               'comentarios_incidencias(mecanico_nombre,texto,created_at), ' +
               'repuestos_taller(id,items,nota,estado,created_at)')
@@ -210,6 +211,42 @@ router.post('/api/app/incidencias', authApp('mecanico'), async (req, res) => {
   } catch (err) {
     console.error('app alta incidencia:', err);
     res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
+  }
+});
+
+// El mecánico da el INGRESO cuando la máquina llega de verdad al taller.
+// Es el que mejor sabe cuándo entró: la recibe él.
+router.post('/api/app/incidencia/:id/ingreso-taller', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data: inc, error: e0 } = await supabase.from('incidencias')
+      .select('id, mecanico_id, estado, tipo_equipo, numero_unidad, created_at, fecha_ingreso_taller')
+      .eq('id', req.params.id).single();
+    if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
+    if (inc.fecha_ingreso_taller) return res.status(409).json({ error: 'Ya tenía el ingreso registrado' });
+    if (inc.estado === 'finalizado') return res.status(409).json({ error: 'Esta reparación ya está cerrada' });
+
+    const ahora = new Date().toISOString();
+    const quien = (req.app_user && req.app_user.nombre) || 'taller';
+    const patch = { fecha_ingreso_taller: ahora, ingreso_por: quien };
+    if (inc.estado === 'pendiente') { patch.estado = 'diagnostico'; patch.fecha_diagnostico = ahora; }
+    // Si no tenía mecánico asignado, queda a nombre de quien la recibió
+    if (!inc.mecanico_id && req.app_user && req.app_user.mid) patch.mecanico_id = req.app_user.mid;
+
+    const { data, error } = await supabase.from('incidencias').update(patch)
+      .eq('id', req.params.id).select('*, mecanicos(nombre)').single();
+    if (error) throw error;
+
+    const espera = Math.max(0, Math.round((new Date(ahora) - new Date(inc.created_at)) / 86400000));
+    await supabase.from('comentarios_incidencias').insert({
+      incidencia_id: inc.id, mecanico_nombre: quien,
+      texto: `[Ingresó al taller] Recibida por ${quien}${espera ? ` · esperó ${espera} día${espera === 1 ? '' : 's'} desde el reporte` : ' · el mismo día del reporte'}`,
+    }).then(() => {}, () => {});
+
+    console.log(`[taller] ingreso ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} por ${quien} · esperó ${espera} d`);
+    res.json({ ok: true, incidencia: data, espera_dias: espera });
+  } catch (err) {
+    console.error('app ingreso taller:', err);
+    res.status(500).json({ error: 'No pude registrar el ingreso' });
   }
 });
 
