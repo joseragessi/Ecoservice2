@@ -8,7 +8,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
-const { notificarCapataz, mensajeEstadoIncidencia } = require('./notificar');
+const { notificarCapataz, mensajeEstadoIncidencia, mensajeCierreSinReparar } = require('./notificar');
 const seg = require('./seguridad');
 
 const router = express.Router();
@@ -262,10 +262,73 @@ router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, r
       });
       if (msg) notificado = await notificarCapataz(inc.capataces.telefono, msg);
     }
-    res.json({ ...data, _notificado: notificado, _descontado: descuentos });
+    res.json({ ...data, _notificado: notificado });
   } catch (err) {
     console.error('app estado:', err);
     res.status(500).json({ error: 'Error cambiando el estado' });
+  }
+});
+
+// Cerrar SIN que el equipo haya pasado por el taller. El caso más común:
+// el capataz reporta la falla, se agenda, y la máquina nunca baja. Estas
+// NO son reparaciones — se marcan aparte para que no ensucien los tiempos
+// del reporte, y el capataz recibe la explicación del mecánico.
+const MOTIVOS_SIN_REPARAR = ['no_ingreso', 'resuelto_en_campo', 'sin_falla', 'duplicado', 'otro'];
+router.post('/api/app/incidencia/:id/cerrar-sin-reparar', authApp('mecanico'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const motivo = MOTIVOS_SIN_REPARAR.includes(b.motivo) ? b.motivo : 'no_ingreso';
+    const nota = String(b.nota || '').trim();
+    // La nota es OBLIGATORIA: el capataz reportó una falla de buena fe y
+    // merece saber por qué se cierra sin reparar.
+    if (nota.length < 5) return res.status(422).json({ error: 'Escribí la nota para el capataz (qué pasó)' });
+
+    const { data: inc, error: e0 } = await supabase.from('incidencias')
+      .select('*, equipos(nombre,tipo), capataces(nombre,telefono)')
+      .eq('id', req.params.id).single();
+    if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
+    if (String(inc.mecanico_id) !== String(req.app_user.mid)) {
+      return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    if (inc.estado === 'finalizado') return res.status(422).json({ error: 'Esa incidencia ya está cerrada' });
+
+    const { data, error } = await supabase.from('incidencias').update({
+      estado: 'finalizado',
+      fecha_finalizado: new Date().toISOString(),
+      cerrado_sin_ingreso: motivo === 'no_ingreso',
+      motivo_cierre: motivo,
+      nota_cierre: nota,
+      cerrado_por: req.app_user.nombre,
+      equipo_parado: false,   // si nunca entró, no está parada por el taller
+    }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+
+    // Queda también como comentario, así aparece en el historial y en el
+    // export de incidencias junto con el resto de lo que hizo el taller.
+    try {
+      await supabase.from('comentarios_incidencias').insert({
+        incidencia_id: req.params.id,
+        mecanico_nombre: req.app_user.nombre,
+        texto: `[Cerrada sin reparar · ${motivo.replace(/_/g, ' ')}] ${nota}`,
+      });
+    } catch (e) { /* el comentario es un extra, no frena el cierre */ }
+
+    let notificado = false;
+    if (inc.capataces && inc.capataces.telefono) {
+      const msg = mensajeCierreSinReparar(motivo, {
+        equipo: inc.equipos ? (inc.equipos.nombre || inc.equipos.tipo) : (inc.tipo_equipo || 'el equipo'),
+        unidad: inc.numero_unidad,
+        falla: inc.tipo_falla,
+        mecanico: req.app_user.nombre,
+        nota,
+      });
+      notificado = await notificarCapataz(inc.capataces.telefono, msg);
+    }
+    console.log(`[taller] cerrada sin reparar (${motivo}): ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} por ${req.app_user.nombre}${notificado ? ' · capataz avisado' : ''}`);
+    res.json({ ...data, _notificado: notificado });
+  } catch (err) {
+    console.error('app cerrar sin reparar:', err);
+    res.status(500).json({ error: 'No pude cerrar la incidencia' });
   }
 });
 
