@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · alta de stock por objetivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · cotización por repuesto';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4807,7 +4807,9 @@ function selRep(ix){
       if(!rp)return '<div class="sub" style="margin-bottom:6px">Sin pedido de repuestos.</div>';
       const est={a_comprar:['A COMPRAR','b-amber'],comprado:['COMPRADO','b-blue'],entregado:['ENTREGADO','b-green']}[rp.estado]||[rp.estado,'b-gray'];
       return `<div style="margin-bottom:6px"><span class="badge ${est[1]}">${est[0]}</span></div>`+
-        (rp.items||[]).map(i=>`<div class="sub" style="font-size:12px;padding:2px 0">x${i.cantidad||1} <b>${i.descripcion}</b>${i.codigo?' · <span class="mono">'+i.codigo+'</span>':''}</div>`).join('')+
+        (rp.items||[]).map(i=>`<div class="sub" style="font-size:12px;padding:2px 0;display:flex;justify-content:space-between;gap:8px">
+          <span>x${i.cantidad||1} <b>${i.descripcion}</b></span>
+          ${i.proveedor||i.precio!=null?`<span style="white-space:nowrap;font-size:11.5px">${i.proveedor?escStk(i.proveedor):''}${i.precio!=null?' · <b class="mono">'+money(i.precio*(Number(i.cantidad)||1))+'</b>':''}</span>`:''}</div>`).join('')+
         (rp.nota?`<div class="sub" style="font-size:11.5px;font-style:italic;margin-top:4px">💬 ${rp.nota}</div>`:'');})()}
     <button class="btn" style="width:100%;justify-content:center;margin-top:6px" onclick="repRepAbrir(${ix})">🛒 ${(r.repuestos_taller||[]).some(x=>x.estado!=='entregado')?'Editar':'Cargar'} pedido de repuestos</button>
     <div class="divider"></div>
@@ -4817,14 +4819,43 @@ function selRep(ix){
     ${btnAvanzar}`;
 }
 /* Pedido de repuestos desde el detalle de la reparación */
+/* Cada repuesto se cotiza POR SEPARADO: el cable puede venir de un lado y
+   el reloj de otro. Por eso proveedor y precio van por fila, no al pie. */
 function repRepFila(i){
   i=i||{};
-  return `<div style="display:flex;gap:5px;margin-bottom:5px">
-    <input class="rr-cant" type="text" inputmode="numeric" value="${i.cantidad||1}" style="width:40px;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px;text-align:center">
-    <input class="rr-desc" type="text" placeholder="Repuesto" value="${(i.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px">
-    <input class="rr-cod" type="text" placeholder="Código" value="${(i.codigo||'').replace(/"/g,'&quot;')}" style="flex:1;box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px">
-    <button class="btn ghost" style="padding:4px 9px;flex:0 0 auto" onclick="this.parentElement.remove()">✕</button>
+  const inp='box-sizing:border-box;padding:7px;border:1px solid var(--linea);border-radius:7px;font-size:12px';
+  return `<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">
+    <input class="rr-cant" type="text" inputmode="numeric" value="${i.cantidad||1}" style="width:40px;${inp};text-align:center">
+    <input class="rr-desc" type="text" placeholder="Repuesto" value="${(i.descripcion||'').replace(/"/g,'&quot;')}" style="flex:2.2;${inp}">
+    <input class="rr-prov" type="text" placeholder="Proveedor" value="${(i.proveedor||'').replace(/"/g,'&quot;')}" style="flex:1.4;${inp}" onchange="repRepTotal()">
+    <input class="rr-precio" type="text" inputmode="decimal" placeholder="Precio $" value="${i.precio!=null&&i.precio!==''?String(i.precio).replace('.',','):''}" style="flex:1;${inp};text-align:right" onchange="repRepTotal()">
+    <button class="btn ghost" style="padding:4px 9px;flex:0 0 auto" onclick="this.parentElement.remove();repRepTotal()">✕</button>
   </div>`;
+}
+/* Total en vivo y cuántos están cotizados: sirve para saber si el pedido
+   ya se puede mandar a aprobar o falta averiguar precios. */
+function repRepTotal(){
+  const filas=[...document.querySelectorAll('#rep-rep-filas > div')];
+  let total=0,cotizados=0,conDesc=0;
+  filas.forEach(f=>{
+    const d=(f.querySelector('.rr-desc')||{}).value||'';
+    if(!d.trim())return;
+    conDesc++;
+    const p=repRepNum((f.querySelector('.rr-precio')||{}).value);
+    const prov=((f.querySelector('.rr-prov')||{}).value||'').trim();
+    if(p>0&&prov){cotizados++;total+=p*(Number((f.querySelector('.rr-cant')||{}).value)||1);}
+  });
+  const el=document.getElementById('rep-rep-total');
+  if(!el)return;
+  el.innerHTML=conDesc
+    ? `<b>${cotizados} de ${conDesc}</b> cotizado${cotizados===1?'':'s'}${total?` · total <b>${money(total)}</b>`:''}`
+      +(cotizados&&cotizados<conDesc?' <span style="color:var(--diesel)">· falta cotizar el resto</span>':'')
+      +(cotizados===conDesc&&conDesc?' <span style="color:var(--brote-2)">· listo para aprobar</span>':'')
+    : '';
+}
+function repRepNum(v){
+  const n=Number(String(v==null?'':v).replace(/[^\d.,-]/g,'').replace(/\./g,'').replace(',','.'));
+  return isNaN(n)?0:n;
 }
 function repRepAddFila(){document.getElementById('rep-rep-filas').insertAdjacentHTML('beforeend',repRepFila());}
 // El pedido se carga en un MODAL GRANDE (el form en el drawer quedaba cortado)
@@ -4842,7 +4873,7 @@ function repRepAbrir(ix){
     <div class="field-l" style="margin:10px 0 6px">Repuestos</div>
     <div id="rep-rep-filas"></div>
     <div style="display:flex;gap:6px;margin-top:4px">
-      <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepAddFila()">＋ otra fila</button>
+      <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepAddFila();repRepTotal()">＋ otra fila</button>
       <button class="btn ghost" style="flex:1;justify-content:center;font-size:12px" onclick="repRepSugerir('${r.id}')">✨ Sugerir de nuevo</button>
       <button class="btn ghost" style="flex:0 0 auto;justify-content:center;font-size:12px" onclick="document.getElementById('rep-rep-filas').innerHTML=repRepFila()">🗑</button>
     </div>
@@ -4856,13 +4887,8 @@ function repRepAbrir(ix){
         </select></div>
     </div>
 
-    <div class="field-l" style="margin:14px 0 4px">🧾 Orden de compra · cotización</div>
-    <div class="sub" style="font-size:11.5px;margin-bottom:8px">Si ya se averiguó dónde y cuánto, cargalo: el pedido queda directo <b>esperando aprobación</b> en Compras. Si no, dejalo vacío y se cotiza después desde el circuito.</div>
-    <div class="mm-field"><label>Proveedor</label><input id="rep-rep-prov" type="text" placeholder="ej: Sumiagro" value="${String(rp&&rp.nota_proveedor||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
-    <div style="display:flex;gap:8px">
-      <div class="mm-field" style="flex:1"><label>Precio final $</label><input id="rep-rep-precio" type="text" inputmode="decimal" value="${rp&&rp.nota_precio!=null?String(rp.nota_precio).replace('.',','):''}" style="width:100%"></div>
-      <div class="mm-field" style="flex:1"><label>Plazo de entrega</label><input id="rep-rep-plazo" type="text" placeholder="ej: 48 hs" value="${String(rp&&rp.nota_plazo||'').replace(/"/g,'&quot;')}" style="width:100%"></div>
-    </div>
+    <div id="rep-rep-total" class="sub" style="font-size:12.5px;margin-top:10px;padding:9px 12px;background:var(--hueso);border-radius:9px"></div>
+    <div class="sub" style="font-size:11.5px;margin-top:8px">Cargá proveedor y precio de cada repuesto si ya lo averiguaste — cada uno puede venir de un lugar distinto. Lo que quede sin cotizar se resuelve después desde el circuito de Compras.</div>
     <textarea id="rep-rep-nota" placeholder="Nota para quien compra (opcional)" style="width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid var(--linea);border-radius:8px;font:inherit;font-size:12.5px;min-height:48px">${rp&&rp.nota||''}</textarea>
     <div class="modal-acciones">
       <button class="btn-salir" onclick="document.getElementById('rep-rep-modal').remove()">Cancelar</button>
@@ -4871,6 +4897,7 @@ function repRepAbrir(ix){
   </div>`;
   document.body.appendChild(bg);
   document.getElementById('rep-rep-filas').innerHTML=((rp&&rp.items&&rp.items.length)?rp.items:[{},{}]).map(repRepFila).join('');
+  repRepTotal();
   if(!rp)repRepSugerir(r.id);   // sin pedido previo → la IA propone (editable)
 }
 async function repRepSugerir(id){
@@ -4879,6 +4906,7 @@ async function repRepSugerir(id){
   try{
     const s=await api('/api/reparaciones/'+id+'/repuestos/sugerir',{method:'POST',body:'{}'});
     document.getElementById('rep-rep-filas').innerHTML=(s.items||[]).map(repRepFila).join('')||repRepFila();
+    repRepTotal();
     if(hint)hint.textContent='✨ '+(s.razon||'Sugerido según la falla')+' — revisá, corregí o agregá lo que falte.';
   }catch(e){if(hint)hint.textContent='No pude sugerir esta vez — cargalo a mano.';}
 }
@@ -4886,17 +4914,19 @@ async function repRepGuardar(id,ix){
   const items=[...document.querySelectorAll('#rep-rep-filas > div')].map(f=>({
     cantidad:Number(f.querySelector('.rr-cant').value)||1,
     descripcion:f.querySelector('.rr-desc').value.trim(),
-    codigo:f.querySelector('.rr-cod').value.trim(),
+    proveedor:f.querySelector('.rr-prov').value.trim(),
+    precio:repRepNum(f.querySelector('.rr-precio').value)||null,
   })).filter(i=>i.descripcion);
   if(!items.length){alert('Cargá al menos un repuesto.');return;}
+  // Cada repuesto se cotiza por separado, así que un ítem con precio pero
+  // sin proveedor (o al revés) es un dato a medias: se avisa.
+  const aMedias=items.filter(i=>(i.proveedor&&!i.precio)||(i.precio&&!i.proveedor));
+  if(aMedias.length&&!confirm(`${aMedias.map(i=>i.descripcion).join(', ')}: falta el proveedor o el precio. ¿Guardar igual?`))return;
   const nota=document.getElementById('rep-rep-nota').value.trim();
   const v=k=>((document.getElementById('rep-rep-'+k)||{}).value||'').trim();
-  const proveedor=v('prov'),precio=v('precio'),plazo=v('plazo');
-  const cotiza=proveedor&&precio&&plazo;
-  if((proveedor||precio||plazo)&&!cotiza){toast('Para cotizar completá proveedor, precio y plazo (o dejá los tres vacíos)','error');return;}
   try{
     const solicita=((document.getElementById('rep-rep-solicita')||{}).value||'').trim();
-    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:v('marca'),proveedor,precio,plazo,solicitante:solicita})});
+    const nuevo=await api('/api/reparaciones/'+id+'/repuestos',{method:'POST',body:JSON.stringify({items,nota,marca_modelo:v('marca'),solicitante:solicita})});
     const m=document.getElementById('rep-rep-modal');if(m)m.remove();
     const r=window._repFiltrada[ix];
     r.repuestos_taller=(r.repuestos_taller||[]).filter(x=>x.id!==nuevo.id&&x.estado==='entregado');
@@ -6364,7 +6394,7 @@ function renderRt(){
     if(!b)return true;
     const inc=p.incidencias||{};
     const txt=[(inc.tipo_equipo||''),(inc.equipos&&inc.equipos.nombre||''),(inc.numero_unidad||''),
-      ...(p.items||[]).map(i=>i.descripcion+' '+(i.codigo||''))].join(' ').toLowerCase();
+      ...(p.items||[]).map(i=>i.descripcion+' '+(i.codigo||'')+' '+(i.proveedor||''))].join(' ').toLowerCase();
     return txt.includes(b);
   });
   const EST={a_comprar:['A COMPRAR','b-amber'],comprado:['✓ TODO COMPRADO','b-blue'],entregado:['✓ ENTREGADO','b-green']};
@@ -6387,13 +6417,30 @@ function renderRt(){
         ${parcial?`<span class="badge b-amber">PARCIAL · ${nComp}/${its.length} comprados</span>`:`<span class="badge ${cls}">${etq}${done&&p.entregado_at?' · '+fechaAR(p.entregado_at):''}</span>`}
       </div>
       <div class="sub" style="font-size:12px;margin:5px 0 8px">👨‍🔧 ${inc.mecanicos?inc.mecanicos.nombre:(p.pedido_por||'—')} · pedido ${dias===0?'hoy':'hace '+dias+' día'+(dias===1?'':'s')}${!done&&dias>=3?' <b style="color:var(--rojo)">⚠</b>':''}</div>
-      ${its.map((i,idx)=>done
-        ?`<div style="font-size:12.5px;padding:2px 0"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> <b>${i.descripcion}</b>${i.codigo?' · <span class="mono" style="color:var(--tinta-3)">'+i.codigo+'</span>':''}</div>`
+      ${(()=>{
+        // Cada repuesto puede venir de un proveedor distinto: se muestra
+        // dónde y a cuánto se cotizó cada uno, no solo el nombre.
+        const cot=i=>i.proveedor||i.precio!=null
+          ?`<span class="sub" style="font-size:11.5px;white-space:nowrap">${i.proveedor?'🏪 '+escStk(i.proveedor):''}${i.precio!=null?` · <b class="mono" style="color:var(--tinta)">${money(i.precio*(Number(i.cantidad)||1))}</b>`:''}</span>`
+          :'<span class="sub" style="font-size:11.5px;color:var(--diesel);white-space:nowrap">sin cotizar</span>';
+        return its.map((i,idx)=>done
+        ?`<div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:3px 0">
+            <span><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> <b>${escStk(i.descripcion)}</b></span>${cot(i)}</div>`
         :`<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;cursor:pointer">
             <input type="checkbox" ${i.comprado?'checked':''} onchange="rtItem('${p.id}',${idx},this.checked)" style="accent-color:var(--brote)">
-            <span style="${i.comprado?'':'font-weight:600'}"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> ${i.descripcion}${i.codigo?' · <span class="mono" style="color:var(--tinta-3)">'+i.codigo+'</span>':''}</span>
+            <span style="${i.comprado?'':'font-weight:600'};flex:1"><span class="mono" style="color:var(--tinta-2)">x${i.cantidad||1}</span> ${escStk(i.descripcion)}</span>
+            ${cot(i)}
             ${i.comprado?'<span class="badge b-green" style="font-size:10px">comprado</span>':'<span class="badge b-amber" style="font-size:10px">falta</span>'}
-          </label>`).join('')}
+          </label>`).join('');})()}
+      ${(()=>{
+        const conPrecio=its.filter(i=>i.precio!=null);
+        if(!conPrecio.length)return '';
+        const total=conPrecio.reduce((a,i)=>a+i.precio*(Number(i.cantidad)||1),0);
+        const provs=[...new Set(its.filter(i=>i.proveedor).map(i=>i.proveedor))];
+        const faltan=its.length-conPrecio.length;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:7px;padding-top:7px;border-top:1px solid var(--linea);font-size:12.5px">
+          <span class="sub">${provs.length===1?'1 proveedor':provs.length+' proveedores'}${faltan?` · <span style="color:var(--diesel)">${faltan} sin cotizar</span>`:''}</span>
+          <span>Total cotizado <b class="mono">${money(total)}</b></span></div>`;})()}
       ${p.nota?`<div style="background:var(--papel);border-left:3px solid var(--tinta-3);border-radius:6px;padding:7px 10px;font-size:12px;font-style:italic;margin-top:7px">💬 "${p.nota}" — ${(p.pedido_por||'').replace('Panel · ','')}</div>`:''}
       ${!done?`<div style="display:flex;gap:8px;margin-top:10px;align-items:center">
         ${p.estado!=='comprado'?`<button class="btn ghost" style="padding:7px 14px;font-size:12.5px" onclick="rtAvanzar('${p.id}','comprado')">✓ Marcar todo comprado</button>`:''}
