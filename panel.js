@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · ingreso al taller';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · filtros de taller y marca';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -79,6 +79,7 @@ let filtroIns = '', combMes = '';
 let insumoEntrega = null;   // pedido en el modal de entrega
 let repFEstado = '', repFPrio = '', repFMec = '', repFObj = '';
 let repFQ = '';   // buscador de Reparaciones→Resumen
+let repFIngreso = '';   // '' | sin | en  — filtro por ingreso al taller
 
 /* Estados y colores de reparaciones */
 const EST_REP = ['pendiente','diagnostico','esperando_repuestos','en_reparacion','finalizado'];
@@ -1657,7 +1658,7 @@ let stockInv=null;       // inventario oficial
 let stockInvEdit=null;   // línea del inventario en edición
 let stockTipoFil='';     // filtro por tipo de equipo en la solapa Detalle ('' = todos)
 let maqData=null;        // padrón de máquinas
-let maqFil={tipo:'',estado:'activa',busca:''};
+let maqFil={tipo:'',estado:'activa',busca:'',marca:''};
 let stockDetBusca='';    // buscador de la solapa Detalle
 
 const MESES_STK=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
@@ -2909,11 +2910,28 @@ async function vStockControl(view){
    Una fila por máquina física, con su número interno, cuándo se compró y
    cuánta vida lleva. Es lo que permite responder "cuáles son" y no solo
    "cuántas hay", y engancha cada máquina con sus reparaciones. */
+/* La marca se escribe de mil formas: "STIHL", "Sthil", "stihl ", "Husq",
+   "Husqvarna". Sin unificarlas, contar por marca no sirve de nada. */
+const MARCA_ALIAS={sthil:'Stihl',stihl:'Stihl',still:'Stihl',
+  husq:'Husqvarna',husqvarna:'Husqvarna',husqvarnas:'Husqvarna',
+  hond:'Honda',honda:'Honda',kawa:'Kawasaki',kawasaki:'Kawasaki',
+  echo:'Echo',shindaiwa:'Shindaiwa',tuya:'Toyama',toyama:'Toyama'};
+function maqMarca(m){
+  const raw=String(m.marca||'').trim();
+  if(!raw)return '';
+  const k=raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z]/g,'');
+  if(MARCA_ALIAS[k])return MARCA_ALIAS[k];
+  // Sin alias conocido: se respeta lo escrito pero con mayúscula inicial,
+  // así "stihl pro" y "Stihl Pro" no cuentan como dos marcas distintas.
+  return raw.charAt(0).toUpperCase()+raw.slice(1).toLowerCase();
+}
+
 function maqFilas(){
   const t=(maqFil.busca||'').toLowerCase().split(/\s+/).filter(Boolean);
   return ((maqData&&maqData.maquinas)||[]).filter(m=>{
     if(maqFil.tipo&&m.tipo_equipo!==maqFil.tipo)return false;
     if(maqFil.estado&&m.estado!==maqFil.estado)return false;
+    if(maqFil.marca&&maqMarca(m)!==maqFil.marca)return false;
     if(!t.length)return true;
     const txt=[m.codigo_interno,m.maquina,m.marca,m.modelo,m.tipo_equipo,m.objetivo_texto,
       objNombre(m.objetivo_id),m.motivo_baja,m.notas].filter(Boolean).join(' ').toLowerCase();
@@ -2964,6 +2982,19 @@ async function vMaquinas(view){
         <option value="">Todos los tipos</option>
         ${tipos.map(t=>`<option value="${escStk(t)}" ${t===maqFil.tipo?'selected':''}>${escStk(t)} · ${todas.filter(m=>m.tipo_equipo===t).length}</option>`).join('')}
       </select>
+      <select class="busca" style="width:auto;min-width:150px" onchange="maqFil.marca=this.value;go('stock')">
+        <option value="">Todas las marcas</option>
+        ${(()=>{
+          // Las marcas del universo que ya filtró tipo y estado: así el
+          // conteo de cada opción es el que uno va a ver al elegirla.
+          const univ=todas.filter(m=>(!maqFil.tipo||m.tipo_equipo===maqFil.tipo)&&(!maqFil.estado||m.estado===maqFil.estado));
+          const cnt={};univ.forEach(m=>{const k=maqMarca(m);if(k)cnt[k]=(cnt[k]||0)+1;});
+          const sinMarca=univ.filter(m=>!maqMarca(m)).length;
+          return Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])
+            .map(k=>`<option value="${escStk(k)}" ${k===maqFil.marca?'selected':''}>${escStk(k)} · ${cnt[k]}</option>`).join('')
+            +(sinMarca?`<option disabled>— ${sinMarca} sin marca cargada —</option>`:'');
+        })()}
+      </select>
       <select class="busca" style="width:auto" onchange="maqFil.estado=this.value;go('stock')">
         <option value="activa" ${maqFil.estado==='activa'?'selected':''}>Activas</option>
         <option value="baja" ${maqFil.estado==='baja'?'selected':''}>Dadas de baja</option>
@@ -2974,6 +3005,53 @@ async function vMaquinas(view){
       <button class="btn-salir" onclick="exportarMaquinas()">⬇ Exportar</button>
       <div class="sub" id="maq-res" style="font-size:12px">${filas.length} máquina${filas.length===1?'':'s'}</div>
     </div>
+    ${(()=>{
+      /* Cuadro tipo × marca: responde de un vistazo "cuántas motoguadañas
+         Stihl tenemos", "cuántas Husqvarna" y "cuántas en total", que hasta
+         ahora había que contar a mano. Respeta el filtro de estado. */
+      const univ=todas.filter(m=>!maqFil.estado||m.estado===maqFil.estado);
+      if(!univ.length)return '';
+      const marcas=[...new Set(univ.map(maqMarca).filter(Boolean))];
+      const porTipo={};
+      univ.forEach(m=>{
+        const t=m.tipo_equipo||'Sin tipo', k=maqMarca(m)||'__sin';
+        porTipo[t]=porTipo[t]||{__total:0};
+        porTipo[t][k]=(porTipo[t][k]||0)+1;porTipo[t].__total++;
+      });
+      const totMarca=k=>univ.filter(m=>(maqMarca(m)||'__sin')===k).length;
+      marcas.sort((a,b)=>totMarca(b)-totMarca(a));
+      const cols=marcas.slice(0,6), otras=marcas.slice(6);
+      const sinMarca=univ.filter(m=>!maqMarca(m)).length;
+      const tipos2=Object.keys(porTipo).sort((a,b)=>porTipo[b].__total-porTipo[a].__total);
+      const cel=(t,k)=>{const n=porTipo[t][k]||0;
+        return `<td class="num" style="${n?'':'color:var(--tinta-3)'}">${n||'·'}</td>`;};
+      return `<div class="tablewrap" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <b style="font-size:13.5px">Cuánto hay de cada cosa</b>
+          <span class="sub" style="font-size:11.5px">${maqFil.estado==='activa'?'solo activas':maqFil.estado==='baja'?'solo dadas de baja':'activas y de baja'} · tocá una fila para filtrar por ese tipo</span>
+        </div>
+        <table><thead><tr><th>Tipo</th>
+          ${cols.map(k=>`<th class="num">${escStk(k)}</th>`).join('')}
+          ${otras.length?'<th class="num">Otras</th>':''}
+          ${sinMarca?'<th class="num">Sin marca</th>':''}
+          <th class="num">Total</th></tr></thead>
+        <tbody>
+          ${tipos2.map(t=>`<tr style="cursor:pointer" onclick="maqFil.tipo='${escStk(t).replace(/'/g,"\\'")}';maqFil.marca='';go('stock')">
+            <td style="font-weight:500">${escStk(t)}</td>
+            ${cols.map(k=>cel(t,k)).join('')}
+            ${otras.length?`<td class="num">${otras.reduce((a,k)=>a+(porTipo[t][k]||0),0)||'·'}</td>`:''}
+            ${sinMarca?cel(t,'__sin'):''}
+            <td class="num" style="font-weight:700">${porTipo[t].__total}</td></tr>`).join('')}
+          <tr style="border-top:2px solid var(--linea)">
+            <td style="font-weight:700">Total</td>
+            ${cols.map(k=>`<td class="num" style="font-weight:700">${totMarca(k)}</td>`).join('')}
+            ${otras.length?`<td class="num" style="font-weight:700">${otras.reduce((a,k)=>a+totMarca(k),0)}</td>`:''}
+            ${sinMarca?`<td class="num" style="font-weight:700">${sinMarca}</td>`:''}
+            <td class="num" style="font-weight:800">${univ.length}</td></tr>
+        </tbody></table>
+        ${sinMarca?`<div class="sub" style="font-size:11.5px;margin-top:7px;color:var(--diesel)">⚠ ${sinMarca} máquina${sinMarca===1?'':'s'} sin marca cargada — no entran en ninguna columna de marca.</div>`:''}
+      </div>`;
+    })()}
     <div class="tablewrap"><table>
       <thead><tr><th>N° int.</th><th>Máquina</th><th>Tipo</th><th>Objetivo</th><th>Compra</th><th>Vida</th><th>Estado</th><th></th></tr></thead>
       <tbody id="maq-body">${maqFilasHTML(filas)}</tbody></table></div>`;
@@ -4978,7 +5056,7 @@ function repBuscar(v){
     if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);
 }
 function repLimpiarFiltros(){
-  repFQ='';repFPrio='';repFMec='';repFObj='';
+  repFQ='';repFPrio='';repFMec='';repFObj='';repFIngreso='';
   renderReparaciones(document.getElementById('view'));
 }
 
@@ -5050,6 +5128,7 @@ function renderReparaciones(view){
     return qRep.every(w=>blob.includes(w));
   };
   const filtrada=base.filter(r=>
+    (!repFIngreso||(repFIngreso==='sin'?!r.fecha_ingreso_taller:!!r.fecha_ingreso_taller))&&
     (!repFPrio||r.prioridad===repFPrio)&&
     (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
     (!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj))&&
@@ -5057,6 +5136,12 @@ function renderReparaciones(view){
   const resumen={critico:cnt('prioridad','critico'),alta:cnt('prioridad','alta'),media:cnt('prioridad','media'),baja:cnt('prioridad','baja')};
 
   const activas=repData.filter(r=>r.estado!=='finalizado').length;
+  // Cuántas máquinas están esperando bajar al taller: es la primera pregunta
+  // de la mañana y hasta ahora había que contarlas a ojo.
+  const fTaller=[['','Todas',base.length],
+      ['sin','⇥ Sin ingresar',base.filter(r=>!r.fecha_ingreso_taller).length],
+      ['en','🔧 Ya en el taller',base.filter(r=>!!r.fecha_ingreso_taller).length]]
+    .map(([v,l,c])=>`<div class="frow ${repFIngreso===v?'on':''}" onclick="repFIngreso='${v}';renderReparaciones(document.getElementById('view'))"><span>${l}</span><span class="fc">${c}</span></div>`).join('');
   const fEstado=[['','Activas',activas],...EST_REP.map(e=>[e,cap(e),cnt('estado',e)])]
     .map(([v,l,c])=>`<div class="frow ${repFEstado===v?'on':''}" onclick="repFEstado='${v}';renderReparaciones(document.getElementById('view'))"><span>${l}</span><span class="fc">${c}</span></div>`).join('');
   const fPrio=[['critico','Crítico','#DC4A5B'],['alta','Alta','#D98A1F'],['media','Media','#3B7DC4'],['baja','Baja','#159B51']]
@@ -5101,6 +5186,7 @@ function renderReparaciones(view){
     <div class="repwrap">
       <div class="rep-filters">
         <div class="fgroup-t">Estado</div>${fEstado}
+        <div class="fgroup-t">Taller</div>${fTaller}
         <div class="fgroup-t">Prioridad</div>${fPrio}
         <div class="fgroup-t">Mecánico</div>${fMec}
         <div class="fgroup-t">Objetivo</div>${fObj}
@@ -5110,7 +5196,7 @@ function renderReparaciones(view){
           <input id="rep-q" class="busca" style="flex:1;min-width:200px;font-size:12.5px;padding:7px 11px"
             placeholder="Buscar equipo, unidad, falla, objetivo, capataz o mecánico…" value="${escStk(repFQ)}" oninput="repBuscar(this.value)">
           <span class="sub" style="font-size:12px;white-space:nowrap">${filtrada.length} de ${base.length}</span>
-          ${repFQ||repFPrio||repFMec||repFObj?`<button class="btn ghost" style="padding:5px 11px;font-size:11.5px" onclick="repLimpiarFiltros()">✕ limpiar</button>`:''}
+          ${repFQ||repFPrio||repFMec||repFObj||repFIngreso?`<button class="btn ghost" style="padding:5px 11px;font-size:11.5px" onclick="repLimpiarFiltros()">✕ limpiar</button>`:''}
         </div>
         <table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Unidad</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
         <tbody id="rep-body">${filas||`<tr><td colspan="8"><div class="empty"><div>${repFQ?'Nada con esa búsqueda.':'No hay incidencias con estos filtros.'}</div></div></td></tr>`}</tbody></table></div>
