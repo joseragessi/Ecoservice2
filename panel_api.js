@@ -3,7 +3,7 @@ const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
 const supabaseCompras = require('./supabase_compras');
-const { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia } = require('./notificar');
+const { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia, mensajeCierreSinReparar } = require('./notificar');
 const { hashClave } = require('./app_api');
 const control = require('./control');
 const seg = require('./seguridad');
@@ -5399,6 +5399,62 @@ router.post('/api/stock/censos', auth, async (req, res) => {
   } catch (err) {
     console.error('stock crear censo:', err);
     res.status(500).json({ error: 'No pude cargar el stock: ' + (err.message || '') });
+  }
+});
+
+// Cerrar una incidencia SIN que el equipo haya pasado por el taller.
+// Mismo cierre que hace el mecánico desde la app, pero desde el panel: el
+// caso típico es que el capataz reportó y la máquina nunca bajó.
+const MOTIVOS_SIN_REPARAR_PANEL = ['no_ingreso', 'resuelto_en_campo', 'sin_falla', 'duplicado', 'otro'];
+router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const motivo = MOTIVOS_SIN_REPARAR_PANEL.includes(b.motivo) ? b.motivo : 'no_ingreso';
+    const nota = String(b.nota || '').trim();
+    if (nota.length < 5) return res.status(422).json({ error: 'Escribí la nota para el capataz' });
+
+    const { data: inc, error: e0 } = await supabase.from('incidencias')
+      .select('*, equipos(nombre,tipo), capataces(nombre,telefono), mecanicos(nombre)')
+      .eq('id', req.params.id).single();
+    if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
+    if (inc.estado === 'finalizado') return res.status(422).json({ error: 'Esa incidencia ya está cerrada' });
+
+    const quien = req.usuario || 'panel';
+    const { data, error } = await supabase.from('incidencias').update({
+      estado: 'finalizado',
+      fecha_finalizado: new Date().toISOString(),
+      cerrado_sin_ingreso: motivo === 'no_ingreso',
+      motivo_cierre: motivo,
+      nota_cierre: nota,
+      cerrado_por: quien,
+      equipo_parado: false,
+    }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+
+    try {
+      await supabase.from('comentarios_incidencias').insert({
+        incidencia_id: req.params.id,
+        mecanico_nombre: quien,
+        texto: `[Cerrada sin reparar · ${motivo.replace(/_/g, ' ')}] ${nota}`,
+      });
+    } catch (e) { /* el comentario es un extra */ }
+
+    let notificado = false;
+    if (inc.capataces && inc.capataces.telefono) {
+      const msg = mensajeCierreSinReparar(motivo, {
+        equipo: inc.equipos ? (inc.equipos.nombre || inc.equipos.tipo) : (inc.tipo_equipo || 'el equipo'),
+        unidad: inc.numero_unidad,
+        falla: inc.tipo_falla,
+        mecanico: inc.mecanicos ? inc.mecanicos.nombre : quien,
+        nota,
+      });
+      notificado = await notificarCapataz(inc.capataces.telefono, msg);
+    }
+    console.log(`[taller] cerrada sin reparar desde el panel (${motivo}): ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''}${notificado ? ' · capataz avisado' : ''}`);
+    res.json({ ...data, _notificado: notificado });
+  } catch (err) {
+    console.error('cerrar sin reparar (panel):', err);
+    res.status(500).json({ error: 'No pude cerrar la incidencia' });
   }
 });
 
