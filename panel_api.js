@@ -5059,7 +5059,12 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       const d = (new Date(fin) - new Date(ini)) / 86400000;
       return d >= 0 ? d : null;
     };
-    const finalizadas = filas.filter(r => r.estado === 'finalizado' && r.fecha_finalizado);
+    // Las cerradas SIN REPARAR (el equipo nunca llegó, se resolvió en el
+    // objetivo, etc.) no son reparaciones: si contaran, inflarían las
+    // "finalizadas" y arrastrarían el promedio de días hacia abajo.
+    const sinReparar = filas.filter(r => r.motivo_cierre);
+    const reparaciones = filas.filter(r => !r.motivo_cierre);
+    const finalizadas = reparaciones.filter(r => r.estado === 'finalizado' && r.fecha_finalizado);
     const tiempos = finalizadas.map(r => dias(r.created_at, r.fecha_finalizado)).filter(x => x != null);
     const prom = tiempos.length ? tiempos.reduce((s, x) => s + x, 0) / tiempos.length : 0;
     const orden = tiempos.slice().sort((x, y) => x - y);
@@ -5069,7 +5074,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     // Por criticidad, de más a menos
     const ORDEN_PRIO = ['critico', 'alta', 'media', 'baja'];
     const porPrioridad = ORDEN_PRIO.map(p => {
-      const del = filas.filter(r => String(r.prioridad || '').toLowerCase() === p);
+      const del = reparaciones.filter(r => String(r.prioridad || '').toLowerCase() === p);
       const t = del.filter(r => r.estado === 'finalizado' && r.fecha_finalizado)
         .map(r => dias(r.created_at, r.fecha_finalizado)).filter(x => x != null);
       return {
@@ -5082,7 +5087,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
     // Tipos de falla, de más frecuente a menos, con su tiempo
     const porFalla = {};
-    filas.forEach(r => {
+    reparaciones.forEach(r => {
       const k = r.tipo_falla || 'Sin especificar';
       if (!porFalla[k]) porFalla[k] = { falla: k, cantidad: 0, criticas: 0, tiempos: [] };
       porFalla[k].cantidad++;
@@ -5100,7 +5105,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const previas = (prev.data || []).filter(r => r.fecha_finalizado);
     const reingresos = [];
-    filas.forEach(r => {
+    reparaciones.forEach(r => {
       const u = norm(r.numero_unidad);
       if (!u || u === 'sn') return;
       const base = previas.filter(p => p.id !== r.id && norm(p.numero_unidad) === u
@@ -5227,28 +5232,35 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         por_objetivo: bateasPorObjetivo(delMes),
       },
       reparaciones: {
-        total: filas.length,
+        total: reparaciones.length,
         finalizadas: finalizadas.length,
-        abiertas: filas.filter(r => r.estado !== 'finalizado').length,
-        parados: filas.filter(r => r.equipo_parado).length,   // del mes
+        abiertas: reparaciones.filter(r => r.estado !== 'finalizado').length,
+        // Cerradas sin pasar por el taller, contadas aparte
+        sin_reparar: sinReparar.length,
+        sin_reparar_por_motivo: Object.entries(sinReparar.reduce((a, r) => {
+          const k = r.motivo_cierre || 'otro'; a[k] = (a[k] || 0) + 1; return a;
+        }, {})).map(([k, v]) => ({ nombre: k.replace(/_/g, ' '), cantidad: v }))
+          .sort((x, y) => y.cantidad - x.cantidad),
+        no_ingreso: sinReparar.filter(r => r.motivo_cierre === 'no_ingreso').length,
+        parados: reparaciones.filter(r => r.equipo_parado).length,   // del mes
         parados_ahora: (paradasHoy.data || []).length,        // a la fecha
         parados_detalle: (paradasHoy.data || []).map(r => ({
           equipo: r.tipo_equipo, unidad: r.numero_unidad, prioridad: r.prioridad,
           objetivo: r.objetivos ? r.objetivos.nombre : null,
           dias: Math.ceil((Date.now() - new Date(r.created_at)) / 86400000),
         })).sort((a2, b2) => b2.dias - a2.dias),
-        preventivas: filas.filter(r => r.tipo_mant === 'preventivo').length,
+        preventivas: reparaciones.filter(r => r.tipo_mant === 'preventivo').length,
         dias_prom: Math.round(prom * 10) / 10,
         dias_mediana: Math.round(mediana * 10) / 10,
         dias_peor: tiempos.length ? Math.round(Math.max(...tiempos) * 10) / 10 : 0,
         por_prioridad: porPrioridad,
         por_falla: fallas,
-        por_objetivo: cuenta(filas, r => r.objetivos && r.objetivos.nombre),
-        por_equipo: cuenta(filas, r => r.tipo_equipo),
-        por_mecanico: cuenta(filas.filter(r => r.estado === 'finalizado'), r => r.mecanicos && r.mecanicos.nombre),
+        por_objetivo: cuenta(reparaciones, r => r.objetivos && r.objetivos.nombre),
+        por_equipo: cuenta(reparaciones, r => r.tipo_equipo),
+        por_mecanico: cuenta(finalizadas, r => r.mecanicos && r.mecanicos.nombre),
         reingresos: {
           cantidad: reingresos.length,
-          porcentaje: filas.length ? Math.round((reingresos.length / filas.length) * 1000) / 10 : 0,
+          porcentaje: reparaciones.length ? Math.round((reingresos.length / reparaciones.length) * 1000) / 10 : 0,
           misma_falla: reingresos.filter(r => r.misma_falla).length,
           detalle: reingresos.sort((x, y) => x.dias - y.dias).slice(0, 15),
         },
