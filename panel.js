@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · marcas en Stock General';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · filtro de marca en Stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1700,6 +1700,31 @@ async function vStock(view){
    números, marca y los faltantes abiertos. Cada N° abre la ficha de la
    máquina si está en el padrón. */
 let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:'',marca:''};
+
+/* La marca del censo viene dentro de la OBSERVACIÓN — el campo dice
+   "Observación (marca, detalle…)" y ahí el capataz escribe "Stihl",
+   "sthil", "Husqvarna FS55". Se busca la marca conocida dentro del texto
+   y se unifica: sin eso "STIHL" y "Sthil" contarían como dos marcas. */
+const STK_MARCAS=[
+  [/\bst[hi]+l\w*/,'Stihl'],        // stihl, sthil, sthill, still
+  [/\bhusq\w*/,'Husqvarna'],
+  [/\bshindaiwa\b/,'Shindaiwa'],
+  [/\becho\b/,'Echo'],
+  [/\bkawa\w*/,'Kawasaki'],
+  [/\bhonda\b/,'Honda'],
+  [/\btoyama\b/,'Toyama'],
+  [/\bmassey\b|\bferguson\b/,'Massey Ferguson'],
+  [/\bjohn\s*deere\b/,'John Deere'],
+  [/\bhanomag\b/,'Hanomag'],
+  [/\bford\b/,'Ford'],
+  [/\btoyota\b/,'Toyota'],
+];
+function stkMarca(f){
+  const t=String(f.observacion||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if(!t)return '';
+  for(const [re,nombre] of STK_MARCAS) if(re.test(t)) return nombre;
+  return '';
+}
 async function vStockGeneral(view){
   if(!stkGen){
     view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando…</div>';
@@ -1725,11 +1750,9 @@ async function vStockGeneral(view){
     // tipo, y mostrarlos ahí confundiría más que ayudar.
     (!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&
     (!F.grupo||f.grupo===F.grupo)&&
-    (!F.marca||((f.marcas||{})[F.marca]||0)>0)&&
+    (!F.marca||stkMarca(f)===F.marca)&&
     (!F.q||norm(f.numeros.join(' ')+' '+(f.observacion||'')+' '+f.objetivo+' '+f.tipo).includes(norm(F.q))));
-  // Con el filtro de marca puesto, el total cuenta SOLO las de esa marca —
-  // si no, una línea de 5 motoguadañas con 2 Stihl sumaría 5.
-  const cantDe=f=>F.marca?((f.marcas||{})[F.marca]||0):(Number(f.cantidad)||0);
+  const cantDe=f=>Number(f.cantidad)||0;
   const total=vis.reduce((a,f)=>a+cantDe(f),0);
   // Los objetivos sin censo no cuentan como "objetivos con equipos"
   const nObjs=new Set(vis.filter(f=>!f.sin_censo).map(f=>f.objetivo)).size;
@@ -1771,7 +1794,7 @@ async function vStockGeneral(view){
         // Marcas del universo ya filtrado por tipo/objetivo/grupo, para que
         // el número de cada opción sea el que se ve al elegirla.
         const univ=filas.filter(f=>(!F.tipo||f.tipo===F.tipo)&&(!F.objetivo||f.objetivo===F.objetivo)&&(!F.grupo||f.grupo===F.grupo));
-        const c={};univ.forEach(f=>Object.entries(f.marcas||{}).forEach(([k,n])=>{if(k!=='__sin')c[k]=(c[k]||0)+n;}));
+        const c={};univ.forEach(f=>{const k=stkMarca(f);if(k)c[k]=(c[k]||0)+(Number(f.cantidad)||0);});
         return Object.keys(c).sort((a,b)=>c[b]-c[a])
           .map(k=>`<option value="${escStk(k)}" ${F.marca===k?'selected':''}>${escStk(k)} · ${c[k]}</option>`).join('');
       })()}
@@ -1801,61 +1824,6 @@ async function vStockGeneral(view){
         <td class="sub" style="font-size:12px">hace ${dias} d</td>
         <td><button class="mini-btn" onclick="resolverFaltante('${fa.id}')">✓ Resolver</button></td></tr>`;}).join('')}
     </tbody></table></div>`:''}
-
-  ${(()=>{
-    /* Cuánto hay de cada tipo y de cada marca. La marca NO está en el censo:
-       se resuelve cruzando el número de máquina contra el padrón. Por eso
-       hay una columna "sin identificar" — son números que no están cargados
-       en el padrón, y ese número es la medida de cuán confiable es el resto. */
-    const univ=filas.filter(f=>f.tipo&&(!F.objetivo||f.objetivo===F.objetivo)&&(!F.grupo||f.grupo===F.grupo));
-    if(!univ.length)return '';
-    const porTipo={}, totM={};
-    univ.forEach(f=>{
-      const t=f.tipo;
-      porTipo[t]=porTipo[t]||{__total:0};
-      const mk=f.marcas||{};
-      const conMarca=Object.values(mk).reduce((a,n)=>a+n,0);
-      Object.entries(mk).forEach(([k,n])=>{porTipo[t][k]=(porTipo[t][k]||0)+n;totM[k]=(totM[k]||0)+n;});
-      // Si la línea tiene más cantidad que números identificados, la
-      // diferencia va a "sin identificar": el capataz censó 5 pero cargó 3 números.
-      const resto=Math.max(0,(Number(f.cantidad)||0)-conMarca);
-      if(resto){porTipo[t].__sin=(porTipo[t].__sin||0)+resto;totM.__sin=(totM.__sin||0)+resto;}
-      porTipo[t].__total+=Math.max(Number(f.cantidad)||0,conMarca);
-    });
-    const marcas=Object.keys(totM).filter(k=>k!=='__sin').sort((a,b)=>totM[b]-totM[a]);
-    const cols=marcas.slice(0,5), otras=marcas.slice(5);
-    const sinId=totM.__sin||0;
-    const tipos2=Object.keys(porTipo).sort((a,b)=>porTipo[b].__total-porTipo[a].__total);
-    const totalGen=tipos2.reduce((a,t)=>a+porTipo[t].__total,0);
-    const cel=(t,k)=>{const n=porTipo[t][k]||0;return `<td style="text-align:right;${n?'':'color:var(--tinta-3)'}">${n||'·'}</td>`;};
-    return `<div class="panel" style="margin-bottom:14px">
-      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
-        <span>Cuánto hay de cada cosa <span class="sub" style="font-weight:400">· tipo y marca</span></span>
-        <span class="sub" style="font-size:11.5px;font-weight:400">tocá una fila para filtrar por ese tipo</span>
-      </div>
-      <table><thead><tr><th>Tipo</th>
-        ${cols.map(k=>`<th style="text-align:right">${escStk(k)}</th>`).join('')}
-        ${otras.length?'<th style="text-align:right">Otras</th>':''}
-        ${sinId?'<th style="text-align:right">Sin identificar</th>':''}
-        <th style="text-align:right">Total</th></tr></thead>
-      <tbody>
-        ${tipos2.map(t=>`<tr style="cursor:pointer" onclick="stkGenF.tipo='${escStk(t).replace(/'/g,"\\'")}';stkGenF.marca='';go('stock')">
-          <td style="font-weight:500">${escStk(t)}</td>
-          ${cols.map(k=>cel(t,k)).join('')}
-          ${otras.length?`<td style="text-align:right">${otras.reduce((a,k)=>a+(porTipo[t][k]||0),0)||'·'}</td>`:''}
-          ${sinId?cel(t,'__sin'):''}
-          <td style="text-align:right;font-weight:700">${porTipo[t].__total}</td></tr>`).join('')}
-        <tr style="border-top:2px solid var(--linea)">
-          <td style="font-weight:700">Total</td>
-          ${cols.map(k=>`<td style="text-align:right;font-weight:700">${totM[k]}</td>`).join('')}
-          ${otras.length?`<td style="text-align:right;font-weight:700">${otras.reduce((a,k)=>a+totM[k],0)}</td>`:''}
-          ${sinId?`<td style="text-align:right;font-weight:700">${sinId}</td>`:''}
-          <td style="text-align:right;font-weight:800">${totalGen}</td></tr>
-      </tbody></table>
-      ${sinId?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
-        ⚠ ${sinId} de ${totalGen} equipos sin identificar: el censo no cargó su número, o el número no está en el padrón de Máquinas. La marca se resuelve cruzando ese número — cuanto más bajo este valor, más confiable el cuadro.</div>`:''}
-    </div>`;
-  })()}
 
   <div class="panel">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -3075,53 +3043,6 @@ async function vMaquinas(view){
       <button class="btn-salir" onclick="exportarMaquinas()">⬇ Exportar</button>
       <div class="sub" id="maq-res" style="font-size:12px">${filas.length} máquina${filas.length===1?'':'s'}</div>
     </div>
-    ${(()=>{
-      /* Cuadro tipo × marca: responde de un vistazo "cuántas motoguadañas
-         Stihl tenemos", "cuántas Husqvarna" y "cuántas en total", que hasta
-         ahora había que contar a mano. Respeta el filtro de estado. */
-      const univ=todas.filter(m=>!maqFil.estado||m.estado===maqFil.estado);
-      if(!univ.length)return '';
-      const marcas=[...new Set(univ.map(maqMarca).filter(Boolean))];
-      const porTipo={};
-      univ.forEach(m=>{
-        const t=m.tipo_equipo||'Sin tipo', k=maqMarca(m)||'__sin';
-        porTipo[t]=porTipo[t]||{__total:0};
-        porTipo[t][k]=(porTipo[t][k]||0)+1;porTipo[t].__total++;
-      });
-      const totMarca=k=>univ.filter(m=>(maqMarca(m)||'__sin')===k).length;
-      marcas.sort((a,b)=>totMarca(b)-totMarca(a));
-      const cols=marcas.slice(0,6), otras=marcas.slice(6);
-      const sinMarca=univ.filter(m=>!maqMarca(m)).length;
-      const tipos2=Object.keys(porTipo).sort((a,b)=>porTipo[b].__total-porTipo[a].__total);
-      const cel=(t,k)=>{const n=porTipo[t][k]||0;
-        return `<td class="num" style="${n?'':'color:var(--tinta-3)'}">${n||'·'}</td>`;};
-      return `<div class="tablewrap" style="margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-          <b style="font-size:13.5px">Cuánto hay de cada cosa</b>
-          <span class="sub" style="font-size:11.5px">${maqFil.estado==='activa'?'solo activas':maqFil.estado==='baja'?'solo dadas de baja':'activas y de baja'} · tocá una fila para filtrar por ese tipo</span>
-        </div>
-        <table><thead><tr><th>Tipo</th>
-          ${cols.map(k=>`<th class="num">${escStk(k)}</th>`).join('')}
-          ${otras.length?'<th class="num">Otras</th>':''}
-          ${sinMarca?'<th class="num">Sin marca</th>':''}
-          <th class="num">Total</th></tr></thead>
-        <tbody>
-          ${tipos2.map(t=>`<tr style="cursor:pointer" onclick="maqFil.tipo='${escStk(t).replace(/'/g,"\\'")}';maqFil.marca='';go('stock')">
-            <td style="font-weight:500">${escStk(t)}</td>
-            ${cols.map(k=>cel(t,k)).join('')}
-            ${otras.length?`<td class="num">${otras.reduce((a,k)=>a+(porTipo[t][k]||0),0)||'·'}</td>`:''}
-            ${sinMarca?cel(t,'__sin'):''}
-            <td class="num" style="font-weight:700">${porTipo[t].__total}</td></tr>`).join('')}
-          <tr style="border-top:2px solid var(--linea)">
-            <td style="font-weight:700">Total</td>
-            ${cols.map(k=>`<td class="num" style="font-weight:700">${totMarca(k)}</td>`).join('')}
-            ${otras.length?`<td class="num" style="font-weight:700">${otras.reduce((a,k)=>a+totMarca(k),0)}</td>`:''}
-            ${sinMarca?`<td class="num" style="font-weight:700">${sinMarca}</td>`:''}
-            <td class="num" style="font-weight:800">${univ.length}</td></tr>
-        </tbody></table>
-        ${sinMarca?`<div class="sub" style="font-size:11.5px;margin-top:7px;color:var(--diesel)">⚠ ${sinMarca} máquina${sinMarca===1?'':'s'} sin marca cargada — no entran en ninguna columna de marca.</div>`:''}
-      </div>`;
-    })()}
     <div class="tablewrap"><table>
       <thead><tr><th>N° int.</th><th>Máquina</th><th>Tipo</th><th>Objetivo</th><th>Compra</th><th>Vida</th><th>Estado</th><th></th></tr></thead>
       <tbody id="maq-body">${maqFilasHTML(filas)}</tbody></table></div>`;
