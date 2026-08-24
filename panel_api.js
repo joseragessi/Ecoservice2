@@ -1308,6 +1308,9 @@ router.post('/api/reparaciones/preventivo/plan-maquina', auth, async (req, res) 
 
     const fila = {
       equipo, unidad: String(b.unidad || '').trim() || null,
+      // equipo_norm y unidad_norm son COLUMNAS reales: el índice único va
+      // sobre ellas. Con un índice sobre lower(equipo) el ON CONFLICT falla.
+      equipo_norm: equipo.toLowerCase().trim(),
       unidad_norm: normUnidadPlan(b.unidad),
       intervalo_dias: dias, habiles, desde, ultimo,
       proximo: px ? px.toISOString().slice(0, 10) : null,
@@ -1318,7 +1321,7 @@ router.post('/api/reparaciones/preventivo/plan-maquina', auth, async (req, res) 
       updated_at: new Date().toISOString(),
     };
     const { data, error } = await supabase.from('preventivo_planes')
-      .upsert(fila, { onConflict: 'equipo,unidad_norm' }).select().single();
+      .upsert(fila, { onConflict: 'equipo_norm,unidad_norm' }).select().single();
     if (error) throw error;
     console.log(`[preventivo] plan ${equipo} ${fila.unidad || ''}: cada ${dias} días${habiles ? ' hábiles' : ''} · próximo ${fila.proximo || '—'}`);
     res.json({ ok: true, plan: data });
