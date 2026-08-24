@@ -1355,8 +1355,21 @@ router.post('/api/reparaciones/nueva', auth, async (req, res) => {
 // panel) y se gestiona en Compras → Repuestos.
 router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
   try {
+    // Cada repuesto se cotiza POR SEPARADO: el cable puede venir de un
+    // proveedor y el reloj de otro. Por eso proveedor y precio son del ítem.
+    const numPrecio = v => {
+      if (v == null || v === '') return null;
+      const n = Number(String(v).replace(/[^\d.,-]/g, '').replace(/\./g, '').replace(',', '.'));
+      return isNaN(n) || n <= 0 ? null : n;
+    };
     const items = (Array.isArray((req.body || {}).items) ? req.body.items : [])
-      .map(i => ({ descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1, codigo: String(i.codigo || '').trim() }))
+      .map(i => ({
+        descripcion: String(i.descripcion || '').trim(),
+        cantidad: Number(i.cantidad) || 1,
+        codigo: String(i.codigo || '').trim(),
+        proveedor: String(i.proveedor || '').trim() || null,
+        precio: numPrecio(i.precio),
+      }))
       .filter(i => i.descripcion);
     if (!items.length) return res.status(400).json({ error: 'Cargá al menos un repuesto' });
     const { data: prev } = await supabase.from('repuestos_taller')
@@ -1374,19 +1387,25 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
     const solicitante = String(bb.solicitante || '').trim();
     const fila = { items, nota: String(bb.nota || '').trim() || null, pedido_por: solicitante || ('Panel · ' + (req.usuario || 'admin')) };
     if (bb.marca_modelo !== undefined) fila.marca_modelo = String(bb.marca_modelo || '').trim() || null;
-    // ORDEN DE COMPRA cargada junto con el pedido: si vienen proveedor+precio+
-    // plazo, el pedido queda COTIZADO directo, esperando la aprobación.
-    const provOC = String(bb.proveedor || '').trim();
-    const precioOC = Number(String(bb.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
-    const plazoOC = String(bb.plazo || '').trim();
-    if (provOC && precioOC && plazoOC) {
-      fila.nota_proveedor = provOC; fila.nota_precio = precioOC; fila.nota_plazo = plazoOC;
-      fila.cotizado_at = new Date().toISOString(); fila.cotizado_por = req.usuario || 'panel';
+    // COTIZACIÓN POR ÍTEM: el pedido pasa a 'cotizado' cuando TODOS los
+    // repuestos tienen proveedor y precio. Con algunos cotizados y otros no,
+    // sigue en pedido — todavía falta averiguar.
+    const cotizados = items.filter(i => i.proveedor && i.precio);
+    const todosCotizados = items.length > 0 && cotizados.length === items.length;
+    // El total y el resumen de proveedores se guardan en los campos que ya
+    // lee Compras, para no romper lo que muestra hoy.
+    if (cotizados.length) {
+      const total = cotizados.reduce((a, i) => a + i.precio * (Number(i.cantidad) || 1), 0);
+      const provs = [...new Set(cotizados.map(i => i.proveedor))];
+      fila.nota_precio = Math.round(total * 100) / 100;
+      fila.nota_proveedor = provs.length === 1 ? provs[0] : provs.join(' · ');
+      fila.cotizado_at = new Date().toISOString();
+      fila.cotizado_por = req.usuario || 'panel';
       fila.observacion = null;
-      // Solo avanza a cotizado si estaba antes de la aprobación (nunca retrocede)
-      if (!prev || ['pedido', 'en_cotizacion', 'cotizado'].includes(prev.estado)) {
+      if (todosCotizados && (!prev || ['pedido', 'en_cotizacion', 'cotizado'].includes(prev.estado))) {
         fila.estado = 'cotizado'; fila.estado_desde = new Date().toISOString();
       }
+      console.log(`[repuestos] ${cotizados.length}/${items.length} cotizados · ${provs.length} proveedor${provs.length === 1 ? '' : 'es'} · total ${total}`);
     }
     let q;
     if (prev) q = supabase.from('repuestos_taller').update(fila).eq('id', prev.id).select().single();
