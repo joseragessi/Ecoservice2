@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-24 · services puntúan +2 · objetivo 2T';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-24 · services +2 al que los carga';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4362,19 +4362,21 @@ async function vRepPerf(view){
   // Van por CREATED_AT (cuándo se cargó la planilla), no por la fecha escrita
   // en ella: esa la lee la IA de una foto y viene con errores (hay planillas
   // fechadas en 2007 y 2008). La fecha de la planilla se muestra en la línea.
-  // Atribución: el nombre que trae la planilla manda; los cargados desde el
-  // panel ("Panel · usuario") no los hizo un mecánico y no se atribuyen.
+  // Atribución: el mecánico que CARGÓ la planilla (sale de su login en la
+  // app). El nombre escrito adentro de la planilla NO se usa: lo lee la IA de
+  // una foto y viene ilegible ("ALERBE JERO", "SEBASTIAN LABUS"), así que
+  // atribuir por ahí llenaría el ranking de mecánicos que no existen.
+  // Los cargados desde el panel ("Panel · usuario") no los hizo un mecánico.
   const normNom=v=>String(v||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
   const esDelPanel=v=>/^panel\s*·/i.test(String(v||'').trim());
   const nombresConocidos={};
   Object.keys(mecs).forEach(n=>{nombresConocidos[normNom(n)]=n;});
   const mecDeService=s=>{
-    const d=s.data||{};
-    const cand=[d.mecanico,s.mecanico_nombre].find(v=>v&&!esDelPanel(v));
-    if(!cand)return null;
-    // Si el nombre de la planilla coincide con un mecánico ya conocido, se usa
-    // el del maestro: si no, "Diego" y "Diego Allende" serían dos personas.
+    const cand=s.mecanico_nombre;
+    if(!cand||esDelPanel(cand))return null;
+    // Se pisa con el nombre del maestro si coincide: si no, una diferencia de
+    // tipeo o de acento partiría al mismo mecánico en dos.
     return nombresConocidos[normNom(cand)]||String(cand).trim();
   };
   const svSinAtribuir=[];
@@ -4509,7 +4511,7 @@ async function vRepPerf(view){
       ${sa?`<button class="btn" style="padding:5px 12px;font-size:12px" onclick="event.stopPropagation();recalcularPuntajes()">🤖 Analizar pendientes</button>`:''}
     </div>`;})()}
   ${svSinAtribuir.length?`<div class="aviso-amarillo" style="margin-bottom:10px">
-    <b>${svSinAtribuir.length}</b> service/s del mes no se le sumaron a nadie: los cargó el panel y la planilla no dice qué mecánico lo hizo
+    <b>${svSinAtribuir.length}</b> service/s del mes no se le sumaron a nadie: los cargó el panel, no un mecánico desde la app
     (${svSinAtribuir.slice(0,6).map(u=>escStk(u)).join(' · ')}${svSinAtribuir.length>6?' …':''}).
   </div>`:''}
   <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> · para el mecánico de 2 tiempos (habilidad <b>Motor 2T</b> en Maestros): <b>${PERF_OBJETIVO_2T} pts</b> (5 máquinas × 22 días). Provisorios — se ajustan con 2-3 meses de datos. Para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
