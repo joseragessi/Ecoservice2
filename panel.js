@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-21 · cotización por repuesto';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-21 · cierre sin reparar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1756,6 +1756,9 @@ async function vReportes(view){
       <div class="kpi-sub">mediana ${r.dias_mediana} d · peor ${r.dias_peor} d</div></div>
     <div class="kpi"><div class="kpi-label">Reingresos</div><div class="kpi-val" style="color:${r.reingresos.porcentaje>10?'var(--rojo)':'inherit'}">${r.reingresos.porcentaje}%</div>
       <div class="kpi-sub">${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla</div></div>
+    ${r.sin_reparar?`<div class="kpi"><div class="kpi-label">Cerradas sin reparar</div>
+      <div class="kpi-val" style="color:var(--diesel)">${r.sin_reparar}</div>
+      <div class="kpi-sub">${r.no_ingreso?r.no_ingreso+' nunca llegaron al taller':'no cuentan como reparación'}</div></div>`:''}
     <div class="kpi"><div class="kpi-label">Paradas hoy</div><div class="kpi-val" style="color:${r.parados_ahora?'var(--rojo)':'inherit'}">${r.parados_ahora!=null?r.parados_ahora:'—'}</div>
       <div class="kpi-sub">${r.parados} estuvieron paradas en el mes</div></div>
   </div>
@@ -1800,6 +1803,15 @@ async function vReportes(view){
       etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
       color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
   </div>
+
+  ${r.sin_reparar?`<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--diesel)">📭 Cerradas sin pasar por el taller (${r.sin_reparar})</div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">
+      No se cuentan como reparaciones: no entran en el total, ni en los días promedio, ni en los reingresos.</div>
+    ${svgBarras(r.sin_reparar_por_motivo,{max:5,color:'#D98A1F',anchoEtiq:190})}
+    ${r.no_ingreso?`<div class="sub" style="font-size:12px;margin-top:8px">
+      <b>${r.no_ingreso}</b> se reportaron y el equipo nunca bajó al taller. Si el número es alto, el cuello de botella está en el traslado, no en el taller.</div>`:''}
+  </div>`:''}
 
   ${r.parados_detalle&&r.parados_detalle.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
     <div class="panel-title" style="color:var(--rojo)">⛔ Paradas en este momento (${r.parados_detalle.length})</div>
@@ -1911,6 +1923,13 @@ function imprimirReporte(){
         <td>${escStk(x.falla_previa||'—')}</td><td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge" style="background:#FCEBED;color:#DC4A5B">misma falla</span>':''}</td>
         <td class="der mono">${x.dias}</td><td>${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
       <div class="mini" style="margin-top:6px">El reingreso con la misma falla es el indicador de calidad de la reparación.</div>
+    </div>`:''}
+
+    ${r.sin_reparar?`<div class="sec">
+      <h2>Cerradas sin pasar por el taller</h2>
+      <div class="mini" style="margin-bottom:8px">No se cuentan como reparaciones: quedan fuera del total, de los días promedio y de los reingresos.</div>
+      ${svgBarras(r.sin_reparar_por_motivo,{ancho:520,max:5,color:'#D98A1F',anchoEtiq:190})}
+      ${r.no_ingreso?`<div class="mini" style="margin-top:6px"><b>${r.no_ingreso}</b> se reportaron y el equipo nunca bajó al taller.</div>`:''}
     </div>`:''}
 
     ${r.parados_detalle&&r.parados_detalle.length?`<div class="sec">
@@ -6301,6 +6320,7 @@ async function vComprasRepuestos(view){
       <div class="view-desc">Lo que el taller espera para reparar — pedidos de los mecánicos con sus notas</div></div></div>
     ${tabsCompras()}
     <div id="rt-aprobacion"></div>
+    <div id="rt-encurso"></div>
     <div id="rt-kpis"></div>
     <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div class="toggle-imp" style="margin:0">
@@ -6316,6 +6336,46 @@ async function vComprasRepuestos(view){
 // Cotizados pendientes de la aprobación de José. El PIN de súper admin se pide
 // en el momento de aprobar (mismo mecanismo que Performance): los mecánicos
 // también entran al panel y esta es la decisión de gastar.
+/* Cotización EN CURSO: pedidos que ya tienen algún precio cargado pero
+   todavía les falta cotizar alguno. Antes desaparecían — la lista de
+   Compras arranca en la aprobación, y estos no llegan ahí hasta estar
+   completos. Compras necesita verlos para saber qué falta averiguar. */
+function renderRtEnCurso(){
+  const cont=document.getElementById('rt-encurso');if(!cont)return;
+  const enCurso=(rtData||[]).filter(p=>
+    ['pedido','en_cotizacion'].includes(p.estado)&&
+    (p.items||[]).some(i=>i.precio!=null||i.proveedor));
+  if(!enCurso.length){cont.innerHTML='';return;}
+  cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--diesel);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--diesel)">🕐 Cotización en curso (${enCurso.length})</div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">
+      Ya tienen algún precio pero falta cotizar el resto. Cuando estén todos, pasan a tu aprobación.</div>
+    ${enCurso.map(p=>{
+      const i=p.incidencias||{};
+      const its=p.items||[];
+      const cot=its.filter(x=>x.precio!=null&&x.proveedor);
+      const total=cot.reduce((a,x)=>a+x.precio*(Number(x.cantidad)||1),0);
+      const dias=Math.ceil((Date.now()-new Date(p.created_at))/86400000);
+      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--hueso)">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div style="font-weight:700;font-size:13.5px">${escStk(i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo')}
+            <span class="uni-num">${escStk(i.numero_unidad||'—')}</span>
+            <span class="sub" style="font-weight:400">${i.objetivos?'· '+escStk(i.objetivos.nombre):''}</span></div>
+          <span class="badge b-amber">${cot.length} de ${its.length} cotizado${cot.length===1?'':'s'}</span>
+        </div>
+        <div class="sub" style="font-size:11.5px;margin:4px 0 7px">👨‍🔧 ${escStk(p.pedido_por||'—')} · pedido hace ${dias} día${dias===1?'':'s'}</div>
+        ${its.map(x=>`<div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:2px 0">
+          <span><span class="mono" style="color:var(--tinta-2)">x${x.cantidad||1}</span> ${escStk(x.descripcion)}</span>
+          ${x.precio!=null&&x.proveedor
+            ?`<span class="sub" style="white-space:nowrap">🏪 ${escStk(x.proveedor)} · <b class="mono" style="color:var(--tinta)">${money(x.precio*(Number(x.cantidad)||1))}</b></span>`
+            :'<span style="color:var(--diesel);font-size:11.5px;white-space:nowrap">falta cotizar</span>'}</div>`).join('')}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--linea);font-size:12.5px">
+          <span class="sub">Parcial · faltan ${its.length-cot.length}</span>
+          <span>Cotizado hasta ahora <b class="mono">${money(total)}</b></span></div>
+      </div>`;}).join('')}
+  </div>`;
+}
+
 function renderRtAprobacion(){
   const cont=document.getElementById('rt-aprobacion');if(!cont)return;
   const cots=(rtData||[]).filter(p=>p.estado==='cotizado');
@@ -6373,6 +6433,7 @@ function renderRt(){
   const kp=document.getElementById('rt-kpis'),ls=document.getElementById('rt-lista');
   if(!kp||!ls)return;
   renderRtAprobacion();
+  renderRtEnCurso();
   // La lista clásica de Compras muestra SOLO desde la aprobación en adelante:
   // lo anterior (pedido / en cotización) es del Referente y se sigue en
   // Reparaciones → Repuestos.
