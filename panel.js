@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-24 · services +2 al que los carga';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-25 · guarda herramienta/consumible en pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2726,9 +2726,12 @@ function pnlAbrirModal(it){
       <div class="mm-field"><label>Código / N° interno</label><input id="pl-cod" value="${escStk(it.codigo||'')}" style="${inp}"></div>
     </div>
     <div class="mm-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-      <input type="checkbox" id="pl-ret" ${it.retornable!==false?'checked':''} style="width:auto">
+      <input type="checkbox" id="pl-ret" ${it.retornable!==false?'checked':''} style="width:auto" onchange="pnlRetCambio()">
       <span>Vuelve al pañol <span style="font-weight:400;color:var(--tinta-3)">— destildá para lo que se consume (aceite, tanza, guantes)</span></span>
-    </label></div>
+    </label>
+    <div id="pl-ret-aviso" style="display:${(it.categoria||'herramienta')==='herramienta'&&it.retornable===false?'':'none'};margin-top:6px;font-size:12px;color:var(--rojo)">
+      ⚠ Una <b>herramienta</b> que no vuelve se descuenta del pañol en cada salida y desaparece del stock. Si de verdad es descartable, ponela en la categoría "otro".
+    </div></div>
     <div style="display:grid;grid-template-columns:1fr 90px 1fr;gap:8px">
       <div class="mm-field"><label>Cantidad</label><input id="pl-cant" type="number" step="0.01" value="${it.cantidad!=null?it.cantidad:1}" style="${inp}"></div>
       <div class="mm-field"><label>Unidad</label><input id="pl-uni" value="${escStk(it.unidad||'u')}" style="${inp}"></div>
@@ -2751,9 +2754,22 @@ function pnlAbrirModal(it){
 }
 /* Un insumo se consume: por defecto no vuelve. Igual se puede forzar. */
 function pnlCatCambio(){
-  const c=document.getElementById('pl-cat'),r=document.getElementById('pl-ret');
-  if(!c||!r||!pnlEdit||pnlEdit.id)return;   // al editar respetamos lo guardado
-  r.checked=c.value!=='insumo';
+  const c=document.getElementById('pl-cat'),r=document.getElementById('pl-ret'),
+        a=document.getElementById('pl-ret-aviso');
+  if(!c||!r)return;
+  // Antes esto no corría al editar ("respetamos lo guardado") y ahí estaba el
+  // problema: pasar un ítem de repuesto a herramienta dejaba el check
+  // destildado, y cada salida descontaba la herramienta del stock como si se
+  // consumiera. Se perdieron 4 motosierras así. Ahora la categoría manda.
+  r.checked=c.value==='herramienta'?true:c.value!=='insumo'&&r.checked;
+  if(a)a.style.display=(c.value==='herramienta'&&!r.checked)?'':'none';
+}
+// Una herramienta que no vuelve se descuenta del pañol en cada salida y
+// desaparece sin dejar rastro. Si de verdad es descartable, va como "otro".
+function pnlRetCambio(){
+  const c=document.getElementById('pl-cat'),r=document.getElementById('pl-ret'),
+        a=document.getElementById('pl-ret-aviso');
+  if(a&&c&&r)a.style.display=(c.value==='herramienta'&&!r.checked)?'':'none';
 }
 async function pnlGuardar(){
   const g=id=>document.getElementById(id);
