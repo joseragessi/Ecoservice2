@@ -5121,6 +5121,14 @@ router.post('/api/panol/items', auth, async (req, res) => {
     };
     if (!fila.nombre) return res.status(422).json({ error: 'Falta el nombre' });
     if (fila.cantidad < 0) return res.status(422).json({ error: 'La cantidad no puede ser negativa' });
+    // Herramienta + no retornable = la salida la descuenta y se pierde del
+    // pañol. No se guarda esa combinación; para algo descartable existe "otro".
+    if (fila.categoria === 'herramienta' && !fila.retornable) {
+      return res.status(422).json({
+        error: 'Una herramienta tiene que volver al pañol. Si no vuelve, se descuenta del stock ' +
+          'en cada salida y se pierde del sistema. Para algo que se consume, usá la categoría "insumo" o "otro".',
+      });
+    }
 
     if (b.id) {
       const { error } = await supabase.from('panol_items').update(fila).eq('id', b.id);
