@@ -628,15 +628,53 @@ function repartoCentroCosto(f, objetivos) {
   return { ok: true, reparto, sin_codigo: [] };
 }
 
+// ── Paginación ───────────────────────────────────────────────
+// Los ÚNICOS parámetros que el API acepta (confirmado por Flexxus el 25-08):
+//   offset → número de PÁGINA, arranca en 0 y sube de a uno (0, 1, 2…)
+//   limit  → registros por página; sin él devuelve 200
+// Antes se mandaba offset como número de REGISTRO (offset=2000) y se probaban
+// a ciegas ~40 variantes (page, pagina, pagesize, cantidad, rows, take…) que
+// el API ignora: por eso el plan y los centros venían cortados.
+async function flxPaginado(ruta, mapear, opts = {}) {
+  const limit = opts.limit || 500;
+  const maxPaginas = opts.maxPaginas || 20;
+  const clave = opts.clave || (x => x.codigo);
+  const sep = ruta.includes('?') ? '&' : '?';
+  const porClave = new Map();
+  const paginas = [];
+  for (let p = 0; p < maxPaginas; p++) {
+    let arr;
+    try {
+      const d = await flx(`${ruta}${sep}offset=${p}&limit=${limit}`);
+      const l = d.data || d || [];
+      arr = mapear(Array.isArray(l) ? l : []);
+    } catch (e) {
+      paginas.push({ offset: p, error: String(e && e.message || e).slice(0, 120) });
+      break;
+    }
+    let nuevas = 0;
+    for (const x of arr) {
+      const k = clave(x);
+      if (!porClave.has(k)) { porClave.set(k, x); nuevas++; }
+    }
+    paginas.push({ offset: p, trajo: arr.length, nuevas });
+    if (arr.length < limit) break;   // página incompleta = era la última
+    if (!nuevas) break;              // el API ignoró offset y repitió: cortar
+  }
+  return { items: [...porClave.values()], paginas };
+}
+
 // Lista de centros de costo tal como los tiene Flexxus (para contrastar los
 // códigos de Maestros contra el ERP antes de imputar).
+const mapearCC = (l) => l.map(x => ({
+  codigo: Number(x.codigocentrocosto),
+  descripcion: String(x.descripcion || x.centro || ''),
+  activo: x.activo !== undefined ? x.activo : (x.estado !== undefined ? x.estado : null),
+})).filter(x => !isNaN(x.codigo));
+
 async function listarCentrosCosto() {
-  const d = await flx('/centrodecosto');
-  const l = d.data || d || [];
-  return (Array.isArray(l) ? l : []).map(x => ({
-    codigo: Number(x.codigocentrocosto),
-    descripcion: String(x.descripcion || x.centro || ''),
-  })).filter(x => !isNaN(x.codigo));
+  const { items } = await flxPaginado('/centrodecosto', mapearCC);
+  return items.map(x => ({ codigo: x.codigo, descripcion: x.descripcion }));
 }
 
 // Catálogo de respaldo: "Listado de Centros de Costo" de Flexxus del 10/08/2026
@@ -674,50 +712,26 @@ async function listarCentrosCostoTodos(forzar = false) {
   return _ccVuelo;
 }
 async function _listarCentrosCostoTodosInner(forzar = false) {
-  // CACHÉ (10-ago): antes esto disparaba 10 requests A FLEXXUS EN SERIE en cada
-  // click de "Imputar" (el preview de centro de costo lo llama siempre). Ahora
-  // las 10 variantes van EN PARALELO, el resultado queda cacheado 6 horas y las
-  // llamadas concurrentes comparten una sola ida (el chequeo vive en el wrapper).
-  const variantes = [
-    '/centrodecosto',
-    '/centrodecosto?limit=500',
-    '/centrodecosto?pagesize=500',
-    '/centrodecosto?cantidad=500',
-    '/centrodecosto?page=2',
-    '/centrodecosto?pagina=2',
-    '/centrodecosto?offset=40',
-    '/centrodecosto?activo=false',
-    '/centrodecosto?incluirinactivos=true',
-    '/centrodecosto?todos=true',
-  ];
-  const porCodigo = new Map();
-  const intentos = [];
-  const res = await Promise.all(variantes.map(ruta =>
-    flx(ruta).then(d => ({ ruta, d })).catch(e => ({ ruta, error: e }))));
-  for (const r of res) {
-    if (r.error) {
-      intentos.push({ ruta: r.ruta, ok: false, error: String(r.error.message || r.error).slice(0, 120) });
-      continue;
-    }
-    const l = r.d.data || r.d || [];
-    const arr = (Array.isArray(l) ? l : []).map(x => ({
-      codigo: Number(x.codigocentrocosto),
-      descripcion: String(x.descripcion || x.centro || ''),
-      activo: x.activo !== undefined ? x.activo : (x.estado !== undefined ? x.estado : null),
-    })).filter(x => !isNaN(x.codigo));
-    intentos.push({ ruta: r.ruta, ok: true, n: arr.length });
-    arr.forEach(c => { if (!porCodigo.has(c.codigo)) porCodigo.set(c.codigo, c); });
-  }
+  // Antes esto sondeaba 10 variantes en paralelo porque no se sabía cómo
+  // paginaba el API. Flexxus confirmó offset/limit el 25-08, así que ahora es
+  // una paginación normal: con limit=500 los 72 centros entran en una ida.
+  const { items, paginas } = await flxPaginado('/centrodecosto', mapearCC);
+  // origen='api' se marca acá, no al completar con el listado: un centro que
+  // exista en Flexxus pero todavía no esté en el listado impreso quedaba sin
+  // marcar y parecía inventado.
+  const porCodigo = new Map(items.map(c => [c.codigo, { ...c, origen: 'api' }]));
   const delApi = porCodigo.size;
-  // Completar con el listado impreso lo que el API no haya devuelto
+  // Red de seguridad: lo que el API no devuelva se completa con el listado
+  // impreso del 10/08. Si la paginación trae los 72, esto no aporta nada y se
+  // puede sacar; queda hasta confirmarlo contra producción.
   for (const [cod, desc] of Object.entries(CENTROS_COSTO_LISTADO)) {
     const n = Number(cod);
     if (!porCodigo.has(n)) porCodigo.set(n, { codigo: n, descripcion: desc, activo: null, origen: 'listado' });
-    else porCodigo.get(n).origen = 'api';
   }
   const valor = {
     centros: [...porCodigo.values()].sort((a, b) => a.codigo - b.codigo),
-    intentos,
+    intentos: paginas.map(p => ({ ruta: `/centrodecosto?offset=${p.offset}&limit=500`, ok: !p.error, n: p.trajo, error: p.error })),
+    paginas,
     del_api: delApi,
     del_listado: porCodigo.size - delApi,
   };
@@ -1222,10 +1236,11 @@ async function colocarClaseComprobante(cuit, claseNum, cuentaRubro) {
 // Rubros de BIENES DE USO tal como salen en Flexxus: son las subcuentas 121…
 // del plan de cuentas (12101001 HARDWARE Y SOFTWARE, 12101005 MAQUINAS Y
 // HERRAMIENTAS, 12101007 RODADOS, etc.). El plan SÍ se puede leer por API.
-const RUTAS_PLAN = ['/plancuentas', '/plandecuentas', '/cuentas', '/cuentascontables', '/cuentacontable',
-  '/contabilidad/cuentas', '/contabilidad/plancuentas', '/contabilidad/plandecuentas',
-  '/cuentasimputables', '/cuentascontable', '/contabilidad/cuenta', '/cuenta',
-  '/planctas', '/ctacontable', '/contabilidad/ctas', '/rubroscontables'];
+// Ruta del plan de cuentas. Flexxus confirmó el 25-08 que la correcta es
+// /planesdecuentas: /cuentas no existe y /plandecuentas da error de sintaxis.
+// /cuentascontables queda como respaldo porque en los logs respondió (consulta
+// FMA_CUENTASCONTABLES_V5), por si las dos exponen cosas distintas.
+const RUTAS_PLAN = ['/planesdecuentas', '/cuentascontables'];
 // Plan de cuentas COMPLETO (imputables). Sirve para sub-seleccionar la cuenta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
@@ -1243,17 +1258,7 @@ async function _listarPlanCuentasCacheado() {
   return r;
 }
 async function _listarPlanCuentas() {
-  // El API PAGINA (igual que /centrodecosto) y NO lo avisa: /cuentascontables
-  // devuelve solo las primeras 50 y quedan afuera las cuentas de gasto que se
-  // necesitan para Servicios/Otros (energía eléctrica, Ecogas, fletes…).
-  //
-  // OJO — bug corregido el 10-ago: antes solo se sondeaba si la primera
-  // respuesta traía menos de 3 grupos distintos mirando el PRIMER dígito del
-  // código. Esa primera página trae 111/112/113/115/121/211/220/427, o sea
-  // los dígitos 1, 2 y 4 → 3 grupos → el sondeo NUNCA se disparaba y el plan
-  // quedaba cortado en 50. Ahora se sondea SIEMPRE, en rondas, y se corta
-  // cuando una ronda entera no aporta ninguna cuenta nueva.
-  const mapear = (l) => (Array.isArray(l) ? l : []).map(x => ({
+  const mapear = (l) => l.map(x => ({
     codigo: String(x.codigocuenta ?? x.codigo ?? x.numero ?? x.cuenta ?? ''),
     descripcion: String(x.descripcion ?? x.nombre ?? x.detalle ?? ''),
     imputable: (x.imputable === undefined && x.esimputable === undefined) ? null
@@ -1261,52 +1266,13 @@ async function _listarPlanCuentas() {
   })).filter(x => x.codigo);
 
   for (const ruta of RUTAS_PLAN) {
-    let base = [];
-    try {
-      const d = await flx(ruta);
-      base = mapear(d.data || d || []);
-    } catch (e) { continue; }
-    if (!base.length) continue;
-
-    const porCodigo = new Map(base.map(c => [c.codigo, c]));
-    const sondeo = [];                       // qué trajo cada variante (diagnóstico)
-    const paso = base.length || 50;          // tamaño real de la página
-
-    // Dispara un lote de variantes EN PARALELO (en serie tardaba ~24s) y
-    // devuelve cuántas cuentas NUEVAS aportó el lote.
-    const probar = async (sufijos) => {
-      const res = await Promise.all(sufijos.map(sf =>
-        flx(ruta + sf)
-          .then(d => ({ sf, arr: mapear(d.data || d || []) }))
-          .catch(e => ({ sf, arr: [], error: String(e && e.message || e).slice(0, 80) }))));
-      let total = 0;
-      for (const r of res) {
-        let nuevas = 0;
-        for (const c of r.arr) if (!porCodigo.has(c.codigo)) { porCodigo.set(c.codigo, c); nuevas++; }
-        total += nuevas;
-        sondeo.push({ variante: r.sf, trajo: r.arr.length, nuevas, error: r.error });
-      }
-      return total;
-    };
-
-    // 1) variantes "traeme todo de una"
-    await probar(['?limit=1000', '?pagesize=1000', '?cantidad=1000', '?todos=true',
-      '?rows=1000', '?take=1000', '?limite=1000']);
-    // 2) paginado por página y por offset, en rondas de 4 páginas, hasta que
-    //    una ronda entera no traiga nada nuevo (si el API ignora el parámetro
-    //    devuelve siempre la misma página → 0 nuevas → corta en la 1ª ronda).
-    for (let ronda = 0; ronda < 8; ronda++) {
-      const suf = [];
-      for (let k = 1; k <= 4; k++) {
-        const n = ronda * 4 + k;             // 1 = segunda página
-        suf.push('?page=' + (n + 1), '?pagina=' + (n + 1),
-          '?offset=' + (paso * n), '?desde=' + (paso * n));
-      }
-      if (!await probar(suf)) break;
-    }
-
-    const cuentas = [...porCodigo.values()].sort((a, b) => a.codigo.localeCompare(b.codigo));
-    return { cuentas, ruta, base: base.length, sondeo };
+    const { items, paginas } = await flxPaginado(ruta, mapear, { clave: x => x.codigo });
+    if (!items.length) continue;
+    const cuentas = items.sort((a, b) => a.codigo.localeCompare(b.codigo));
+    // `sondeo` se mantiene por compatibilidad con el endpoint del panel, que
+    // lo muestra como diagnóstico; ahora son las páginas que se leyeron.
+    const sondeo = paginas.map(p => ({ variante: `?offset=${p.offset}`, trajo: p.trajo, nuevas: p.nuevas, error: p.error }));
+    return { cuentas, ruta, base: (paginas[0] && paginas[0].trajo) || 0, sondeo };
   }
   return { cuentas: [], ruta: null, base: 0, sondeo: [] };
 }
