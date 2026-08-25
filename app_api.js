@@ -1034,6 +1034,17 @@ router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (re
     if (item.retornable && !b.retorno_previsto) {
       return res.status(422).json({ error: 'Poné cuándo vuelve' });
     }
+    // Una HERRAMIENTA marcada como no retornable es una contradicción: la
+    // salida la descontaría del stock y el movimiento nacería cerrado, así que
+    // la herramienta desaparece del pañol sin que nadie vea nada raro (pasó
+    // con 4 motosierras T435 en agosto de 2026). Antes de descontar, se frena.
+    if (!item.retornable && item.categoria === 'herramienta') {
+      return res.status(422).json({
+        error: `"${item.nombre}" está cargada como herramienta pero marcada como que NO vuelve al pañol. ` +
+          'Así, esta salida la descontaría del stock y la herramienta se perdería del sistema. ' +
+          'Avisale al encargado del pañol para que la corrija en Maestros antes de entregarla.',
+      });
+    }
 
     const { data: obj } = await supabase.from('objetivos').select('nombre').eq('id', b.objetivo_id).maybeSingle();
     const { data, error } = await supabase.from('panol_movimientos').insert({
