@@ -1854,6 +1854,39 @@ router.get('/api/services', auth, async (req, res) => {
   }
 });
 
+// Cambiar a qué mecánico se le atribuye un service. Las planillas llegan en
+// papel y muchas veces las carga uno solo para todo el taller, así que desde
+// el panel se corrige a quién le corresponde el punto.
+router.patch('/api/services/:id/mecanico', auth, async (req, res) => {
+  try {
+    const id = String((req.body || {}).mecanico_id || '') || null;
+    const { data: sv, error: eS } = await supabase
+      .from('services_unidades').select('id, data, mecanico_nombre')
+      .eq('id', req.params.id).maybeSingle();
+    if (eS) throw eS;
+    if (!sv) return res.status(404).json({ error: 'No encontr\u00e9 ese service' });
+
+    let fila = { mecanico_id: null, mecanico_nombre: null };
+    if (id) {
+      const { data: m } = await supabase.from('mecanicos')
+        .select('id, nombre').eq('id', id).maybeSingle();
+      if (!m) return res.status(422).json({ error: 'Ese mec\u00e1nico no existe' });
+      fila = { mecanico_id: m.id, mecanico_nombre: m.nombre };
+    }
+    const { error } = await supabase.from('services_unidades')
+      .update(fila).eq('id', sv.id);
+    if (error) throw error;
+
+    const d = sv.data || {};
+    console.log(`[services] ${sv.id} (${d.unidad || d.patente || 's/unidad'}) reasignado: ` +
+      `${sv.mecanico_nombre || '\u2014'} \u2192 ${fila.mecanico_nombre || '(sin asignar)'} \u00b7 por ${req.usuario || '?'}`);
+    res.json({ ok: true, mecanico_nombre: fila.mecanico_nombre });
+  } catch (err) {
+    console.error('reasignar service:', err);
+    res.status(500).json({ error: 'No pude cambiar el mec\u00e1nico' });
+  }
+});
+
 // Borrar una planilla de service. Se cargan por foto + IA desde la app, así
 // que una mal leída o repetida tenía que quedar para siempre. Queda el log
 // con quién la borró y de qué unidad era.
@@ -3030,8 +3063,8 @@ function expandirFactura(d) {
 router.get('/api/compras/plan-cuentas', auth, async (req, res) => {
   try {
     const { listarPlanCuentas } = require('./flexxus');
-    // ?refrescar=1 saltea la caché de 30 min (útil después de tocar el sondeo:
-    // si no, la respuesta cortada seguía viva media hora).
+    // ?refrescar=1 saltea la caché de 6 h (útil después de tocar la paginación:
+    // si no, la respuesta cortada seguía viva 6 horas).
     const forzar = ['1', 'true', 'si'].includes(String(req.query.refrescar || '').toLowerCase());
     const { cuentas, ruta, base, sondeo } = await listarPlanCuentas(forzar);
     const pref = String(req.query.prefijo || '').trim();
