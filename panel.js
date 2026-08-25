@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-25 · asignar mecánico al service';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-25 · bateas por objetivo sin cortar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1309,7 +1309,10 @@ async function vBateas(view){
     <div class="panel" style="margin-bottom:16px"><div class="panel-title" style="margin-bottom:10px">Bateas por objetivo
       <button class="btn-salir" style="padding:3px 9px;font-size:11px;float:right" onclick="verAliasObjetivos()">🏷 Alias</button></div>
       ${(ind.por_objetivo||[]).length?(function(){const mx=Math.max(...ind.por_objetivo.map(o=>o.bateas),1);
-        return ind.por_objetivo.slice(0,10).map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('');})()
+        // Sin cortar: antes mostraba solo los 10 primeros y los objetivos con
+        // pocas bateas quedaban invisibles, como si no se hubieran contado.
+        return ind.por_objetivo.map(o=>`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>${o.nombre}</span><span class="mono">${o.bateas} bat · ${o.m3.toLocaleString('es-AR')} m³</span></div><div style="height:7px;background:var(--papel);border-radius:4px"><div style="width:${Math.round(o.bateas*100/mx)}%;height:100%;background:var(--brote);border-radius:4px"></div></div></div>`).join('')
+          +`<div class="sub" style="font-size:11.5px;margin-top:9px">${ind.por_objetivo.length} objetivo${ind.por_objetivo.length===1?'':'s'} · ${ind.por_objetivo.reduce((s,o)=>s+o.bateas,0)} bateas en total</div>`;})()
         :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
     </div>
     <div class="panel-title" style="margin-bottom:8px">Detalle de jornadas</div>
