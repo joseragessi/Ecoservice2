@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-25 · guarda herramienta/consumible en pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-25 · asignar mecánico al service';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4803,7 +4803,17 @@ function pintarSvLista(){
     <td style="font-weight:600">${escStk(d.unidad||d.patente||'—')}${d.patente&&d.unidad?`<div class="sub mono">${escStk(d.patente)}</div>`:''}</td>
     <td class="mono">${escStk(d.km_horas||'—')}</td>
     <td class="mono">${escStk(d.proximo_service||'—')}</td>
-    <td>${escStk(s.mecanico_nombre||d.mecanico||'—')}</td>
+    <td onclick="event.stopPropagation()">
+      <select onchange="svReasignar('${s.id}',this.value)" title="A quién se le suma el punto de este service"
+        style="padding:5px 8px;border:1px solid var(--linea);border-radius:7px;font-family:inherit;font-size:12.5px;max-width:170px">
+        <option value="">— sin asignar —</option>
+        ${(mecanicos||[]).filter(m=>m.activo!==false).map(m=>`<option value="${m.id}" ${s.mecanico_id===m.id?'selected':''}>${escStk(m.nombre)}</option>`).join('')}
+        ${s.mecanico_nombre&&!(mecanicos||[]).some(m=>m.id===s.mecanico_id)
+          ?`<option value="" selected>${escStk(s.mecanico_nombre)} (no está en el maestro)</option>`:''}
+      </select>
+      ${d.mecanico&&normNomSv(d.mecanico)!==normNomSv(s.mecanico_nombre)&&!/^panel\s*·/i.test(d.mecanico)
+        ?`<div class="sub" style="font-size:10.5px;margin-top:2px" title="Nombre leído de la planilla por la IA">📄 dice: ${escStk(d.mecanico)}</div>`:''}
+    </td>
     <td style="text-align:right"><button class="mini-btn" title="Eliminar este service"
       onclick="event.stopPropagation();svBorrar('${s.id}')">🗑</button></td>
   </tr>`;}).join('')
@@ -4812,6 +4822,25 @@ function pintarSvLista(){
       :'Todavía no hay services cargados. Se cargan desde la app del mecánico (pestaña Service).'}</div></td></tr>`;
   const c=document.getElementById('sv-cuenta');
   if(c)c.textContent=fs.length===total?`${total} service${total===1?'':'s'}`:`${fs.length} de ${total} services`;
+}
+const normNomSv=v=>String(v||'').toLowerCase().normalize('NFD')
+  .replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
+/* Reasignar el service a otro mecánico. El papel llega al taller y muchas
+   veces lo carga uno solo para todos, así que el punto tiene que poder
+   moverse a quien de verdad hizo el trabajo. */
+async function svReasignar(id,mecId){
+  const s=(svPanelData||[]).find(x=>x.id===id);if(!s)return;
+  const antes={mecanico_id:s.mecanico_id,mecanico_nombre:s.mecanico_nombre};
+  try{
+    const r=await api('/api/services/'+id+'/mecanico',{method:'PATCH',body:JSON.stringify({mecanico_id:mecId||null})});
+    s.mecanico_id=mecId||null;s.mecanico_nombre=r.mecanico_nombre||null;
+    toast(r.mecanico_nombre?'Service asignado a '+r.mecanico_nombre:'Service sin asignar');
+    pintarSvLista();
+  }catch(e){
+    s.mecanico_id=antes.mecanico_id;s.mecanico_nombre=antes.mecanico_nombre;
+    toast(e.message||'No pude cambiar el mecánico','error');
+    pintarSvLista();   // vuelve el select a lo que estaba
+  }
 }
 /* Borrar una planilla mal cargada. Se cargan por foto + IA, así que una mal
    leída o repetida no tenía forma de salir. Pide confirmación con la unidad y
