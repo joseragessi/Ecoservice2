@@ -21,9 +21,19 @@ function base() {
 }
 
 // ── Login con cache de token ─────────────────────────────────
-let _tok = null;   // { token, vence (epoch ms) }
+let _tok = null;       // { token, vence (epoch ms) }
+let _loginVuelo = null;  // login en curso, para no disparar varios a la vez
 
 async function login() {
+  // Si ya hay un login en vuelo, todos esperan ESE. Sin esto, un lote de
+  // llamadas en paralelo (Promise.all) encuentra el cache vacío y cada una
+  // dispara su propio login: el 25-08 salieron 7 de una en el mismo segundo.
+  if (_loginVuelo) return _loginVuelo;
+  _loginVuelo = _login().finally(() => { _loginVuelo = null; });
+  return _loginVuelo;
+}
+
+async function _login() {
   const body = new URLSearchParams({
     username: process.env.FLEXXUS_USER || '',
     password: process.env.FLEXXUS_PASS || '',
@@ -38,9 +48,17 @@ async function login() {
   if (!r.ok || !d.token) {
     throw new Error('Login Flexxus falló (' + r.status + '): ' + (d.message || d.error || 'revisá FLEXXUS_USER/PASS'));
   }
-  // expireIn viene en epoch seconds; renovamos 5 min antes
-  _tok = { token: d.token, vence: (Number(d.expireIn) || (Date.now() / 1000 + 3600)) * 1000 - 5 * 60 * 1000 };
-  console.log('[flexxus] login OK');
+  // expireIn puede venir de dos formas y no está documentado cuál: como
+  // INSTANTE (epoch en segundos, ~1.8e9 hoy) o como DURACIÓN (86400 = 24 h).
+  // Tomarlo siempre como instante daba una fecha de 1970 con la segunda forma
+  // → token vencido siempre → login en cada request. Se distingue por tamaño.
+  const exp = Number(d.expireIn) || 0;
+  const SEG = 1000;
+  const venceSeg = exp <= 0 ? (Date.now() / SEG + 3600)     // sin dato: 1 h
+    : exp < 1e9 ? (Date.now() / SEG + exp)                   // duración
+    : exp;                                                   // epoch
+  _tok = { token: d.token, vence: venceSeg * SEG - 5 * 60 * SEG };   // 5 min de margen
+  console.log(`[flexxus] login OK · token válido hasta ${new Date(_tok.vence).toISOString()}`);
   return _tok.token;
 }
 
