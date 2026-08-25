@@ -1356,6 +1356,8 @@ function svFoto(input){
         body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
       if(d.__error){$('sv-msg').textContent=d.__error;return;}
       svData=d;svData.tareas=svData.tareas||[];svData.repuestos_entregados=svData.repuestos_entregados||[];
+      svMecSel=null;
+      await svCargarMecs();
       render();
     }catch(e){$('sv-msg').textContent='Error: '+e.message;}
   };
@@ -1387,6 +1389,12 @@ function renderSvRevision(){
       <div id="sv-reps">${d.repuestos_entregados.map((r,i)=>svRepRow(r,i)).join('')||'<div class="desc">Ninguno leído.</div>'}</div>
       <button class="btn sec" style="margin-top:6px" onclick="svData.repuestos_entregados.push({repuesto:'',marca:'',cantidad:1,codigo:''});render()">＋ Agregar repuesto</button>
       ${svCampo('sv-obs','Observaciones',d.observaciones)}
+      <div class="dl" style="margin:12px 0 6px">¿Quién hizo este service?</div>
+      <select id="sv-mec" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;font-family:inherit;background:#fff">
+        ${(svMecs||[]).map(m=>`<option value="${m.id}" ${String(svMecSel||(miMec()||{}).id||'')===String(m.id)?'selected':''}>${m.nombre}</option>`).join('')
+          ||`<option value="">${localStorage.getItem('eco_app_nombre')||'Yo'}</option>`}
+      </select>
+      <div class="desc" style="font-size:12px;margin-top:4px">El puntaje del service va para el que elijas acá. Si la planilla es tuya, dejalo como está.</div>
       <button class="btn" style="margin-top:12px" onclick="svGuardar()">✓ ${svEditId?'Guardar cambios':'Guardar service'}</button>
       <button class="btn sec" style="margin-top:8px" onclick="svData=null;svEditId=null;render()">Cancelar</button>
     </div>`;
@@ -1427,6 +1435,19 @@ function svRepRow(r,i){
   </div>`;
 }
 // Vuelca lo que hay en los inputs a svData (antes de borrar filas o guardar)
+// Mecánicos que se pueden elegir como responsables del service. Se piden una
+// sola vez por sesión: la lista cambia muy poco y la app anda con poca señal.
+let svMecs=null, svMecSel=null;
+// El login no guarda el id del mecánico, solo el nombre, así que el que está
+// usando la app se ubica por nombre dentro de la lista.
+const miMec=()=>{
+  const n=(localStorage.getItem('eco_app_nombre')||'').toLowerCase().trim();
+  return (svMecs||[]).find(m=>String(m.nombre||'').toLowerCase().trim()===n)||null;
+};
+async function svCargarMecs(){
+  if(svMecs!==null)return;
+  try{svMecs=await api('/api/app/mecanicos');}catch(e){svMecs=[];}
+}
 function svLeer(){
   const d=svData;if(!d)return;
   d.fecha_service=$('sv-fecha')?.value.trim()||null;
@@ -1437,6 +1458,9 @@ function svLeer(){
   d.km_horas=$('sv-km')?.value.trim()||null;
   d.proximo_service=$('sv-prox')?.value.trim()||null;
   d.observaciones=$('sv-obs')?.value.trim()||null;
+  // A quién se le atribuye el service (el punto va ahí). Por defecto, quien
+  // está usando la app; muchas veces uno carga la planilla de un compañero.
+  d.mecanico_id=$('sv-mec')?.value||null;
   d.tareas=d.tareas.map((t,i)=>({
     tarea:$('sv-t-n-'+i)?.value.trim()||t.tarea||'',
     repuestos:$('sv-t-r-'+i)?.value.trim()||'',
@@ -1450,13 +1474,15 @@ function svLeer(){
   })).filter(r=>r.repuesto);
 }
 // Cargar un service guardado en el formulario de revisión para corregirlo
-function svEditar(id){
+async function svEditar(id){
   const s=(svHist||[]).find(x=>x.id===id);if(!s)return;
+  await svCargarMecs();
   const d=s.data||{};
   svData={...d,
     tareas:(d.tareas||[]).map(t=>({...t})),
     repuestos_entregados:(d.repuestos_entregados||[]).map(r=>({...r}))};
   svEditId=id;
+  svMecSel=s.mecanico_id||null;
   render();
 }
 async function svGuardar(){
