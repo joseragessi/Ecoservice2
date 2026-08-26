@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-26 · caché de vistas + gzip';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-26 · avisa cambios de otros usuarios';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -458,55 +458,77 @@ async function refrescarContadores(){
 
 /* ===== Navegación ===== */
 const CRUMB={dashboard:'Dashboard',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock',movimientos:'Movimientos'};
-let _autoRefreshTimer=null, _vistaActual=null;
+let _vistaActual=null;
 // AJUSTE 11-ago (pedido de José): la pantalla se recargaba sola cada 5 minutos
 // y era molesto. Ahora cada 4 horas — alcanza de sobra, y si querés datos
 // frescos ya, cambiás de módulo o apretás F5.
-const AUTO_REFRESH_MS=4*60*60*1000; // 4 horas
-const MODULOS_AUTOREFRESH=['reparaciones','compras','insumos','movimientos'];
-// Watcher de novedades en Reparaciones: cada 5 min compara una firma liviana
-// (estado de cada incidencia + estado de cada pedido de repuestos + cantidad
-// de comentarios). Solo repinta si algo CAMBIÓ de verdad —nueva incidencia,
-// respuesta de compras, avance de estado—; si no cambió nada, no toca la
-// pantalla. Antes chequeaba cada 90s: bajaba el ruido pero pegaba seguido.
+// (el viejo refresco a ciegas cada 4 h se reemplazó por la detección de
+//  cambios de más abajo, que corre en TODOS los módulos)
+// (El watcher viejo de Reparaciones se eliminó: cada 5 min se bajaba las 145
+//  incidencias enteras —249 KB— solo para comparar una firma. La detección de
+//  cambios de abajo hace lo mismo con 200 bytes y sirve para todos los
+//  módulos. _repFirma se conserva porque go() la resetea.)
 let _repFirma=null;
-setInterval(async function(){
-  if(_vistaActual!=='reparaciones')return;
-  try{
-    const reps=await api('/api/reparaciones');
-    const firma=reps.map(r=>r.id+':'+r.estado
-      +':'+((r.repuestos_taller||[]).map(x=>x.id+'-'+x.estado).join('|'))
-      +':'+((r.comentarios_incidencias||[]).length)).sort().join(';');
-    if(_repFirma===null){_repFirma=firma;return;}
-    if(firma===_repFirma)return;
-    _repFirma=firma;
-    const hayModal=document.querySelector('.modal-bg.abierto');
-    if(_vistaActual==='reparaciones'&&!hayModal&&!repDetalleAbierto){
-      go('reparaciones');
-      toast('Hay novedades en reparaciones — actualizado','info');
-    }else{
-      toast('Hay novedades en reparaciones (se actualiza al cerrar lo que estás viendo)','info');
-    }
-  }catch(e){}
-},5*60*1000);
+/* Detección de cambios (reemplaza el auto-refresh a ciegas cada 4 h).
+   La idea: no recargar cada tanto —eso corta el trabajo— sino solo cuando
+   OTRA persona modificó algo. Cada 25 s se pide /api/cambios, que devuelve
+   contadores en memoria del servidor (unos 200 bytes, cero consultas a la
+   base). Si el contador del módulo que estás mirando no se movió, no pasa
+   nada en pantalla.
+   Cuando sí hay cambios:
+     · si no estás en el medio de algo → se refresca solo
+     · si tenés un modal o un detalle abierto → aparece un cartelito arriba
+       y actualizás vos cuando querés. Nunca te pisa lo que estás haciendo. */
+const CAMBIOS_CADA_MS=25*1000;
+let _cambiosVistos=null, _cambiosArranque=null, _cambiosTimer=null;
+
+function estoyOcupado(v){
+  if(document.querySelector('.modal-bg.abierto'))return true;
+  if(v==='reparaciones'&&repDetalleAbierto)return true;
+  if(v==='compras'&&(comprasVer!=null||comprasMode==='carga'||comprasMode==='detalle'))return true;
+  // Si estás tipeando en algún campo, tampoco se toca la pantalla.
+  const a=document.activeElement;
+  if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return true;
+  return false;
+}
+function avisarCambios(v){
+  let el=document.getElementById('aviso-cambios');
+  if(!el){
+    el=document.createElement('div');
+    el.id='aviso-cambios';
+    el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;'+
+      'background:var(--brote,#2E7D45);color:#fff;padding:9px 16px;border-radius:22px;font-size:13px;'+
+      'box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer;font-family:inherit';
+    el.onclick=()=>{el.remove();invalidarCacheApi();go(_vistaActual);};
+    document.body.appendChild(el);
+  }
+  el.textContent='Hay cambios nuevos · tocá para actualizar';
+}
 function programarAutoRefresh(v){
-  clearTimeout(_autoRefreshTimer);
-  if(!MODULOS_AUTOREFRESH.includes(v))return;
-  _autoRefreshTimer=setTimeout(function tick(){
-    // No refrescar si: cambiaste de módulo, hay un modal abierto, o estás
-    // mirando/editando un detalle (para no patearte lo que tenés en pantalla)
-    const hayModal=document.querySelector('.modal-bg.abierto');
-    const hayDetalle=(v==='reparaciones'&&repDetalleAbierto)||(v==='compras'&&(comprasVer!=null||comprasMode==='carga'||comprasMode==='detalle'));
-    if(_vistaActual===v&&!hayModal&&!hayDetalle){
-      _repFirma=null;              // el watcher rearma su firma tras el refresh
-      invalidarCacheApi();         // el refresh tiene que traer datos frescos
-      perfServices=null;
-      go(v);                       // recarga el módulo
-      toast('Datos actualizados','info');
-    }else{
-      _autoRefreshTimer=setTimeout(tick,10*60*1000); // ocupado: reintenta en 10 min
-    }
-  },AUTO_REFRESH_MS);
+  clearTimeout(_cambiosTimer);
+  const el=document.getElementById('aviso-cambios');if(el)el.remove();
+  _cambiosTimer=setTimeout(async function tick(){
+    try{
+      const c=await api('/api/cambios');
+      // El servidor se reinició: los contadores volvieron a cero. Se
+      // resincroniza en silencio en vez de avisar un cambio que no hubo.
+      if(_cambiosArranque!==null&&c.arranque!==_cambiosArranque){
+        _cambiosVistos=c.modulos;_cambiosArranque=c.arranque;
+      }else if(_cambiosVistos===null){
+        _cambiosVistos=c.modulos;_cambiosArranque=c.arranque;
+      }else if((c.modulos[v]||0)>(_cambiosVistos[v]||0)){
+        _cambiosVistos=c.modulos;
+        if(_vistaActual===v&&!estoyOcupado(v)){
+          _repFirma=null;
+          invalidarCacheApi();
+          go(v);
+          return;                 // go() reprograma el timer
+        }
+        if(_vistaActual===v)avisarCambios(v);
+      }
+    }catch(e){/* sin conexión: se reintenta en el próximo ciclo */}
+    _cambiosTimer=setTimeout(tick,CAMBIOS_CADA_MS);
+  },CAMBIOS_CADA_MS);
 }
 function go(v){
   if(!puedeVer(v)){toastPermiso();return;}
