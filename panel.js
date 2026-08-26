@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-25 · bateas por objetivo sin cortar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-25 · guarda de máquinas en pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -156,7 +156,12 @@ async function api(ruta, opts={}) {
     headers:{ 'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{}), ...(opts.headers||{}) }});
   if (r.status===401){ salir(); throw new Error('Sesión vencida'); }
   if (r.status===423){ mostrarBloqueo(); throw new Error('Sistema bloqueado'); }  // PIN vencido
-  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error||'Error');
+  if (!r.ok) {
+    const d = await r.json().catch(()=>({}));
+    const e = new Error(d.error||'Error');
+    Object.assign(e, d);   // deja pasar flags del backend (ej. requiere_confirmacion)
+    throw e;
+  }
   return r.json();
 }
 
@@ -2005,8 +2010,11 @@ async function vReportes(view){
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
     <div class="kpi"><div class="kpi-label">Reparaciones</div><div class="kpi-val">${r.total}</div>
       <div class="kpi-sub">${r.finalizadas} finalizadas · ${r.abiertas} abiertas</div></div>
-    <div class="kpi"><div class="kpi-label">Resolución promedio</div><div class="kpi-val">${r.dias_prom}<span style="font-size:15px"> d</span></div>
-      <div class="kpi-sub">mediana ${r.dias_mediana} d · peor ${r.dias_peor} d</div></div>
+    <div class="kpi"><div class="kpi-label">Tardó en cerrar</div><div class="kpi-val">${r.dias_prom}<span style="font-size:15px"> d</span></div>
+      <div class="kpi-sub">mediana ${r.dias_mediana} d · peor ${r.dias_peor} d · solo las ${r.finalizadas} cerradas</div></div>
+    ${(r.pendientes&&r.pendientes.cantidad)?`<div class="kpi"><div class="kpi-label">Abiertas hace</div>
+      <div class="kpi-val">${r.pendientes.dias_prom}<span style="font-size:15px"> d</span></div>
+      <div class="kpi-sub">mediana ${r.pendientes.dias_mediana} d · la más vieja ${r.pendientes.dias_peor} d · ${r.pendientes.cantidad} sin cerrar${r.pendientes.esperando_repuestos?` (${r.pendientes.esperando_repuestos} esperando repuestos)`:''}</div></div>`:''}
     <div class="kpi"><div class="kpi-label">Reingresos</div><div class="kpi-val" style="color:${r.reingresos.porcentaje>10?'var(--rojo)':'inherit'}">${r.reingresos.porcentaje}%</div>
       <div class="kpi-sub">${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla</div></div>
     ${r.sin_reparar?`<div class="kpi"><div class="kpi-label">Cerradas sin reparar</div>
@@ -2190,7 +2198,8 @@ function imprimirReporte(){
     <div class="sec">
       <div class="kpis">
         ${kpi('Reparaciones',r.total,`${r.finalizadas} finalizadas · ${r.abiertas} abiertas`)}
-        ${kpi('Resolución promedio',r.dias_prom+' d',`mediana ${r.dias_mediana} d · peor ${r.dias_peor} d`)}
+        ${kpi('Tardó en cerrar',r.dias_prom+' d',`mediana ${r.dias_mediana} d · peor ${r.dias_peor} d · solo las ${r.finalizadas} cerradas`)}
+        ${(r.pendientes&&r.pendientes.cantidad)?kpi('Abiertas hace',r.pendientes.dias_prom+' d',`mediana ${r.pendientes.dias_mediana} d · la más vieja ${r.pendientes.dias_peor} d · ${r.pendientes.cantidad} sin cerrar`):''}
         ${kpi('Reingresos',r.reingresos.porcentaje+'%',`${r.reingresos.cantidad} volvieron · ${r.reingresos.misma_falla} misma falla`,r.reingresos.porcentaje>10?'#DC4A5B':'')}
         ${kpi('Paradas hoy',r.parados_ahora!=null?r.parados_ahora:'—',`${r.parados} estuvieron paradas en el mes`,r.parados_ahora?'#DC4A5B':'')}
       </div>
@@ -2784,10 +2793,23 @@ async function pnlGuardar(){
     ubicacion:g('pl-ubi').value.trim(),notas:g('pl-notas').value.trim()};
   if(g('pl-activo'))body.activo=g('pl-activo').checked;
   if(!body.nombre)return alert('Poné el nombre del ítem.');
-  try{
+  const mandar=async()=>{
     await api('/api/panol/items',{method:'POST',body:JSON.stringify(body)});
     cerrarMaestro();pnlEdit=null;pnlData=null;go('stock');
-  }catch(e){alert('No pude guardar: '+(e.message||''));}
+  };
+  try{ await mandar(); }
+  catch(e){
+    // El backend avisa cuando el nombre suena a máquina pero está como
+    // consumible. Puede ser un falso positivo legítimo (un "Filtro giro cero"
+    // no es un giro cero), así que se confirma en vez de bloquear.
+    if(e.requiere_confirmacion){
+      if(!confirm(e.message+'\n\n¿Guardarlo igual como consumible?'))return;
+      body.confirmar_consumible=true;
+      try{ await mandar(); }catch(e2){ alert('No pude guardar: '+(e2.message||'')); }
+      return;
+    }
+    alert('No pude guardar: '+(e.message||''));
+  }
 }
 async function pnlBorrar(id){
   const it=(pnlData.items||[]).find(x=>x.id===id);
