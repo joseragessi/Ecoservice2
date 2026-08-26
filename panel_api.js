@@ -4145,26 +4145,23 @@ function mensajeStock(periodo, nombre) {
 router.get('/api/stock', auth, async (req, res) => {
   try {
     const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
-    const { data: censos, error: e1 } = await supabase
-      .from('censos_stock')
-      .select('*, objetivos(nombre), capataces(nombre), censos_stock_items(*)')
-      .eq('periodo', periodo)
-      .order('created_at', { ascending: true });
-    if (e1) throw e1;
-    const { data: pers, error: e2 } = await supabase
-      .from('censos_stock').select('periodo');
-    if (e2) throw e2;
-    const periodos = [...new Set([periodoStockActual(), ...(pers || []).map(p => p.periodo)])]
+    // Las cuatro consultas son independientes entre sí: en serie sumaban cuatro
+    // idas y vueltas a Supabase (el endpoint tardaba ~617 ms para 55 KB).
+    const [rCensos, rPers, rObjs, rCaps] = await Promise.all([
+      supabase.from('censos_stock')
+        .select('*, objetivos(nombre), capataces(nombre), censos_stock_items(*)')
+        .eq('periodo', periodo)
+        .order('created_at', { ascending: true }),
+      supabase.from('censos_stock').select('periodo'),
+      // Candidatos para pedir stock: objetivos operativos activos, con su
+      // capataz y el estado del censo de este período (si ya existe).
+      supabase.from('objetivos').select('id, nombre, tipo').eq('activo', true).eq('tipo', 'operativo'),
+      supabase.from('capataces').select('nombre, telefono, objetivo_id').eq('activo', true),
+    ]);
+    for (const r of [rCensos, rPers, rObjs, rCaps]) if (r.error) throw r.error;
+    const censos = rCensos.data, objs = rObjs.data, caps = rCaps.data;
+    const periodos = [...new Set([periodoStockActual(), ...((rPers.data) || []).map(p => p.periodo)])]
       .sort().reverse();
-
-    // Candidatos para pedir stock: objetivos operativos activos, con su capataz
-    // y el estado del censo de este período (si ya existe).
-    const { data: objs, error: e3 } = await supabase
-      .from('objetivos').select('id, nombre, tipo').eq('activo', true).eq('tipo', 'operativo');
-    if (e3) throw e3;
-    const { data: caps, error: e4 } = await supabase
-      .from('capataces').select('nombre, telefono, objetivo_id').eq('activo', true);
-    if (e4) throw e4;
     const estadoPorObj = {};
     (censos || []).forEach(c => { estadoPorObj[c.objetivo_id] = c.estado; });
     const candidatos = (objs || []).map(o => {
