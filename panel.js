@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-25 · guarda de máquinas en pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-26 · caché de vistas + gzip';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -151,7 +151,26 @@ function railEstado(idx,total,amber){let s='';for(let i=0;i<total;i++)s+=`<div c
 function railLabels(labels,idx){return `<div class="rail-labels">${labels.map((l,i)=>`<span class="${i===idx?'cur':''}">${l}</span>`).join('')}</div>`}
 
 /* ===== API ===== */
+/* Caché corta de lecturas. El problema que resuelve: cambiar de pestaña
+   dentro de un módulo llamaba a go(), y go() volvía a pedir el endpoint
+   entero aunque los datos no hubieran cambiado — 543 ms y 249 KB por clic
+   para ir de Resumen a Services.
+   Cualquier escritura (POST/PATCH/PUT/DELETE) borra la caché completa, así
+   que un cambio propio se ve siempre al instante. Los 30 s solo pueden
+   demorar un cambio hecho por OTRA persona desde la app. */
+const CACHE_TTL_MS=30*1000;
+const _cacheApi=new Map();   // ruta -> {t, data}
+function invalidarCacheApi(){ _cacheApi.clear(); if(typeof perfServices!=='undefined')perfServices=null; }
+async function apiC(ruta){
+  const hit=_cacheApi.get(ruta);
+  if(hit && Date.now()-hit.t < CACHE_TTL_MS) return hit.data;
+  const data=await api(ruta);
+  _cacheApi.set(ruta,{t:Date.now(),data});
+  return data;
+}
 async function api(ruta, opts={}) {
+  // Toda escritura invalida: nunca mostrar datos viejos después de un cambio.
+  if((opts.method||'GET').toUpperCase()!=='GET') invalidarCacheApi();
   const r = await fetch(ruta, { ...opts,
     headers:{ 'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{}), ...(opts.headers||{}) }});
   if (r.status===401){ salir(); throw new Error('Sesión vencida'); }
@@ -480,6 +499,8 @@ function programarAutoRefresh(v){
     const hayDetalle=(v==='reparaciones'&&repDetalleAbierto)||(v==='compras'&&(comprasVer!=null||comprasMode==='carga'||comprasMode==='detalle'));
     if(_vistaActual===v&&!hayModal&&!hayDetalle){
       _repFirma=null;              // el watcher rearma su firma tras el refresh
+      invalidarCacheApi();         // el refresh tiene que traer datos frescos
+      perfServices=null;
       go(v);                       // recarga el módulo
       toast('Datos actualizados','info');
     }else{
@@ -5290,7 +5311,7 @@ async function vRepInd(view){
 async function vReparaciones(view){
   repDetalleAbierto=false;
   try{
-    repData=await api('/api/reparaciones');
+    repData=await apiC('/api/reparaciones');
     if(repTab==='services'){vRepServices(view);return;}
     if(repTab==='preventivo'){vRepPreventivo(view);return;}
     if(repTab==='indicadores'){vRepInd(view);return;}
