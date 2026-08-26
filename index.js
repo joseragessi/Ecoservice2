@@ -1,4 +1,5 @@
 require('dotenv').config();
+const cambios = require('./cambios');
 const compression = require('compression');
 const express  = require('express');
 const twilio   = require('twilio');
@@ -22,6 +23,9 @@ const app  = express();
 // gzip en todo: /api/reparaciones pasa de 249 KB a ~40 KB, y el panel.js de
 // 663 KB a 175 KB. Es lo que más se nota con conexión de celular.
 app.use(compression());
+// Registro de cambios por módulo: cada escritura marca su módulo para que el
+// panel se entere sin recargar cada tanto. Va antes de las rutas.
+app.use(cambios.registrarCambios);
 app.use(express.urlencoded({ extended: false, limit: '25mb' }));
 app.use(express.json({ limit: '25mb' }));
 app.use(seg.headersSeguridad);
