@@ -1,4 +1,5 @@
 require('dotenv').config();
+const compression = require('compression');
 const express  = require('express');
 const twilio   = require('twilio');
 const { procesarMensaje } = require('./conversacion');
@@ -18,6 +19,9 @@ const { notificarCapataz } = require('./notificar');
 const seg = require('./seguridad');
 
 const app  = express();
+// gzip en todo: /api/reparaciones pasa de 249 KB a ~40 KB, y el panel.js de
+// 663 KB a 175 KB. Es lo que más se nota con conexión de celular.
+app.use(compression());
 app.use(express.urlencoded({ extended: false, limit: '25mb' }));
 app.use(express.json({ limit: '25mb' }));
 app.use(seg.headersSeguridad);
