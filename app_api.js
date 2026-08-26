@@ -5,6 +5,7 @@
 //   { rol: 'mecanico', mid, nombre }  |  { rol: 'panol', usuario }
 
 const express = require('express');
+const { validarSalidaPanol } = require('./panol_reglas');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
@@ -721,6 +722,33 @@ router.post('/api/app/service/extract', authApp('mecanico'), async (req, res) =>
   }
 });
 
+// Resuelve a quién se le atribuye el service. Si vino un mecanico_id elegido
+// en la app, se verifica contra el maestro antes de usarlo (el celular no es
+// una fuente confiable); si no vino o no existe, queda el que está logueado.
+async function mecanicoAsignado(mecanicoId, appUser) {
+  const propio = { mecanico_id: appUser.mid || null, mecanico_nombre: appUser.nombre || null };
+  if (!mecanicoId || mecanicoId === appUser.mid) return propio;
+  const { data } = await supabase.from('mecanicos')
+    .select('id, nombre').eq('id', mecanicoId).eq('activo', true).maybeSingle();
+  if (!data) return propio;
+  return { mecanico_id: data.id, mecanico_nombre: data.nombre };
+}
+
+// Lista de mecánicos para asignar el service. Muchas veces uno carga la
+// planilla de otro (llega el papel al taller), así que el que la sube tiene
+// que poder decir de quién es: el puntaje va al que hizo el trabajo.
+router.get('/api/app/mecanicos', authApp('mecanico'), async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('mecanicos')
+      .select('id, nombre').eq('activo', true).order('nombre');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('[app] mecanicos:', err);
+    res.status(500).json({ error: 'No pude cargar los mecánicos' });
+  }
+});
+
 // Guardar el service revisado. El mecánico que guarda queda registrado por token.
 router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
   try {
@@ -739,9 +767,15 @@ router.post('/api/app/service', authApp('mecanico'), async (req, res) => {
         repuestos_entregados: Array.isArray(d.repuestos_entregados) ? d.repuestos_entregados : [],
         mecanico:            d.mecanico || req.app_user.nombre || null,
         observaciones:       d.observaciones || null,
+        // Quién subió la planilla, que no siempre es quién hizo el service:
+        // el papel llega al taller y lo carga otro. El puntaje va al que lo
+        // hizo (mecanico_id/mecanico_nombre); esto queda como rastro.
+        cargado_por:         req.app_user.nombre || null,
       },
-      mecanico_id: req.app_user.mid || null,
-      mecanico_nombre: req.app_user.nombre || null,
+      // Mecánico responsable: el elegido en la app, o el que está logueado si
+      // no eligió a nadie. Se valida contra el maestro para que no entre un
+      // id inventado desde el celular.
+      ...(await mecanicoAsignado(d.mecanico_id, req.app_user)),
     };
     const { data, error } = await supabase.from('services_unidades').insert(fila).select().single();
     if (error) throw error;
@@ -777,7 +811,8 @@ router.put('/api/app/service/:id', authApp('mecanico'), async (req, res) => {
       editado_at:           new Date().toISOString(),
     };
     const { error } = await supabase.from('services_unidades')
-      .update({ data }).eq('id', req.params.id);
+      .update({ data, ...(d.mecanico_id ? await mecanicoAsignado(d.mecanico_id, req.app_user) : {}) })
+      .eq('id', req.params.id);
     if (error) throw error;
     res.json({ ok: true });
   } catch (err) {
@@ -1034,17 +1069,12 @@ router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (re
     if (item.retornable && !b.retorno_previsto) {
       return res.status(422).json({ error: 'Poné cuándo vuelve' });
     }
-    // Una HERRAMIENTA marcada como no retornable es una contradicción: la
-    // salida la descontaría del stock y el movimiento nacería cerrado, así que
-    // la herramienta desaparece del pañol sin que nadie vea nada raro (pasó
-    // con 4 motosierras T435 en agosto de 2026). Antes de descontar, se frena.
-    if (!item.retornable && item.categoria === 'herramienta') {
-      return res.status(422).json({
-        error: `"${item.nombre}" está cargada como herramienta pero marcada como que NO vuelve al pañol. ` +
-          'Así, esta salida la descontaría del stock y la herramienta se perdería del sistema. ' +
-          'Avisale al encargado del pañol para que la corrija en Maestros antes de entregarla.',
-      });
-    }
+    // Última barrera antes de descontar: un ítem no retornable se consume, y
+    // si en realidad es una máquina desaparece del pañol sin dejar rastro
+    // (pasó con 4 Motosierra T435 y 3 MS 250 en agosto de 2026). La regla
+    // completa está en panol_reglas.js.
+    const malSalida = validarSalidaPanol(item);
+    if (malSalida) return res.status(422).json(malSalida);
 
     const { data: obj } = await supabase.from('objetivos').select('nombre').eq('id', b.objetivo_id).maybeSingle();
     const { data, error } = await supabase.from('panol_movimientos').insert({
