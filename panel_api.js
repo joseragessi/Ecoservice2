@@ -1,4 +1,5 @@
 const express = require('express');
+const cambios = require('./cambios');
 const { validarItemPanol } = require('./panol_reglas');
 const crypto  = require('crypto');
 const path    = require('path');
@@ -5989,6 +5990,13 @@ router.get('/panel.js', (req, res) => {
   sinCache(res);
   res.sendFile(path.join(__dirname, 'panel.js'));
 });
+// Latido de cambios: qué módulos se tocaron desde que arrancó el server.
+// No consulta la base — son contadores en memoria (ver cambios.js). El panel
+// lo pide cada 25 s y solo recarga la vista si el número de SU módulo cambió.
+router.get('/api/cambios', auth, (req, res) => {
+  res.json(cambios.estado());
+});
+
 router.get('/api/panel-version', (req, res) => {
   res.json({ version: PANEL_VERSION });
 });
