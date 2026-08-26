@@ -1,4 +1,5 @@
 const express = require('express');
+const { validarItemPanol } = require('./panol_reglas');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
@@ -5154,14 +5155,11 @@ router.post('/api/panol/items', auth, async (req, res) => {
     };
     if (!fila.nombre) return res.status(422).json({ error: 'Falta el nombre' });
     if (fila.cantidad < 0) return res.status(422).json({ error: 'La cantidad no puede ser negativa' });
-    // Herramienta + no retornable = la salida la descuenta y se pierde del
-    // pañol. No se guarda esa combinación; para algo descartable existe "otro".
-    if (fila.categoria === 'herramienta' && !fila.retornable) {
-      return res.status(422).json({
-        error: 'Una herramienta tiene que volver al pañol. Si no vuelve, se descuenta del stock ' +
-          'en cada salida y se pierde del sistema. Para algo que se consume, usá la categoría "insumo" o "otro".',
-      });
-    }
+    // Coherencia herramienta/consumible: ver panol_reglas.js. Un consumible se
+    // descuenta del stock en cada salida, así que una máquina cargada como tal
+    // desaparece del pañol sin rastro.
+    const malItem = validarItemPanol(fila, (req.body || {}).confirmar_consumible === true);
+    if (malItem) return res.status(422).json(malItem);
 
     if (b.id) {
       const { error } = await supabase.from('panol_items').update(fila).eq('id', b.id);
@@ -5549,6 +5547,30 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         dias_prom: Math.round(prom * 10) / 10,
         dias_mediana: Math.round(mediana * 10) / 10,
         dias_peor: tiempos.length ? Math.round(Math.max(...tiempos) * 10) / 10 : 0,
+        // ── Las que SIGUEN abiertas ──────────────────────────────────
+        // dias_prom mide solo lo que se cerró, y eso tiene sesgo de
+        // supervivencia: lo que se resuelve rápido se cierra y entra al
+        // promedio; lo que se empantana queda abierto y no entra nunca. Por
+        // eso convivían "2 d de promedio" y un tractor parado hace 15.
+        // Acá se mide la otra pregunta: hace cuánto están abiertas las que
+        // no se cerraron, contra hoy.
+        // (se llama `pendientes` y no `abiertas` porque `abiertas` ya es el
+        // conteo simple que usa el KPI "Reparaciones")
+        pendientes: (() => {
+          const hoy = Date.now();
+          const ab = reparaciones.filter(r => r.estado !== 'finalizado' || !r.fecha_finalizado);
+          const edades = ab.map(r => (hoy - new Date(r.created_at)) / 86400000)
+            .filter(x => x >= 0).sort((x, y) => x - y);
+          const r1 = x => Math.round(x * 10) / 10;
+          return {
+            cantidad: ab.length,
+            dias_prom: edades.length ? r1(edades.reduce((s, x) => s + x, 0) / edades.length) : null,
+            dias_mediana: edades.length ? r1(edades[Math.floor(edades.length / 2)]) : null,
+            dias_peor: edades.length ? r1(edades[edades.length - 1]) : null,
+            esperando_repuestos: ab.filter(r => r.estado === 'esperando_repuestos').length,
+            paradas: ab.filter(r => r.equipo_parado).length,
+          };
+        })(),
         por_prioridad: porPrioridad,
         por_falla: fallas,
         por_objetivo: cuenta(reparaciones, r => r.objetivos && r.objetivos.nombre),
