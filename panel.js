@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · PDF corto + evolución en 2 gráficos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · evolución promedio de bateas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2149,39 +2149,57 @@ function bloqueBateasReporte(b){
    eso obliga a leer dos escalas en el mismo dibujo y se presta a comparar
    magnitudes que no son comparables (cientos de bateas contra decenas de
    reparaciones). Separados, cada uno se lee solo. */
-function graficoEvo(datos, {titulo, color, campo, ancho=430}){
-  const W=ancho,H=170,mI=34,mD=12,mS=14,mB=28;
+function graficoEvo(datos, {titulo, subtitulo, color, campo, ancho=430, sufijo='', contexto}){
+  const W=ancho,H=190,mI=36,mD=14,mS=18,mB=40;
   const aw=W-mI-mD, ah=H-mS-mB;
-  const vals=datos.map(x=>x[campo]);
+  const vals=datos.map(x=>x[campo]||0);
+  const conDato=datos.filter(x=>(x[campo]||0)>0);
   const max=Math.max(...vals,1);
+  // El promedio se calcula SOLO sobre los meses con actividad: incluir los
+  // meses en cero (donde no había sistema) lo hundiría y no diría nada.
+  const prom=conDato.length?conDato.reduce((a,x)=>a+(x[campo]||0),0)/conDato.length:0;
   const px=i=>mI+(datos.length===1?aw/2:i*aw/(datos.length-1));
   const py=v=>mS+ah-(v*ah/max);
   const etiqMes=m=>{const [y,mm]=m.split('-');return ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][+mm-1]+(mm==='01'?"'"+y.slice(2):'');};
-  const total=vals.reduce((a,b2)=>a+b2,0);
-  const conDato=vals.filter(v=>v>0).length;
+  const r1=v=>Math.round(v*10)/10;
+  // Variación contra el mes anterior con dato: es lo que se mira de verdad.
+  const ult=datos[datos.length-1], antIdx=datos.length-2;
+  const ant=antIdx>=0?datos[antIdx]:null;
+  const varPct=(ant&&(ant[campo]||0)>0)?Math.round((((ult[campo]||0)/ant[campo])-1)*100):null;
   return `<div>
-    <div class="sub" style="font-weight:600;margin-bottom:4px">${titulo}
-      <span style="font-weight:400">· ${total.toLocaleString('es-AR')} en el período</span></div>
+    <div class="sub" style="font-weight:600;margin-bottom:2px">${titulo}</div>
+    <div class="sub" style="font-size:11px;margin-bottom:4px">${subtitulo||''}</div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;overflow:visible" role="img">
       <line x1="${mI}" y1="${mS+ah}" x2="${W-mD}" y2="${mS+ah}" stroke="#D9DED9"/>
       <line x1="${mI}" y1="${mS}" x2="${mI}" y2="${mS+ah}" stroke="#D9DED9"/>
-      <path d="${datos.map((x,i)=>`${i?'L':'M'}${px(i).toFixed(1)},${py(x[campo]).toFixed(1)}`).join(' ')}"
+      ${prom>0?`<line x1="${mI}" y1="${py(prom).toFixed(1)}" x2="${W-mD}" y2="${py(prom).toFixed(1)}"
+        stroke="${color}" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>
+      <text x="${W-mD}" y="${(py(prom)-4).toFixed(1)}" font-size="9" fill="${color}" text-anchor="end" opacity=".8">prom ${r1(prom)}${sufijo}</text>`:''}
+      <path d="${datos.map((x,i)=>`${i?'L':'M'}${px(i).toFixed(1)},${py(x[campo]||0).toFixed(1)}`).join(' ')}"
         fill="none" stroke="${color}" stroke-width="2"/>
-      ${datos.map((x,i)=>`<circle cx="${px(i).toFixed(1)}" cy="${py(x[campo]).toFixed(1)}" r="2.5" fill="${color}"/>
-        <text x="${px(i).toFixed(1)}" y="${H-14}" font-size="9.5" fill="#8A968E" text-anchor="middle">${etiqMes(x.mes)}</text>
-        ${x[campo]>0?`<text x="${px(i).toFixed(1)}" y="${(py(x[campo])-7).toFixed(1)}" font-size="9.5" fill="#5A6B5D" text-anchor="middle">${x[campo]}</text>`:''}`).join('')}
-      <text x="${mI-5}" y="${mS+8}" font-size="9.5" fill="#8A968E" text-anchor="end">${max}</text>
+      ${datos.map((x,i)=>{const v=x[campo]||0;return `<circle cx="${px(i).toFixed(1)}" cy="${py(v).toFixed(1)}" r="${v>0?3:2}" fill="${v>0?color:'#C9D1C9'}"/>
+        <text x="${px(i).toFixed(1)}" y="${H-20}" font-size="9.5" fill="#8A968E" text-anchor="middle">${etiqMes(x.mes)}</text>
+        ${contexto&&contexto(x)?`<text x="${px(i).toFixed(1)}" y="${H-9}" font-size="8.5" fill="#B4BDB4" text-anchor="middle">${contexto(x)}</text>`:''}
+        ${v>0?`<text x="${px(i).toFixed(1)}" y="${(py(v)-8).toFixed(1)}" font-size="10" font-weight="600" fill="#5A6B5D" text-anchor="middle">${v}${sufijo}</text>`:''}`;}).join('')}
+      <text x="${mI-5}" y="${mS+8}" font-size="9.5" fill="#8A968E" text-anchor="end">${r1(max)}</text>
       <text x="${mI-5}" y="${mS+ah}" font-size="9.5" fill="#8A968E" text-anchor="end">0</text>
     </svg>
-    ${conDato<datos.length?`<div class="sub" style="font-size:10.5px">Con datos en ${conDato} de los ${datos.length} meses.</div>`:''}
+    <div class="sub" style="font-size:10.5px;display:flex;justify-content:space-between;gap:8px">
+      <span>${conDato.length} de ${datos.length} meses con actividad</span>
+      ${varPct!=null?`<span style="color:${varPct<0?'var(--rojo)':'var(--brote-2)'}">${varPct>0?'+':''}${varPct}% vs mes anterior</span>`:''}
+    </div>
   </div>`;
 }
 function bloqueEvolucion(ev){
   if(!ev||!ev.length)return '';
   return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Evolución · últimos 12 meses</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
-      ${graficoEvo(ev,{titulo:'Bateas',color:'#159B51',campo:'bateas'})}
-      ${graficoEvo(ev,{titulo:'Reparaciones',color:'#3B7DC4',campo:'reparaciones'})}
+      ${graficoEvo(ev,{titulo:'Bateas · promedio por jornada',
+        subtitulo:'Cuánto rinde cada salida. Abajo de cada mes, las jornadas.',
+        color:'#159B51',campo:'bateas_prom',contexto:x=>x.jornadas?x.jornadas+' j':''})}
+      ${graficoEvo(ev,{titulo:'Reparaciones · por mes',
+        subtitulo:'Incidencias abiertas en el mes, sin las cerradas sin reparar.',
+        color:'#3B7DC4',campo:'reparaciones'})}
     </div>
   </div>`;
 }
@@ -2336,8 +2354,12 @@ function imprimirReporte(){
     ${(d.evolucion&&d.evolucion.length)?`<div class="sec">
       <h2>Evolución · últimos 12 meses</h2>
       <div class="dos">
-        ${graficoEvo(d.evolucion,{titulo:'Bateas',color:'#159B51',campo:'bateas',ancho:420})}
-        ${graficoEvo(d.evolucion,{titulo:'Reparaciones',color:'#3B7DC4',campo:'reparaciones',ancho:420})}
+        ${graficoEvo(d.evolucion,{titulo:'Bateas · promedio por jornada',
+          subtitulo:'Cuánto rinde cada salida. Abajo de cada mes, las jornadas.',
+          color:'#159B51',campo:'bateas_prom',ancho:420,contexto:x=>x.jornadas?x.jornadas+' j':''})}
+        ${graficoEvo(d.evolucion,{titulo:'Reparaciones · por mes',
+          subtitulo:'Incidencias abiertas en el mes, sin las cerradas sin reparar.',
+          color:'#3B7DC4',campo:'reparaciones',ancho:420})}
       </div>
     </div>`:''}
 
