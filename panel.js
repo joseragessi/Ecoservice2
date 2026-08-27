@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · reporte con bateas y evolución anual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · PDF corto + evolución en 2 gráficos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2144,37 +2144,45 @@ function bloqueBateasReporte(b){
   </div>`;
 }
 
-/* Evolución de los últimos 12 meses: reparaciones y bateas una al lado de la
-   otra. Van en dos ejes distintos porque son magnitudes muy diferentes
-   (decenas de reparaciones contra cientos de bateas): con un eje común, una
-   de las dos series quedaría aplastada contra el piso y no se leería. */
-function bloqueEvolucion(ev){
-  if(!ev||!ev.length)return '';
-  const W=880,H=190,mI=44,mD=44,mS=16,mB=30;
+/* Evolución de los últimos 12 meses, en DOS gráficos separados: uno de
+   bateas y otro de reparaciones. Antes iban superpuestos con dos ejes, pero
+   eso obliga a leer dos escalas en el mismo dibujo y se presta a comparar
+   magnitudes que no son comparables (cientos de bateas contra decenas de
+   reparaciones). Separados, cada uno se lee solo. */
+function graficoEvo(datos, {titulo, color, campo, ancho=430}){
+  const W=ancho,H=170,mI=34,mD=12,mS=14,mB=28;
   const aw=W-mI-mD, ah=H-mS-mB;
-  const maxR=Math.max(...ev.map(x=>x.reparaciones),1);
-  const maxB=Math.max(...ev.map(x=>x.bateas),1);
-  const px=i=>mI+(ev.length===1?aw/2:i*aw/(ev.length-1));
-  const pyR=v=>mS+ah-(v*ah/maxR);
-  const pyB=v=>mS+ah-(v*ah/maxB);
-  const linea=(f,color)=>ev.map((x,i)=>`${i?'L':'M'}${px(i).toFixed(1)},${f(x).toFixed(1)}`).join(' ');
+  const vals=datos.map(x=>x[campo]);
+  const max=Math.max(...vals,1);
+  const px=i=>mI+(datos.length===1?aw/2:i*aw/(datos.length-1));
+  const py=v=>mS+ah-(v*ah/max);
   const etiqMes=m=>{const [y,mm]=m.split('-');return ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][+mm-1]+(mm==='01'?"'"+y.slice(2):'');};
-  return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Evolución · últimos 12 meses</div>
+  const total=vals.reduce((a,b2)=>a+b2,0);
+  const conDato=vals.filter(v=>v>0).length;
+  return `<div>
+    <div class="sub" style="font-weight:600;margin-bottom:4px">${titulo}
+      <span style="font-weight:400">· ${total.toLocaleString('es-AR')} en el período</span></div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;overflow:visible" role="img">
       <line x1="${mI}" y1="${mS+ah}" x2="${W-mD}" y2="${mS+ah}" stroke="#D9DED9"/>
-      <path d="${linea(x=>pyB(x.bateas),'')}" fill="none" stroke="#159B51" stroke-width="2"/>
-      <path d="${linea(x=>pyR(x.reparaciones),'')}" fill="none" stroke="#3B7DC4" stroke-width="2" stroke-dasharray="4 3"/>
-      ${ev.map((x,i)=>`<circle cx="${px(i).toFixed(1)}" cy="${pyB(x.bateas).toFixed(1)}" r="2.5" fill="#159B51"/>
-        <circle cx="${px(i).toFixed(1)}" cy="${pyR(x.reparaciones).toFixed(1)}" r="2.5" fill="#3B7DC4"/>
-        <text x="${px(i).toFixed(1)}" y="${H-10}" font-size="10" fill="#8A968E" text-anchor="middle">${etiqMes(x.mes)}</text>`).join('')}
-      <text x="${mI-6}" y="${mS+8}" font-size="10" fill="#3B7DC4" text-anchor="end">${maxR}</text>
-      <text x="${W-mD+6}" y="${mS+8}" font-size="10" fill="#159B51">${maxB}</text>
-      <text x="${mI-6}" y="${mS+ah}" font-size="10" fill="#8A968E" text-anchor="end">0</text>
+      <line x1="${mI}" y1="${mS}" x2="${mI}" y2="${mS+ah}" stroke="#D9DED9"/>
+      <path d="${datos.map((x,i)=>`${i?'L':'M'}${px(i).toFixed(1)},${py(x[campo]).toFixed(1)}`).join(' ')}"
+        fill="none" stroke="${color}" stroke-width="2"/>
+      ${datos.map((x,i)=>`<circle cx="${px(i).toFixed(1)}" cy="${py(x[campo]).toFixed(1)}" r="2.5" fill="${color}"/>
+        <text x="${px(i).toFixed(1)}" y="${H-14}" font-size="9.5" fill="#8A968E" text-anchor="middle">${etiqMes(x.mes)}</text>
+        ${x[campo]>0?`<text x="${px(i).toFixed(1)}" y="${(py(x[campo])-7).toFixed(1)}" font-size="9.5" fill="#5A6B5D" text-anchor="middle">${x[campo]}</text>`:''}`).join('')}
+      <text x="${mI-5}" y="${mS+8}" font-size="9.5" fill="#8A968E" text-anchor="end">${max}</text>
+      <text x="${mI-5}" y="${mS+ah}" font-size="9.5" fill="#8A968E" text-anchor="end">0</text>
     </svg>
-    <div class="sub" style="font-size:11.5px;margin-top:4px">
-      <span style="color:#3B7DC4">▬ reparaciones</span> (izquierda, tope ${maxR}) ·
-      <span style="color:#159B51">▬ bateas</span> (derecha, tope ${maxB}).
-      Escalas distintas: sirven para ver la tendencia de cada una, no para compararlas entre sí.</div>
+    ${conDato<datos.length?`<div class="sub" style="font-size:10.5px">Con datos en ${conDato} de los ${datos.length} meses.</div>`:''}
+  </div>`;
+}
+function bloqueEvolucion(ev){
+  if(!ev||!ev.length)return '';
+  return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Evolución · últimos 12 meses</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+      ${graficoEvo(ev,{titulo:'Bateas',color:'#159B51',campo:'bateas'})}
+      ${graficoEvo(ev,{titulo:'Reparaciones',color:'#3B7DC4',campo:'reparaciones'})}
+    </div>
   </div>`;
 }
 
@@ -2249,7 +2257,6 @@ function imprimirReporte(){
     .rojo{color:#DC4A5B}
     .badge{display:inline-block;font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px}
     .pie{margin-top:26px;padding-top:10px;border-top:1px solid #E6EBE4;font-size:10.5px;color:#8A968E;display:flex;justify-content:space-between}
-    .ev{margin:0}.h2ev{font-size:12.5px;font-weight:700;color:#2B3A2E;margin:0 0 6px}
     /* El resumen tiene que entrar en UNA página: secciones compactas y sin
        cortes internos. El detalle por incidencia es un anexo aparte —puede
        ocupar varias páginas— así que arranca en página nueva y sus tablas sí
@@ -2257,10 +2264,6 @@ function imprimirReporte(){
     @media print{
       body{padding:10mm 9mm}
       .sec{page-break-inside:avoid;margin-bottom:12px}
-      .detalle-familias{page-break-before:always;page-break-inside:auto}
-      .detalle-familias table{page-break-inside:auto}
-      .detalle-familias tr{page-break-inside:avoid}
-      .detalle-familias h3{page-break-after:avoid}
       .pie{page-break-before:avoid}
     }
   </style></head><body>
@@ -2330,24 +2333,12 @@ function imprimirReporte(){
       </div>
     </div>
 
-    ${(d.evolucion&&d.evolucion.length)?`<div class="sec evolucion">
-      ${bloqueEvolucion(d.evolucion).replace('class="panel" style="margin-bottom:14px"','class="ev"').replace('class="panel-title"','class="h2ev"')}
-    </div>`:''}
-
-    ${(r.por_familia||[]).some(x=>(x.detalle||[]).length)?`<div class="sec detalle-familias">
-      <h2>Detalle por incidencia</h2>
-      <div class="mini" style="margin-bottom:8px">Las incidencias que forman cada número de la tabla anterior. Mismo universo: las cerradas sin reparar quedan afuera.</div>
-      ${r.por_familia.filter(x=>(x.detalle||[]).length).map(x=>`
-        <h3 style="font-size:12px;margin:10px 0 4px">${escStk(x.familia)} · ${x.detalle.length}</h3>
-        <table><thead><tr><th>Fecha</th><th>Equipo · unidad</th><th>Objetivo</th><th>Falla</th>
-          <th>Mecánico</th><th>Estado</th><th class="der">Días</th></tr></thead>
-        <tbody>${x.detalle.map(y=>`<tr>
-          <td class="mono">${fechaAR(y.fecha)}</td>
-          <td><b>${escStk(y.equipo||'—')}</b>${y.unidad?' <span class="mono">'+escStk(y.unidad)+'</span>':''}${y.tipo_mant==='preventivo'?' (prev)':''}</td>
-          <td>${escStk(y.objetivo||'—')}</td><td>${escStk(y.falla||'—')}</td>
-          <td>${escStk(y.mecanico||'—')}</td>
-          <td>${LABEL_PRIO[String(y.prioridad||'').toLowerCase()]||y.prioridad||'—'}${y.dias==null?' · abierta':''}</td>
-          <td class="der mono">${y.dias!=null?y.dias+' d':y.dias_abierta+' d'}</td></tr>`).join('')}</tbody></table>`).join('')}
+    ${(d.evolucion&&d.evolucion.length)?`<div class="sec">
+      <h2>Evolución · últimos 12 meses</h2>
+      <div class="dos">
+        ${graficoEvo(d.evolucion,{titulo:'Bateas',color:'#159B51',campo:'bateas',ancho:420})}
+        ${graficoEvo(d.evolucion,{titulo:'Reparaciones',color:'#3B7DC4',campo:'reparaciones',ancho:420})}
+      </div>
     </div>`:''}
 
     <div class="pie"><span>EcoService S.R.L. · Reporte de mantenimiento</span><span>${escStk(mesNombre(d.mes))}</span></div>
