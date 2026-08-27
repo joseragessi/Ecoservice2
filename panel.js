@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · meta de 5 bateas por jornada';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · sin recargas automáticas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -469,40 +469,34 @@ let _vistaActual=null;
 //  cambios de abajo hace lo mismo con 200 bytes y sirve para todos los
 //  módulos. _repFirma se conserva porque go() la resetea.)
 let _repFirma=null;
-/* Detección de cambios (reemplaza el auto-refresh a ciegas cada 4 h).
-   La idea: no recargar cada tanto —eso corta el trabajo— sino solo cuando
-   OTRA persona modificó algo. Cada 25 s se pide /api/cambios, que devuelve
-   contadores en memoria del servidor (unos 200 bytes, cero consultas a la
-   base). Si el contador del módulo que estás mirando no se movió, no pasa
-   nada en pantalla.
-   Cuando sí hay cambios:
-     · si no estás en el medio de algo → se refresca solo
-     · si tenés un modal o un detalle abierto → aparece un cartelito arriba
-       y actualizás vos cuando querés. Nunca te pisa lo que estás haciendo. */
-const CAMBIOS_CADA_MS=25*1000;
+/* Detección de cambios. NUNCA recarga la pantalla sola: eso interrumpe el
+   trabajo (con varios mecánicos cargando datos, la vista se reiniciaba a cada
+   rato y no se podía ni leer una tabla). Lo único que hace es avisar con un
+   cartelito arriba cuando otra persona modificó algo del módulo que estás
+   mirando; actualizás vos cuando querés, tocándolo.
+   El chequeo cuesta ~200 bytes: son contadores en memoria del servidor
+   (cambios.js), sin consultas a la base. */
+const CAMBIOS_CADA_MS=60*1000;
 let _cambiosVistos=null, _cambiosArranque=null, _cambiosTimer=null;
 
-function estoyOcupado(v){
-  if(document.querySelector('.modal-bg.abierto'))return true;
-  if(v==='reparaciones'&&repDetalleAbierto)return true;
-  if(v==='compras'&&(comprasVer!=null||comprasMode==='carga'||comprasMode==='detalle'))return true;
-  // Si estás tipeando en algún campo, tampoco se toca la pantalla.
-  const a=document.activeElement;
-  if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return true;
-  return false;
-}
-function avisarCambios(v){
+function avisarCambios(){
   let el=document.getElementById('aviso-cambios');
   if(!el){
     el=document.createElement('div');
     el.id='aviso-cambios';
     el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;'+
-      'background:var(--brote,#2E7D45);color:#fff;padding:9px 16px;border-radius:22px;font-size:13px;'+
-      'box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer;font-family:inherit';
-    el.onclick=()=>{el.remove();invalidarCacheApi();go(_vistaActual);};
+      'background:var(--brote,#2E7D45);color:#fff;padding:8px 15px;border-radius:22px;font-size:12.5px;'+
+      'box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer;font-family:inherit;display:flex;gap:10px;align-items:center';
+    el.innerHTML='<span>Hay cambios nuevos · tocá para actualizar</span>'+
+      '<span id="aviso-cerrar" style="opacity:.7;font-size:15px;line-height:1">✕</span>';
+    el.onclick=(e)=>{
+      el.remove();
+      // La ✕ solo descarta el aviso; el resto del cartel sí recarga.
+      if(e.target&&e.target.id==='aviso-cerrar')return;
+      invalidarCacheApi();go(_vistaActual);
+    };
     document.body.appendChild(el);
   }
-  el.textContent='Hay cambios nuevos · tocá para actualizar';
 }
 function programarAutoRefresh(v){
   clearTimeout(_cambiosTimer);
@@ -518,13 +512,7 @@ function programarAutoRefresh(v){
         _cambiosVistos=c.modulos;_cambiosArranque=c.arranque;
       }else if((c.modulos[v]||0)>(_cambiosVistos[v]||0)){
         _cambiosVistos=c.modulos;
-        if(_vistaActual===v&&!estoyOcupado(v)){
-          _repFirma=null;
-          invalidarCacheApi();
-          go(v);
-          return;                 // go() reprograma el timer
-        }
-        if(_vistaActual===v)avisarCambios(v);
+        if(_vistaActual===v)avisarCambios();
       }
     }catch(e){/* sin conexión: se reintenta en el próximo ciclo */}
     _cambiosTimer=setTimeout(tick,CAMBIOS_CADA_MS);
