@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · horas estimadas por mecánico';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · meta de 5 bateas por jornada';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1324,19 +1324,33 @@ async function vBateas(view){
       <span class="sub">hasta</span><input type="date" value="${hasta}" onchange="viajesHasta=this.value;go('bateas')" style="padding:6px;border:1px solid var(--linea);border-radius:8px">
     </div>
     <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
-      ${kpi('Promedio de bateas / jornada',(k.bateas_promedio_jornada!=null?k.bateas_promedio_jornada:'—'),(k.bateas_total||0)+' bateas ÷ '+(k.jornadas_total||0)+' jornadas trabajadas')}
+      ${(function(){const m=cumplMeta(k.bateas_promedio_jornada);
+        return `<div class="kpi"><div class="kpi-label">Promedio de bateas / jornada</div>
+          <div class="kpi-val" style="color:${m.color}">${k.bateas_promedio_jornada!=null?k.bateas_promedio_jornada:'—'}
+            <span style="font-size:13px;color:var(--tinta-3)">/ ${META_BATEAS_JORNADA}</span></div>
+          <div class="kpi-sub">${(k.bateas_total||0)} bateas ÷ ${(k.jornadas_total||0)} jornadas · <b style="color:${m.color}">${m.txt}</b></div>
+          <div style="height:5px;background:var(--papel);border-radius:3px;margin-top:6px">
+            <div style="width:${Math.min(100,m.pct)}%;height:100%;background:${m.color};border-radius:3px"></div></div>
+          ${(k.jornadas_total||0)?`<div class="sub" style="font-size:10.5px;margin-top:4px">Faltan ${Math.max(0,Math.round((META_BATEAS_JORNADA*(k.jornadas_total||0)-(k.bateas_total||0))*10)/10)} bateas para la meta del período</div>`:''}
+        </div>`;})()}
       ${kpi('Bateas totales',(k.bateas_total||0),(k.m3_total||0).toLocaleString('es-AR')+' m³ · '+(k.bateas_total||0)+' × 14 m³')}
       ${kpi('Puntos de bajada',(k.puntos_total||0),'descargas en objetivos')}
     </div>
     <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Rendimiento por chofer <span class="sub" style="font-weight:400;font-size:11px">· bateas por jornada</span></div>
         ${(ind.por_chofer||[]).length?`<div class="tablewrap"><table><thead><tr><th>Chofer</th><th class="num">Bateas</th><th class="num">Jornadas</th><th class="num">Prom/jornada</th></tr></thead><tbody>
-          ${ind.por_chofer.map(c=>`<tr><td>${c.chofer}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.jornadas}</td><td class="num mono" style="color:var(--brote-2);font-weight:700;font-size:14px">${c.prom_jornada}</td></tr>`).join('')}
+          ${ind.por_chofer.map(c=>{const m=cumplMeta(c.prom_jornada);
+            return `<tr><td>${c.chofer}</td><td class="num mono">${c.bateas}</td><td class="num mono">${c.jornadas}</td>
+              <td class="num mono" style="color:${m.color};font-weight:700;font-size:14px">${c.prom_jornada}
+                <div class="sub" style="font-size:10px;font-weight:400">${m.pct}%</div></td></tr>`;}).join('')}
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
       <div class="panel"><div class="panel-title" style="margin-bottom:10px">Rendimiento por camión <span class="sub" style="font-weight:400;font-size:11px">· bateas por jornada</span></div>
         ${(ind.por_unidad||[]).length?`<div class="tablewrap"><table><thead><tr><th>Unidad</th><th class="num">Bateas</th><th class="num">Jornadas</th><th class="num">Prom/jornada</th></tr></thead><tbody>
-          ${ind.por_unidad.map(u=>`<tr><td><span class="uni-chip">${u.unidad}</span></td><td class="num mono">${u.bateas}</td><td class="num mono">${u.jornadas}</td><td class="num mono" style="color:var(--brote-2);font-weight:700;font-size:14px">${u.prom_jornada}</td></tr>`).join('')}
+          ${ind.por_unidad.map(u=>{const m=cumplMeta(u.prom_jornada);
+            return `<tr><td><span class="uni-chip">${u.unidad}</span></td><td class="num mono">${u.bateas}</td><td class="num mono">${u.jornadas}</td>
+              <td class="num mono" style="color:${m.color};font-weight:700;font-size:14px">${u.prom_jornada}
+                <div class="sub" style="font-size:10px;font-weight:400">${m.pct}%</div></td></tr>`;}).join('')}
         </tbody></table></div>`:'<div class="sub" style="padding:10px 0">Sin datos en el período.</div>'}
       </div>
     </div>
@@ -1982,6 +1996,17 @@ const LABEL_PRIO={critico:'Crítica',alta:'Alta',media:'Media',baja:'Baja'};
    mantenimiento de ese mismo camión. La comparación que importa es
    "este mes vs su propio promedio" — un camión que hace 40 y otro que
    hace 90 no son comparables entre sí, sí contra sí mismos. */
+/* Meta de rendimiento: cada camión tiene que hacer 5 bateas por jornada
+   trabajada. Si un camión no salió ese día, esa jornada no existe y no
+   cuenta en contra: la meta mide cuánto rinde cada salida, no cuántos días
+   se salió. */
+const META_BATEAS_JORNADA=5;
+function cumplMeta(prom){
+  const p=Number(prom)||0;
+  const pct=Math.round(p*100/META_BATEAS_JORNADA);
+  const color=pct>=100?'var(--brote-2)':pct>=80?'var(--diesel)':'var(--rojo)';
+  return {pct,color,txt:`${pct}% de la meta (${META_BATEAS_JORNADA}/jornada)`};
+}
 function bloqueBateas(b){
   if(!b)return '';
   if(!b.camiones||!b.camiones.length)
@@ -2168,8 +2193,14 @@ function bloqueBateasReporte(b){
   const sinObj=(b.por_objetivo||[]).filter(o=>o.sin_objetivo).reduce((s2,o)=>s2+o.bateas,0);
   return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Bateas · por objetivo</div>
     <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">Promedio por jornada</div><div class="kpi-val">${b.prom_jornada}</div>
-        <div class="kpi-sub">${b.jornadas} jornada${b.jornadas===1?'':'s'} en el mes</div></div>
+      ${(function(){const m=cumplMeta(b.prom_jornada);
+        return `<div class="kpi"><div class="kpi-label">Promedio por jornada</div>
+          <div class="kpi-val" style="color:${m.color}">${b.prom_jornada}
+            <span style="font-size:13px;color:var(--tinta-3)">/ ${META_BATEAS_JORNADA}</span></div>
+          <div class="kpi-sub">${b.jornadas} jornada${b.jornadas===1?'':'s'} · <b style="color:${m.color}">${m.pct}% de la meta</b></div>
+          <div style="height:5px;background:var(--papel);border-radius:3px;margin-top:6px">
+            <div style="width:${Math.min(100,m.pct)}%;height:100%;background:${m.color};border-radius:3px"></div></div>
+        </div>`;})()}
       <div class="kpi"><div class="kpi-label">Bateas del mes</div><div class="kpi-val">${b.total}</div>
         <div class="kpi-sub">${b.m3.toLocaleString('es-AR')} m³</div></div>
       <div class="kpi"><div class="kpi-label">Objetivos atendidos</div><div class="kpi-val">${(b.por_objetivo||[]).length}</div>
@@ -2376,7 +2407,9 @@ function imprimirReporte(){
     ${(d.bateas&&d.bateas.jornadas)?`<div class="sec">
       <h2>Bateas · por objetivo</h2>
       <div class="kpis tres">
-        ${kpi('Promedio por jornada',d.bateas.prom_jornada,`${d.bateas.jornadas} jornada${d.bateas.jornadas===1?'':'s'} en el mes`)}
+        ${kpi('Promedio por jornada',d.bateas.prom_jornada+' / '+META_BATEAS_JORNADA,
+          `${d.bateas.jornadas} jornada${d.bateas.jornadas===1?'':'s'} · ${cumplMeta(d.bateas.prom_jornada).pct}% de la meta`,
+          cumplMeta(d.bateas.prom_jornada).pct>=100?'#159B51':cumplMeta(d.bateas.prom_jornada).pct>=80?'#D98A1F':'#DC4A5B')}
         ${kpi('Bateas del mes',d.bateas.total,`${d.bateas.m3.toLocaleString('es-AR')} m³`)}
         ${kpi('Objetivos atendidos',(d.bateas.por_objetivo||[]).length,'con al menos una batea')}
       </div>
