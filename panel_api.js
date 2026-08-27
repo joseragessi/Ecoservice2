@@ -848,6 +848,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
 
     // Días con actividad (fechas distintas) para el promedio de bateas por día
     const diasConViajes = new Set(viajes.map(v => v.fecha)).size;
+    const jornadasMant = viajes.filter(v => v.mantenimiento).length;
 
     // Por chofer (jornadas = filas de ese chofer; prom = bateas ÷ jornadas)
     const porChofer = {};
@@ -905,6 +906,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
         // Promedio real: total de bateas ÷ total de jornadas trabajadas
         bateas_promedio_jornada: prom(bateasTotal, jornadas),
         dias_activos: diasConViajes,
+        jornadas_mantenimiento: jornadasMant,
       },
       por_chofer: Object.values(porChofer).map(o => ({
         ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
@@ -1093,6 +1095,29 @@ router.post('/api/viajes/:id/anular', auth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: 'Error eliminando el viaje' });
+  }
+});
+
+// Marcar/desmarcar que ese día el camión estuvo en mantenimiento. Se carga a
+// mano desde el panel: el bot no lo pregunta. Sirve para distinguir una
+// jornada floja de una que se fue en el taller.
+router.patch('/api/viajes/:id/mantenimiento', auth, async (req, res) => {
+  try {
+    const valor = (req.body || {}).mantenimiento === true;
+    const { error } = await supabase.from('viajes_bateas')
+      .update({ mantenimiento: valor }).eq('id', req.params.id);
+    if (error) {
+      // La columna se agrega con un ALTER TABLE; si todavía no está, el
+      // mensaje lo dice en vez de un 500 pelado.
+      if (/mantenimiento/.test(error.message || '')) {
+        return res.status(422).json({ error: 'Falta la columna `mantenimiento` en viajes_bateas. Corré el ALTER TABLE.' });
+      }
+      throw error;
+    }
+    res.json({ ok: true, mantenimiento: valor });
+  } catch (err) {
+    console.error('viaje mantenimiento:', err);
+    res.status(500).json({ error: 'No pude marcar el mantenimiento' });
   }
 });
 
