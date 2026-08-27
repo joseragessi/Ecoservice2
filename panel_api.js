@@ -854,8 +854,9 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
     const porChofer = {};
     viajes.forEach(v => {
       const k = v.capataces ? v.capataces.nombre : 'Sin chofer';
-      const o = porChofer[k] || (porChofer[k] = { chofer: k, bateas: 0, puntos: 0, jornadas: 0 });
+      const o = porChofer[k] || (porChofer[k] = { chofer: k, bateas: 0, puntos: 0, jornadas: 0, mant: 0 });
       o.bateas += Number(v.total_bateas) || 0;
+      if (v.mantenimiento) o.mant++;
       o.puntos += Number(v.puntos_bajada) || 0; o.jornadas++;
     });
 
@@ -863,8 +864,9 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
     const porUnidad = {};
     viajes.forEach(v => {
       const k = v.unidades ? v.unidades.patente : (v.patente_raw || 'Sin unidad');
-      const o = porUnidad[k] || (porUnidad[k] = { unidad: k, bateas: 0, jornadas: 0 });
+      const o = porUnidad[k] || (porUnidad[k] = { unidad: k, bateas: 0, jornadas: 0, mant: 0 });
       o.bateas += Number(v.total_bateas) || 0; o.jornadas++;
+      if (v.mantenimiento) o.mant++;
     });
 
     // Bateas por objetivo. La clave es el objetivo_id cuando la parada
@@ -904,15 +906,20 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
         bateas_total: bateasTotal,
         jornadas_total: jornadas,
         // Promedio real: total de bateas ÷ total de jornadas trabajadas
-        bateas_promedio_jornada: prom(bateasTotal, jornadas),
+        // El promedio se calcula sobre bateas EQUIVALENTES: una jornada de
+        // mantenimiento vale como una batea, así un día de taller no arrastra
+        // el rendimiento hacia abajo. El total de bateas y los m³ quedan con
+        // el número real de bateas movidas — esos no se inflan.
+        bateas_promedio_jornada: prom(bateasTotal + jornadasMant, jornadas),
+        bateas_equivalentes: bateasTotal + jornadasMant,
         dias_activos: diasConViajes,
         jornadas_mantenimiento: jornadasMant,
       },
       por_chofer: Object.values(porChofer).map(o => ({
-        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
+        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas + o.mant, o.jornadas),
       })).sort((a, b) => b.prom_jornada - a.prom_jornada),
       por_unidad: Object.values(porUnidad).map(o => ({
-        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas, o.jornadas),
+        ...o, m3: o.bateas * M3_POR_BATEA, prom_jornada: prom(o.bateas + o.mant, o.jornadas),
       })).sort((a, b) => b.prom_jornada - a.prom_jornada),
       por_objetivo: Object.values(porObjetivo)
         .map(o => ({ nombre: o.nombre, bateas: o.bateas, m3: o.bateas * M3_POR_BATEA, sin_objetivo: o.sin_objetivo }))
@@ -5728,6 +5735,9 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       // varias bateas por salida) y a qué objetivos fueron.
       bateas: (() => {
         const totalMes = delMes.reduce((s2, v) => s2 + (Number(v.total_bateas) || 0), 0);
+        // Una jornada de mantenimiento cuenta como una batea para el
+        // rendimiento; el total y los m³ siguen siendo los reales.
+        const mantMes = delMes.filter(v => v.mantenimiento).length;
         const porObj = {};
         delMes.forEach(v => (v.paradas || []).forEach(pp => {
           const nombre = pp.objetivo_nombre || 'Sin objetivo';
@@ -5738,7 +5748,8 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         return {
           total: totalMes,
           jornadas: delMes.length,
-          prom_jornada: delMes.length ? Math.round((totalMes / delMes.length) * 10) / 10 : 0,
+          mantenimiento: mantMes,
+          prom_jornada: delMes.length ? Math.round(((totalMes + mantMes) / delMes.length) * 10) / 10 : 0,
           m3: totalMes * M3_BATEA_REP,
           por_objetivo: Object.values(porObj)
             .map(o => ({ ...o, m3: o.bateas * M3_BATEA_REP }))
@@ -5774,16 +5785,20 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         // Jornadas por mes, para poder mostrar el PROMEDIO por jornada: es la
         // medida de rendimiento. El total de un mes depende de cuántos días
         // se salió; el promedio dice cuánto rinde cada salida.
-        const jorPorMes = {};
+        const jorPorMes = {}, mantPorMes = {};
         bat.forEach(v => {
           const mm = String(v.fecha || '').slice(0, 7);
           jorPorMes[mm] = (jorPorMes[mm] || 0) + 1;
+          if (v.mantenimiento) mantPorMes[mm] = (mantPorMes[mm] || 0) + 1;
         });
         return meses.map(mm => ({
           mes: mm,
           bateas: batPorMes[mm] || 0,
           jornadas: jorPorMes[mm] || 0,
-          bateas_prom: jorPorMes[mm] ? Math.round((batPorMes[mm] / jorPorMes[mm]) * 10) / 10 : 0,
+          mantenimiento: mantPorMes[mm] || 0,
+          // Mismo criterio que el resto: el mantenimiento vale como una batea
+          bateas_prom: jorPorMes[mm]
+            ? Math.round((((batPorMes[mm] || 0) + (mantPorMes[mm] || 0)) / jorPorMes[mm]) * 10) / 10 : 0,
           reparaciones: repPorMes[mm] || 0,
         }));
       })(),
