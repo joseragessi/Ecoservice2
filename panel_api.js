@@ -5333,10 +5333,16 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       supabase.from('panol_disponible').select('*').then(r => r, () => ({ data: [] })),
       supabase.from('panol_movimientos').select('*').gte('fecha_salida', desde).lt('fecha_salida', hasta)
         .then(r => r, () => ({ data: [] })),
+      // MISMO select que /api/viajes, que es el que anda. Cualquier cosa de
+      // más acá hacía fallar la consulta entera y, como el error se
+      // silenciaba, el informe mostraba 0 bateas sin decir por qué.
+      // `paradas` no se pide: es una COLUMNA del viaje y viene en el *.
+      // El filtro de anulados se hace en JS, no con .neq(): si la columna
+      // `estado` no existiera, el .neq() voltearía toda la consulta.
       supabase.from('viajes_bateas')
-        .select('*, unidades(patente, marca_modelo), capataces(nombre), paradas:viajes_paradas(objetivo_id, objetivo_nombre, bateas)')
-        .neq('estado', 'anulado').lt('fecha', hasta.slice(0, 10))
-        .then(r => r, () => ({ data: [] })),
+        .select('*, capataces(nombre), unidades(patente)')
+        .lt('fecha', hasta.slice(0, 10))
+        .then(r => r, (e) => { console.error('[reporte] viajes_bateas:', e && e.message); return { data: [] }; }),
       supabase.from('unidades').select('id, patente, marca_modelo, tipo_rodado')
         .then(r => r, () => ({ data: [] })),
       // Paradas AHORA: todas las abiertas con equipo_parado, sin filtro de
@@ -5449,7 +5455,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     // Por camión: las del mes, el promedio mensual histórico y el
     // mantenimiento de ese mismo camión (las reparaciones se cruzan por
     // patente normalizada contra numero_unidad, que es texto libre).
-    const bat = bateasHist.data || [];
+    // Supabase no siempre rechaza la promesa: muchos errores vienen en r.error.
+    // Sin esto, un select mal escrito devolvía [] y el informe mostraba ceros
+    // como si no hubiera habido viajes.
+    if (bateasHist.error) console.error('[reporte] viajes_bateas:', bateasHist.error.message);
+    const bat = (bateasHist.data || []).filter(v => v.estado !== 'anulado');
     const delMes = bat.filter(v => String(v.fecha || '').slice(0, 7) === mes);
     const normPat = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const uni = {};
@@ -5458,7 +5468,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     const porCamion = {};
     bat.forEach(v => {
       const k = v.unidad_id || 'sin-unidad';
-      const u = v.unidades || uni[v.unidad_id] || {};
+      const u = uni[v.unidad_id] || v.unidades || {};   // el maestro trae marca_modelo
       if (!porCamion[k]) porCamion[k] = {
         unidad_id: v.unidad_id, patente: u.patente || 'sin patente',
         modelo: u.marca_modelo || null,
@@ -5706,9 +5716,19 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           const mm = String(r.created_at || '').slice(0, 7);
           repPorMes[mm] = (repPorMes[mm] || 0) + 1;
         });
+        // Jornadas por mes, para poder mostrar el PROMEDIO por jornada: es la
+        // medida de rendimiento. El total de un mes depende de cuántos días
+        // se salió; el promedio dice cuánto rinde cada salida.
+        const jorPorMes = {};
+        bat.forEach(v => {
+          const mm = String(v.fecha || '').slice(0, 7);
+          jorPorMes[mm] = (jorPorMes[mm] || 0) + 1;
+        });
         return meses.map(mm => ({
           mes: mm,
           bateas: batPorMes[mm] || 0,
+          jornadas: jorPorMes[mm] || 0,
+          bateas_prom: jorPorMes[mm] ? Math.round((batPorMes[mm] / jorPorMes[mm]) * 10) / 10 : 0,
           reparaciones: repPorMes[mm] || 0,
         }));
       })(),
