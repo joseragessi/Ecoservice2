@@ -5990,6 +5990,17 @@ router.get('/panel.js', (req, res) => {
   sinCache(res);
   res.sendFile(path.join(__dirname, 'panel.js'));
 });
+// Diagnóstico del token de Flexxus. Sirve para responder la pregunta de ellos:
+// si `logins_desde_arranque` es 1 y `reusos_desde_arranque` es alto, el token
+// se está reutilizando bien. Si en cada consulta el `pid` o el `uptime_s`
+// cambian, el proceso se reinicia entre requests y se pierde toda la memoria
+// (token, plan de cuentas, centros de costo) — ahí el problema es de
+// infraestructura, no del código de la integración.
+router.get('/api/compras/flexxus-token-estado', auth, (req, res) => {
+  const { estadoToken } = require('./flexxus');
+  res.json(estadoToken());
+});
+
 // Latido de cambios: qué módulos se tocaron desde que arrancó el server.
 // No consulta la base — son contadores en memoria (ver cambios.js). El panel
 // lo pide cada 25 s y solo recarga la vista si el número de SU módulo cambió.
