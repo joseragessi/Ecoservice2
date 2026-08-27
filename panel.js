@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · sin recargas automáticas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · meta 4 + mantenimiento por jornada';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1316,7 +1316,8 @@ async function vBateas(view){
         return `<div class="kpi"><div class="kpi-label">Promedio de bateas / jornada</div>
           <div class="kpi-val" style="color:${m.color}">${k.bateas_promedio_jornada!=null?k.bateas_promedio_jornada:'—'}
             <span style="font-size:13px;color:var(--tinta-3)">/ ${META_BATEAS_JORNADA}</span></div>
-          <div class="kpi-sub">${(k.bateas_total||0)} bateas ÷ ${(k.jornadas_total||0)} jornadas · <b style="color:${m.color}">${m.txt}</b></div>
+          <div class="kpi-sub">${(k.bateas_total||0)} bateas ÷ ${(k.jornadas_total||0)} jornadas · <b style="color:${m.color}">${m.txt}</b>${
+            k.jornadas_mantenimiento?` · <span style="color:var(--diesel)">🔧 ${k.jornadas_mantenimiento} con mantenimiento</span>`:''}</div>
           <div style="height:5px;background:var(--papel);border-radius:3px;margin-top:6px">
             <div style="width:${Math.min(100,m.pct)}%;height:100%;background:${m.color};border-radius:3px"></div></div>
           ${(k.jornadas_total||0)?`<div class="sub" style="font-size:10.5px;margin-top:4px">Faltan ${Math.max(0,Math.round((META_BATEAS_JORNADA*(k.jornadas_total||0)-(k.bateas_total||0))*10)/10)} bateas para la meta del período</div>`:''}
@@ -1366,17 +1367,30 @@ async function vBateas(view){
         :'<div class="sub" style="padding:10px 0">Sin bateas en el período.</div>'}
     </div>
     <div class="panel-title" style="margin-bottom:8px">Detalle de jornadas</div>
-    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Unidad</th><th class="num">Bateas</th><th>Paradas</th><th></th></tr></thead>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Chofer</th><th>Unidad</th><th class="num">Bateas</th><th>Paradas</th><th>Mant.</th><th></th></tr></thead>
       <tbody>${lista.length?lista.map(v=>`<tr>
         <td class="mono">${fechaAR(v.fecha)}</td>
         <td>${v.capataces?v.capataces.nombre:'—'}</td>
         <td><span class="uni-chip">${v.unidades?v.unidades.patente:(v.patente_raw||'—')}</span></td>
         <td class="num mono">${v.total_bateas||0}</td>
         <td style="font-size:12px">${(v.paradas||[]).length?(v.paradas||[]).map((p,ix)=>`<span class="uni-chip" title="Tocá para cambiar el objetivo" style="cursor:pointer;margin:0 3px 3px 0;display:inline-block;${p.objetivo_id?'':'background:var(--papel);border:1px dashed var(--linea)'}" onclick="corregirParada('${v.id}',${ix})">${(p.objetivo_nombre||'—').replace(/</g,'&lt;')} (${p.bateas})${p.objetivo_id?'':' ⚠'}</span>`).join(''):'—'}</td>
+        <td><button class="btn ghost" title="${v.mantenimiento?'Ese día se le hizo mantenimiento · tocá para desmarcar':'Marcar que ese día se le hizo mantenimiento'}"
+          style="padding:4px 9px;font-size:12px;${v.mantenimiento?'background:var(--diesel-soft);border-color:var(--diesel);color:var(--diesel)':'color:var(--tinta-3)'}"
+          onclick="marcarMantenimiento('${v.id}',${v.mantenimiento?'false':'true'})">🔧</button></td>
         <td class="num"><button class="btn ghost" style="padding:4px 9px;font-size:11px;color:var(--rojo)" onclick="anularViaje('${v.id}')">✕</button></td>
       </tr>`).join('')
-        :'<tr><td colspan="9"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot con la opción "Cargar viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
+        :'<tr><td colspan="7"><div class="empty" style="height:120px"><div>No hay viajes cargados en el período.<br><span class="sub">Los choferes los cargan por WhatsApp al bot con la opción "Cargar viajes".</span></div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="view-head"><div><div class="view-title">Bateas</div></div></div><div class="cargando-v">${e.message||'No pude cargar los viajes.'}<br><span class="sub">¿Creaste la tabla viajes_bateas en Supabase?</span></div>`;}
+}
+/* Marca que ese día el camión estuvo en mantenimiento. Sirve para saber por
+   qué una jornada rindió menos: no es lo mismo un día flojo que un día que
+   se fue en el taller. */
+async function marcarMantenimiento(id,valor){
+  try{
+    await api('/api/viajes/'+id+'/mantenimiento',{method:'PATCH',body:JSON.stringify({mantenimiento:valor})});
+    toast(valor?'Marcado con mantenimiento':'Mantenimiento desmarcado');
+    invalidarCacheApi();go('bateas');
+  }catch(e){toast('No pude marcarlo: '+(e.message||''),'error');}
 }
 async function anularViaje(id){
   if(!await uiConfirm('¿Eliminar esta jornada de viaje?','Eliminar viaje',{ok:'Eliminar',danger:true}))return;
@@ -1988,7 +2002,7 @@ const LABEL_PRIO={critico:'Crítica',alta:'Alta',media:'Media',baja:'Baja'};
    trabajada. Si un camión no salió ese día, esa jornada no existe y no
    cuenta en contra: la meta mide cuánto rinde cada salida, no cuántos días
    se salió. */
-const META_BATEAS_JORNADA=5;
+const META_BATEAS_JORNADA=4;
 function cumplMeta(prom){
   const p=Number(prom)||0;
   const pct=Math.round(p*100/META_BATEAS_JORNADA);
