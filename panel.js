@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · formato de impresión del reporte';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · horas estimadas por mecánico';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2119,7 +2119,43 @@ async function vReportes(view){
     </div>
   </div>
 
-  ${bloqueEvolucion(d.evolucion)}`;
+  ${bloqueEvolucion(d.evolucion)}
+
+  ${bloqueCargaMecanicos(d.por_mecanico)}`;
+}
+
+/* Horas estimadas por mecánico. SOLO EN PANTALLA: no va al PDF a propósito.
+   Es un dato para mirar internamente, no para un informe que circula: son
+   estimaciones de la IA (la mayoría con confianza baja porque el taller
+   escribe poco) y puestas en un reporte se leen como si fueran horas
+   fichadas. */
+function bloqueCargaMecanicos(lista){
+  if(!lista||!lista.length)return '';
+  const totH=lista.reduce((a,x)=>a+x.horas,0);
+  const totR=lista.reduce((a,x)=>a+x.reparaciones,0);
+  const sinEst=lista.reduce((a,x)=>a+x.sin_estimar,0);
+  return `<div class="panel" style="margin-bottom:14px;border-left:3px solid var(--linea)">
+    <div class="panel-title">Carga por mecánico · horas estimadas
+      <span class="sub" style="font-weight:400;font-size:11px">· no se exporta al PDF</span></div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">
+      Horas de mano de obra que estimó la IA al cerrar cada reparación. <b>No son horas trabajadas</b>:
+      no hay registro de presencia, y lo que no se carga como incidencia no aparece acá.</div>
+    <table><thead><tr><th>Mecánico</th><th style="text-align:right">Reparaciones</th>
+      <th style="text-align:right">Horas est.</th><th style="text-align:right">Días con cierres</th>
+      <th style="text-align:right">Horas/día</th><th style="text-align:right">Puntos</th></tr></thead>
+    <tbody>${lista.map(x=>`<tr>
+      <td style="font-weight:500">${escStk(x.mecanico)}</td>
+      <td class="mono" style="text-align:right">${x.reparaciones}</td>
+      <td class="mono" style="text-align:right">${x.horas} h${x.sin_estimar?`<div class="sub" style="font-size:10.5px">${x.sin_estimar} sin analizar</div>`:''}</td>
+      <td class="mono" style="text-align:right">${x.dias}</td>
+      <td class="mono" style="text-align:right">${x.horas_por_dia}</td>
+      <td class="mono" style="text-align:right">${x.puntos}${x.horas&&x.puntos>x.horas?`<div class="sub" style="font-size:10.5px">+${Math.round(((x.puntos/x.horas)-1)*100)}%</div>`:''}</td>
+    </tr>`).join('')}</tbody></table>
+    <div class="sub" style="font-size:11.5px;margin-top:7px">
+      ${totR} reparaciones cerradas · ${Math.round(totH*10)/10} h estimadas en total${sinEst?` · ${sinEst} sin analizar todavía`:''}.
+      Los puntos suelen dar más que las horas porque cada reparación paga 1 punto como mínimo,
+      aunque haya llevado media hora.</div>
+  </div>`;
 }
 
 /* Bateas del mes en el informe: el promedio por jornada es la medida de
