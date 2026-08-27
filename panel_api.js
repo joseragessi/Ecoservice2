@@ -5668,6 +5668,36 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           dias: Math.round(dias(r.created_at, r.fecha_finalizado) * 10) / 10,
         })).sort((x, y) => y.dias - x.dias),
       },
+      // ── Carga por mecánico ────────────────────────────────────────
+      // Horas de mano de obra que estimó la IA, sumadas por mecánico. NO son
+      // horas trabajadas: no hay fichaje, y en agosto de 2026 estas horas
+      // cubrían ~1/4 de la jornada teórica del taller. Sirven para comparar
+      // entre mecánicos y entre meses, nada más.
+      // Mismo universo que el resto del informe: incidencias creadas en el
+      // mes y ya cerradas, sin las cerradas sin reparar.
+      por_mecanico: (() => {
+        const acc = {};
+        finalizadas.forEach(r => {
+          const n = r.mecanicos ? r.mecanicos.nombre : null;
+          if (!n) return;
+          const o = acc[n] || (acc[n] = { mecanico: n, reparaciones: 0, horas: 0, sin_estimar: 0, dias: new Set(), puntos: 0 });
+          o.reparaciones++;
+          const h = Number(r.puntos_ia_horas);
+          if (isNaN(h) || r.puntos_ia_horas == null) o.sin_estimar++; else o.horas += h;
+          o.puntos += Number(r.puntos_ia) || 0;
+          o.dias.add(String(r.fecha_finalizado).slice(0, 10));
+        });
+        return Object.values(acc).map(o => ({
+          mecanico: o.mecanico,
+          reparaciones: o.reparaciones,
+          horas: Math.round(o.horas * 10) / 10,
+          sin_estimar: o.sin_estimar,
+          dias: o.dias.size,
+          puntos: o.puntos,
+          horas_por_dia: o.dias.size ? Math.round((o.horas / o.dias.size) * 10) / 10 : 0,
+        })).sort((x, y) => y.horas - x.horas);
+      })(),
+
       // ── Bateas del mes ────────────────────────────────────────────
       // Promedio por jornada (es la medida de rendimiento: un camión hace
       // varias bateas por salida) y a qué objetivos fueron.
