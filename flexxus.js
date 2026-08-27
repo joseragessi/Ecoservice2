@@ -24,11 +24,33 @@ function base() {
 let _tok = null;       // { token, vence (epoch ms) }
 let _loginVuelo = null;  // login en curso, para no disparar varios a la vez
 
-async function login() {
+// Diagnóstico del token: para saber POR QUÉ se pide uno nuevo. Si el token no
+// se reutiliza entre requests pero el PID cambia, el problema no es el cache
+// sino que el proceso se reinicia (o hay más de una instancia) y se pierde
+// toda la memoria — incluidas las cachés del plan de cuentas y de centros.
+const _diag = { logins: 0, reusos: 0, motivos: [], pid: process.pid, arranque: Date.now() };
+function estadoToken() {
+  return {
+    pid: _diag.pid,
+    uptime_s: Math.round(process.uptime()),
+    logins_desde_arranque: _diag.logins,
+    reusos_desde_arranque: _diag.reusos,
+    token_en_memoria: !!_tok,
+    vence: _tok ? new Date(_tok.vence).toISOString() : null,
+    ultimos_motivos: _diag.motivos.slice(-10),
+  };
+}
+
+async function login(motivo) {
   // Si ya hay un login en vuelo, todos esperan ESE. Sin esto, un lote de
   // llamadas en paralelo (Promise.all) encuentra el cache vacío y cada una
   // dispara su propio login: el 25-08 salieron 7 de una en el mismo segundo.
   if (_loginVuelo) return _loginVuelo;
+  _diag.logins++;
+  _diag.motivos.push(`${new Date().toISOString()} · ${motivo || 'sin motivo'}`);
+  if (_diag.motivos.length > 30) _diag.motivos.shift();
+  console.log(`[flexxus] pidiendo token · motivo: ${motivo || '?'} · pid ${process.pid} · ` +
+    `uptime ${Math.round(process.uptime())}s · logins en este proceso: ${_diag.logins}`);
   _loginVuelo = _login().finally(() => { _loginVuelo = null; });
   return _loginVuelo;
 }
@@ -48,23 +70,20 @@ async function _login() {
   if (!r.ok || !d.token) {
     throw new Error('Login Flexxus falló (' + r.status + '): ' + (d.message || d.error || 'revisá FLEXXUS_USER/PASS'));
   }
-  // expireIn puede venir de dos formas y no está documentado cuál: como
-  // INSTANTE (epoch en segundos, ~1.8e9 hoy) o como DURACIÓN (86400 = 24 h).
-  // Tomarlo siempre como instante daba una fecha de 1970 con la segunda forma
-  // → token vencido siempre → login en cada request. Se distingue por tamaño.
-  const exp = Number(d.expireIn) || 0;
+  // expireIn es el INSTANTE de expiración en Unix epoch (segundos), y el token
+  // dura 24 h — confirmado por Flexxus el 26-08-2026. Si viniera un valor
+  // absurdo (ausente, cero, o ya vencido) se usa 1 h para no quedar sin token.
   const SEG = 1000;
-  const venceSeg = exp <= 0 ? (Date.now() / SEG + 3600)     // sin dato: 1 h
-    : exp < 1e9 ? (Date.now() / SEG + exp)                   // duración
-    : exp;                                                   // epoch
+  const exp = Number(d.expireIn) || 0;
+  const venceSeg = exp > Date.now() / SEG ? exp : (Date.now() / SEG + 3600);
   _tok = { token: d.token, vence: venceSeg * SEG - 5 * 60 * SEG };   // 5 min de margen
   console.log(`[flexxus] login OK · token válido hasta ${new Date(_tok.vence).toISOString()}`);
   return _tok.token;
 }
 
 async function token() {
-  if (_tok && Date.now() < _tok.vence) return _tok.token;
-  return login();
+  if (_tok && Date.now() < _tok.vence) { _diag.reusos++; return _tok.token; }
+  return login(!_tok ? 'no había token en memoria' : 'el token guardado ya venció');
 }
 
 // Traduce mensajes crudos del API de Flexxus a algo que se entienda en el panel.
@@ -93,7 +112,11 @@ async function flx(path, opts = {}, reint = true) {
     ...opts,
     headers: { authorization: 'Bearer ' + t, 'content-type': 'application/json', ...(opts.headers || {}) },
   });
-  if (r.status === 401 && reint) { _tok = null; return flx(path, opts, false); }
+  if (r.status === 401 && reint) {
+    _tok = null;
+    await login('el API respondió 401 con el token vigente');
+    return flx(path, opts, false);
+  }
   const texto = await r.text();
   let d; try { d = JSON.parse(texto); } catch (e) { d = { raw: texto }; }
   if (!r.ok) {
@@ -642,10 +665,15 @@ async function flxPaginado(ruta, mapear, opts = {}) {
   const sep = ruta.includes('?') ? '&' : '?';
   const porClave = new Map();
   const paginas = [];
+  let total = null;   // el `count` del API, cuando lo trae
   for (let p = 0; p < maxPaginas; p++) {
     let arr;
     try {
       const d = await flx(`${ruta}${sep}offset=${p}&limit=${limit}`);
+      // La mayoría de los endpoints informa `count` con el total disponible
+      // (confirmado por Flexxus el 26-08). Sirve para saber si trajimos todo;
+      // como no está en todos, el corte por página incompleta sigue mandando.
+      if (total === null && d && d.count != null && !isNaN(Number(d.count))) total = Number(d.count);
       const l = d.data || d || [];
       arr = mapear(Array.isArray(l) ? l : []);
     } catch (e) {
@@ -661,7 +689,13 @@ async function flxPaginado(ruta, mapear, opts = {}) {
     if (arr.length < limit) break;   // página incompleta = era la última
     if (!nuevas) break;              // el API ignoró offset y repitió: cortar
   }
-  return { items: [...porClave.values()], paginas };
+  const items = [...porClave.values()];
+  // Si el API dijo cuántos hay y trajimos menos, algo quedó afuera: se avisa
+  // en el log en vez de devolver una lista corta en silencio.
+  if (total !== null && items.length < total) {
+    console.warn(`[flexxus] ${ruta}: el API informa ${total} registros y se leyeron ${items.length}`);
+  }
+  return { items, paginas, total };
 }
 
 // Lista de centros de costo tal como los tiene Flexxus (para contrastar los
@@ -715,7 +749,7 @@ async function _listarCentrosCostoTodosInner(forzar = false) {
   // Antes esto sondeaba 10 variantes en paralelo porque no se sabía cómo
   // paginaba el API. Flexxus confirmó offset/limit el 25-08, así que ahora es
   // una paginación normal: con limit=500 los 72 centros entran en una ida.
-  const { items, paginas } = await flxPaginado('/centrodecosto', mapearCC);
+  const { items, paginas, total } = await flxPaginado('/centrodecosto', mapearCC);
   // origen='api' se marca acá, no al completar con el listado: un centro que
   // exista en Flexxus pero todavía no esté en el listado impreso quedaba sin
   // marcar y parecía inventado.
@@ -734,6 +768,11 @@ async function _listarCentrosCostoTodosInner(forzar = false) {
     paginas,
     del_api: delApi,
     del_listado: porCodigo.size - delApi,
+    // Cuántos dice el API que hay. Por defecto devuelve activos e inactivos
+    // (con ?mostrarinactivos=false solo los activos). Si count_api coincide
+    // con del_api, la paginación trajo todo y el listado impreso ya no hace
+    // falta: se puede borrar CENTROS_COSTO_LISTADO.
+    count_api: total,
   };
   if (valor.centros.length) _ccCache = { t: Date.now(), valor };
   return valor;
@@ -1067,7 +1106,7 @@ async function anularComprobanteCompra(f) {
 }
 
 async function probarConexion() {
-  await login();
+  await token();   // reutiliza el vigente; antes forzaba un login nuevo
   const out = { ok: true, url: process.env.FLEXXUS_URL, usuario: process.env.FLEXXUS_USER };
   const trae = async (path, mapa) => {
     try { const d = await flx(path); const l = d.data || d || []; return (Array.isArray(l) ? l : []).slice(0, 40).map(mapa); }
@@ -1236,11 +1275,14 @@ async function colocarClaseComprobante(cuit, claseNum, cuentaRubro) {
 // Rubros de BIENES DE USO tal como salen en Flexxus: son las subcuentas 121…
 // del plan de cuentas (12101001 HARDWARE Y SOFTWARE, 12101005 MAQUINAS Y
 // HERRAMIENTAS, 12101007 RODADOS, etc.). El plan SÍ se puede leer por API.
-// Ruta del plan de cuentas. Flexxus confirmó el 25-08 que la correcta es
-// /planesdecuentas: /cuentas no existe y /plandecuentas da error de sintaxis.
-// /cuentascontables queda como respaldo porque en los logs respondió (consulta
-// FMA_CUENTASCONTABLES_V5), por si las dos exponen cosas distintas.
-const RUTAS_PLAN = ['/planesdecuentas', '/cuentascontables'];
+// Rutas del plan de cuentas. Los dos endpoints devuelven lo mismo, pero
+// /cuentascontables acepta `soloimputables=true` y devuelve únicamente las
+// cuentas de movimiento — que son las únicas que sirven para imputar
+// (confirmado por Flexxus el 26-08-2026). Por eso va primero: evita traer las
+// de agrupación y evita tener que deducir las hojas por prefijo de código.
+// /planesdecuentas queda de respaldo; ahí `imputable` viene como true/false,
+// mientras que en /cuentascontables viene como 1/0. El mapeo acepta las dos.
+const RUTAS_PLAN = ['/cuentascontables?soloimputables=true', '/planesdecuentas'];
 // Plan de cuentas COMPLETO (imputables). Sirve para sub-seleccionar la cuenta
 // en cualquier clase de comprobante, no solo Bienes de uso: Servicios, Otros,
 // Locaciones y Nacionalizaciones también van a una subcuenta de la ficha.
@@ -1266,13 +1308,13 @@ async function _listarPlanCuentas() {
   })).filter(x => x.codigo);
 
   for (const ruta of RUTAS_PLAN) {
-    const { items, paginas } = await flxPaginado(ruta, mapear, { clave: x => x.codigo });
+    const { items, paginas, total } = await flxPaginado(ruta, mapear, { clave: x => x.codigo });
     if (!items.length) continue;
     const cuentas = items.sort((a, b) => a.codigo.localeCompare(b.codigo));
     // `sondeo` se mantiene por compatibilidad con el endpoint del panel, que
     // lo muestra como diagnóstico; ahora son las páginas que se leyeron.
     const sondeo = paginas.map(p => ({ variante: `?offset=${p.offset}`, trajo: p.trajo, nuevas: p.nuevas, error: p.error }));
-    return { cuentas, ruta, base: (paginas[0] && paginas[0].trajo) || 0, sondeo };
+    return { cuentas, ruta, base: (paginas[0] && paginas[0].trajo) || 0, sondeo, count_api: total };
   }
   return { cuentas: [], ruta: null, base: 0, sondeo: [] };
 }
@@ -1341,4 +1383,5 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
-module.exports = { precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
+module.exports = {
+  estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
