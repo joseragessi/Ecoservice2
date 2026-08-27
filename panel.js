@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · evolución promedio de bateas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · formato de impresión del reporte';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2254,22 +2254,32 @@ function imprimirReporte(){
   const kpi=(l,v,s,c)=>`<div class="k"><div class="kl">${l}</div><div class="kv"${c?` style="color:${c}"`:''}>${v}</div><div class="ks">${s||''}</div></div>`;
   const html=`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Reporte ${escStk(mesNombre(d.mes))} · EcoService</title><style>
     *{box-sizing:border-box}
-    body{font-family:system-ui,-apple-system,sans-serif;color:#16221C;margin:0;padding:26px 30px;font-size:12.5px;line-height:1.5}
-    h1{font-size:23px;margin:0 0 2px;letter-spacing:-.4px}
-    h2{font-size:14px;margin:0 0 12px;padding-bottom:6px;border-bottom:2px solid #16221C;letter-spacing:-.2px}
-    .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #159B51;padding-bottom:12px;margin-bottom:20px}
+    /* Sin esto el navegador imprime todo en gris: se pierden el verde de la
+       marca, los colores de la dona y los rojos de los valores en alerta. */
+    body{font-family:system-ui,-apple-system,sans-serif;color:#16221C;margin:0;padding:20px 24px;font-size:12px;line-height:1.45;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h1{font-size:20px;margin:0 0 2px;letter-spacing:-.4px}
+    h2{font-size:13px;margin:0 0 9px;padding-bottom:5px;border-bottom:2px solid #16221C;letter-spacing:-.2px}
+    .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #159B51;padding-bottom:9px;margin-bottom:14px}
+    svg{max-width:100%;height:auto}
     .sub{color:#4A5A51;font-size:12px}
     .mini{color:#8A968E;font-size:11px}
-    .sec{margin-bottom:22px;page-break-inside:avoid}
-    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
-    .k{border:1px solid #E6EBE4;border-radius:9px;padding:11px 13px;background:#FBFCFA}
-    .kl{font-size:9.5px;text-transform:uppercase;letter-spacing:1px;color:#8A968E;font-weight:600}
-    .kv{font-family:ui-monospace,monospace;font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-1px}
-    .ks{font-size:11px;color:#4A5A51;margin-top:3px}
+    .sec{margin-bottom:16px;page-break-inside:avoid}
+    /* Los 5 KPIs de cabecera en UNA fila: con grid de 4 el quinto caía solo a
+       una segunda fila y dejaba media hoja vacía. */
+    .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px}
+    .kpis.tres{grid-template-columns:repeat(3,1fr)}
+    .kpis.cuatro{grid-template-columns:repeat(4,1fr)}
+    .k{border:1px solid #E6EBE4;border-radius:9px;padding:9px 10px;background:#FBFCFA}
+    .kl{font-size:8.5px;text-transform:uppercase;letter-spacing:.8px;color:#8A968E;font-weight:600;line-height:1.25}
+    .kv{font-family:ui-monospace,monospace;font-size:21px;font-weight:700;margin-top:4px;letter-spacing:-1px}
+    .ks{font-size:10px;color:#4A5A51;margin-top:2px;line-height:1.35}
     .dos{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-    table{width:100%;border-collapse:collapse;font-size:11.5px}
-    th{text-align:left;font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:#8A968E;padding:6px 8px;border-bottom:1px solid #E6EBE4}
-    td{padding:6px 8px;border-bottom:1px solid #F2F5F0}
+    table{width:100%;border-collapse:collapse;font-size:11px}
+    th{text-align:left;font-size:8.5px;text-transform:uppercase;letter-spacing:.5px;color:#8A968E;padding:5px 6px;border-bottom:1px solid #E6EBE4;line-height:1.25}
+    td{padding:5px 6px;border-bottom:1px solid #F2F5F0}
+    /* Los números no se parten en dos líneas: "2.1 d" quedaba como "2.1" y "d" */
+    td.der,th.der,td.mono{white-space:nowrap}
     .mono{font-family:ui-monospace,monospace}
     .der{text-align:right}
     .rojo{color:#DC4A5B}
@@ -2280,8 +2290,11 @@ function imprimirReporte(){
        ocupar varias páginas— así que arranca en página nueva y sus tablas sí
        se pueden partir; si no, una familia larga dejaría media hoja vacía. */
     @media print{
-      body{padding:10mm 9mm}
-      .sec{page-break-inside:avoid;margin-bottom:12px}
+      @page{size:A4 portrait;margin:11mm 10mm}
+      body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .sec{page-break-inside:avoid;margin-bottom:13px}
+      h2{page-break-after:avoid}
+      tr{page-break-inside:avoid}
       .pie{page-break-before:avoid}
     }
   </style></head><body>
@@ -2326,7 +2339,7 @@ function imprimirReporte(){
 
     ${(d.bateas&&d.bateas.jornadas)?`<div class="sec">
       <h2>Bateas · por objetivo</h2>
-      <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+      <div class="kpis tres">
         ${kpi('Promedio por jornada',d.bateas.prom_jornada,`${d.bateas.jornadas} jornada${d.bateas.jornadas===1?'':'s'} en el mes`)}
         ${kpi('Bateas del mes',d.bateas.total,`${d.bateas.m3.toLocaleString('es-AR')} m³`)}
         ${kpi('Objetivos atendidos',(d.bateas.por_objetivo||[]).length,'con al menos una batea')}
@@ -2337,7 +2350,7 @@ function imprimirReporte(){
 
     <div class="sec">
       <h2>Pañol</h2>
-      <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpis cuatro">
         ${kpi('Ítems en pañol',p.items,p.unidades+' unidades')}
         ${kpi('Salidas del mes',p.salidas_mes,p.afuera+' sin devolver')}
         ${kpi('Bajo mínimo',p.bajo_minimo,p.agotados+' agotados',p.bajo_minimo?'#D98A1F':'')}
