@@ -5321,7 +5321,9 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
     // Para el promedio mensual por camión se necesita el histórico entero,
     // no solo el mes: el promedio de un mes contra sí mismo no dice nada.
-    const [inc, prev, panolItems, panolMovs, bateasHist, unidades, paradasHoy] = await Promise.all([
+    // 12 meses atrás desde el primer día del mes que se está mirando
+    const desdeAnio = new Date(Date.UTC(a, m - 12, 1)).toISOString();
+    const [inc, prev, panolItems, panolMovs, bateasHist, unidades, paradasHoy, incAnio] = await Promise.all([
       supabase.from('incidencias')
         .select('*, objetivos(nombre), mecanicos(nombre), capataces(nombre)')
         .gte('created_at', desde).lt('created_at', hasta),
@@ -5332,7 +5334,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       supabase.from('panol_movimientos').select('*').gte('fecha_salida', desde).lt('fecha_salida', hasta)
         .then(r => r, () => ({ data: [] })),
       supabase.from('viajes_bateas')
-        .select('*, unidades(patente, marca_modelo), capataces(nombre)')
+        .select('*, unidades(patente, marca_modelo), capataces(nombre), paradas:viajes_paradas(objetivo_id, objetivo_nombre, bateas)')
         .neq('estado', 'anulado').lt('fecha', hasta.slice(0, 10))
         .then(r => r, () => ({ data: [] })),
       supabase.from('unidades').select('id, patente, marca_modelo, tipo_rodado')
@@ -5342,6 +5344,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       supabase.from('incidencias')
         .select('id, tipo_equipo, numero_unidad, prioridad, created_at, objetivos(nombre)')
         .eq('equipo_parado', true).neq('estado', 'finalizado'),
+      // Solo la fecha y el motivo de cierre, para la evolución anual del pie
+      // del informe. Es liviano: una columna por incidencia.
+      supabase.from('incidencias').select('created_at, motivo_cierre')
+        .gte('created_at', desdeAnio).lt('created_at', hasta)
+        .then(r => r, () => ({ data: [] })),
     ]);
     if (inc.error) throw inc.error;
     const filas = inc.data || [];
@@ -5651,6 +5658,61 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           dias: Math.round(dias(r.created_at, r.fecha_finalizado) * 10) / 10,
         })).sort((x, y) => y.dias - x.dias),
       },
+      // ── Bateas del mes ────────────────────────────────────────────
+      // Promedio por jornada (es la medida de rendimiento: un camión hace
+      // varias bateas por salida) y a qué objetivos fueron.
+      bateas: (() => {
+        const totalMes = delMes.reduce((s2, v) => s2 + (Number(v.total_bateas) || 0), 0);
+        const porObj = {};
+        delMes.forEach(v => (v.paradas || []).forEach(pp => {
+          const nombre = pp.objetivo_nombre || 'Sin objetivo';
+          const k = pp.objetivo_id ? 'id:' + pp.objetivo_id : 'txt:' + nombre.toLowerCase().trim();
+          const o = porObj[k] || (porObj[k] = { nombre, bateas: 0, sin_objetivo: !pp.objetivo_id });
+          o.bateas += Number(pp.bateas) || 0;
+        }));
+        return {
+          total: totalMes,
+          jornadas: delMes.length,
+          prom_jornada: delMes.length ? Math.round((totalMes / delMes.length) * 10) / 10 : 0,
+          m3: totalMes * M3_BATEA_REP,
+          por_objetivo: Object.values(porObj)
+            .map(o => ({ ...o, m3: o.bateas * M3_BATEA_REP }))
+            .sort((x, y) => y.bateas - x.bateas),
+        };
+      })(),
+
+      // ── Evolución de los últimos 12 meses ─────────────────────────
+      // Reparaciones y bateas mes a mes, para ver la tendencia al pie del
+      // informe. Las reparaciones salen de `prev` (que trae 60 días) solo
+      // para el mes en curso; el resto se calcula sobre los viajes, que sí
+      // vienen con historia completa. Por eso reparaciones va solo donde hay
+      // dato: no se dibuja una línea en cero que parezca un mes sin trabajo.
+      evolucion: (() => {
+        const meses = [];
+        for (let k = 11; k >= 0; k--) {
+          const d2 = new Date(Date.UTC(a, m - 1 - k, 1));
+          meses.push(d2.toISOString().slice(0, 7));
+        }
+        const batPorMes = {};
+        bat.forEach(v => {
+          const mm = String(v.fecha || '').slice(0, 7);
+          batPorMes[mm] = (batPorMes[mm] || 0) + (Number(v.total_bateas) || 0);
+        });
+        // Mismo criterio que el resto del informe: las cerradas sin reparar
+        // no son reparaciones y no se cuentan.
+        const repPorMes = {};
+        ((incAnio && incAnio.data) || []).forEach(r => {
+          if (r.motivo_cierre) return;
+          const mm = String(r.created_at || '').slice(0, 7);
+          repPorMes[mm] = (repPorMes[mm] || 0) + 1;
+        });
+        return meses.map(mm => ({
+          mes: mm,
+          bateas: batPorMes[mm] || 0,
+          reparaciones: repPorMes[mm] || 0,
+        }));
+      })(),
+
       panol: {
         items: items.length,
         unidades: items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0),
