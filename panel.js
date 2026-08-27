@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-26 · avisa cambios de otros usuarios';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · reporte con bateas y evolución anual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2102,48 +2102,9 @@ async function vReportes(view){
   <div class="panel" style="margin-bottom:14px"><div class="panel-title">Dónde se rompe · por objetivo</div>
     ${svgBarras(r.por_objetivo,{max:10})}</div>
 
-  ${r.reingresos.cantidad?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--rojo)">Reingresos · máquinas que volvieron dentro de los 30 días</div>
-    <table><thead><tr><th>Equipo</th><th>N°</th><th>Falla anterior</th><th>Falla ahora</th><th style="text-align:right">Días</th><th>Reparó antes</th></tr></thead>
-    <tbody>${r.reingresos.detalle.map(x=>`<tr>
-      <td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
-      <td class="sub">${escStk(x.falla_previa||'—')}</td>
-      <td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge b-rojo">misma</span>':''}</td>
-      <td class="mono" style="text-align:right">${x.dias}</td>
-      <td class="sub">${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
-  </div>`:''}
+  ${bloqueBateasReporte(d.bateas)}
 
   <div class="panel" style="margin-bottom:14px">
-    <div class="panel-title">Tiempo de resolución · las 12 que más tardaron</div>
-    ${svgBarras(r.detalle_tiempos.slice(0,12),{max:12,sufijo:' d',
-      etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
-      color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
-  </div>
-
-  ${r.sin_reparar?`<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--diesel)">📭 Cerradas sin pasar por el taller (${r.sin_reparar})</div>
-    <div class="sub" style="font-size:12px;margin-bottom:10px">
-      No se cuentan como reparaciones: no entran en el total, ni en los días promedio, ni en los reingresos.</div>
-    ${svgBarras(r.sin_reparar_por_motivo,{max:5,color:'#D98A1F',anchoEtiq:190})}
-    ${r.no_ingreso?`<div class="sub" style="font-size:12px;margin-top:8px">
-      <b>${r.no_ingreso}</b> se reportaron y el equipo nunca bajó al taller. Si el número es alto, el cuello de botella está en el traslado, no en el taller.</div>`:''}
-  </div>`:''}
-
-  ${r.parados_detalle&&r.parados_detalle.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--rojo)">⛔ Paradas en este momento (${r.parados_detalle.length})</div>
-    <div class="sub" style="font-size:12px;margin-bottom:10px">Máquinas sin poder trabajar hoy, sin importar de qué mes sea la incidencia.</div>
-    <table><thead><tr><th>Equipo</th><th>N°</th><th>Objetivo</th><th>Prioridad</th><th style="text-align:right">Días parada</th></tr></thead>
-    <tbody>${r.parados_detalle.map(x=>`<tr>
-      <td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
-      <td class="sub">${escStk(x.objetivo||'—')}</td>
-      <td><span class="badge" style="background:${COLOR_PRIO[String(x.prioridad||'').toLowerCase()]||'#8A968E'}22;color:${COLOR_PRIO[String(x.prioridad||'').toLowerCase()]||'#8A968E'}">${LABEL_PRIO[String(x.prioridad||'').toLowerCase()]||x.prioridad||'—'}</span></td>
-      <td class="mono" style="text-align:right;color:${x.dias>=7?'var(--rojo)':x.dias>=3?'var(--diesel)':'inherit'}">${x.dias}</td></tr>`).join('')}
-    </tbody></table>
-  </div>`:''}
-
-  ${bloqueBateas(d.bateas)}
-
-  <div class="panel">
     <div class="panel-title">Pañol</div>
     <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">Ítems</div><div class="kpi-val">${p.items}</div><div class="kpi-sub">${p.unidades} unidades</div></div>
@@ -2156,6 +2117,64 @@ async function vReportes(view){
       <div><div class="sub" style="font-weight:600;margin-bottom:8px">A qué objetivo fue</div>
         ${svgBarras(p.salidas_por_objetivo,{max:8,color:'#159B51'})}</div>
     </div>
+  </div>
+
+  ${bloqueEvolucion(d.evolucion)}`;
+}
+
+/* Bateas del mes en el informe: el promedio por jornada es la medida de
+   rendimiento (un camión hace varias bateas por salida), y abajo a qué
+   objetivos fueron. Las paradas que el chofer escribió y no matchearon
+   ningún objetivo aparecen igual, marcadas: si no, la suma de las barras da
+   menos que el total y parece un error de cuentas. */
+function bloqueBateasReporte(b){
+  if(!b||!b.jornadas)return '<div class="panel" style="margin-bottom:14px"><div class="panel-title">Bateas</div><div class="sub">Sin viajes en el período.</div></div>';
+  const sinObj=(b.por_objetivo||[]).filter(o=>o.sin_objetivo).reduce((s2,o)=>s2+o.bateas,0);
+  return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Bateas · por objetivo</div>
+    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Promedio por jornada</div><div class="kpi-val">${b.prom_jornada}</div>
+        <div class="kpi-sub">${b.jornadas} jornada${b.jornadas===1?'':'s'} en el mes</div></div>
+      <div class="kpi"><div class="kpi-label">Bateas del mes</div><div class="kpi-val">${b.total}</div>
+        <div class="kpi-sub">${b.m3.toLocaleString('es-AR')} m³</div></div>
+      <div class="kpi"><div class="kpi-label">Objetivos atendidos</div><div class="kpi-val">${(b.por_objetivo||[]).length}</div>
+        <div class="kpi-sub">${sinObj?sinObj+' bateas sin objetivo asignado':'todas con objetivo'}</div></div>
+    </div>
+    ${svgBarras((b.por_objetivo||[]).map(o=>({nombre:o.nombre+(o.sin_objetivo?' ⚠':''),valor:o.bateas})),
+      {max:14,color:'#159B51',etiqueta:x=>x.nombre,valor:x=>x.valor,anchoEtiq:200})}
+  </div>`;
+}
+
+/* Evolución de los últimos 12 meses: reparaciones y bateas una al lado de la
+   otra. Van en dos ejes distintos porque son magnitudes muy diferentes
+   (decenas de reparaciones contra cientos de bateas): con un eje común, una
+   de las dos series quedaría aplastada contra el piso y no se leería. */
+function bloqueEvolucion(ev){
+  if(!ev||!ev.length)return '';
+  const W=880,H=190,mI=44,mD=44,mS=16,mB=30;
+  const aw=W-mI-mD, ah=H-mS-mB;
+  const maxR=Math.max(...ev.map(x=>x.reparaciones),1);
+  const maxB=Math.max(...ev.map(x=>x.bateas),1);
+  const px=i=>mI+(ev.length===1?aw/2:i*aw/(ev.length-1));
+  const pyR=v=>mS+ah-(v*ah/maxR);
+  const pyB=v=>mS+ah-(v*ah/maxB);
+  const linea=(f,color)=>ev.map((x,i)=>`${i?'L':'M'}${px(i).toFixed(1)},${f(x).toFixed(1)}`).join(' ');
+  const etiqMes=m=>{const [y,mm]=m.split('-');return ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][+mm-1]+(mm==='01'?"'"+y.slice(2):'');};
+  return `<div class="panel" style="margin-bottom:14px"><div class="panel-title">Evolución · últimos 12 meses</div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;overflow:visible" role="img">
+      <line x1="${mI}" y1="${mS+ah}" x2="${W-mD}" y2="${mS+ah}" stroke="#D9DED9"/>
+      <path d="${linea(x=>pyB(x.bateas),'')}" fill="none" stroke="#159B51" stroke-width="2"/>
+      <path d="${linea(x=>pyR(x.reparaciones),'')}" fill="none" stroke="#3B7DC4" stroke-width="2" stroke-dasharray="4 3"/>
+      ${ev.map((x,i)=>`<circle cx="${px(i).toFixed(1)}" cy="${pyB(x.bateas).toFixed(1)}" r="2.5" fill="#159B51"/>
+        <circle cx="${px(i).toFixed(1)}" cy="${pyR(x.reparaciones).toFixed(1)}" r="2.5" fill="#3B7DC4"/>
+        <text x="${px(i).toFixed(1)}" y="${H-10}" font-size="10" fill="#8A968E" text-anchor="middle">${etiqMes(x.mes)}</text>`).join('')}
+      <text x="${mI-6}" y="${mS+8}" font-size="10" fill="#3B7DC4" text-anchor="end">${maxR}</text>
+      <text x="${W-mD+6}" y="${mS+8}" font-size="10" fill="#159B51">${maxB}</text>
+      <text x="${mI-6}" y="${mS+ah}" font-size="10" fill="#8A968E" text-anchor="end">0</text>
+    </svg>
+    <div class="sub" style="font-size:11.5px;margin-top:4px">
+      <span style="color:#3B7DC4">▬ reparaciones</span> (izquierda, tope ${maxR}) ·
+      <span style="color:#159B51">▬ bateas</span> (derecha, tope ${maxB}).
+      Escalas distintas: sirven para ver la tendencia de cada una, no para compararlas entre sí.</div>
   </div>`;
 }
 
@@ -2230,7 +2249,20 @@ function imprimirReporte(){
     .rojo{color:#DC4A5B}
     .badge{display:inline-block;font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px}
     .pie{margin-top:26px;padding-top:10px;border-top:1px solid #E6EBE4;font-size:10.5px;color:#8A968E;display:flex;justify-content:space-between}
-    @media print{body{padding:12mm 10mm}.sec{page-break-inside:avoid}}
+    .ev{margin:0}.h2ev{font-size:12.5px;font-weight:700;color:#2B3A2E;margin:0 0 6px}
+    /* El resumen tiene que entrar en UNA página: secciones compactas y sin
+       cortes internos. El detalle por incidencia es un anexo aparte —puede
+       ocupar varias páginas— así que arranca en página nueva y sus tablas sí
+       se pueden partir; si no, una familia larga dejaría media hoja vacía. */
+    @media print{
+      body{padding:10mm 9mm}
+      .sec{page-break-inside:avoid;margin-bottom:12px}
+      .detalle-familias{page-break-before:always;page-break-inside:auto}
+      .detalle-familias table{page-break-inside:auto}
+      .detalle-familias tr{page-break-inside:avoid}
+      .detalle-familias h3{page-break-after:avoid}
+      .pie{page-break-before:avoid}
+    }
   </style></head><body>
     <div class="cab">
       <div><h1>Reporte mensual de mantenimiento</h1>
@@ -2271,57 +2303,15 @@ function imprimirReporte(){
       <h2>Por objetivo</h2>${svgBarras(r.por_objetivo,{ancho:880,max:10})}
     </div>
 
-    <div class="sec">
-      <h2>Tiempo de resolución · las que más tardaron</h2>
-      ${svgBarras(r.detalle_tiempos.slice(0,12),{ancho:900,max:12,sufijo:' d',anchoEtiq:230,
-        etiqueta:x=>`${x.equipo||''} ${x.unidad?'N° '+x.unidad:''}`.trim()||'—',valor:x=>x.dias,
-        color:x=>({critico:'#DC4A5B',alta:'#D98A1F'})[String(x.prioridad||'').toLowerCase()]||'#3B7DC4'})}
-    </div>
-
-    ${r.reingresos.cantidad?`<div class="sec">
-      <h2>Reingresos · volvieron dentro de los 30 días</h2>
-      <table><thead><tr><th>Equipo</th><th>N°</th><th>Falla anterior</th><th>Falla ahora</th><th class="der">Días</th><th>Reparó antes</th></tr></thead>
-      <tbody>${r.reingresos.detalle.map(x=>`<tr><td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
-        <td>${escStk(x.falla_previa||'—')}</td><td>${escStk(x.falla_ahora||'—')}${x.misma_falla?' <span class="badge" style="background:#FCEBED;color:#DC4A5B">misma falla</span>':''}</td>
-        <td class="der mono">${x.dias}</td><td>${escStk(x.mecanico||'—')}</td></tr>`).join('')}</tbody></table>
-      <div class="mini" style="margin-top:6px">El reingreso con la misma falla es el indicador de calidad de la reparación.</div>
-    </div>`:''}
-
-    ${r.sin_reparar?`<div class="sec">
-      <h2>Cerradas sin pasar por el taller</h2>
-      <div class="mini" style="margin-bottom:8px">No se cuentan como reparaciones: quedan fuera del total, de los días promedio y de los reingresos.</div>
-      ${svgBarras(r.sin_reparar_por_motivo,{ancho:520,max:5,color:'#D98A1F',anchoEtiq:190})}
-      ${r.no_ingreso?`<div class="mini" style="margin-top:6px"><b>${r.no_ingreso}</b> se reportaron y el equipo nunca bajó al taller.</div>`:''}
-    </div>`:''}
-
-    ${r.parados_detalle&&r.parados_detalle.length?`<div class="sec">
-      <h2>Paradas en este momento</h2>
-      <table><thead><tr><th>Equipo</th><th>N°</th><th>Objetivo</th><th>Prioridad</th><th class="der">Días parada</th></tr></thead>
-      <tbody>${r.parados_detalle.map(x=>`<tr><td>${escStk(x.equipo||'—')}</td><td class="mono">${escStk(x.unidad||'—')}</td>
-        <td>${escStk(x.objetivo||'—')}</td><td>${LABEL_PRIO[String(x.prioridad||'').toLowerCase()]||x.prioridad||'—'}</td>
-        <td class="der mono"${x.dias>=7?' style="color:#DC4A5B;font-weight:700"':''}>${x.dias}</td></tr>`).join('')}</tbody></table>
-      <div class="mini" style="margin-top:6px">Máquinas sin poder trabajar al momento de emitir el reporte, sin importar de qué mes es la incidencia.</div>
-    </div>`:''}
-
-    ${d.bateas&&d.bateas.camiones&&d.bateas.camiones.length?`<div class="sec">
-      <h2>Bateas</h2>
+    ${(d.bateas&&d.bateas.jornadas)?`<div class="sec">
+      <h2>Bateas · por objetivo</h2>
       <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
-        ${kpi('Bateas del mes',d.bateas.total_mes,`${d.bateas.viajes_mes} viajes${d.bateas.m3_mes?' · '+d.bateas.m3_mes+' m³':''}`)}
-        ${kpi('Camiones activos',d.bateas.camiones.filter(c=>c.bateas_mes>0).length,`de ${d.bateas.camiones.length} con historia`)}
-        ${kpi('Prom. por viaje',d.bateas.viajes_mes?Math.round((d.bateas.total_mes/d.bateas.viajes_mes)*10)/10:0,'bateas por viaje')}
+        ${kpi('Promedio por jornada',d.bateas.prom_jornada,`${d.bateas.jornadas} jornada${d.bateas.jornadas===1?'':'s'} en el mes`)}
+        ${kpi('Bateas del mes',d.bateas.total,`${d.bateas.m3.toLocaleString('es-AR')} m³`)}
+        ${kpi('Objetivos atendidos',(d.bateas.por_objetivo||[]).length,'con al menos una batea')}
       </div>
-      <table><thead><tr><th>Camión</th><th>Chofer</th><th class="der">Bateas mes</th><th class="der">Viajes</th>
-        <th class="der">Prom. mensual</th><th class="der">vs promedio</th><th class="der">Mantenimiento</th></tr></thead>
-      <tbody>${d.bateas.camiones.map(c=>{
-        const dif=c.prom_mensual?Math.round(((c.bateas_mes/c.prom_mensual)-1)*100):null;
-        return `<tr><td class="mono"><b>${escStk(c.patente)}</b>${c.modelo?`<br><span style="font-size:10px;color:#8A968E">${escStk(c.modelo)}</span>`:''}</td>
-          <td>${escStk(c.chofer||'—')}</td>
-          <td class="der mono">${c.bateas_mes}</td><td class="der mono">${c.viajes_mes}</td>
-          <td class="der mono">${c.prom_mensual}</td>
-          <td class="der mono"${dif!=null&&dif<=-20?' class="rojo"':''}>${dif==null?'—':(dif>0?'+':'')+dif+'%'}</td>
-          <td class="der">${c.mant_cantidad?`${c.mant_cantidad} rep.${c.mant_dias!=null?' · '+c.mant_dias+' d':''}`:'—'}</td></tr>`;}).join('')}
-      </tbody></table>
-      <div class="mini" style="margin-top:6px">El promedio mensual toma solo los meses con actividad de cada camión. "vs promedio" compara el mes contra ese promedio propio.</div>
+      ${svgBarras((d.bateas.por_objetivo||[]).map(o=>({nombre:o.nombre+(o.sin_objetivo?' (sin objetivo)':''),valor:o.bateas})),
+        {ancho:880,max:14,color:'#159B51',etiqueta:x=>x.nombre,valor:x=>x.valor,anchoEtiq:220})}
     </div>`:''}
 
     <div class="sec">
@@ -2339,6 +2329,26 @@ function imprimirReporte(){
           ${svgBarras(p.salidas_por_objetivo,{ancho:420,max:8,color:'#159B51'})}</div>
       </div>
     </div>
+
+    ${(d.evolucion&&d.evolucion.length)?`<div class="sec evolucion">
+      ${bloqueEvolucion(d.evolucion).replace('class="panel" style="margin-bottom:14px"','class="ev"').replace('class="panel-title"','class="h2ev"')}
+    </div>`:''}
+
+    ${(r.por_familia||[]).some(x=>(x.detalle||[]).length)?`<div class="sec detalle-familias">
+      <h2>Detalle por incidencia</h2>
+      <div class="mini" style="margin-bottom:8px">Las incidencias que forman cada número de la tabla anterior. Mismo universo: las cerradas sin reparar quedan afuera.</div>
+      ${r.por_familia.filter(x=>(x.detalle||[]).length).map(x=>`
+        <h3 style="font-size:12px;margin:10px 0 4px">${escStk(x.familia)} · ${x.detalle.length}</h3>
+        <table><thead><tr><th>Fecha</th><th>Equipo · unidad</th><th>Objetivo</th><th>Falla</th>
+          <th>Mecánico</th><th>Estado</th><th class="der">Días</th></tr></thead>
+        <tbody>${x.detalle.map(y=>`<tr>
+          <td class="mono">${fechaAR(y.fecha)}</td>
+          <td><b>${escStk(y.equipo||'—')}</b>${y.unidad?' <span class="mono">'+escStk(y.unidad)+'</span>':''}${y.tipo_mant==='preventivo'?' (prev)':''}</td>
+          <td>${escStk(y.objetivo||'—')}</td><td>${escStk(y.falla||'—')}</td>
+          <td>${escStk(y.mecanico||'—')}</td>
+          <td>${LABEL_PRIO[String(y.prioridad||'').toLowerCase()]||y.prioridad||'—'}${y.dias==null?' · abierta':''}</td>
+          <td class="der mono">${y.dias!=null?y.dias+' d':y.dias_abierta+' d'}</td></tr>`).join('')}</tbody></table>`).join('')}
+    </div>`:''}
 
     <div class="pie"><span>EcoService S.R.L. · Reporte de mantenimiento</span><span>${escStk(mesNombre(d.mes))}</span></div>
     <script>window.print()<\/script></body></html>`;
