@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · meta 4 + mantenimiento por jornada';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-27 · mantenimiento cuenta como batea';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1316,8 +1316,9 @@ async function vBateas(view){
         return `<div class="kpi"><div class="kpi-label">Promedio de bateas / jornada</div>
           <div class="kpi-val" style="color:${m.color}">${k.bateas_promedio_jornada!=null?k.bateas_promedio_jornada:'—'}
             <span style="font-size:13px;color:var(--tinta-3)">/ ${META_BATEAS_JORNADA}</span></div>
-          <div class="kpi-sub">${(k.bateas_total||0)} bateas ÷ ${(k.jornadas_total||0)} jornadas · <b style="color:${m.color}">${m.txt}</b>${
-            k.jornadas_mantenimiento?` · <span style="color:var(--diesel)">🔧 ${k.jornadas_mantenimiento} con mantenimiento</span>`:''}</div>
+          <div class="kpi-sub">${k.jornadas_mantenimiento
+            ?`${(k.bateas_total||0)} bateas + <span style="color:var(--diesel)">🔧 ${k.jornadas_mantenimiento} mant.</span> ÷ ${(k.jornadas_total||0)} jornadas`
+            :`${(k.bateas_total||0)} bateas ÷ ${(k.jornadas_total||0)} jornadas`} · <b style="color:${m.color}">${m.txt}</b></div>
           <div style="height:5px;background:var(--papel);border-radius:3px;margin-top:6px">
             <div style="width:${Math.min(100,m.pct)}%;height:100%;background:${m.color};border-radius:3px"></div></div>
           ${(k.jornadas_total||0)?`<div class="sub" style="font-size:10.5px;margin-top:4px">Faltan ${Math.max(0,Math.round((META_BATEAS_JORNADA*(k.jornadas_total||0)-(k.bateas_total||0))*10)/10)} bateas para la meta del período</div>`:''}
@@ -2199,7 +2200,7 @@ function bloqueBateasReporte(b){
         return `<div class="kpi"><div class="kpi-label">Promedio por jornada</div>
           <div class="kpi-val" style="color:${m.color}">${b.prom_jornada}
             <span style="font-size:13px;color:var(--tinta-3)">/ ${META_BATEAS_JORNADA}</span></div>
-          <div class="kpi-sub">${b.jornadas} jornada${b.jornadas===1?'':'s'} · <b style="color:${m.color}">${m.pct}% de la meta</b></div>
+          <div class="kpi-sub">${b.jornadas} jornada${b.jornadas===1?'':'s'}${b.mantenimiento?` · 🔧 ${b.mantenimiento} mant.`:''} · <b style="color:${m.color}">${m.pct}% de la meta</b></div>
           <div style="height:5px;background:var(--papel);border-radius:3px;margin-top:6px">
             <div style="width:${Math.min(100,m.pct)}%;height:100%;background:${m.color};border-radius:3px"></div></div>
         </div>`;})()}
