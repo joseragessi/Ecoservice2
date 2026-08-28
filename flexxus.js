@@ -20,6 +20,42 @@ function base() {
   return u.replace(/\/$/, '') + '/v5';
 }
 
+// ── Caché persistente (tabla flexxus_cache) ──────────────────
+// Por qué en la base y no solo en memoria: el contenedor se reinicia con cada
+// publicación, y con él se perdían el token y las cachés. Resultado: un login
+// + el plan de cuentas + los centros de costo en CADA deploy (18 el 27-08).
+// Guardándolos afuera, un reinicio no le cuesta nada al API de Flexxus: el
+// proceso nuevo levanta el token que ya estaba y sigue.
+// Si la tabla no existe, todo sigue funcionando con la caché en memoria: las
+// lecturas devuelven null y las escrituras se ignoran.
+const supabase = require('./supabase');
+let _avisoTabla = false;
+const CACHE_MS = 6 * 60 * 60 * 1000;   // plan y centros: 6 h
+
+async function cacheLeer(clave) {
+  try {
+    const { data, error } = await supabase.from('flexxus_cache')
+      .select('valor, vence').eq('clave', clave).maybeSingle();
+    if (error) {
+      if (!_avisoTabla) { _avisoTabla = true; console.warn('[flexxus] sin tabla flexxus_cache (se usa solo memoria):', error.message); }
+      return null;
+    }
+    if (!data) return null;
+    if (data.vence && new Date(data.vence) <= new Date()) return null;   // venció
+    return data.valor;
+  } catch (e) { return null; }
+}
+
+async function cacheGuardar(clave, valor, venceMs) {
+  try {
+    await supabase.from('flexxus_cache').upsert({
+      clave, valor,
+      vence: venceMs ? new Date(venceMs).toISOString() : null,
+      actualizado: new Date().toISOString(),
+    }, { onConflict: 'clave' });
+  } catch (e) { /* sin tabla: se sigue con la caché en memoria */ }
+}
+
 // ── Login con cache de token ─────────────────────────────────
 let _tok = null;       // { token, vence (epoch ms) }
 let _loginVuelo = null;  // login en curso, para no disparar varios a la vez
@@ -35,6 +71,7 @@ function estadoToken() {
     uptime_s: Math.round(process.uptime()),
     logins_desde_arranque: _diag.logins,
     reusos_desde_arranque: _diag.reusos,
+    token_recuperado_de_la_base: _diag.desdeBase || 0,
     token_en_memoria: !!_tok,
     vence: _tok ? new Date(_tok.vence).toISOString() : null,
     ultimos_motivos: _diag.motivos.slice(-10),
@@ -77,13 +114,26 @@ async function _login() {
   const exp = Number(d.expireIn) || 0;
   const venceSeg = exp > Date.now() / SEG ? exp : (Date.now() / SEG + 3600);
   _tok = { token: d.token, vence: venceSeg * SEG - 5 * 60 * SEG };   // 5 min de margen
+  // Se guarda para que el próximo reinicio no tenga que volver a autenticar.
+  await cacheGuardar('token', { token: _tok.token, vence: _tok.vence }, _tok.vence);
   console.log(`[flexxus] login OK · token válido hasta ${new Date(_tok.vence).toISOString()}`);
   return _tok.token;
 }
 
 async function token() {
   if (_tok && Date.now() < _tok.vence) { _diag.reusos++; return _tok.token; }
-  return login(!_tok ? 'no había token en memoria' : 'el token guardado ya venció');
+  // Antes de pedir uno nuevo: ¿hay uno vigente guardado de antes del reinicio?
+  if (!_tok) {
+    const g = await cacheLeer('token');
+    if (g && g.token && g.vence > Date.now()) {
+      _tok = { token: g.token, vence: g.vence };
+      _diag.reusos++;
+      _diag.desdeBase = (_diag.desdeBase || 0) + 1;
+      console.log(`[flexxus] token reutilizado de la base · vence ${new Date(g.vence).toISOString()} · sin login`);
+      return _tok.token;
+    }
+  }
+  return login(!_tok ? 'no había token guardado (ni en memoria ni en la base)' : 'el token guardado ya venció');
 }
 
 // Traduce mensajes crudos del API de Flexxus a algo que se entienda en el panel.
@@ -740,8 +790,14 @@ const CENTROS_COSTO_LISTADO = {
 let _ccCache = null;   // { t, valor } — el listado de centros casi no cambia
 let _ccVuelo = null;   // single-flight: llamadas concurrentes comparten UNA ida
 async function listarCentrosCostoTodos(forzar = false) {
-  if (!forzar && _ccCache && Date.now() - _ccCache.t < 6 * 60 * 60 * 1000) return _ccCache.valor;
+  if (!forzar && _ccCache && Date.now() - _ccCache.t < CACHE_MS) return _ccCache.valor;
   if (!forzar && _ccVuelo) return _ccVuelo;
+  // Tras un reinicio la memoria está vacía pero la base puede tener el
+  // listado todavía vigente: así el arranque no vuelve a pegarle a Flexxus.
+  if (!forzar) {
+    const g = await cacheLeer('centros_costo');
+    if (g && (g.centros || []).length) { _ccCache = { t: Date.now(), valor: g }; return g; }
+  }
   _ccVuelo = _listarCentrosCostoTodosInner(forzar).finally(() => { _ccVuelo = null; });
   return _ccVuelo;
 }
@@ -774,7 +830,10 @@ async function _listarCentrosCostoTodosInner(forzar = false) {
     // falta: se puede borrar CENTROS_COSTO_LISTADO.
     count_api: total,
   };
-  if (valor.centros.length) _ccCache = { t: Date.now(), valor };
+  if (valor.centros.length) {
+    _ccCache = { t: Date.now(), valor };
+    await cacheGuardar('centros_costo', valor, Date.now() + CACHE_MS);
+  }
   return valor;
 }
 
@@ -1289,14 +1348,21 @@ const RUTAS_PLAN = ['/cuentascontables?soloimputables=true', '/planesdecuentas']
 let _planCache = null;   // { t, valor } — el plan de cuentas casi no cambia (caché 6 h)
 let _planVuelo = null;   // single-flight: rubros + plan del previo comparten UNA ida
 async function listarPlanCuentas(forzar = false) {
-  if (!forzar && _planCache && Date.now() - _planCache.t < 6 * 60 * 60 * 1000) return _planCache.valor;
+  if (!forzar && _planCache && Date.now() - _planCache.t < CACHE_MS) return _planCache.valor;
   if (!forzar && _planVuelo) return _planVuelo;
+  if (!forzar) {
+    const g = await cacheLeer('plan_cuentas');
+    if (g && (g.cuentas || []).length) { _planCache = { t: Date.now(), valor: g }; return g; }
+  }
   _planVuelo = _listarPlanCuentasCacheado().finally(() => { _planVuelo = null; });
   return _planVuelo;
 }
 async function _listarPlanCuentasCacheado() {
   const r = await _listarPlanCuentas();
-  if (r && (r.cuentas || []).length) _planCache = { t: Date.now(), valor: r };
+  if (r && (r.cuentas || []).length) {
+    _planCache = { t: Date.now(), valor: r };
+    await cacheGuardar('plan_cuentas', r, Date.now() + CACHE_MS);
+  }
   return r;
 }
 async function _listarPlanCuentas() {
