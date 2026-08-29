@@ -2236,6 +2236,79 @@ function bloqueBateas(b){
   </div>`;
 }
 
+/* Combustible: el bloque que abre el informe. Primero la plata, después
+   el detalle. Cada camión se compara contra el promedio de L/batea de la
+   flota del mes; lo que está por encima va a pesos al precio real del mes. */
+function bloqueCombustibleReporte(c){
+  if(!c)return '';
+  const L=n=>Math.round(Number(n)||0).toLocaleString('es-AR')+' L';
+  const exc=c.exceso_pesos||0;
+  const colorExc=exc>0?'var(--rojo)':'inherit';
+  const al=c.alertas||{sin_unidad:[],finde_sin_viaje:[]};
+  const fechaC=f=>{const[a,m,d]=String(f||'').slice(0,10).split('-');return d?`${d}/${m}`:'';};
+  const titulo=c.flota&&c.flota.camiones
+    ?`Gasoil: ${money0(c.pesos)} el mes. ${exc>0?`Hay ${money0(exc)} por encima del promedio de la flota.`:'Ningún camión por encima del promedio de la flota.'}`
+    :`Gasoil: ${money0(c.pesos)} el mes.`;
+  return `<div class="panel" style="margin-bottom:14px;border:2px solid var(--brote)">
+    <div class="panel-title">Combustible</div>
+    <div style="font-size:17px;font-weight:600;margin:2px 0 12px">${titulo}</div>
+    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">Litros cargados</div><div class="kpi-val">${L(c.litros)}</div><div class="kpi-sub">${c.cargas} cargas · ${money0(c.precio_litro)}/L prom.</div></div>
+      <div class="kpi"><div class="kpi-label">Flota (camiones)</div><div class="kpi-val">${c.flota?c.flota.l_batea:'—'}<span style="font-size:14px"> L/batea</span></div><div class="kpi-sub">${c.flota?c.flota.camiones+' camiones · '+c.flota.bateas+' bateas':''}</div></div>
+      <div class="kpi"><div class="kpi-label">Sobre el promedio</div><div class="kpi-val" style="color:${colorExc}">${L(c.exceso_litros)}</div><div class="kpi-sub">${c.exceso_pct}% de lo cargado · ${money0(exc)}</div></div>
+      <div class="kpi"><div class="kpi-label">Cargas a revisar</div><div class="kpi-val" style="color:${(al.sin_unidad.length+al.finde_sin_viaje.length)?'var(--diesel)':'inherit'}">${al.sin_unidad.length+al.finde_sin_viaje.length}</div><div class="kpi-sub">${al.sin_unidad.length} sin unidad · ${al.finde_sin_viaje.length} fin de semana sin viaje</div></div>
+    </div>
+    ${c.camiones&&c.camiones.length?`
+    <table><thead><tr><th>Camión</th><th>Chofer</th><th style="text-align:right">Bateas</th><th style="text-align:right">Litros</th>
+      <th style="text-align:right">L/batea</th><th style="text-align:right">vs flota</th><th style="text-align:right">Exceso</th></tr></thead>
+    <tbody>${c.camiones.map(x=>{
+      const col=x.vs_flota==null?'inherit':x.vs_flota>=20?'var(--rojo)':x.vs_flota>=8?'var(--diesel)':x.vs_flota<=-10?'var(--brote)':'inherit';
+      return `<tr>
+        <td><b class="mono">${escStk(x.patente)}</b>${x.modelo?`<div class="sub" style="font-size:11.5px">${escStk(x.modelo)}</div>`:''}</td>
+        <td class="sub" style="font-size:12px">${escStk(x.chofer||'—')}</td>
+        <td class="mono" style="text-align:right">${x.bateas}</td>
+        <td class="mono" style="text-align:right">${L(x.litros)}</td>
+        <td class="mono" style="text-align:right;font-weight:600">${x.l_batea}</td>
+        <td class="mono" style="text-align:right;color:${col}">${x.vs_flota==null?'—':(x.vs_flota>0?'+':'')+x.vs_flota+'%'}</td>
+        <td class="mono" style="text-align:right;color:${x.exceso_pesos?'var(--rojo)':'inherit'}">${x.exceso_pesos?money0(x.exceso_pesos):'—'}</td></tr>`;}).join('')}
+    </tbody></table>
+    <div class="sub" style="font-size:11.5px;margin-top:8px">
+      L/batea = litros cargados en el mes ÷ bateas hechas por ese camión. "vs flota" compara contra el promedio del mes de todos los camiones con viajes. El exceso son los litros por encima de ese promedio, al precio promedio real del mes.
+    </div>`:'<div class="sub">No hay camiones con cargas y viajes en el mismo mes para comparar.</div>'}
+    ${(al.sin_unidad.length||al.finde_sin_viaje.length)?`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+      <div><div class="sub" style="font-weight:600;margin-bottom:6px">Cargas sin unidad resuelta · ${money0(al.sin_unidad_pesos)}</div>
+        ${al.sin_unidad.length?al.sin_unidad.slice(0,6).map(x=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;border-bottom:1px solid var(--linea)">
+          <span>${fechaC(x.fecha)} · <b class="mono">${escStk(x.patente)}</b> <span class="sub">${escStk(x.capataz||'')}</span></span><span class="mono">${L(x.litros)} · ${money0(x.pesos)}</span></div>`).join(''):'<div class="sub">Ninguna.</div>'}</div>
+      <div><div class="sub" style="font-weight:600;margin-bottom:6px">Fin de semana sin viaje registrado · ${money0(al.finde_pesos)}</div>
+        ${al.finde_sin_viaje.length?al.finde_sin_viaje.slice(0,6).map(x=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;border-bottom:1px solid var(--linea)">
+          <span>${fechaC(x.fecha)} · <b class="mono">${escStk(x.patente)}</b> <span class="sub">${escStk(x.capataz||'')}</span></span><span class="mono">${L(x.litros)} · ${money0(x.pesos)}</span></div>`).join(''):'<div class="sub">Ninguna.</div>'}</div>
+    </div>`:''}
+    ${c.otras_unidades&&c.otras_unidades.length?`
+    <div style="margin-top:14px"><div class="sub" style="font-weight:600;margin-bottom:8px">Otras unidades con carga (sin bateas para comparar)</div>
+      ${svgBarras(c.otras_unidades.map(x=>({nombre:x.patente+(x.modelo?' · '+x.modelo:''),cantidad:x.litros})),{max:8,color:'#3B7DC4',sufijo:' L'})}</div>`:''}
+  </div>`;
+}
+
+/* Máquinas paradas del mes, a pesos. El precio por día es un parámetro
+   (REPORTE_PRECIO_DIA_PARADO): alquiler equivalente o facturación perdida. */
+function bloqueParadasReporte(p,param){
+  if(!p||!p.detalle)return '';
+  const precio=param&&param.precio_dia_parado?param.precio_dia_parado:0;
+  return `<div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Máquinas paradas</div>
+    <div style="font-size:17px;font-weight:600;margin:2px 0 12px">${p.dias} días de máquina parada en el mes. Costo estimado: ${money0(p.costo)}.</div>
+    ${p.detalle.length?`<table><thead><tr><th>Equipo</th><th>Falla</th><th>Objetivo</th><th style="text-align:right">Días</th><th style="text-align:right">Costo</th></tr></thead>
+    <tbody>${p.detalle.map(x=>`<tr>
+      <td><b>${escStk(x.equipo||'')}</b> ${escStk(x.unidad||'')}${x.abierta?' <span class="badge b-amber">sigue parada</span>':''}</td>
+      <td class="sub" style="font-size:12px">${escStk(x.falla||'—')}</td>
+      <td class="sub" style="font-size:12px">${escStk(x.objetivo||'—')}</td>
+      <td class="mono" style="text-align:right;color:${x.dias>=7?'var(--rojo)':'inherit'}">${x.dias}</td>
+      <td class="mono" style="text-align:right">${money0(x.costo)}</td></tr>`).join('')}</tbody></table>`:'<div class="sub">Ninguna máquina parada en el período.</div>'}
+    <div class="sub" style="font-size:11.5px;margin-top:8px">Se cuentan solo los días dentro del mes. Precio por día parado: ${money0(precio)} (parámetro de la empresa).</div>
+  </div>`;
+}
+
 async function vReportes(view){
   if(!repMes)repMes=mesActualISO();
   if(!repDatos||repDatos.__mes!==repMes){
@@ -2261,6 +2334,9 @@ async function vReportes(view){
       </select>
       <button class="btn" onclick="imprimirReporte()">📄 Exportar PDF</button>
     </div></div>
+
+  ${bloqueCombustibleReporte(d.combustible)}
+  ${bloqueParadasReporte(d.paradas_mes,d.parametros)}
 
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
     <div class="kpi"><div class="kpi-label">Reparaciones</div><div class="kpi-val">${r.total}</div>
