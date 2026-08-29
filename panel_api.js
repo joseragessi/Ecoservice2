@@ -5813,11 +5813,17 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           const n = normObjetivo(nom);
           return mapaAlias[n] || nom;
         };
+        // El destino separa el consumo en dos mundos que no se mezclan:
+        //   bidón  → máquinas (2 tiempos, tractores, cortadoras)
+        //   unidad → el tanque de un vehículo
+        // Comparar el total contra todo el parque junto daba números sin
+        // sentido; separados, cada uno se mide contra lo que le corresponde.
         const porObj = {};
-        const sumar = (nom, litros) => {
+        const sumar = (nom, litros, esBidon) => {
           const k = resolver(nom) || 'Sin objetivo';
-          porObj[k] = porObj[k] || { objetivo: k, litros: 0, cargas: 0 };
+          porObj[k] = porObj[k] || { objetivo: k, litros: 0, cargas: 0, litros_bidon: 0, litros_unidad: 0 };
           porObj[k].litros += litros;
+          if (esBidon) porObj[k].litros_bidon += litros; else porObj[k].litros_unidad += litros;
         };
         let total = 0;
         ((cargasComb && cargasComb.data) || []).filter(c => c.estado !== 'anulada').forEach(c => {
@@ -5828,12 +5834,14 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
               const l = Number(i.litros) || 0;
               if (!l) return;
               total += l;
-              sumar(i.destino === 'bidon' ? (i.destino_detalle || objC) : objC, l);
+              const esBidon = i.destino === 'bidon';
+              sumar(esBidon ? (i.destino_detalle || objC) : objC, l, esBidon);
             });
           } else {
+            // Carga vieja sin ítems: no se sabe el destino, va como unidad.
             const l = Number(c.litros_total) || 0;
             total += l;
-            sumar(objC, l);
+            sumar(objC, l, false);
           }
           const k = resolver(objC) || 'Sin objetivo';
           if (porObj[k]) porObj[k].cargas++;
@@ -5896,6 +5904,15 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             // distintos sin tener que suponer cuántas se usan a diario.
             capacidad: maq ? capacidadTeorica(maq.familias, diasHabiles, grupoDe[o.objetivo]) : null,
             grupo: grupoDe[o.objetivo] || null,
+            litros_bidon: Math.round(o.litros_bidon),
+            litros_unidad: Math.round(o.litros_unidad),
+            // Capacidad separada: lo que va en bidón alimenta las máquinas;
+            // lo que va a tanque, los vehículos.
+            capacidad_maquinas: maq ? capacidadTeorica(
+              { ...maq.familias, vehiculo: 0 }, diasHabiles, grupoDe[o.objetivo]) : null,
+            capacidad_vehiculos: maq ? capacidadTeorica(
+              { dos_tiempos: 0, tractor: 0, cortadora: 0, fijo: 0, vehiculo: maq.familias.vehiculo },
+              diasHabiles, grupoDe[o.objetivo]) : null,
             litros_por_maquina: nMaq ? Math.round(o.litros / nMaq) : null,
             // Promedio diario del período que se está viendo. Si el mes está
             // en curso se divide por los días transcurridos, no por el mes
@@ -5916,16 +5933,24 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         // Utilización: qué parte de su capacidad usó cada objetivo.
         lista.forEach(o => {
           o.utilizacion = o.capacidad ? Math.round(o.litros * 100 / o.capacidad) : null;
+          // La utilización que se compara entre objetivos es la de MÁQUINAS:
+          // es la que tiene un consumo de referencia sólido (6 lt por jornada
+          // de 2 tiempos, 40 los tractores). La de vehículos depende de los
+          // kilómetros, que no se registran.
+          o.uso_maquinas = o.capacidad_maquinas
+            ? Math.round(o.litros_bidon * 100 / o.capacidad_maquinas) : null;
+          o.uso_vehiculos = o.capacidad_vehiculos
+            ? Math.round(o.litros_unidad * 100 / o.capacidad_vehiculos) : null;
         });
         // El desvío se mide contra la MEDIANA de los demás objetivos, no
         // contra un número inventado: si todos rondan el 25% y uno da 70%,
         // ese es el que hay que mirar. La mediana aguanta los extremos mejor
         // que el promedio, que un solo objetivo raro puede arrastrar.
-        const utils = lista.map(o => o.utilizacion).filter(u => u != null).sort((x, y) => x - y);
+        const utils = lista.map(o => o.uso_maquinas).filter(u => u != null).sort((x, y) => x - y);
         const mediana = utils.length ? utils[Math.floor(utils.length / 2)] : null;
         lista.forEach(o => {
-          o.desvio_pct = (o.utilizacion != null && mediana)
-            ? Math.round((o.utilizacion - mediana) * 100 / mediana) : null;
+          o.desvio_pct = (o.uso_maquinas != null && mediana)
+            ? Math.round((o.uso_maquinas - mediana) * 100 / mediana) : null;
           // Verde hasta ±40% de la mediana, ámbar hasta ±80%, rojo por encima.
           // Con dos meses de datos los cortes son anchos a propósito: apretarlos
           // marcaría en rojo variaciones que todavía no sabemos si son normales.
