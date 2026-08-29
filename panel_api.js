@@ -5942,21 +5942,26 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           o.uso_vehiculos = o.capacidad_vehiculos
             ? Math.round(o.litros_unidad * 100 / o.capacidad_vehiculos) : null;
         });
-        // El desvío se mide contra la MEDIANA de los demás objetivos, no
-        // contra un número inventado: si todos rondan el 25% y uno da 70%,
-        // ese es el que hay que mirar. La mediana aguanta los extremos mejor
-        // que el promedio, que un solo objetivo raro puede arrastrar.
+        // El umbral es la CAPACIDAD DEL PROPIO OBJETIVO, no la comparación con
+        // los demás. Antes se medía contra la mediana y daba falsos positivos:
+        // La Calandria usó 22% de su capacidad — consume MENOS de lo que sus 3
+        // máquinas podrían — y salía "+120% · revisar" solo porque la mediana
+        // estaba en 10%. Un objetivo que trabaja normal no es un desvío.
+        //
+        // Pasar el 100% sí es un hecho duro: significa que se cargó más
+        // combustible del que su parque puede quemar trabajando todos los días
+        // hábiles. Eso siempre tiene una explicación que hay que buscar
+        // (máquinas sin censar, consumo mal imputado, carga de terceros).
         const utils = lista.map(o => o.uso_maquinas).filter(u => u != null).sort((x, y) => x - y);
         const mediana = utils.length ? utils[Math.floor(utils.length / 2)] : null;
         lista.forEach(o => {
           o.desvio_pct = (o.uso_maquinas != null && mediana)
             ? Math.round((o.uso_maquinas - mediana) * 100 / mediana) : null;
-          // Verde hasta ±40% de la mediana, ámbar hasta ±80%, rojo por encima.
-          // Con dos meses de datos los cortes son anchos a propósito: apretarlos
-          // marcaría en rojo variaciones que todavía no sabemos si son normales.
-          o.estado = o.desvio_pct == null ? null
-            : Math.abs(o.desvio_pct) <= 40 ? 'normal'
-            : Math.abs(o.desvio_pct) <= 80 ? 'mirar' : 'revisar';
+          o.estado = o.uso_maquinas == null ? null
+            : o.uso_maquinas > 100 ? 'revisar'      // imposible sin explicación
+            : o.uso_maquinas >= 75 ? 'al tope'      // trabajando casi a full
+            : o.uso_maquinas >= 15 ? 'normal'
+            : 'poco uso';                            // máquinas censadas que casi no se usan
         });
 
         return {
