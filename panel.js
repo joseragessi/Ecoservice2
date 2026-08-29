@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-28 · máquinas del último censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-29 · máquinas por familia de consumo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2348,22 +2348,30 @@ function bloqueCombustibleReporte(cb){
       const col=o.uso_pct==null?'inherit':o.uso_pct>110?'var(--rojo)':o.uso_pct>=40?'var(--brote-2)':'var(--diesel)';
       return `<tr>
       <td style="font-weight:500">${escStk(o.objetivo)}
-        ${o.tipos?`<div class="sub" style="font-size:10.5px">${Object.entries(o.tipos).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([t,n])=>escStk(t)+' '+n).join(' · ')}</div>`:''}</td>
+        ${o.familias?`<div class="sub" style="font-size:10.5px">${
+          [['dos_tiempos','2T'],['cortadora','cortadoras'],['tractor','tractores'],['vehiculo','vehículos'],['fijo','fijos']]
+            .filter(([k])=>o.familias[k]>0).map(([k,l])=>`<b>${o.familias[k]}</b> ${l}`).join(' · ')
+          }${o.familias.sin_motor?` <span style="opacity:.6">· ${o.familias.sin_motor} sin motor</span>`:''
+          }${o.familias.otro?` <span style="opacity:.6">· ${o.familias.otro} sin clasificar</span>`:''}</div>`:''}</td>
       <td class="mono" style="text-align:right;font-weight:600">${o.litros.toLocaleString('es-AR')}</td>
       <td class="mono" style="text-align:right">${o.maquinas!=null
-        ?`${o.maquinas}${o.censo_periodo?`<div class="sub" style="font-size:10px">censo ${escStk(o.censo_periodo)}</div>`:''}`
+        ?`${o.maquinas}<div class="sub" style="font-size:10px">de ${o.maquinas_censadas} censadas</div>`
         :'<span class="sub">sin censo</span>'}</td>
       <td class="mono" style="text-align:right">${o.litros_por_maquina!=null?o.litros_por_maquina+' lt':'—'}</td>
       <td class="mono" style="text-align:right">${o.litros_maquina_dia!=null?o.litros_maquina_dia:'—'}
         ${o.litros_maquina_habil!=null?`<div class="sub" style="font-size:10px">${o.litros_maquina_habil} hábil</div>`:''}</td>
-      <td class="mono" style="text-align:right;color:${col};font-weight:600">${o.uso_pct!=null?o.uso_pct+'%':'—'}</td>
+      <td class="mono" style="text-align:right;color:${o.solo_2t?col:'var(--tinta-3)'};font-weight:600">${
+        o.uso_pct==null?'—':(o.solo_2t?o.uso_pct+'%':`<span title="Hay tractores o vehículos: consumen mucho más que 6 lt por jornada, así que el % no es comparable">${o.uso_pct}%*</span>`)}</td>
       <td><div style="height:8px;background:var(--papel);border-radius:4px">
         <div style="width:${Math.round(o.litros*100/max)}%;height:100%;background:var(--diesel);border-radius:4px"></div></div></td>
     </tr>`;}).join('')}</tbody></table>
     <div class="sub" style="font-size:11.5px;margin-top:8px">
-      <b>Uso</b> compara el consumo por máquina y día hábil contra los ${cb.litros_jornada_2t} lt que gasta una
-      máquina de 2 tiempos en una jornada completa. 100% sería cada máquina del objetivo trabajando todos los días.
-      Sirve para máquinas chicas: donde hay tractores o camionetas el número se dispara porque consumen mucho más.</div>
+      <b>Máquinas</b> cuenta solo las que tienen motor: palas, machetes, horquillas y carros quedan afuera
+      porque no consumen.<br>
+      <b>Uso</b> compara el consumo por máquina y día hábil contra los ${cb.litros_jornada_2t} lt de una jornada
+      completa de 2 tiempos. 100% sería cada máquina trabajando todos los días hábiles.
+      Los valores con <b>*</b> tienen tractores o vehículos en el parque, que consumen mucho más:
+      ahí el porcentaje no es comparable hasta que carguemos su consumo propio.</div>
     ${cb.sin_maquinas?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
       ${cb.sin_maquinas} objetivo${cb.sin_maquinas===1?'':'s'} sin maquinaria censada: ahí el litros/máquina no se puede calcular.</div>`:''}
   </div>`;
