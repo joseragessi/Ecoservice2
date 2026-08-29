@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-28 · unificar objetivos en combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-28 · reporte: combustible primero, sin pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2236,79 +2236,6 @@ function bloqueBateas(b){
   </div>`;
 }
 
-/* Combustible: el bloque que abre el informe. Primero la plata, después
-   el detalle. Cada camión se compara contra el promedio de L/batea de la
-   flota del mes; lo que está por encima va a pesos al precio real del mes. */
-function bloqueCombustibleReporte(c){
-  if(!c)return '';
-  const L=n=>Math.round(Number(n)||0).toLocaleString('es-AR')+' L';
-  const exc=c.exceso_pesos||0;
-  const colorExc=exc>0?'var(--rojo)':'inherit';
-  const al=c.alertas||{sin_unidad:[],finde_sin_viaje:[]};
-  const fechaC=f=>{const[a,m,d]=String(f||'').slice(0,10).split('-');return d?`${d}/${m}`:'';};
-  const titulo=c.flota&&c.flota.camiones
-    ?`Gasoil: ${money0(c.pesos)} el mes. ${exc>0?`Hay ${money0(exc)} por encima del promedio de la flota.`:'Ningún camión por encima del promedio de la flota.'}`
-    :`Gasoil: ${money0(c.pesos)} el mes.`;
-  return `<div class="panel" style="margin-bottom:14px;border:2px solid var(--brote)">
-    <div class="panel-title">Combustible</div>
-    <div style="font-size:17px;font-weight:600;margin:2px 0 12px">${titulo}</div>
-    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">Litros cargados</div><div class="kpi-val">${L(c.litros)}</div><div class="kpi-sub">${c.cargas} cargas · ${money0(c.precio_litro)}/L prom.</div></div>
-      <div class="kpi"><div class="kpi-label">Flota (camiones)</div><div class="kpi-val">${c.flota?c.flota.l_batea:'—'}<span style="font-size:14px"> L/batea</span></div><div class="kpi-sub">${c.flota?c.flota.camiones+' camiones · '+c.flota.bateas+' bateas':''}</div></div>
-      <div class="kpi"><div class="kpi-label">Sobre el promedio</div><div class="kpi-val" style="color:${colorExc}">${L(c.exceso_litros)}</div><div class="kpi-sub">${c.exceso_pct}% de lo cargado · ${money0(exc)}</div></div>
-      <div class="kpi"><div class="kpi-label">Cargas a revisar</div><div class="kpi-val" style="color:${(al.sin_unidad.length+al.finde_sin_viaje.length)?'var(--diesel)':'inherit'}">${al.sin_unidad.length+al.finde_sin_viaje.length}</div><div class="kpi-sub">${al.sin_unidad.length} sin unidad · ${al.finde_sin_viaje.length} fin de semana sin viaje</div></div>
-    </div>
-    ${c.camiones&&c.camiones.length?`
-    <table><thead><tr><th>Camión</th><th>Chofer</th><th style="text-align:right">Bateas</th><th style="text-align:right">Litros</th>
-      <th style="text-align:right">L/batea</th><th style="text-align:right">vs flota</th><th style="text-align:right">Exceso</th></tr></thead>
-    <tbody>${c.camiones.map(x=>{
-      const col=x.vs_flota==null?'inherit':x.vs_flota>=20?'var(--rojo)':x.vs_flota>=8?'var(--diesel)':x.vs_flota<=-10?'var(--brote)':'inherit';
-      return `<tr>
-        <td><b class="mono">${escStk(x.patente)}</b>${x.modelo?`<div class="sub" style="font-size:11.5px">${escStk(x.modelo)}</div>`:''}</td>
-        <td class="sub" style="font-size:12px">${escStk(x.chofer||'—')}</td>
-        <td class="mono" style="text-align:right">${x.bateas}</td>
-        <td class="mono" style="text-align:right">${L(x.litros)}</td>
-        <td class="mono" style="text-align:right;font-weight:600">${x.l_batea}</td>
-        <td class="mono" style="text-align:right;color:${col}">${x.vs_flota==null?'—':(x.vs_flota>0?'+':'')+x.vs_flota+'%'}</td>
-        <td class="mono" style="text-align:right;color:${x.exceso_pesos?'var(--rojo)':'inherit'}">${x.exceso_pesos?money0(x.exceso_pesos):'—'}</td></tr>`;}).join('')}
-    </tbody></table>
-    <div class="sub" style="font-size:11.5px;margin-top:8px">
-      L/batea = litros cargados en el mes ÷ bateas hechas por ese camión. "vs flota" compara contra el promedio del mes de todos los camiones con viajes. El exceso son los litros por encima de ese promedio, al precio promedio real del mes.
-    </div>`:'<div class="sub">No hay camiones con cargas y viajes en el mismo mes para comparar.</div>'}
-    ${(al.sin_unidad.length||al.finde_sin_viaje.length)?`
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
-      <div><div class="sub" style="font-weight:600;margin-bottom:6px">Cargas sin unidad resuelta · ${money0(al.sin_unidad_pesos)}</div>
-        ${al.sin_unidad.length?al.sin_unidad.slice(0,6).map(x=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;border-bottom:1px solid var(--linea)">
-          <span>${fechaC(x.fecha)} · <b class="mono">${escStk(x.patente)}</b> <span class="sub">${escStk(x.capataz||'')}</span></span><span class="mono">${L(x.litros)} · ${money0(x.pesos)}</span></div>`).join(''):'<div class="sub">Ninguna.</div>'}</div>
-      <div><div class="sub" style="font-weight:600;margin-bottom:6px">Fin de semana sin viaje registrado · ${money0(al.finde_pesos)}</div>
-        ${al.finde_sin_viaje.length?al.finde_sin_viaje.slice(0,6).map(x=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;border-bottom:1px solid var(--linea)">
-          <span>${fechaC(x.fecha)} · <b class="mono">${escStk(x.patente)}</b> <span class="sub">${escStk(x.capataz||'')}</span></span><span class="mono">${L(x.litros)} · ${money0(x.pesos)}</span></div>`).join(''):'<div class="sub">Ninguna.</div>'}</div>
-    </div>`:''}
-    ${c.otras_unidades&&c.otras_unidades.length?`
-    <div style="margin-top:14px"><div class="sub" style="font-weight:600;margin-bottom:8px">Otras unidades con carga (sin bateas para comparar)</div>
-      ${svgBarras(c.otras_unidades.map(x=>({nombre:x.patente+(x.modelo?' · '+x.modelo:''),cantidad:x.litros})),{max:8,color:'#3B7DC4',sufijo:' L'})}</div>`:''}
-  </div>`;
-}
-
-/* Máquinas paradas del mes, a pesos. El precio por día es un parámetro
-   (REPORTE_PRECIO_DIA_PARADO): alquiler equivalente o facturación perdida. */
-function bloqueParadasReporte(p,param){
-  if(!p||!p.detalle)return '';
-  const precio=param&&param.precio_dia_parado?param.precio_dia_parado:0;
-  return `<div class="panel" style="margin-bottom:14px">
-    <div class="panel-title">Máquinas paradas</div>
-    <div style="font-size:17px;font-weight:600;margin:2px 0 12px">${p.dias} días de máquina parada en el mes. Costo estimado: ${money0(p.costo)}.</div>
-    ${p.detalle.length?`<table><thead><tr><th>Equipo</th><th>Falla</th><th>Objetivo</th><th style="text-align:right">Días</th><th style="text-align:right">Costo</th></tr></thead>
-    <tbody>${p.detalle.map(x=>`<tr>
-      <td><b>${escStk(x.equipo||'')}</b> ${escStk(x.unidad||'')}${x.abierta?' <span class="badge b-amber">sigue parada</span>':''}</td>
-      <td class="sub" style="font-size:12px">${escStk(x.falla||'—')}</td>
-      <td class="sub" style="font-size:12px">${escStk(x.objetivo||'—')}</td>
-      <td class="mono" style="text-align:right;color:${x.dias>=7?'var(--rojo)':'inherit'}">${x.dias}</td>
-      <td class="mono" style="text-align:right">${money0(x.costo)}</td></tr>`).join('')}</tbody></table>`:'<div class="sub">Ninguna máquina parada en el período.</div>'}
-    <div class="sub" style="font-size:11.5px;margin-top:8px">Se cuentan solo los días dentro del mes. Precio por día parado: ${money0(precio)} (parámetro de la empresa).</div>
-  </div>`;
-}
-
 async function vReportes(view){
   if(!repMes)repMes=mesActualISO();
   if(!repDatos||repDatos.__mes!==repMes){
@@ -2336,8 +2263,8 @@ async function vReportes(view){
     </div></div>
 
   ${bloqueCombustibleReporte(d.combustible)}
-  ${bloqueParadasReporte(d.paradas_mes,d.parametros)}
 
+  <div class="sub" style="font-weight:700;font-size:13px;margin:18px 0 8px;padding-bottom:5px;border-bottom:2px solid var(--tinta)">Taller</div>
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
     <div class="kpi"><div class="kpi-label">Reparaciones</div><div class="kpi-val">${r.total}</div>
       <div class="kpi-sub">${r.finalizadas} finalizadas · ${r.abiertas} abiertas</div></div>
@@ -2390,26 +2317,42 @@ async function vReportes(view){
   <div class="panel" style="margin-bottom:14px"><div class="panel-title">Dónde se rompe · por objetivo</div>
     ${svgBarras(r.por_objetivo,{max:10})}</div>
 
+  <div class="sub" style="font-weight:700;font-size:13px;margin:18px 0 8px;padding-bottom:5px;border-bottom:2px solid var(--tinta)">Bateas</div>
   ${bloqueBateasReporte(d.bateas)}
-
-  <div class="panel" style="margin-bottom:14px">
-    <div class="panel-title">Pañol</div>
-    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">Ítems</div><div class="kpi-val">${p.items}</div><div class="kpi-sub">${p.unidades} unidades</div></div>
-      <div class="kpi"><div class="kpi-label">Salidas del mes</div><div class="kpi-val">${p.salidas_mes}</div><div class="kpi-sub">${p.afuera} sin devolver</div></div>
-      <div class="kpi"><div class="kpi-label">Bajo mínimo</div><div class="kpi-val" style="color:${p.bajo_minimo?'var(--diesel)':'inherit'}">${p.bajo_minimo}</div><div class="kpi-sub">${p.agotados} agotados</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-      <div><div class="sub" style="font-weight:600;margin-bottom:8px">Lo que más salió</div>
-        ${svgBarras(p.top_consumo,{max:8,color:'#D98A1F'})}</div>
-      <div><div class="sub" style="font-weight:600;margin-bottom:8px">A qué objetivo fue</div>
-        ${svgBarras(p.salidas_por_objetivo,{max:8,color:'#159B51'})}</div>
-    </div>
-  </div>
 
   ${bloqueEvolucion(d.evolucion)}
 
   ${bloqueCargaMecanicos(d.por_mecanico)}`;
+}
+
+/* Combustible por objetivo, con las máquinas censadas de cada uno. Es la
+   primera sección del informe: es el consumo que más pesa y el que más se
+   discute. Los litros de bidones se imputan al objetivo de DESTINO, así que
+   un objetivo puede aparecer sin haber cargado nunca directamente. */
+function bloqueCombustibleReporte(cb){
+  if(!cb||!(cb.objetivos||[]).length)return '';
+  const objs=cb.objetivos;
+  const max=Math.max(...objs.map(o=>o.litros),1);
+  return `<div class="panel" style="margin-bottom:14px">
+    <div class="panel-title">Combustible por objetivo</div>
+    <div class="sub" style="font-size:12px;margin-bottom:12px">
+      ${cb.total.toLocaleString('es-AR')} lt en el mes · los bidones se cuentan en el objetivo donde se usaron,
+      no donde se cargaron.</div>
+    <table><thead><tr><th>Objetivo</th><th style="text-align:right">Litros</th>
+      <th style="text-align:right">Máquinas</th><th style="text-align:right">Lt/máquina</th>
+      <th style="width:26%"></th></tr></thead>
+    <tbody>${objs.map(o=>`<tr>
+      <td style="font-weight:500">${escStk(o.objetivo)}
+        ${o.tipos?`<div class="sub" style="font-size:10.5px">${Object.entries(o.tipos).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([t,n])=>escStk(t)+' '+n).join(' · ')}</div>`:''}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${o.litros.toLocaleString('es-AR')}</td>
+      <td class="mono" style="text-align:right">${o.maquinas!=null?o.maquinas:'<span class="sub">sin censo</span>'}</td>
+      <td class="mono" style="text-align:right">${o.litros_por_maquina!=null?o.litros_por_maquina+' lt':'—'}</td>
+      <td><div style="height:8px;background:var(--papel);border-radius:4px">
+        <div style="width:${Math.round(o.litros*100/max)}%;height:100%;background:var(--diesel);border-radius:4px"></div></div></td>
+    </tr>`).join('')}</tbody></table>
+    ${cb.sin_maquinas?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
+      ${cb.sin_maquinas} objetivo${cb.sin_maquinas===1?'':'s'} sin maquinaria censada: ahí el litros/máquina no se puede calcular.</div>`:''}
+  </div>`;
 }
 
 /* Horas estimadas por mecánico. SOLO EN PANTALLA: no va al PDF a propósito.
@@ -2635,7 +2578,22 @@ function imprimirReporte(){
     </div>
 
     <div class="sec">
-      <div class="kpis">
+      ${(d.combustible&&(d.combustible.objetivos||[]).length)?`<div class="sec">
+      <h2>Combustible por objetivo</h2>
+      <div class="mini" style="margin-bottom:7px">${d.combustible.total.toLocaleString('es-AR')} lt en el mes ·
+        los bidones se cuentan en el objetivo donde se usaron, no donde se cargaron.</div>
+      <table><thead><tr><th>Objetivo</th><th class="der">Litros</th><th class="der">Máquinas</th>
+        <th class="der">Lt/máquina</th></tr></thead>
+      <tbody>${d.combustible.objetivos.map(o=>`<tr>
+        <td>${escStk(o.objetivo)}</td>
+        <td class="der mono">${o.litros.toLocaleString('es-AR')}</td>
+        <td class="der mono">${o.maquinas!=null?o.maquinas:'—'}</td>
+        <td class="der mono">${o.litros_por_maquina!=null?o.litros_por_maquina:'—'}</td></tr>`).join('')}</tbody></table>
+      ${d.combustible.sin_maquinas?`<div class="mini">${d.combustible.sin_maquinas} objetivo/s sin maquinaria censada.</div>`:''}
+    </div>`:''}
+
+    <h2 style="margin-top:4px">Taller</h2>
+    <div class="kpis">
         ${kpi('Reparaciones',r.total,`${r.finalizadas} finalizadas · ${r.abiertas} abiertas`)}
         ${kpi('Tardó en cerrar',r.dias_prom+' d',`mediana ${r.dias_mediana} d · peor ${r.dias_peor} d · solo las ${r.finalizadas} cerradas`)}
         ${(r.pendientes&&r.pendientes.cantidad)?kpi('Abiertas hace',r.pendientes.dias_prom+' d',`mediana ${r.pendientes.dias_mediana} d · la más vieja ${r.pendientes.dias_peor} d · ${r.pendientes.cantidad} sin cerrar`):''}
@@ -2679,22 +2637,6 @@ function imprimirReporte(){
       ${svgBarras((d.bateas.por_objetivo||[]).map(o=>({nombre:o.nombre+(o.sin_objetivo?' (sin objetivo)':''),valor:o.bateas})),
         {ancho:880,max:14,color:'#159B51',etiqueta:x=>x.nombre,valor:x=>x.valor,anchoEtiq:220})}
     </div>`:''}
-
-    <div class="sec">
-      <h2>Pañol</h2>
-      <div class="kpis cuatro">
-        ${kpi('Ítems en pañol',p.items,p.unidades+' unidades')}
-        ${kpi('Salidas del mes',p.salidas_mes,p.afuera+' sin devolver')}
-        ${kpi('Bajo mínimo',p.bajo_minimo,p.agotados+' agotados',p.bajo_minimo?'#D98A1F':'')}
-        ${kpi('Categorías',p.por_categoria.length,p.por_categoria.map(c=>c.nombre).slice(0,3).join(', '))}
-      </div>
-      <div class="dos">
-        <div><div class="sub" style="font-weight:600;margin-bottom:6px">Lo que más salió</div>
-          ${svgBarras(p.top_consumo,{ancho:420,max:8,color:'#D98A1F'})}</div>
-        <div><div class="sub" style="font-weight:600;margin-bottom:6px">A qué objetivo fue</div>
-          ${svgBarras(p.salidas_por_objetivo,{ancho:420,max:8,color:'#159B51'})}</div>
-      </div>
-    </div>
 
     ${(d.evolucion&&d.evolucion.length)?`<div class="sec">
       <h2>Evolución · últimos 12 meses</h2>
