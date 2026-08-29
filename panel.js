@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-28 · niveles en el dashboard';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-28 · filtros de combustible · sin dashboard';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -434,7 +434,9 @@ async function iniciar(){
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
   try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
   // Entrar por el primer módulo permitido (no siempre es el dashboard)
-  const orden=['dashboard','compras','insumos','combustible','bateas','reparaciones','stock','maestros'];
+  // El dashboard salió del menú (agosto 2026: no aportaba). La vista sigue en
+  // el código por si se retoma, pero ya no se entra por defecto.
+  const orden=['bateas','reparaciones','combustible','compras','insumos','stock','maestros'];
   go(orden.find(puedeVer)||'dashboard');
   refrescarContadores();
   // El aviso de preventivos va DESPUÉS de pintar la vista: si saltara antes,
@@ -539,94 +541,9 @@ function go(v){
 }
 
 /* ===== Dashboard ===== */
-/* ── Niveles: de qué estamos cortos y dónde sobra capacidad ──────
-   Cuatro medidores arriba del dashboard. La pregunta que responden:
-   ¿puedo tomar más trabajo?, ¿de qué me voy a quedar sin stock y cuándo?
-   Un nivel vacío no es lo mismo que un nivel sano: donde el dato no
-   alcanza, se dice, en vez de dibujar una barra que parezca informada. */
-function nivBarra(pct,color,alto){
-  const p=Math.max(0,Math.min(100,Math.round(pct||0)));
-  return `<div style="height:${alto||9}px;background:var(--papel);border-radius:5px;overflow:hidden">
-    <div style="width:${p}%;height:100%;background:${color};border-radius:5px"></div></div>`;
-}
-function nivColor(pct,invertir){
-  const p=Number(pct)||0;
-  if(invertir) return p>=80?'var(--rojo)':p>=50?'var(--diesel)':'var(--brote)';
-  return p>=80?'var(--brote)':p>=40?'var(--diesel)':'var(--rojo)';
-}
-function bloqueNiveles(n){
-  if(!n)return '';
-  const t=n.taller||{},p=n.panol||{},co=n.compras||{},mq=n.maquinas||{};
-  const ocup=t.ocupacion||0;
-  // Ocupación alta = poco lugar para más trabajo: por eso el color va al revés
-  const colTaller=ocup>=90?'var(--rojo)':ocup>=70?'var(--diesel)':'var(--brote)';
-  const flotaOk=mq.flota?Math.round((mq.flota-mq.paradas)*100/mq.flota):null;
-
-  const card=(titulo,sub,cuerpo)=>`<div class="panel" style="padding:15px 17px">
-    <div style="font-weight:700;font-size:14px">${titulo}</div>
-    <div class="sub" style="font-size:11px;margin-bottom:12px">${sub}</div>${cuerpo}</div>`;
-
-  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-bottom:14px">
-
-    ${card('Taller · carga',`${t.horas_por_mecanico} h útiles por mecánico al mes`,`
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
-        <span class="mono" style="font-size:23px;font-weight:700;color:${colTaller}">${ocup}%</span>
-        <span class="sub" style="font-size:11.5px">${t.horas_usadas} h de ${t.capacidad} h</span></div>
-      ${nivBarra(ocup,colTaller)}
-      <div class="sub" style="font-size:11.5px;margin-top:7px">
-        ${t.horas_libres>0?`Queda lugar para <b>${t.horas_libres} h</b> más este mes.`:'Sin margen: el taller está al tope.'}</div>
-      <div style="margin-top:10px">${(t.por_mecanico||[]).map(m=>`
-        <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:2px">
-          <span>${escStk(m.mecanico)}</span><span class="mono">${m.horas} h · ${m.ocupacion}%</span></div>
-        ${nivBarra(m.ocupacion,m.ocupacion>=90?'var(--rojo)':m.ocupacion>=60?'var(--diesel)':'var(--brote)',6)}
-      `).join('')||'<div class="sub" style="font-size:11.5px">Sin mecánicos activos.</div>'}</div>
-      <div class="sub" style="font-size:10.5px;margin-top:8px">
-        Las horas son estimaciones de la IA sobre las reparaciones cerradas, no horas fichadas.</div>`)}
-
-    ${card('Pañol · cuándo me quedo sin','Días que alcanza al ritmo de los últimos 90 días',`
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
-        <span class="mono" style="font-size:23px;font-weight:700;color:${p.agotados?'var(--rojo)':p.en_riesgo_total?'var(--diesel)':'var(--brote)'}">${p.en_riesgo_total||0}</span>
-        <span class="sub" style="font-size:11.5px">de ${p.items_total} ítems bajo 90 días${p.agotados?` · <b style="color:var(--rojo)">${p.agotados} agotados</b>`:''}</span></div>
-      ${(p.en_riesgo||[]).length?(p.en_riesgo||[]).map(it=>{
-        const cob=it.cobertura_dias;
-        const col=cob<=7?'var(--rojo)':cob<=30?'var(--diesel)':'var(--brote)';
-        return `<div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:2px">
-          <span>${escStk(it.nombre)} <span class="sub">${it.clase}</span></span>
-          <span class="mono" style="color:${col}">${it.hay===0?'agotado':cob+' d'}</span></div>
-        ${nivBarra(cob*100/90,col,6)}`;}).join('')
-        :'<div class="sub" style="font-size:11.5px">Todo con más de 90 días de cobertura.</div>'}
-      <div class="sub" style="font-size:10.5px;margin-top:8px">
-        Clase A ${(p.por_clase||{}).A||0} · B ${(p.por_clase||{}).B||0} · C ${(p.por_clase||{}).C||0}</div>`)}
-
-    ${card('Compras · frenos',`${co.esperando_repuestos||0} reparaciones esperan un repuesto`,`
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
-        <span class="mono" style="font-size:23px;font-weight:700;color:${co.esperando_repuestos?'var(--diesel)':'var(--brote)'}">${co.esperando_repuestos||0}</span>
-        <span class="sub" style="font-size:11.5px">de ${co.abiertas||0} abiertas</span></div>
-      ${nivBarra(co.abiertas?(co.esperando_repuestos*100/co.abiertas):0,'var(--diesel)')}
-      <div class="sub" style="font-size:11.5px;margin-top:9px">
-        ${co.con_punto_pedido
-          ?`${co.con_punto_pedido} ítems con punto de pedido cargado: de esos el sistema avisa solo.`
-          :`<span style="color:var(--diesel)">⚠ Ningún ítem tiene punto de pedido cargado. Sin eso el sistema no puede avisar de una falta antes de que ocurra.</span>`}</div>`)}
-
-    ${card('Máquinas · disponibilidad','Cuántas están operativas ahora',`
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
-        <span class="mono" style="font-size:23px;font-weight:700;color:${nivColor(flotaOk)}">${flotaOk!=null?flotaOk+'%':'—'}</span>
-        <span class="sub" style="font-size:11.5px">${mq.flota-mq.paradas} de ${mq.flota} operativas</span></div>
-      ${nivBarra(flotaOk,nivColor(flotaOk))}
-      <div style="margin-top:10px">${(mq.por_familia||[]).slice(0,5).map(f=>`
-        <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:3px">
-          <span>${escStk(f.familia)}</span><span class="mono" style="color:var(--rojo)">${f.paradas} parada${f.paradas===1?'':'s'}</span></div>
-      `).join('')||'<div class="sub" style="font-size:11.5px">Ninguna máquina parada.</div>'}</div>`)}
-
-  </div>`;
-}
-
 async function vDashboard(view){
   try{
-    const [d,niv]=await Promise.all([
-      api('/api/dashboard'),
-      api('/api/niveles').catch(()=>null),   // si falla, el dashboard igual se muestra
-    ]);
+    const d=await api('/api/dashboard');
     const c=d.compras||{},t=d.taller||{},st=d.stock||{},a=d.acciones||{};
     const pp=c.pendiente_pago||{};
     const paradas=t.paradas||[];
@@ -729,8 +646,6 @@ async function vDashboard(view){
     view.innerHTML=`
     <div class="view-head" style="margin-bottom:14px"><div><div class="view-title">Panel de gestión</div>
       <div class="view-desc">Compras y taller de un vistazo · ${new Date().toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div></div></div>
-
-    ${bloqueNiveles(niv)}
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
       ${kpi('Gasto · va del mes',mm(c.gasto_mes),
@@ -1071,6 +986,8 @@ async function cambiarInsumo(id,estado){
 /* ===== Combustible ===== */
 let filtroComb='';
 let combTab='cargas';           // 'cargas' | 'analisis'
+let combObj='', combUni='';     // filtros de objetivo y unidad (vacío = todos)
+let combMesAnterior=null;       // {mes, objetivo, litros} para la comparación
 let combCargas=[];              // cache de cargas para el modal de detalle
 let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
 let combRemFile=null;
@@ -1102,8 +1019,47 @@ async function vCombustible(view){
     if(combMes)params.push('mes='+combMes);
     const cs=await api('/api/combustible'+(params.length?'?'+params.join('&'):''));
     combCargas=cs;
+    // Para comparar contra el mes anterior hace falta traerlo. Solo se pide si
+    // hay un mes elegido Y un objetivo filtrado: sin mes concreto no hay
+    // "anterior" contra el cual comparar, y sin objetivo no se muestra.
+    combMesAnterior=null;
+    if(combMes&&combObj){
+      const [aa,mm]=combMes.split('-').map(Number);
+      const prevD=new Date(aa,mm-2,1);
+      const prevMes=prevD.getFullYear()+'-'+String(prevD.getMonth()+1).padStart(2,'0');
+      try{
+        const prevCs=await apiC('/api/combustible?mes='+prevMes);
+        let lit=0;
+        prevCs.filter(c=>c.estado!=='anulada').forEach(c=>{
+          const objC=c.objetivos?c.objetivos.nombre:'Sin objetivo';
+          const its=c.cargas_combustible_items||[];
+          if(its.length)its.forEach(i=>{
+            const destino=i.destino==='bidon'?(i.destino_detalle||objC):objC;
+            if(destino===combObj)lit+=Number(i.litros)||0;
+          });
+          else if(objC===combObj)lit+=Number(c.litros_total)||0;
+        });
+        combMesAnterior={mes:prevMes,objetivo:combObj,litros:lit};
+      }catch(e){/* si falla, simplemente no se muestra la comparación */}
+    }
     // ---- Indicadores del período (sobre cargas no anuladas) ----
-    const vivas=cs.filter(c=>c.estado!=='anulada');
+    // Filtros por objetivo y por unidad: se aplican en el front sobre lo que
+    // ya trajo el endpoint (un mes entero), así cambiar de objetivo no vuelve
+    // a pegarle a la base.
+    const todasVivas=cs.filter(c=>c.estado!=='anulada');
+    const objDe=c=>c.objetivos?c.objetivos.nombre:'Sin objetivo';
+    const uniDe=c=>c.unidades?c.unidades.patente:(c.patente_raw||'Sin unidad');
+    // Un bidón puede ir a un objetivo distinto al de la carga, así que para el
+    // filtro por objetivo hay que mirar también el destino de cada ítem.
+    const tocaObjetivo=(c,obj)=>objDe(c)===obj
+      ||(c.cargas_combustible_items||[]).some(i=>i.destino==='bidon'&&(i.destino_detalle||objDe(c))===obj);
+    const vivas=todasVivas.filter(c=>
+      (!combObj||tocaObjetivo(c,combObj))&&(!combUni||uniDe(c)===combUni));
+    // Listas para los selectores: salen de TODAS las cargas del mes, no de las
+    // filtradas (si no, al elegir uno desaparecerían los demás).
+    const objetivosLista=[...new Set(todasVivas.flatMap(c=>[objDe(c),
+      ...(c.cargas_combustible_items||[]).filter(i=>i.destino==='bidon').map(i=>i.destino_detalle||objDe(c))]))].filter(Boolean).sort();
+    const unidadesLista=[...new Set(todasVivas.map(uniDe))].filter(Boolean).sort();
     let litTot=0,litUni=0,litBid=0,nFact=0,nSf=0;
     const porObj={},porTipo={},bidObj={};
     vivas.forEach(c=>{
@@ -1137,11 +1093,73 @@ async function vCombustible(view){
       <option value="">Últimas 200 cargas</option>
       ${meses.map(m=>`<option value="${m}" ${m===combMes?'selected':''}>${mesStk(m)} (completo)</option>`).join('')}
     </select>`;
+    const selObj=`<select class="busca" style="width:auto" onchange="combObj=this.value;go('combustible')">
+      <option value="">Todos los objetivos</option>
+      ${objetivosLista.map(o=>`<option value="${escStk(o)}" ${o===combObj?'selected':''}>${escStk(o)}</option>`).join('')}
+    </select>`;
+    const selUni=`<select class="busca" style="width:auto" onchange="combUni=this.value;go('combustible')">
+      <option value="">Todas las unidades</option>
+      ${unidadesLista.map(u=>`<option value="${escStk(u)}" ${u===combUni?'selected':''}>${escStk(u)}</option>`).join('')}
+    </select>`;
+
+    // Detalle del objetivo elegido: variación contra el mes anterior, litros
+    // por unidad y lo facturado. La comparación necesita un mes concreto: con
+    // "últimas 200 cargas" no hay mes anterior contra el cual comparar.
+    const detalleObj=combObj?(function(){
+      const litUniObj={};
+      let facturado=0, sinFacturar=0;
+      vivas.forEach(c=>{
+        const its=c.cargas_combustible_items||[];
+        const u=uniDe(c);
+        let lc=0;
+        if(its.length){its.forEach(i=>{
+          const l=Number(i.litros)||0;
+          const destino=i.destino==='bidon'?(i.destino_detalle||objDe(c)):objDe(c);
+          if(destino!==combObj)return;
+          lc+=l;
+          if(i.destino==='bidon')litUniObj['Bidones']=(litUniObj['Bidones']||0)+l;
+          else litUniObj[u]=(litUniObj[u]||0)+l;
+        });}
+        else if(objDe(c)===combObj){const l=Number(c.litros_total)||0;lc+=l;litUniObj[u]=(litUniObj[u]||0)+l;}
+        if(!lc)return;
+        // El importe está a nivel carga, no por ítem: se prorratea por litros.
+        const litrosCarga=its.length?its.reduce((s2,i)=>s2+(Number(i.litros)||0),0):(Number(c.litros_total)||0);
+        const parte=litrosCarga?lc/litrosCarga:1;
+        if(c.estado==='facturada'&&c.total!=null)facturado+=Number(c.total)*parte;
+        else sinFacturar+=lc;
+      });
+      const totalObj=Object.values(litUniObj).reduce((a2,b2)=>a2+b2,0);
+      const prev=combMesAnterior&&combMesAnterior.objetivo===combObj?combMesAnterior.litros:null;
+      const varPct=prev?Math.round(((totalObj/prev)-1)*100):null;
+      return `<div class="panel" style="margin-bottom:14px;border-left:3px solid var(--brote)">
+        <div class="panel-title">${escStk(combObj)} <span class="sub" style="font-weight:400;font-size:11.5px">· detalle del objetivo</span></div>
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin:10px 0 4px">
+          <div class="kpi"><div class="kpi-label">Litros</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(totalObj)}</div>
+            <div class="kpi-sub">${varPct!=null
+              ?`<span style="color:${varPct>0?'var(--rojo)':'var(--brote-2)'}">${varPct>0?'+':''}${varPct}% vs ${mesStk(combMesAnterior.mes)}</span>`
+              :(combMes?'sin dato del mes anterior':'elegí un mes para comparar')}</div></div>
+          <div class="kpi plain"><div class="kpi-label">Facturado</div><div class="kpi-val">${facturado?money0(facturado):'—'}</div>
+            <div class="kpi-sub">${sinFacturar?fmtL(sinFacturar)+' todavía sin facturar':'todo facturado'}</div></div>
+          <div class="kpi plain"><div class="kpi-label">Unidades</div><div class="kpi-val">${Object.keys(litUniObj).length}</div>
+            <div class="kpi-sub">cargaron en este objetivo</div></div>
+        </div>
+        <div class="sub" style="font-weight:600;margin:12px 0 8px">Litros por unidad</div>
+        ${barras(litUniObj,'var(--azul)')}
+        <div class="sub" style="font-size:11px;margin-top:9px">
+          El importe sale de las cargas ya facturadas y se prorratea por litros cuando una carga se reparte
+          entre varios objetivos. Lo sin facturar no tiene precio todavía.</div>
+      </div>`;})():'';
+
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible</div>
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div>
-      <div class="spacer"></div>${selMes}</div>
+      <div class="spacer"></div>${selObj} ${selUni} ${selMes}</div>
     ${tabs}
+    ${(combObj||combUni)?`<div style="margin-bottom:12px;font-size:12.5px;color:var(--tinta-2)">
+      Filtrando por ${combObj?`objetivo <b>${escStk(combObj)}</b>`:''}${combObj&&combUni?' y ':''}${combUni?`unidad <b>${escStk(combUni)}</b>`:''}
+      · ${vivas.length} de ${todasVivas.length} cargas
+      <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';go('combustible')">Limpiar</button></div>`:''}
+    ${detalleObj}
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">Litros totales</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(litTot)}</div><div class="kpi-sub">${vivas.length} cargas</div></div>
       <div class="kpi plain"><div class="kpi-label">A unidades</div><div class="kpi-val">${fmtL(litUni)}</div><div class="kpi-sub">${pct(litUni,litTot)}% · al tanque</div></div>
