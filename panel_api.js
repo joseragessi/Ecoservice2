@@ -1,5 +1,6 @@
 const express = require('express');
-const { agruparPorFamilia, LABEL_FAMILIA } = require('./familias_consumo');
+const { agruparPorFamilia, LABEL_FAMILIA, capacidadTeorica,
+        CONSUMO_JORNADA, CONSUMO_VEHICULO_MES } = require('./familias_consumo');
 const cambios = require('./cambios');
 const { validarItemPanol } = require('./panol_reglas');
 const crypto  = require('crypto');
@@ -5482,7 +5483,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       // Alias para unificar los nombres escritos a mano, igual que en el panel
       supabase.from('objetivos_alias').select('alias, objetivos(nombre)')
         .then(r => r, () => ({ data: [] })),
-      supabase.from('objetivos').select('id, nombre')
+      supabase.from('objetivos').select('id, nombre, grupo_stock')
         .then(r => r, () => ({ data: [] })),
     ]);
     if (inc.error) throw inc.error;
@@ -5866,7 +5867,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         });
         // El maestro de objetivos hace falta para cruzar id → nombre
         const porNombre = {};
-        (((objsMaestro && objsMaestro.data) || [])).forEach(o => { porNombre[o.nombre] = maqPorObjId[o.id] || null; });
+        const grupoDe = {};
+        (((objsMaestro && objsMaestro.data) || [])).forEach(o => {
+          porNombre[o.nombre] = maqPorObjId[o.id] || null;
+          grupoDe[o.nombre] = o.grupo_stock || null;
+        });
 
         const lista = Object.values(porObj).map(o => {
           const maq = porNombre[o.objetivo] || null;
@@ -5885,6 +5890,12 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             // es de 2 tiempos. Con tractores o vehículos en el medio el número
             // se dispara porque esos consumen mucho más.
             solo_2t: maq ? (maq.familias.tractor + maq.familias.vehiculo + maq.familias.cortadora) === 0 : null,
+            // Techo de consumo del parque: todas las máquinas a jornada
+            // completa todos los días hábiles. No es lo esperado, es el
+            // máximo posible — sirve para comparar objetivos con parques
+            // distintos sin tener que suponer cuántas se usan a diario.
+            capacidad: maq ? capacidadTeorica(maq.familias, diasHabiles, grupoDe[o.objetivo]) : null,
+            grupo: grupoDe[o.objetivo] || null,
             litros_por_maquina: nMaq ? Math.round(o.litros / nMaq) : null,
             // Promedio diario del período que se está viendo. Si el mes está
             // en curso se divide por los días transcurridos, no por el mes
@@ -5902,9 +5913,33 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           };
         }).sort((a2, b2) => b2.litros - a2.litros);
 
+        // Utilización: qué parte de su capacidad usó cada objetivo.
+        lista.forEach(o => {
+          o.utilizacion = o.capacidad ? Math.round(o.litros * 100 / o.capacidad) : null;
+        });
+        // El desvío se mide contra la MEDIANA de los demás objetivos, no
+        // contra un número inventado: si todos rondan el 25% y uno da 70%,
+        // ese es el que hay que mirar. La mediana aguanta los extremos mejor
+        // que el promedio, que un solo objetivo raro puede arrastrar.
+        const utils = lista.map(o => o.utilizacion).filter(u => u != null).sort((x, y) => x - y);
+        const mediana = utils.length ? utils[Math.floor(utils.length / 2)] : null;
+        lista.forEach(o => {
+          o.desvio_pct = (o.utilizacion != null && mediana)
+            ? Math.round((o.utilizacion - mediana) * 100 / mediana) : null;
+          // Verde hasta ±40% de la mediana, ámbar hasta ±80%, rojo por encima.
+          // Con dos meses de datos los cortes son anchos a propósito: apretarlos
+          // marcaría en rojo variaciones que todavía no sabemos si son normales.
+          o.estado = o.desvio_pct == null ? null
+            : Math.abs(o.desvio_pct) <= 40 ? 'normal'
+            : Math.abs(o.desvio_pct) <= 80 ? 'mirar' : 'revisar';
+        });
+
         return {
           total: Math.round(total),
           objetivos: lista,
+          utilizacion_mediana: mediana,
+          consumo_referencia: CONSUMO_JORNADA,
+          consumo_vehiculo_mes: CONSUMO_VEHICULO_MES,
           sin_maquinas: lista.filter(o => o.maquinas == null).length,
           litros_jornada_2t: 6,
           dias: ultimoDia,
