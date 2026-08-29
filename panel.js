@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-29 · máquinas por familia de consumo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-29 · desvío de consumo por objetivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2338,40 +2338,36 @@ function bloqueCombustibleReporte(cb){
     <div class="sub" style="font-size:12px;margin-bottom:12px">
       ${cb.total.toLocaleString('es-AR')} lt en ${cb.dias} día${cb.dias===1?'':'s'}${cb.mes_en_curso?' transcurridos':''}
       (${cb.dias_habiles} hábiles) · los bidones se cuentan en el objetivo donde se usaron, no donde se cargaron.</div>
-    <table><thead><tr><th>Objetivo</th><th style="text-align:right">Litros</th>
-      <th style="text-align:right">Máquinas</th><th style="text-align:right">Lt/máquina</th>
-      <th style="text-align:right">Lt/máq/día</th><th style="text-align:right">Uso</th>
-      <th style="width:18%"></th></tr></thead>
+    <table><thead><tr><th>Objetivo</th><th style="text-align:right">Consumió</th>
+      <th style="text-align:right">Capacidad</th><th style="text-align:right">Usó</th>
+      <th style="text-align:right">vs resto</th><th style="width:16%">Estado</th></tr></thead>
     <tbody>${objs.map(o=>{
-      // uso_pct: qué parte de una jornada diaria de uso explica el consumo.
-      // Arriba de 100% cada máquina consumió más que trabajando todos los días.
-      const col=o.uso_pct==null?'inherit':o.uso_pct>110?'var(--rojo)':o.uso_pct>=40?'var(--brote-2)':'var(--diesel)';
+      const col=o.estado==='revisar'?'var(--rojo)':o.estado==='mirar'?'var(--diesel)':'var(--brote-2)';
+      const txt=o.estado==='revisar'?'revisar':o.estado==='mirar'?'mirar':'normal';
       return `<tr>
-      <td style="font-weight:500">${escStk(o.objetivo)}
+      <td style="font-weight:500">${escStk(o.objetivo)}${o.grupo?` <span class="badge b-gray" style="font-size:9px">${escStk(o.grupo)}</span>`:''}
         ${o.familias?`<div class="sub" style="font-size:10.5px">${
           [['dos_tiempos','2T'],['cortadora','cortadoras'],['tractor','tractores'],['vehiculo','vehículos'],['fijo','fijos']]
-            .filter(([k])=>o.familias[k]>0).map(([k,l])=>`<b>${o.familias[k]}</b> ${l}`).join(' · ')
-          }${o.familias.sin_motor?` <span style="opacity:.6">· ${o.familias.sin_motor} sin motor</span>`:''
-          }${o.familias.otro?` <span style="opacity:.6">· ${o.familias.otro} sin clasificar</span>`:''}</div>`:''}</td>
-      <td class="mono" style="text-align:right;font-weight:600">${o.litros.toLocaleString('es-AR')}</td>
-      <td class="mono" style="text-align:right">${o.maquinas!=null
-        ?`${o.maquinas}<div class="sub" style="font-size:10px">de ${o.maquinas_censadas} censadas</div>`
-        :'<span class="sub">sin censo</span>'}</td>
-      <td class="mono" style="text-align:right">${o.litros_por_maquina!=null?o.litros_por_maquina+' lt':'—'}</td>
-      <td class="mono" style="text-align:right">${o.litros_maquina_dia!=null?o.litros_maquina_dia:'—'}
-        ${o.litros_maquina_habil!=null?`<div class="sub" style="font-size:10px">${o.litros_maquina_habil} hábil</div>`:''}</td>
-      <td class="mono" style="text-align:right;color:${o.solo_2t?col:'var(--tinta-3)'};font-weight:600">${
-        o.uso_pct==null?'—':(o.solo_2t?o.uso_pct+'%':`<span title="Hay tractores o vehículos: consumen mucho más que 6 lt por jornada, así que el % no es comparable">${o.uso_pct}%*</span>`)}</td>
-      <td><div style="height:8px;background:var(--papel);border-radius:4px">
-        <div style="width:${Math.round(o.litros*100/max)}%;height:100%;background:var(--diesel);border-radius:4px"></div></div></td>
+            .filter(([k])=>o.familias[k]>0).map(([k,l])=>`<b>${o.familias[k]}</b> ${l}`).join(' · ')||'sin máquinas a motor'
+          }${o.familias.sin_motor?` <span style="opacity:.6">· ${o.familias.sin_motor} sin motor</span>`:''}</div>`:''}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${o.litros.toLocaleString('es-AR')} lt</td>
+      <td class="mono" style="text-align:right">${o.capacidad?o.capacidad.toLocaleString('es-AR')+' lt':'<span class="sub">sin censo</span>'}
+        ${o.capacidad?`<div class="sub" style="font-size:10px">si trabajaran a full</div>`:''}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${o.utilizacion!=null?o.utilizacion+'%':'—'}</td>
+      <td class="mono" style="text-align:right;color:${o.desvio_pct==null?'inherit':col}">${
+        o.desvio_pct==null?'—':(o.desvio_pct>0?'+':'')+o.desvio_pct+'%'}</td>
+      <td>${o.estado?`<span class="badge" style="background:${col}1A;color:${col}">${txt}</span>`:'<span class="sub">—</span>'}</td>
     </tr>`;}).join('')}</tbody></table>
-    <div class="sub" style="font-size:11.5px;margin-top:8px">
-      <b>Máquinas</b> cuenta solo las que tienen motor: palas, machetes, horquillas y carros quedan afuera
-      porque no consumen.<br>
-      <b>Uso</b> compara el consumo por máquina y día hábil contra los ${cb.litros_jornada_2t} lt de una jornada
-      completa de 2 tiempos. 100% sería cada máquina trabajando todos los días hábiles.
-      Los valores con <b>*</b> tienen tractores o vehículos en el parque, que consumen mucho más:
-      ahí el porcentaje no es comparable hasta que carguemos su consumo propio.</div>
+    <div class="sub" style="font-size:11.5px;margin-top:9px;padding-top:9px;border-top:1px solid var(--linea)">
+      <b>Capacidad</b> es lo que consumiría el parque de ese objetivo si todas sus máquinas trabajaran a jornada
+      completa los ${cb.dias_habiles} días hábiles: ${cb.consumo_referencia.dos_tiempos} lt por jornada las de 2 tiempos,
+      ${cb.consumo_referencia.tractor} lt los tractores, ${cb.consumo_referencia.cortadora} lt las cortadoras.
+      Las camionetas van por mes según el grupo: ${cb.consumo_vehiculo_mes.privado} lt las de barrio (privado),
+      ${cb.consumo_vehiculo_mes.deposito} lt las que salen del depósito.<br>
+      <b>Usó</b> es qué parte de esa capacidad consumió. Nadie llega al 100%: no todas las máquinas trabajan
+      todos los días. Lo que importa es la columna <b>vs resto</b>, que compara contra la mediana de todos los
+      objetivos (${cb.utilizacion_mediana!=null?cb.utilizacion_mediana+'%':'—'}). Ahí se ven los que se despegan.<br>
+      <span style="opacity:.75">Herramientas sin motor —palas, machetes, carros— no cuentan en ningún cálculo.</span></div>
     ${cb.sin_maquinas?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
       ${cb.sin_maquinas} objetivo${cb.sin_maquinas===1?'':'s'} sin maquinaria censada: ahí el litros/máquina no se puede calcular.</div>`:''}
   </div>`;
@@ -2605,17 +2601,20 @@ function imprimirReporte(){
       <div class="mini" style="margin-bottom:7px">${d.combustible.total.toLocaleString('es-AR')} lt en
         ${d.combustible.dias} día/s${d.combustible.mes_en_curso?' transcurridos':''} (${d.combustible.dias_habiles} hábiles) ·
         los bidones se cuentan en el objetivo donde se usaron, no donde se cargaron.</div>
-      <table><thead><tr><th>Objetivo</th><th class="der">Litros</th><th class="der">Máquinas</th>
-        <th class="der">Lt/máq</th><th class="der">Lt/máq/día</th><th class="der">Uso</th></tr></thead>
+      <table><thead><tr><th>Objetivo</th><th class="der">Consumió</th><th class="der">Capacidad</th>
+        <th class="der">Usó</th><th class="der">vs resto</th><th>Estado</th></tr></thead>
       <tbody>${d.combustible.objetivos.map(o=>`<tr>
-        <td>${escStk(o.objetivo)}</td>
+        <td>${escStk(o.objetivo)}${o.familias?`<div class="mini">${
+          [['dos_tiempos','2T'],['cortadora','cort.'],['tractor','tract.'],['vehiculo','veh.']]
+            .filter(([k])=>o.familias[k]>0).map(([k,l])=>o.familias[k]+' '+l).join(' · ')}</div>`:''}</td>
         <td class="der mono">${o.litros.toLocaleString('es-AR')}</td>
-        <td class="der mono">${o.maquinas!=null?o.maquinas:'—'}</td>
-        <td class="der mono">${o.litros_por_maquina!=null?o.litros_por_maquina:'—'}</td>
-        <td class="der mono">${o.litros_maquina_dia!=null?o.litros_maquina_dia:'—'}</td>
-        <td class="der mono">${o.uso_pct!=null?o.uso_pct+'%':'—'}</td></tr>`).join('')}</tbody></table>
-      <div class="mini">Uso = consumo por máquina y día hábil contra los ${d.combustible.litros_jornada_2t} lt
-        de una jornada de 2 tiempos. Se dispara donde hay tractores o vehículos.</div>
+        <td class="der mono">${o.capacidad?o.capacidad.toLocaleString('es-AR'):'—'}</td>
+        <td class="der mono">${o.utilizacion!=null?o.utilizacion+'%':'—'}</td>
+        <td class="der mono">${o.desvio_pct==null?'—':(o.desvio_pct>0?'+':'')+o.desvio_pct+'%'}</td>
+        <td>${o.estado||'—'}</td></tr>`).join('')}</tbody></table>
+      <div class="mini">Capacidad = todo el parque a jornada completa los ${d.combustible.dias_habiles} días hábiles
+        (${d.combustible.consumo_referencia.dos_tiempos} lt/jornada las 2T, ${d.combustible.consumo_referencia.tractor} lt los tractores).
+        "vs resto" compara contra la mediana de todos los objetivos (${d.combustible.utilizacion_mediana!=null?d.combustible.utilizacion_mediana+'%':'—'}).</div>
       ${d.combustible.sin_maquinas?`<div class="mini">${d.combustible.sin_maquinas} objetivo/s sin maquinaria censada.</div>`:''}
     </div>`:''}
 
