@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-28 · reporte: combustible primero, sin pañol';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-28 · máquinas del último censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2336,20 +2336,34 @@ function bloqueCombustibleReporte(cb){
   return `<div class="panel" style="margin-bottom:14px">
     <div class="panel-title">Combustible por objetivo</div>
     <div class="sub" style="font-size:12px;margin-bottom:12px">
-      ${cb.total.toLocaleString('es-AR')} lt en el mes · los bidones se cuentan en el objetivo donde se usaron,
-      no donde se cargaron.</div>
+      ${cb.total.toLocaleString('es-AR')} lt en ${cb.dias} día${cb.dias===1?'':'s'}${cb.mes_en_curso?' transcurridos':''}
+      (${cb.dias_habiles} hábiles) · los bidones se cuentan en el objetivo donde se usaron, no donde se cargaron.</div>
     <table><thead><tr><th>Objetivo</th><th style="text-align:right">Litros</th>
       <th style="text-align:right">Máquinas</th><th style="text-align:right">Lt/máquina</th>
-      <th style="width:26%"></th></tr></thead>
-    <tbody>${objs.map(o=>`<tr>
+      <th style="text-align:right">Lt/máq/día</th><th style="text-align:right">Uso</th>
+      <th style="width:18%"></th></tr></thead>
+    <tbody>${objs.map(o=>{
+      // uso_pct: qué parte de una jornada diaria de uso explica el consumo.
+      // Arriba de 100% cada máquina consumió más que trabajando todos los días.
+      const col=o.uso_pct==null?'inherit':o.uso_pct>110?'var(--rojo)':o.uso_pct>=40?'var(--brote-2)':'var(--diesel)';
+      return `<tr>
       <td style="font-weight:500">${escStk(o.objetivo)}
         ${o.tipos?`<div class="sub" style="font-size:10.5px">${Object.entries(o.tipos).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([t,n])=>escStk(t)+' '+n).join(' · ')}</div>`:''}</td>
       <td class="mono" style="text-align:right;font-weight:600">${o.litros.toLocaleString('es-AR')}</td>
-      <td class="mono" style="text-align:right">${o.maquinas!=null?o.maquinas:'<span class="sub">sin censo</span>'}</td>
+      <td class="mono" style="text-align:right">${o.maquinas!=null
+        ?`${o.maquinas}${o.censo_periodo?`<div class="sub" style="font-size:10px">censo ${escStk(o.censo_periodo)}</div>`:''}`
+        :'<span class="sub">sin censo</span>'}</td>
       <td class="mono" style="text-align:right">${o.litros_por_maquina!=null?o.litros_por_maquina+' lt':'—'}</td>
+      <td class="mono" style="text-align:right">${o.litros_maquina_dia!=null?o.litros_maquina_dia:'—'}
+        ${o.litros_maquina_habil!=null?`<div class="sub" style="font-size:10px">${o.litros_maquina_habil} hábil</div>`:''}</td>
+      <td class="mono" style="text-align:right;color:${col};font-weight:600">${o.uso_pct!=null?o.uso_pct+'%':'—'}</td>
       <td><div style="height:8px;background:var(--papel);border-radius:4px">
         <div style="width:${Math.round(o.litros*100/max)}%;height:100%;background:var(--diesel);border-radius:4px"></div></div></td>
-    </tr>`).join('')}</tbody></table>
+    </tr>`;}).join('')}</tbody></table>
+    <div class="sub" style="font-size:11.5px;margin-top:8px">
+      <b>Uso</b> compara el consumo por máquina y día hábil contra los ${cb.litros_jornada_2t} lt que gasta una
+      máquina de 2 tiempos en una jornada completa. 100% sería cada máquina del objetivo trabajando todos los días.
+      Sirve para máquinas chicas: donde hay tractores o camionetas el número se dispara porque consumen mucho más.</div>
     ${cb.sin_maquinas?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
       ${cb.sin_maquinas} objetivo${cb.sin_maquinas===1?'':'s'} sin maquinaria censada: ahí el litros/máquina no se puede calcular.</div>`:''}
   </div>`;
@@ -2580,15 +2594,20 @@ function imprimirReporte(){
     <div class="sec">
       ${(d.combustible&&(d.combustible.objetivos||[]).length)?`<div class="sec">
       <h2>Combustible por objetivo</h2>
-      <div class="mini" style="margin-bottom:7px">${d.combustible.total.toLocaleString('es-AR')} lt en el mes ·
+      <div class="mini" style="margin-bottom:7px">${d.combustible.total.toLocaleString('es-AR')} lt en
+        ${d.combustible.dias} día/s${d.combustible.mes_en_curso?' transcurridos':''} (${d.combustible.dias_habiles} hábiles) ·
         los bidones se cuentan en el objetivo donde se usaron, no donde se cargaron.</div>
       <table><thead><tr><th>Objetivo</th><th class="der">Litros</th><th class="der">Máquinas</th>
-        <th class="der">Lt/máquina</th></tr></thead>
+        <th class="der">Lt/máq</th><th class="der">Lt/máq/día</th><th class="der">Uso</th></tr></thead>
       <tbody>${d.combustible.objetivos.map(o=>`<tr>
         <td>${escStk(o.objetivo)}</td>
         <td class="der mono">${o.litros.toLocaleString('es-AR')}</td>
         <td class="der mono">${o.maquinas!=null?o.maquinas:'—'}</td>
-        <td class="der mono">${o.litros_por_maquina!=null?o.litros_por_maquina:'—'}</td></tr>`).join('')}</tbody></table>
+        <td class="der mono">${o.litros_por_maquina!=null?o.litros_por_maquina:'—'}</td>
+        <td class="der mono">${o.litros_maquina_dia!=null?o.litros_maquina_dia:'—'}</td>
+        <td class="der mono">${o.uso_pct!=null?o.uso_pct+'%':'—'}</td></tr>`).join('')}</tbody></table>
+      <div class="mini">Uso = consumo por máquina y día hábil contra los ${d.combustible.litros_jornada_2t} lt
+        de una jornada de 2 tiempos. Se dispara donde hay tractores o vehículos.</div>
       ${d.combustible.sin_maquinas?`<div class="mini">${d.combustible.sin_maquinas} objetivo/s sin maquinaria censada.</div>`:''}
     </div>`:''}
 
