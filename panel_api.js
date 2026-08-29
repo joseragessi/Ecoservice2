@@ -1,4 +1,5 @@
 const express = require('express');
+const { agruparPorFamilia, LABEL_FAMILIA } = require('./familias_consumo');
 const cambios = require('./cambios');
 const { validarItemPanol } = require('./panol_reglas');
 const crypto  = require('crypto');
@@ -5845,11 +5846,22 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         ((maqObj && maqObj.data) || []).forEach(c => {
           if (censoUsado[c.objetivo_id]) return;
           censoUsado[c.objetivo_id] = c.periodo;
-          const o = maqPorObjId[c.objetivo_id] = { total: 0, tipos: {}, periodo: c.periodo };
-          (c.censos_stock_items || []).forEach(i => {
-            const n = Number(i.cantidad) || 0;
-            o.total += n;
-            o.tipos[i.tipo_equipo] = (o.tipos[i.tipo_equipo] || 0) + n;
+          // Se separan por familia de CONSUMO: las 2 tiempos, los tractores y
+          // los vehículos gastan cosas muy distintas, y las herramientas de
+          // mano no gastan nada. Mezclarlas hundía el promedio (FINCAS DEL SUR
+          // daba 5% de uso con 34 "máquinas", de las que 30 eran palas).
+          const fam = agruparPorFamilia(c.censos_stock_items || []);
+          const o = maqPorObjId[c.objetivo_id] = {
+            total: fam.total, con_motor: fam.con_motor, periodo: c.periodo,
+            familias: {
+              dos_tiempos: fam.dos_tiempos, cortadora: fam.cortadora,
+              tractor: fam.tractor, vehiculo: fam.vehiculo,
+              fijo: fam.fijo, sin_motor: fam.sin_motor, otro: fam.otro,
+            },
+            tipos: {},
+          };
+          Object.values(fam.detalle).forEach(d => {
+            Object.entries(d).forEach(([t, n]) => { o.tipos[t] = (o.tipos[t] || 0) + n; });
           });
         });
         // El maestro de objetivos hace falta para cruzar id → nombre
@@ -5858,14 +5870,21 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
         const lista = Object.values(porObj).map(o => {
           const maq = porNombre[o.objetivo] || null;
-          const nMaq = maq ? maq.total : null;
+          // El denominador son las máquinas CON MOTOR, no todo lo censado.
+          const nMaq = maq ? maq.con_motor : null;
           const r1 = x => Math.round(x * 10) / 10;
           return {
             ...o,
             litros: Math.round(o.litros),
             maquinas: nMaq,
+            maquinas_censadas: maq ? maq.total : null,
+            familias: maq ? maq.familias : null,
             tipos: maq ? maq.tipos : null,
             censo_periodo: maq ? maq.periodo : null,
+            // El uso contra los 6 lt/jornada solo tiene sentido si el parque
+            // es de 2 tiempos. Con tractores o vehículos en el medio el número
+            // se dispara porque esos consumen mucho más.
+            solo_2t: maq ? (maq.familias.tractor + maq.familias.vehiculo + maq.familias.cortadora) === 0 : null,
             litros_por_maquina: nMaq ? Math.round(o.litros / nMaq) : null,
             // Promedio diario del período que se está viendo. Si el mes está
             // en curso se divide por los días transcurridos, no por el mes
