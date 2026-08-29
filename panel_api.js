@@ -5452,6 +5452,16 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     if (inc.error) throw inc.error;
     const filas = inc.data || [];
 
+    // ── Combustible del mes ────────────────────────────────────────
+    // Consulta aparte del Promise.all: si la tabla o alguna columna no
+    // existiera en algún deploy, el resto del informe sigue saliendo.
+    const cargasRes = await supabase.from('cargas_combustible')
+      .select('id, fecha, destino, unidad_id, objetivo_id, patente_raw, litros_total, total, estado, numero_remito, unidades(patente), capataces(nombre), objetivos(nombre), cargas_combustible_items(litros, subtotal, es_combustible, destino, unidad_id)')
+      .gte('fecha', desde.slice(0, 10)).lt('fecha', hasta.slice(0, 10))
+      .then(r => r, (e) => { console.error('[reporte] cargas_combustible:', e && e.message); return { data: [] }; });
+    if (cargasRes.error) console.error('[reporte] cargas_combustible:', cargasRes.error.message);
+    const cargasMes = (cargasRes.data || []).filter(c => c.estado !== 'anulada');
+
     const dias = (ini, fin) => {
       if (!ini || !fin) return null;
       const d = (new Date(fin) - new Date(ini)) / 86400000;
@@ -5623,8 +5633,127 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
     const items = panolItems.data || [];
     const movs = panolMovs.data || [];
+    // ── Parámetros por empresa ─────────────────────────────────────
+    // Lo que convierte litros y días en pesos. Por ahora por env; cuando
+    // haya más de un cliente pasa a una tabla `parametros_empresa`.
+    const PRECIO_DIA_PARADO = Number(process.env.REPORTE_PRECIO_DIA_PARADO) || 150000;
+
+    // ── Combustible: litros por batea, unidad contra flota ─────────
+    // La medida de trabajo es la batea (viajes_bateas). Cada camión se
+    // compara contra el promedio de L/batea de la flota del mes; lo que
+    // está por encima se traduce a litros y pesos al precio promedio real
+    // del mes. No se le pide nada a nadie: sale de las cargas del bot y
+    // de los viajes que ya se registran.
+    const combustible = (() => {
+      const porUnidad = {};
+      let litrosTot = 0, pesosTot = 0;
+      const sinUnidad = [], finde = [];
+      const diasConViaje = {};
+      delMes.forEach(v => {
+        if (!v.unidad_id) return;
+        (diasConViaje[v.unidad_id] = diasConViaje[v.unidad_id] || new Set()).add(String(v.fecha || '').slice(0, 10));
+      });
+      cargasMes.forEach(c => {
+        const items = (c.cargas_combustible_items || []).filter(i => i.es_combustible !== false);
+        const litrosC = items.length ? items.reduce((s2, i) => s2 + (Number(i.litros) || 0), 0) : (Number(c.litros_total) || 0);
+        const pesosC = Number(c.total) || 0;
+        litrosTot += litrosC; pesosTot += pesosC;
+        // Reparto por unidad: si hay ítems con destino, se usa eso; si no,
+        // la carga entera va a la unidad de la carga.
+        const partes = items.length
+          ? items.map(i => ({ unidad_id: i.unidad_id || (i.destino === 'unidad' ? c.unidad_id : null),
+                              litros: Number(i.litros) || 0, pesos: Number(i.subtotal) || 0 }))
+          : [{ unidad_id: c.unidad_id, litros: litrosC, pesos: pesosC }];
+        // Si los ítems no traen subtotal, se prorratea el total por litros
+        const sinPesos = partes.filter(p2 => !p2.pesos).length === partes.length;
+        partes.forEach(p2 => {
+          if (sinPesos && litrosC) p2.pesos = pesosC * (p2.litros / litrosC);
+          if (!p2.unidad_id) return;
+          const u = porUnidad[p2.unidad_id] || (porUnidad[p2.unidad_id] = { litros: 0, pesos: 0, cargas: 0 });
+          u.litros += p2.litros; u.pesos += p2.pesos; u.cargas++;
+        });
+        const cap = c.capataces ? c.capataces.nombre : null;
+        if (c.destino === 'unidad' && !c.unidad_id)
+          sinUnidad.push({ fecha: c.fecha, patente: c.patente_raw || '—', litros: Math.round(litrosC), pesos: Math.round(pesosC), capataz: cap });
+        const dow = new Date(String(c.fecha).slice(0, 10) + 'T12:00:00').getDay();
+        if (c.unidad_id && (dow === 0 || dow === 6)) {
+          const set = diasConViaje[c.unidad_id];
+          if (!set || !set.has(String(c.fecha).slice(0, 10)))
+            finde.push({ fecha: c.fecha, patente: (c.unidades && c.unidades.patente) || c.patente_raw || '—',
+              litros: Math.round(litrosC), pesos: Math.round(pesosC), capataz: cap });
+        }
+      });
+      const precioLitro = litrosTot ? pesosTot / litrosTot : 0;
+
+      const camionesC = Object.values(porCamion)
+        .filter(c => c.unidad_id && c.bateas_mes > 0 && porUnidad[c.unidad_id])
+        .map(c => {
+          const u = porUnidad[c.unidad_id];
+          const chofer = Object.entries(c.choferes).sort((x, y) => y[1] - x[1])[0];
+          return { patente: c.patente, modelo: c.modelo, chofer: chofer ? chofer[0] : null,
+            bateas: c.bateas_mes, litros: Math.round(u.litros), pesos: Math.round(u.pesos), cargas: u.cargas,
+            l_batea: Math.round((u.litros / c.bateas_mes) * 10) / 10 };
+        });
+      const litrosCam = camionesC.reduce((s2, x) => s2 + x.litros, 0);
+      const bateasCam = camionesC.reduce((s2, x) => s2 + x.bateas, 0);
+      const promFlota = bateasCam ? litrosCam / bateasCam : 0;
+      camionesC.forEach(x => {
+        x.vs_flota = promFlota ? Math.round((x.l_batea / promFlota - 1) * 100) : null;
+        const exc = Math.max(0, x.litros - x.bateas * promFlota);
+        x.exceso_litros = Math.round(exc);
+        x.exceso_pesos = Math.round(exc * precioLitro);
+      });
+      camionesC.sort((x, y) => y.exceso_pesos - x.exceso_pesos);
+      const excesoLitros = camionesC.reduce((s2, x) => s2 + x.exceso_litros, 0);
+
+      // Unidades con carga pero sin bateas (maquinaria, utilitarios): sin
+      // medida de trabajo no se comparan; se listan por litros para que
+      // no queden invisibles.
+      const otras = Object.entries(porUnidad)
+        .filter(([id]) => !camionesC.some(x => porCamion[id] && porCamion[id].patente === x.patente))
+        .map(([id, u]) => ({ patente: (uni[id] && uni[id].patente) || 'sin patente', modelo: uni[id] ? uni[id].marca_modelo : null,
+          litros: Math.round(u.litros), pesos: Math.round(u.pesos), cargas: u.cargas }))
+        .sort((x, y) => y.litros - x.litros);
+
+      return {
+        litros: Math.round(litrosTot), pesos: Math.round(pesosTot), cargas: cargasMes.length,
+        precio_litro: Math.round(precioLitro),
+        flota: { camiones: camionesC.length, litros: litrosCam, bateas: bateasCam, l_batea: Math.round(promFlota * 10) / 10 },
+        exceso_litros: excesoLitros,
+        exceso_pesos: Math.round(excesoLitros * precioLitro),
+        exceso_pct: litrosCam ? Math.round(excesoLitros * 100 / litrosCam) : 0,
+        camiones: camionesC,
+        otras_unidades: otras.slice(0, 8),
+        alertas: {
+          sin_unidad: sinUnidad, sin_unidad_pesos: sinUnidad.reduce((s2, x) => s2 + x.pesos, 0),
+          finde_sin_viaje: finde, finde_pesos: finde.reduce((s2, x) => s2 + x.pesos, 0),
+        },
+      };
+    })();
+
+    // ── Máquinas: días parada en el mes, a pesos ──────────────────
+    // Se cuenta solo el tramo del mes: una máquina que entró parada el 25
+    // y sigue parada aporta 6 días a este informe, no todos los que lleve.
+    const paradas = (() => {
+      const ini = new Date(desde + 'Z'), fin = new Date(hasta), hoy = new Date();
+      const tope = hoy < fin ? hoy : fin;
+      const lista = filas.filter(r => r.equipo_parado && !r.motivo_cierre).map(r => {
+        const d0 = new Date(r.created_at) > ini ? new Date(r.created_at) : ini;
+        const d1 = r.fecha_finalizado ? (new Date(r.fecha_finalizado) < fin ? new Date(r.fecha_finalizado) : fin) : tope;
+        const dd = Math.max(0, (d1 - d0) / 86400000);
+        return { equipo: r.tipo_equipo, unidad: r.numero_unidad, falla: r.tipo_falla, prioridad: r.prioridad,
+          objetivo: r.objetivos ? r.objetivos.nombre : null, abierta: r.estado !== 'finalizado',
+          dias: Math.round(dd * 10) / 10, costo: Math.round(dd * PRECIO_DIA_PARADO) };
+      }).sort((x, y) => y.dias - x.dias);
+      const dias = lista.reduce((s2, x) => s2 + x.dias, 0);
+      return { dias: Math.round(dias * 10) / 10, costo: Math.round(dias * PRECIO_DIA_PARADO), detalle: lista.slice(0, 6) };
+    })();
+
     res.json({
       mes,
+      parametros: { precio_dia_parado: PRECIO_DIA_PARADO, precio_litro: combustible.precio_litro },
+      combustible,
+      paradas_mes: paradas,
       bateas: {
         total_mes: totalBateasMes,
         viajes_mes: delMes.length,
