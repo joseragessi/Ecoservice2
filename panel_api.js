@@ -5263,6 +5263,131 @@ router.post('/api/panol/movimientos/:id/devolver', auth, async (req, res) => {
 // carreteles, tapas). El ABC las separa solo, con los movimientos reales:
 // A = las que acumulan el primer 80% del consumo, B hasta el 95%, C el
 // resto. Sobre las A tiene sentido poner punto de pedido; sobre las C no.
+// ── Niveles: de qué estamos cortos y dónde sobra capacidad ─────────
+// Cuatro medidores en un solo llamado. La pregunta que responde: ¿puedo
+// tomar más trabajo? ¿de qué me voy a quedar sin stock y cuándo?
+//
+// Las horas útiles por mecánico son un SUPUESTO, no un dato medido: hoy no
+// hay registro de presencia. Cambiar este número cambia todo el nivel del
+// taller, así que está acá arriba y en un solo lugar.
+const HORAS_UTILES_MECANICO_MES = 55;
+
+router.get('/api/niveles', auth, async (req, res) => {
+  try {
+    const hoy = new Date();
+    const desdeMes = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1)).toISOString();
+
+    const [inc, mecs, cons, disp, unidades, pedidos] = await Promise.all([
+      supabase.from('incidencias')
+        .select('id, estado, motivo_cierre, fecha_finalizado, created_at, equipo_parado, tipo_equipo, puntos_ia_horas, mecanicos(nombre)')
+        .gte('created_at', desdeMes),
+      supabase.from('mecanicos').select('id, nombre').eq('activo', true),
+      supabase.from('panol_consumo').select('*').then(r => r, () => ({ data: [] })),
+      supabase.from('panol_disponible').select('id, disponible, minimo').then(r => r, () => ({ data: [] })),
+      supabase.from('unidades').select('id, activo').eq('activo', true).then(r => r, () => ({ data: [] })),
+      supabase.from('incidencias').select('id').eq('estado', 'esperando_repuestos')
+        .then(r => r, () => ({ data: [] })),
+    ]);
+    if (inc.error) throw inc.error;
+
+    const filas = (inc.data || []).filter(r => !r.motivo_cierre);
+    const cerradas = filas.filter(r => r.estado === 'finalizado' && r.fecha_finalizado);
+    const abiertas = filas.filter(r => r.estado !== 'finalizado' || !r.fecha_finalizado);
+
+    // ── Taller: horas estimadas contra capacidad ──
+    const porMec = {};
+    cerradas.forEach(r => {
+      const n = r.mecanicos ? r.mecanicos.nombre : null;
+      if (!n) return;
+      porMec[n] = (porMec[n] || 0) + (Number(r.puntos_ia_horas) || 0);
+    });
+    const listaMec = (mecs.data || []).map(m => ({
+      mecanico: m.nombre,
+      horas: Math.round((porMec[m.nombre] || 0) * 10) / 10,
+      ocupacion: Math.round((porMec[m.nombre] || 0) * 100 / HORAS_UTILES_MECANICO_MES),
+    })).sort((a, b) => b.horas - a.horas);
+    const horasUsadas = listaMec.reduce((s2, x) => s2 + x.horas, 0);
+    const capacidad = (mecs.data || []).length * HORAS_UTILES_MECANICO_MES;
+
+    // ── Pañol: cobertura en días (mismo cálculo que /api/panol/reposicion) ──
+    const dispPorId = {};
+    (disp.data || []).forEach(d => { dispPorId[d.id] = d; });
+    const items = (cons.data || []).map(c => {
+      const d = dispPorId[c.id] || {};
+      const cm = Number(c.consumo_mes) || 0;
+      const hay = Number(d.disponible);
+      return {
+        nombre: c.nombre, unidad: c.unidad, hay: isNaN(hay) ? null : hay,
+        consumo_mes: cm,
+        cobertura_dias: cm > 0 && !isNaN(hay) ? Math.round((hay / cm) * 30) : null,
+      };
+    });
+    // Clase ABC sobre el consumo de 90 días, igual que en Stock
+    const conMov = (cons.data || []).filter(c => (Number(c.consumo_90d) || 0) > 0)
+      .sort((a, b) => (Number(b.consumo_90d) || 0) - (Number(a.consumo_90d) || 0));
+    const totalCons = conMov.reduce((s2, c) => s2 + (Number(c.consumo_90d) || 0), 0);
+    const claseDe = {};
+    let acum = 0;
+    conMov.forEach(c => {
+      acum += Number(c.consumo_90d) || 0;
+      const pct = totalCons ? acum / totalCons : 1;
+      claseDe[c.id] = pct <= 0.8 ? 'A' : pct <= 0.95 ? 'B' : 'C';
+    });
+    items.forEach((it, i) => { it.clase = claseDe[(cons.data || [])[i].id] || 'sin movimiento'; });
+    // Solo interesa lo que se está por acabar: lo demás es ruido
+    const enRiesgo = items
+      .filter(it => it.cobertura_dias != null && it.cobertura_dias <= 90)
+      .sort((a, b) => a.cobertura_dias - b.cobertura_dias);
+
+    // ── Máquinas ──
+    const paradas = abiertas.filter(r => r.equipo_parado);
+    const porFamilia = {};
+    paradas.forEach(r => {
+      const f = familiaEquipo(r.tipo_equipo);
+      porFamilia[f] = (porFamilia[f] || 0) + 1;
+    });
+
+    res.json({
+      taller: {
+        horas_usadas: Math.round(horasUsadas * 10) / 10,
+        capacidad,
+        horas_libres: Math.round(Math.max(0, capacidad - horasUsadas) * 10) / 10,
+        ocupacion: capacidad ? Math.round(horasUsadas * 100 / capacidad) : null,
+        horas_por_mecanico: HORAS_UTILES_MECANICO_MES,
+        por_mecanico: listaMec,
+        cerradas: cerradas.length,
+        abiertas: abiertas.length,
+      },
+      panol: {
+        items_total: items.length,
+        agotados: items.filter(it => it.hay === 0).length,
+        en_riesgo: enRiesgo.slice(0, 10),
+        en_riesgo_total: enRiesgo.length,
+        por_clase: {
+          A: items.filter(it => it.clase === 'A').length,
+          B: items.filter(it => it.clase === 'B').length,
+          C: items.filter(it => it.clase === 'C').length,
+        },
+      },
+      compras: {
+        esperando_repuestos: (pedidos.data || []).length,
+        abiertas: abiertas.length,
+        // Sin puntos de pedido cargados el sistema no puede avisar solo.
+        con_punto_pedido: (disp.data || []).filter(d => Number(d.minimo) > 0).length,
+      },
+      maquinas: {
+        flota: (unidades.data || []).length,
+        paradas: paradas.length,
+        por_familia: Object.entries(porFamilia).map(([familia, n]) => ({ familia, paradas: n }))
+          .sort((a, b) => b.paradas - a.paradas),
+      },
+    });
+  } catch (err) {
+    console.error('niveles:', err);
+    res.status(500).json({ error: 'Error cargando los niveles' });
+  }
+});
+
 router.get('/api/panol/reposicion', auth, async (req, res) => {
   try {
     const [cons, disp] = await Promise.all([
