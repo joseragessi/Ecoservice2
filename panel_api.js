@@ -5469,7 +5469,14 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         .select('estado, litros_total, fecha, objetivos(nombre), cargas_combustible_items(litros, destino, destino_detalle)')
         .gte('fecha', desde.slice(0, 10)).lt('fecha', hasta.slice(0, 10))
         .then(r => r, () => ({ data: [] })),
-      supabase.from('stock_objetivo').select('objetivo_id, tipo_equipo, cantidad')
+      // Las máquinas salen del ÚLTIMO CENSO RESPONDIDO de cada objetivo, que
+      // es la misma fuente que muestra Stock → General. Antes se usaba
+      // `stock_objetivo`, que está poblada solo para algunos objetivos: por
+      // eso Viarava aparecía "sin censo" en el reporte y con 11 equipos en
+      // Stock. Sin período fijo: se toma el censo más reciente que haya.
+      supabase.from('censos_stock')
+        .select('objetivo_id, periodo, censos_stock_items(tipo_equipo, cantidad)')
+        .eq('estado', 'respondido').order('periodo', { ascending: false })
         .then(r => r, () => ({ data: [] })),
       // Alias para unificar los nombres escritos a mano, igual que en el panel
       supabase.from('objetivos_alias').select('alias, objetivos(nombre)')
@@ -5831,11 +5838,19 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         });
 
         // Máquinas censadas por objetivo, para poder ver litros por máquina
+        // Un objetivo puede tener varios censos; vienen ordenados por período
+        // descendente, así que el primero que aparece es el más reciente.
         const maqPorObjId = {};
-        ((maqObj && maqObj.data) || []).forEach(m => {
-          const o = maqPorObjId[m.objetivo_id] || (maqPorObjId[m.objetivo_id] = { total: 0, tipos: {} });
-          o.total += Number(m.cantidad) || 0;
-          o.tipos[m.tipo_equipo] = (o.tipos[m.tipo_equipo] || 0) + (Number(m.cantidad) || 0);
+        const censoUsado = {};
+        ((maqObj && maqObj.data) || []).forEach(c => {
+          if (censoUsado[c.objetivo_id]) return;
+          censoUsado[c.objetivo_id] = c.periodo;
+          const o = maqPorObjId[c.objetivo_id] = { total: 0, tipos: {}, periodo: c.periodo };
+          (c.censos_stock_items || []).forEach(i => {
+            const n = Number(i.cantidad) || 0;
+            o.total += n;
+            o.tipos[i.tipo_equipo] = (o.tipos[i.tipo_equipo] || 0) + n;
+          });
         });
         // El maestro de objetivos hace falta para cruzar id → nombre
         const porNombre = {};
@@ -5850,6 +5865,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             litros: Math.round(o.litros),
             maquinas: nMaq,
             tipos: maq ? maq.tipos : null,
+            censo_periodo: maq ? maq.periodo : null,
             litros_por_maquina: nMaq ? Math.round(o.litros / nMaq) : null,
             // Promedio diario del período que se está viendo. Si el mes está
             // en curso se divide por los días transcurridos, no por el mes
