@@ -83,4 +83,44 @@ function agruparPorFamilia(items) {
   return out;
 }
 
-module.exports = { familiaConsumo, agruparPorFamilia, LABEL_FAMILIA, FAMILIAS_CON_MOTOR };
+// ── Consumo de referencia ────────────────────────────────────
+// Litros que gasta cada familia en una JORNADA COMPLETA de trabajo.
+// Los dos primeros son datos que dio José (agosto 2026); los vehículos son
+// una estimación y por eso están marcados aparte.
+const CONSUMO_JORNADA = {
+  dos_tiempos: 6,     // motoguadaña, motosierra, extensible, sopladora
+  tractor: 40,        // gasoil, jornada completa
+  cortadora: 12,      // estimado: motor de 4 tiempos, entre una 2T y un tractor
+  fijo: 5,            // generador/compresor, uso intermitente
+};
+
+// Los vehículos no van por jornada sino por kilómetros, y el kilometraje
+// depende de dónde estén: los de grupo "privado" se mueven dentro del barrio;
+// los de "depósito" salen de la base a recorrer objetivos. Litros por MES.
+const CONSUMO_VEHICULO_MES = {
+  privado: 130,       // ~un tanque cada dos semanas (dato de José)
+  deposito: 280,      // salen a los objetivos: más del doble de recorrido
+  default: 180,
+};
+
+/**
+ * Litros que consumiría el parque de un objetivo si TODO trabajara a jornada
+ * completa todos los días hábiles. Es un techo, no una expectativa: sirve para
+ * medir qué porción de su capacidad usó cada objetivo y compararlos entre sí,
+ * sin tener que suponer cuántas máquinas se usan a diario.
+ */
+function capacidadTeorica(familias, diasHabiles, grupo) {
+  if (!familias) return null;
+  const g = String(grupo || '').toLowerCase();
+  const porMesVeh = CONSUMO_VEHICULO_MES[g === 'deposito' || g === 'depósito' ? 'deposito'
+    : g === 'privado' ? 'privado' : 'default'];
+  let lt = 0;
+  Object.entries(CONSUMO_JORNADA).forEach(([fam, porJornada]) => {
+    lt += (familias[fam] || 0) * porJornada * diasHabiles;
+  });
+  lt += (familias.vehiculo || 0) * porMesVeh;
+  return Math.round(lt);
+}
+
+module.exports = { familiaConsumo, agruparPorFamilia, LABEL_FAMILIA, FAMILIAS_CON_MOTOR,
+  CONSUMO_JORNADA, CONSUMO_VEHICULO_MES, capacidadTeorica };
