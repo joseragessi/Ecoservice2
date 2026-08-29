@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-28 · filtros de combustible · sin dashboard';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-28 · unificar objetivos en combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -987,6 +987,33 @@ async function cambiarInsumo(id,estado){
 let filtroComb='';
 let combTab='cargas';           // 'cargas' | 'analisis'
 let combObj='', combUni='';     // filtros de objetivo y unidad (vacío = todos)
+let combAlias=null;             // {alias:[], objetivos:[]} — se pide una vez
+
+/* Unifica nombres de objetivo escritos a mano. El supervisor carga el destino
+   de los bidones por WhatsApp y cada variante ("prity", "pritty jardin",
+   "bodcat") aparecía como un objetivo distinto en los gráficos. Se normaliza
+   igual que en Bateas —misma tabla objetivos_alias, mismo normalizador— así
+   lo que se enseña una vez vale para los dos módulos. */
+const normObj=v=>String(v||'').toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+function resolverObj(nombre){
+  if(!nombre)return nombre;
+  const n=normObj(nombre);
+  if(!n||!combAlias)return nombre;
+  // 1) ¿coincide con un objetivo real?
+  const directo=(combAlias.objetivos||[]).find(o=>normObj(o.nombre)===n);
+  if(directo)return directo.nombre;
+  // 2) ¿hay un alias aprendido?
+  const al=(combAlias.alias||[]).find(a=>a.alias===n);
+  if(al)return al.nombre;
+  return nombre;   // sin reconocer: queda como lo escribieron
+}
+function objReconocido(nombre){
+  const n=normObj(nombre);
+  if(!n||!combAlias)return true;
+  return (combAlias.objetivos||[]).some(o=>normObj(o.nombre)===n)
+    ||(combAlias.alias||[]).some(a=>a.alias===n);
+}
 let combMesAnterior=null;       // {mes, objetivo, litros} para la comparación
 let combCargas=[];              // cache de cargas para el modal de detalle
 let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
@@ -1007,6 +1034,21 @@ function quienCargoCombus(c){
   const m=/^Cargado por ([^:]+): ([^·]+)/.exec(String(c.respuesta_capataz||''));
   return m?`<div>${m[2].trim()}</div><div class="sub" style="font-size:10.5px">${m[1].trim()}</div>`:'—';
 }
+/* Enseña que un texto escrito a mano corresponde a un objetivo real. Queda
+   guardado como alias y desde ese momento se resuelve solo, acá y en Bateas. */
+async function combUnificar(texto){
+  const sel=document.getElementById('al-'+normObj(texto));
+  const objetivo_id=sel?sel.value:'';
+  if(!objetivo_id)return toast('Elegí a qué objetivo corresponde','error');
+  try{
+    const r=await api('/api/objetivos/alias',{method:'POST',body:JSON.stringify({texto,objetivo_id})});
+    combAlias=null;              // se vuelve a pedir con el alias nuevo
+    invalidarCacheApi();
+    toast(`"${texto}" ahora se cuenta como ${r.objetivo.nombre}`);
+    go('combustible');
+  }catch(e){toast(e.message||'No pude unificar','error');}
+}
+
 async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
     <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
@@ -1017,7 +1059,11 @@ async function vCombustible(view){
     const params=[];
     if(filtroComb)params.push('estado='+filtroComb);
     if(combMes)params.push('mes='+combMes);
-    const cs=await api('/api/combustible'+(params.length?'?'+params.join('&'):''));
+    const [cs,al]=await Promise.all([
+      api('/api/combustible'+(params.length?'?'+params.join('&'):'')),
+      combAlias?Promise.resolve(combAlias):apiC('/api/objetivos/alias').catch(()=>({alias:[],objetivos:[]})),
+    ]);
+    combAlias=al;
     combCargas=cs;
     // Para comparar contra el mes anterior hace falta traerlo. Solo se pide si
     // hay un mes elegido Y un objetivo filtrado: sin mes concreto no hay
@@ -1047,18 +1093,19 @@ async function vCombustible(view){
     // ya trajo el endpoint (un mes entero), así cambiar de objetivo no vuelve
     // a pegarle a la base.
     const todasVivas=cs.filter(c=>c.estado!=='anulada');
-    const objDe=c=>c.objetivos?c.objetivos.nombre:'Sin objetivo';
+    const objDe=c=>c.objetivos?resolverObj(c.objetivos.nombre):'Sin objetivo';
+    const destinoDe=(i,c)=>i.destino==='bidon'?resolverObj(i.destino_detalle||'')||objDe(c):objDe(c);
     const uniDe=c=>c.unidades?c.unidades.patente:(c.patente_raw||'Sin unidad');
     // Un bidón puede ir a un objetivo distinto al de la carga, así que para el
     // filtro por objetivo hay que mirar también el destino de cada ítem.
     const tocaObjetivo=(c,obj)=>objDe(c)===obj
-      ||(c.cargas_combustible_items||[]).some(i=>i.destino==='bidon'&&(i.destino_detalle||objDe(c))===obj);
+      ||(c.cargas_combustible_items||[]).some(i=>i.destino==='bidon'&&destinoDe(i,c)===obj);
     const vivas=todasVivas.filter(c=>
       (!combObj||tocaObjetivo(c,combObj))&&(!combUni||uniDe(c)===combUni));
     // Listas para los selectores: salen de TODAS las cargas del mes, no de las
     // filtradas (si no, al elegir uno desaparecerían los demás).
     const objetivosLista=[...new Set(todasVivas.flatMap(c=>[objDe(c),
-      ...(c.cargas_combustible_items||[]).filter(i=>i.destino==='bidon').map(i=>i.destino_detalle||objDe(c))]))].filter(Boolean).sort();
+      ...(c.cargas_combustible_items||[]).filter(i=>i.destino==='bidon').map(i=>destinoDe(i,c))]))].filter(Boolean).sort();
     const unidadesLista=[...new Set(todasVivas.map(uniDe))].filter(Boolean).sort();
     let litTot=0,litUni=0,litBid=0,nFact=0,nSf=0;
     const porObj={},porTipo={},bidObj={};
@@ -1069,7 +1116,7 @@ async function vCombustible(view){
       if(its.length){
         its.forEach(i=>{
           const l=Number(i.litros)||0;litTot+=l;
-          if(i.destino==='bidon'){litBid+=l;const o=i.destino_detalle||objC;bidObj[o]=(bidObj[o]||0)+l;porObj[o]=(porObj[o]||0)+l;}
+          if(i.destino==='bidon'){litBid+=l;const o=destinoDe(i,c);bidObj[o]=(bidObj[o]||0)+l;porObj[o]=(porObj[o]||0)+l;}
           else{litUni+=l;porObj[objC]=(porObj[objC]||0)+l;}
           const t=(i.producto||'—').trim().toUpperCase();porTipo[t]=(porTipo[t]||0)+l;
         });
@@ -1159,6 +1206,38 @@ async function vCombustible(view){
       Filtrando por ${combObj?`objetivo <b>${escStk(combObj)}</b>`:''}${combObj&&combUni?' y ':''}${combUni?`unidad <b>${escStk(combUni)}</b>`:''}
       · ${vivas.length} de ${todasVivas.length} cargas
       <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';go('combustible')">Limpiar</button></div>`:''}
+    ${(function(){
+      // Destinos escritos a mano que no matchean ningún objetivo ni alias.
+      // Mientras no se unifiquen, cada variante suma por separado en los
+      // gráficos y parece un objetivo que no existe.
+      const sinRec={};
+      todasVivas.forEach(c=>{
+        (c.cargas_combustible_items||[]).forEach(i=>{
+          if(i.destino!=='bidon')return;
+          const txt=(i.destino_detalle||'').trim();
+          if(!txt||objReconocido(txt))return;
+          sinRec[txt]=(sinRec[txt]||0)+(Number(i.litros)||0);
+        });
+        const oc=c.objetivos?c.objetivos.nombre:'';
+        if(oc&&!objReconocido(oc))sinRec[oc]=(sinRec[oc]||0)+0;
+      });
+      const ents=Object.entries(sinRec).sort((a2,b2)=>b2[1]-a2[1]);
+      if(!ents.length)return '';
+      return `<div class="panel" style="margin-bottom:14px;border-left:3px solid var(--diesel)">
+        <div class="panel-title">⚠ ${ents.length} destino${ents.length===1?'':'s'} sin unificar</div>
+        <div class="sub" style="font-size:12px;margin-bottom:10px">
+          Los cargó el supervisor a mano y no coinciden con ningún objetivo. Cada variante suma por
+          separado. Asignalos una vez y el sistema los reconoce solo de acá en adelante, también en Bateas.</div>
+        ${ents.map(([txt,lt])=>`<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--linea)">
+          <span style="flex:1;font-size:12.5px"><b>${escStk(txt)}</b>${lt?` <span class="sub">· ${fmtL(lt)}</span>`:''}</span>
+          <select id="al-${normObj(txt)}" class="busca" style="width:auto;font-size:12px;padding:4px 8px">
+            <option value="">— asignar a —</option>
+            ${(combAlias.objetivos||[]).map(o=>`<option value="${o.id}">${escStk(o.nombre)}</option>`).join('')}
+          </select>
+          <button class="btn ghost" style="padding:4px 11px;font-size:11.5px"
+            onclick="combUnificar('${escStk(txt).replace(/'/g,"\\'")}')">Unificar</button>
+        </div>`).join('')}
+      </div>`;})()}
     ${detalleObj}
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">Litros totales</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(litTot)}</div><div class="kpi-sub">${vivas.length} cargas</div></div>
