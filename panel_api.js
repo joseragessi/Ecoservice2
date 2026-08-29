@@ -1073,6 +1073,67 @@ router.post('/api/viajes/:id/parada', auth, async (req, res) => {
 // ── Alias de objetivos ────────────────────────────────────────
 // Van bajo /api/viajes a propósito: moduloDeRuta() mandaría /api/objetivos*
 // al permiso 'maestros', y esto lo maneja quien usa Bateas.
+// ── Alias de objetivos, genéricos ─────────────────────────────
+// Misma tabla que usa Bateas. Combustible tiene el mismo problema: el
+// supervisor escribe el destino de los bidones a mano ("prity", "pritty
+// jardin", "bodcat") y cada variante aparece como un objetivo distinto.
+// Acá se enseña la equivalencia una vez y vale para todo el sistema.
+router.post('/api/objetivos/alias', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const texto = String(b.texto || '').trim();
+    if (!texto) return res.status(422).json({ error: 'Falta el texto a unificar' });
+    if (!b.objetivo_id) return res.status(422).json({ error: 'Elegí a qué objetivo corresponde' });
+
+    const { data: obj, error: eO } = await supabase.from('objetivos')
+      .select('id, nombre').eq('id', b.objetivo_id).maybeSingle();
+    if (eO) throw eO;
+    if (!obj) return res.status(422).json({ error: 'Ese objetivo no existe' });
+
+    const aliasNorm = normObjetivo(texto);
+    if (!aliasNorm) return res.status(422).json({ error: 'El texto no tiene letras ni números' });
+    if (aliasNorm === normObjetivo(obj.nombre)) {
+      return res.status(422).json({ error: 'Ese texto ya coincide con el nombre del objetivo' });
+    }
+
+    const { error } = await supabase.from('objetivos_alias').upsert({
+      alias: aliasNorm,
+      alias_original: texto,
+      objetivo_id: obj.id,
+      creado_por: req.usuario || null,
+    }, { onConflict: 'alias' });
+    if (error) {
+      return res.status(422).json({ error: 'No pude guardar el alias: ' + error.message });
+    }
+    console.log(`[alias] "${texto}" → ${obj.nombre} · por ${req.usuario || '?'}`);
+    res.json({ ok: true, alias: aliasNorm, objetivo: obj });
+  } catch (err) {
+    console.error('alias objetivo:', err);
+    res.status(500).json({ error: 'No pude guardar el alias' });
+  }
+});
+
+// Los alias más el normalizador, para que el panel pueda unificar nombres del
+// lado del cliente sin volver a consultar por cada uno.
+router.get('/api/objetivos/alias', auth, async (req, res) => {
+  try {
+    const [al, objs] = await Promise.all([
+      supabase.from('objetivos_alias').select('alias, objetivo_id, objetivos(nombre)')
+        .then(r => r, () => ({ data: [] })),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true),
+    ]);
+    if (objs.error) throw objs.error;
+    res.json({
+      alias: (al.data || []).filter(a => a.objetivo_id && a.objetivos)
+        .map(a => ({ alias: a.alias, objetivo_id: a.objetivo_id, nombre: a.objetivos.nombre })),
+      objetivos: objs.data || [],
+    });
+  } catch (err) {
+    console.error('alias listado:', err);
+    res.status(500).json({ error: 'No pude cargar los alias' });
+  }
+});
+
 router.get('/api/viajes/alias', auth, async (req, res) => {
   try {
     const { data, error } = await supabase
