@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-29 · bidones vs tanque por objetivo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-29 · estado sobre capacidad propia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2344,8 +2344,8 @@ function bloqueCombustibleReporte(cb){
       <th style="text-align:right">Uso máq.</th>
       <th style="text-align:right">vs resto</th><th style="width:14%">Estado</th></tr></thead>
     <tbody>${objs.map(o=>{
-      const col=o.estado==='revisar'?'var(--rojo)':o.estado==='mirar'?'var(--diesel)':'var(--brote-2)';
-      const txt=o.estado==='revisar'?'revisar':o.estado==='mirar'?'mirar':'normal';
+      const col=o.estado==='revisar'?'var(--rojo)':o.estado==='al tope'?'var(--diesel)'
+        :o.estado==='poco uso'?'var(--tinta-3)':'var(--brote-2)';
       return `<tr>
       <td style="font-weight:500">${escStk(o.objetivo)}${o.grupo?` <span class="badge b-gray" style="font-size:9px">${escStk(o.grupo)}</span>`:''}
         ${o.familias?`<div class="sub" style="font-size:10.5px">${
@@ -2358,9 +2358,9 @@ function bloqueCombustibleReporte(cb){
       <td class="mono" style="text-align:right">${o.litros_unidad?o.litros_unidad.toLocaleString('es-AR'):'—'}
         ${o.capacidad_vehiculos?`<div class="sub" style="font-size:10px">de ${o.capacidad_vehiculos.toLocaleString('es-AR')}</div>`:''}</td>
       <td class="mono" style="text-align:right;font-weight:600">${o.uso_maquinas!=null?o.uso_maquinas+'%':'—'}</td>
-      <td class="mono" style="text-align:right;color:${o.desvio_pct==null?'inherit':col}">${
+      <td class="mono" style="text-align:right;color:var(--tinta-3)">${
         o.desvio_pct==null?'—':(o.desvio_pct>0?'+':'')+o.desvio_pct+'%'}</td>
-      <td>${o.estado?`<span class="badge" style="background:${col}1A;color:${col}">${txt}</span>`:'<span class="sub">—</span>'}</td>
+      <td>${o.estado?`<span class="badge" style="background:${col}1A;color:${col}">${escStk(o.estado)}</span>`:'<span class="sub">—</span>'}</td>
     </tr>`;}).join('')}</tbody></table>
     <div class="sub" style="font-size:11.5px;margin-top:9px;padding-top:9px;border-top:1px solid var(--linea)">
       El combustible se separa por destino: lo que sale en <b>🛢 bidones</b> alimenta las máquinas
@@ -2369,10 +2369,16 @@ function bloqueCombustibleReporte(cb){
       ${cb.consumo_referencia.dos_tiempos} lt por jornada las de 2 tiempos, ${cb.consumo_referencia.tractor} lt los tractores,
       ${cb.consumo_referencia.cortadora} lt las cortadoras; las camionetas por mes según el grupo
       (${cb.consumo_vehiculo_mes.privado} lt las de barrio, ${cb.consumo_vehiculo_mes.deposito} lt las del depósito).<br>
-      <b>Uso máq.</b> es la parte de esa capacidad que consumieron las máquinas. Nadie llega al 100%: no todas
-      trabajan todos los días. Lo que importa es <b>vs resto</b>, que compara contra la mediana de los demás
-      objetivos (${cb.utilizacion_mediana!=null?cb.utilizacion_mediana+'%':'—'}): ahí se ven los que se despegan.
-      Los vehículos no entran en esa comparación porque dependen de los kilómetros, que no se registran.<br>
+      <b>Uso máq.</b> es la parte de esa capacidad que consumieron las máquinas, y de ahí sale el estado:
+      <b style="color:var(--rojo)">revisar</b> arriba del 100% — se cargó más de lo que el parque puede quemar
+      trabajando todos los días, así que falta algo (máquinas sin censar, consumo mal imputado);
+      <b style="color:var(--diesel)">al tope</b> del 75 al 100%;
+      <b style="color:var(--brote-2)">normal</b> del 15 al 75%;
+      <b style="color:var(--tinta-3)">poco uso</b> por debajo del 15%, que suele ser censo desactualizado o
+      máquinas paradas. Consumir por debajo de la capacidad no es un desvío: nadie trabaja a full todos los días.<br>
+      <b>vs resto</b> es solo una referencia: cuánto se aparta de la mediana de los objetivos
+      (${cb.utilizacion_mediana!=null?cb.utilizacion_mediana+'%':'—'}). No define el estado.
+      Los vehículos quedan fuera porque dependen de los kilómetros, que no se registran.<br>
       <span style="opacity:.75">Herramientas sin motor —palas, machetes, carros— no cuentan en ningún cálculo.</span></div>
     ${cb.sin_maquinas?`<div class="sub" style="font-size:11.5px;margin-top:8px;color:var(--diesel)">
       ${cb.sin_maquinas} objetivo${cb.sin_maquinas===1?'':'s'} sin maquinaria censada: ahí el litros/máquina no se puede calcular.</div>`:''}
@@ -2618,11 +2624,13 @@ function imprimirReporte(){
         <td class="der mono">${o.litros_unidad?o.litros_unidad.toLocaleString('es-AR'):'—'}${o.capacidad_vehiculos?'<span class="mini"> /'+o.capacidad_vehiculos.toLocaleString('es-AR')+'</span>':''}</td>
         <td class="der mono">${o.uso_maquinas!=null?o.uso_maquinas+'%':'—'}</td>
         <td class="der mono">${o.desvio_pct==null?'—':(o.desvio_pct>0?'+':'')+o.desvio_pct+'%'}</td>
-        <td>${o.estado||'—'}</td></tr>`).join('')}</tbody></table>
+        <td>${escStk(o.estado||'—')}</td></tr>`).join('')}</tbody></table>
       <div class="mini">Bidones alimentan las máquinas; el tanque, los vehículos. Al lado de cada uno, su capacidad
         a jornada completa en ${d.combustible.dias_habiles} días hábiles (${d.combustible.consumo_referencia.dos_tiempos} lt/jornada las 2T,
-        ${d.combustible.consumo_referencia.tractor} lt los tractores). "vs resto" compara el uso de máquinas contra la mediana
-        de los objetivos (${d.combustible.utilizacion_mediana!=null?d.combustible.utilizacion_mediana+'%':'—'}).</div>
+        ${d.combustible.consumo_referencia.tractor} lt los tractores). El estado sale del uso propio: "revisar" arriba
+        del 100% (se cargó más de lo que el parque puede quemar), "al tope" del 75 al 100%, "normal" del 15 al 75%,
+        "poco uso" por debajo. "vs resto" es solo referencia contra la mediana
+        (${d.combustible.utilizacion_mediana!=null?d.combustible.utilizacion_mediana+'%':'—'}).</div>
       ${d.combustible.sin_maquinas?`<div class="mini">${d.combustible.sin_maquinas} objetivo/s sin maquinaria censada.</div>`:''}
     </div>`:''}
 
