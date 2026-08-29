@@ -5408,6 +5408,20 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     const desde = `${mes}-01T00:00:00`;
     const [a, m] = mes.split('-').map(Number);
     const hasta = new Date(Date.UTC(a, m, 1)).toISOString();
+    // Días del período. Si el mes está en curso, solo los transcurridos: con
+    // 8 días de septiembre no se puede dividir por 30 y decir que el consumo
+    // bajó. Se cuentan también los hábiles, que es contra lo que trabajan las
+    // máquinas (el promedio por jornada usa esos, no los calendario).
+    const hoyCba = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
+    const finMesReal = new Date(Date.UTC(a, m, 0));
+    const esMesEnCurso = hoyCba.getFullYear() === a && (hoyCba.getMonth() + 1) === m;
+    const ultimoDia = esMesEnCurso ? hoyCba.getDate() : finMesReal.getUTCDate();
+    let diasHabiles = 0;
+    for (let d2 = 1; d2 <= ultimoDia; d2++) {
+      const dow = new Date(Date.UTC(a, m - 1, d2)).getUTCDay();
+      if (dow !== 0 && dow !== 6) diasHabiles++;
+    }
+
     // Para reingresos se miran también los 60 días previos: una máquina
     // que volvió este mes pudo haberse reparado el mes pasado.
     const desdePrevio = new Date(Date.UTC(a, m - 3, 1)).toISOString();
@@ -5829,15 +5843,26 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 
         const lista = Object.values(porObj).map(o => {
           const maq = porNombre[o.objetivo] || null;
+          const nMaq = maq ? maq.total : null;
+          const r1 = x => Math.round(x * 10) / 10;
           return {
             ...o,
             litros: Math.round(o.litros),
-            maquinas: maq ? maq.total : null,
+            maquinas: nMaq,
             tipos: maq ? maq.tipos : null,
-            litros_por_maquina: maq && maq.total ? Math.round(o.litros / maq.total) : null,
-            // Jornadas de máquina chica que explica ese consumo (6 lt por
-            // jornada, dato de José). Solo orientativo: en el total entran
-            // también tractores y vehículos, que consumen distinto.
+            litros_por_maquina: nMaq ? Math.round(o.litros / nMaq) : null,
+            // Promedio diario del período que se está viendo. Si el mes está
+            // en curso se divide por los días transcurridos, no por el mes
+            // entero: si no, un mes recién empezado parece de bajo consumo.
+            litros_dia: ultimoDia ? r1(o.litros / ultimoDia) : null,
+            litros_maquina_dia: nMaq && ultimoDia ? r1(o.litros / nMaq / ultimoDia) : null,
+            // Lo mismo pero sobre días hábiles, que es cuando las máquinas
+            // trabajan de verdad — es el número comparable con los 6 lt/jornada.
+            litros_maquina_habil: nMaq && diasHabiles ? r1(o.litros / nMaq / diasHabiles) : null,
+            // Qué parte de una jornada de uso diario explica ese consumo.
+            // 100% = cada máquina del objetivo trabajó todos los días hábiles.
+            uso_pct: nMaq && diasHabiles ? Math.round((o.litros / nMaq / diasHabiles) * 100 / 6) : null,
+            // Jornadas de máquina chica que explica el consumo total.
             jornadas_equiv: Math.round(o.litros / 6),
           };
         }).sort((a2, b2) => b2.litros - a2.litros);
@@ -5847,6 +5872,9 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           objetivos: lista,
           sin_maquinas: lista.filter(o => o.maquinas == null).length,
           litros_jornada_2t: 6,
+          dias: ultimoDia,
+          dias_habiles: diasHabiles,
+          mes_en_curso: esMesEnCurso,
         };
       })(),
 
