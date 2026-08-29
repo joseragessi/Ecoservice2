@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-27 · mantenimiento cuenta como batea';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-28 · niveles en el dashboard';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -539,9 +539,94 @@ function go(v){
 }
 
 /* ===== Dashboard ===== */
+/* ── Niveles: de qué estamos cortos y dónde sobra capacidad ──────
+   Cuatro medidores arriba del dashboard. La pregunta que responden:
+   ¿puedo tomar más trabajo?, ¿de qué me voy a quedar sin stock y cuándo?
+   Un nivel vacío no es lo mismo que un nivel sano: donde el dato no
+   alcanza, se dice, en vez de dibujar una barra que parezca informada. */
+function nivBarra(pct,color,alto){
+  const p=Math.max(0,Math.min(100,Math.round(pct||0)));
+  return `<div style="height:${alto||9}px;background:var(--papel);border-radius:5px;overflow:hidden">
+    <div style="width:${p}%;height:100%;background:${color};border-radius:5px"></div></div>`;
+}
+function nivColor(pct,invertir){
+  const p=Number(pct)||0;
+  if(invertir) return p>=80?'var(--rojo)':p>=50?'var(--diesel)':'var(--brote)';
+  return p>=80?'var(--brote)':p>=40?'var(--diesel)':'var(--rojo)';
+}
+function bloqueNiveles(n){
+  if(!n)return '';
+  const t=n.taller||{},p=n.panol||{},co=n.compras||{},mq=n.maquinas||{};
+  const ocup=t.ocupacion||0;
+  // Ocupación alta = poco lugar para más trabajo: por eso el color va al revés
+  const colTaller=ocup>=90?'var(--rojo)':ocup>=70?'var(--diesel)':'var(--brote)';
+  const flotaOk=mq.flota?Math.round((mq.flota-mq.paradas)*100/mq.flota):null;
+
+  const card=(titulo,sub,cuerpo)=>`<div class="panel" style="padding:15px 17px">
+    <div style="font-weight:700;font-size:14px">${titulo}</div>
+    <div class="sub" style="font-size:11px;margin-bottom:12px">${sub}</div>${cuerpo}</div>`;
+
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-bottom:14px">
+
+    ${card('Taller · carga',`${t.horas_por_mecanico} h útiles por mecánico al mes`,`
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
+        <span class="mono" style="font-size:23px;font-weight:700;color:${colTaller}">${ocup}%</span>
+        <span class="sub" style="font-size:11.5px">${t.horas_usadas} h de ${t.capacidad} h</span></div>
+      ${nivBarra(ocup,colTaller)}
+      <div class="sub" style="font-size:11.5px;margin-top:7px">
+        ${t.horas_libres>0?`Queda lugar para <b>${t.horas_libres} h</b> más este mes.`:'Sin margen: el taller está al tope.'}</div>
+      <div style="margin-top:10px">${(t.por_mecanico||[]).map(m=>`
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:2px">
+          <span>${escStk(m.mecanico)}</span><span class="mono">${m.horas} h · ${m.ocupacion}%</span></div>
+        ${nivBarra(m.ocupacion,m.ocupacion>=90?'var(--rojo)':m.ocupacion>=60?'var(--diesel)':'var(--brote)',6)}
+      `).join('')||'<div class="sub" style="font-size:11.5px">Sin mecánicos activos.</div>'}</div>
+      <div class="sub" style="font-size:10.5px;margin-top:8px">
+        Las horas son estimaciones de la IA sobre las reparaciones cerradas, no horas fichadas.</div>`)}
+
+    ${card('Pañol · cuándo me quedo sin','Días que alcanza al ritmo de los últimos 90 días',`
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+        <span class="mono" style="font-size:23px;font-weight:700;color:${p.agotados?'var(--rojo)':p.en_riesgo_total?'var(--diesel)':'var(--brote)'}">${p.en_riesgo_total||0}</span>
+        <span class="sub" style="font-size:11.5px">de ${p.items_total} ítems bajo 90 días${p.agotados?` · <b style="color:var(--rojo)">${p.agotados} agotados</b>`:''}</span></div>
+      ${(p.en_riesgo||[]).length?(p.en_riesgo||[]).map(it=>{
+        const cob=it.cobertura_dias;
+        const col=cob<=7?'var(--rojo)':cob<=30?'var(--diesel)':'var(--brote)';
+        return `<div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:2px">
+          <span>${escStk(it.nombre)} <span class="sub">${it.clase}</span></span>
+          <span class="mono" style="color:${col}">${it.hay===0?'agotado':cob+' d'}</span></div>
+        ${nivBarra(cob*100/90,col,6)}`;}).join('')
+        :'<div class="sub" style="font-size:11.5px">Todo con más de 90 días de cobertura.</div>'}
+      <div class="sub" style="font-size:10.5px;margin-top:8px">
+        Clase A ${(p.por_clase||{}).A||0} · B ${(p.por_clase||{}).B||0} · C ${(p.por_clase||{}).C||0}</div>`)}
+
+    ${card('Compras · frenos',`${co.esperando_repuestos||0} reparaciones esperan un repuesto`,`
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
+        <span class="mono" style="font-size:23px;font-weight:700;color:${co.esperando_repuestos?'var(--diesel)':'var(--brote)'}">${co.esperando_repuestos||0}</span>
+        <span class="sub" style="font-size:11.5px">de ${co.abiertas||0} abiertas</span></div>
+      ${nivBarra(co.abiertas?(co.esperando_repuestos*100/co.abiertas):0,'var(--diesel)')}
+      <div class="sub" style="font-size:11.5px;margin-top:9px">
+        ${co.con_punto_pedido
+          ?`${co.con_punto_pedido} ítems con punto de pedido cargado: de esos el sistema avisa solo.`
+          :`<span style="color:var(--diesel)">⚠ Ningún ítem tiene punto de pedido cargado. Sin eso el sistema no puede avisar de una falta antes de que ocurra.</span>`}</div>`)}
+
+    ${card('Máquinas · disponibilidad','Cuántas están operativas ahora',`
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
+        <span class="mono" style="font-size:23px;font-weight:700;color:${nivColor(flotaOk)}">${flotaOk!=null?flotaOk+'%':'—'}</span>
+        <span class="sub" style="font-size:11.5px">${mq.flota-mq.paradas} de ${mq.flota} operativas</span></div>
+      ${nivBarra(flotaOk,nivColor(flotaOk))}
+      <div style="margin-top:10px">${(mq.por_familia||[]).slice(0,5).map(f=>`
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:3px">
+          <span>${escStk(f.familia)}</span><span class="mono" style="color:var(--rojo)">${f.paradas} parada${f.paradas===1?'':'s'}</span></div>
+      `).join('')||'<div class="sub" style="font-size:11.5px">Ninguna máquina parada.</div>'}</div>`)}
+
+  </div>`;
+}
+
 async function vDashboard(view){
   try{
-    const d=await api('/api/dashboard');
+    const [d,niv]=await Promise.all([
+      api('/api/dashboard'),
+      api('/api/niveles').catch(()=>null),   // si falla, el dashboard igual se muestra
+    ]);
     const c=d.compras||{},t=d.taller||{},st=d.stock||{},a=d.acciones||{};
     const pp=c.pendiente_pago||{};
     const paradas=t.paradas||[];
@@ -644,6 +729,8 @@ async function vDashboard(view){
     view.innerHTML=`
     <div class="view-head" style="margin-bottom:14px"><div><div class="view-title">Panel de gestión</div>
       <div class="view-desc">Compras y taller de un vistazo · ${new Date().toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div></div></div>
+
+    ${bloqueNiveles(niv)}
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
       ${kpi('Gasto · va del mes',mm(c.gasto_mes),
