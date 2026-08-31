@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-31 · bono anclado al mes y sin cerradas sin reparar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-31 · informe de una hoja con conclusión';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4470,89 +4470,130 @@ function perfPesoEquipo(tipo,falla){
 }
 let perfPer='', perfOpen=null;   // mes filtrado y card expandida
 let perfServices=null;           // planillas de service (null = todavía sin cargar)
+let perfFilas=null;              // filas calculadas del ranking, para el informe individual
 // Candado extra: los mecánicos también entran al panel, así que además de ser
 // admin la vista pide el PIN de súper admin (env PERFORMANCE_PIN en Railway).
 // El OK dura lo que dure la pestaña del navegador (sessionStorage).
 /* Informe imprimible de un mecánico: una ficha por incidencia con lo que
    hizo, los repuestos, el puntaje y por qué. Se abre en una ventana y se
    imprime — desde ahí "Guardar como PDF". Sin librerías en el panel. */
+/* Informe individual de UNA hoja. Lee las filas ya calculadas del ranking
+   (perfFilas), así los puntos, la reincidencia y las dormidas son EXACTAMENTE
+   los que se ven en la card: antes recalculaba por su cuenta y no coincidía
+   (no contaba preventivos, services ni dormidas). Arriba de todo va la
+   conclusión: cobra o no, y por qué. */
 function informeMecanico(nombre){
-  const todas=repData||[];
-  const mesDeF=r=>r.fecha_finalizado?String(r.fecha_finalizado).slice(0,7):'';
-  const suyas=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado
-    &&mesDeF(r)===perfPer&&(r.mecanicos?r.mecanicos.nombre:'Sin asignar')===nombre)
-    .sort((a,b)=>String(a.fecha_finalizado).localeCompare(String(b.fecha_finalizado)));
-  if(!suyas.length){toast('No tiene reparaciones finalizadas en el mes','error');return;}
-
+  const f=(perfFilas||[]).find(x=>x.n===nombre);
+  if(!f){toast('Abrí primero la pestaña Performance del mes','error');return;}
+  const M=f.M;
   const esc=v=>String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const fecha=d=>d?String(d).slice(0,10).split('-').reverse().join('/'):'—';
-  const total=suyas.reduce((a,r)=>a+(r.puntos_manual!=null?Number(r.puntos_manual):r.puntos_ia!=null?Number(r.puntos_ia):0),0);
 
-  const fichas=suyas.map((r,i)=>{
-    const pts=r.puntos_manual!=null?Number(r.puntos_manual):r.puntos_ia!=null?Number(r.puntos_ia):null;
-    const coms=(r.comentarios_incidencias||[]).map(c=>`<li><b>${esc(c.mecanico_nombre||'?')}:</b> ${esc(c.texto)}</li>`).join('');
-    const reps=(r.repuestos_taller||[]).map(x=>(Array.isArray(x.items)?x.items:[]).map(i=>i.descripcion||i.nombre||'').filter(Boolean).join(', ')).filter(Boolean).join(' · ');
-    const dias=r.created_at&&r.fecha_finalizado?Math.round((new Date(r.fecha_finalizado)-new Date(r.created_at))/86400000):null;
-    return `<div class="ficha">
-      <div class="fh"><span class="num">${i+1}</span>
-        <span class="eq">${esc(r.tipo_equipo||'—')} ${esc(r.numero_unidad||'')}</span>
-        <span class="prio p-${esc(r.prioridad||'')}">${esc(r.prioridad||'—')}</span>
-        ${r.equipo_parado?'<span class="parada">máquina parada</span>':''}
-        <span class="pts">${pts!=null?pts+' pts':'—'}</span></div>
-      <table class="datos">
-        <tr><th>Objetivo</th><td>${esc(r.objetivos?r.objetivos.nombre:'—')}</td>
-            <th>Capataz</th><td>${esc(r.capataces?r.capataces.nombre:'—')}</td></tr>
-        <tr><th>Falla</th><td>${esc(r.tipo_falla||'sin especificar')}</td>
-            <th>Ingresó / salió</th><td>${fecha(r.created_at)} → ${fecha(r.fecha_finalizado)}${dias!=null?` (${dias} d)`:''}</td></tr>
-      </table>
-      ${r.descripcion?`<p class="desc"><b>Reportó:</b> ${esc(r.descripcion)}</p>`:''}
-      <div class="bloque"><b>Qué se hizo</b>${coms?`<ul>${coms}</ul>`:'<p class="vacio">Sin comentarios cargados por el taller.</p>'}</div>
-      ${reps?`<p class="reps"><b>Repuestos:</b> ${esc(reps)}</p>`:''}
-      ${r.puntos_ia_motivo?`<p class="analisis"><b>Puntaje:</b> ${esc(r.puntos_ia_motivo)}${r.puntos_ia_horas!=null?` · ${Math.round(Number(r.puntos_ia_horas)*10)/10} h estimadas`:''}${r.puntos_ia_confianza?` · confianza ${esc(r.puntos_ia_confianza)}`:''}${r.puntos_manual!=null?' · <i>corregido a mano</i>':''}</p>`:''}
-      <div class="firma"><span>Comentarios de la charla:</span><div class="lineas"></div></div>
-    </div>`;}).join('');
+  // ── Conclusión ──
+  const llegoPts=M.total>=f.obj;
+  const faltan=Math.max(0,f.obj-M.total);
+  let veredicto,motivo,color;
+  if(f.cumple){
+    veredicto='COBRA EL BONO';color='#2f7d4f';
+    motivo=`Llegó a los puntos (${M.total} de ${f.obj}) y su reincidencia está dentro del límite (${f.pctR!=null?f.pctR+'%':'sin datos'}, tope ${PERF_REINC_MAX}%).`;
+  }else if(!llegoPts&&!f.habilitado){
+    veredicto='NO COBRA';color='#c0392b';
+    motivo=`Le faltaron <b>${faltan} puntos</b> (${M.total} de ${f.obj}) y además <b>${f.nReb} de sus ${f.nBase} reparaciones volvieron al taller</b> (${f.pctR}%, el tope es ${PERF_REINC_MAX}%).`;
+  }else if(!llegoPts){
+    veredicto='NO COBRA';color='#c0392b';
+    motivo=`Le faltaron <b>${faltan} puntos</b> para el objetivo (${M.total} de ${f.obj}). Su calidad está bien (${f.pctR!=null?f.pctR+'%':'sin datos'}).`;
+  }else{
+    veredicto='NO COBRA';color='#c0392b';
+    motivo=`Llegó a los puntos (${M.total} de ${f.obj}), pero <b>${f.nReb} de sus ${f.nBase} reparaciones volvieron al taller</b> (${f.pctR}%, el tope es ${PERF_REINC_MAX}%). La calidad bloquea el bono.`;
+  }
+  const notaMuestra=f.pocaMuestra&&f.nBase>0?` <i>Con ${f.nBase} reparaciones en 90 días, cada rebote pesa mucho en el porcentaje.</i>`:'';
+
+  // ── Desglose de puntos ──
+  const desglose=[
+    ['Trabajo en reparaciones',M.trabajo],
+    ['Urgencias (crítica / alta / parada)',M.urgencia],
+    ['Preventivos realizados',M.prev],
+    ['Services cargados',M.serv||0],
+    ['Dormidas (abiertas >'+PERF_DORMIDA_DIAS+' días)',-(M.dormidas||0)],
+  ].filter(([,v])=>v);
+
+  // ── Reparaciones del mes, compacto: una línea cada una ──
+  const reps=(M.lineas||[]).filter(l=>!l.mal&&l.det!=='preventivo realizado'&&!/^service cargado/.test(l.det||''));
+  const prevs=(M.lineas||[]).filter(l=>l.det==='preventivo realizado');
+  const servs=(M.lineas||[]).filter(l=>/^service cargado/.test(l.det||''));
+  const filaRep=l=>`<tr><td>${esc(l.tit)}</td><td class="d">${esc((l.det||'').replace(/ · confianza (alta|media|baja)/,''))}${l.conf?` <span class="c c-${esc(l.conf)}">${esc(l.conf)}</span>`:''}</td><td class="n">${esc(l.pts)}</td></tr>`;
 
   const w=window.open('','_blank');
   if(!w){toast('El navegador bloqueó la ventana — permití pop-ups','error');return;}
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Informe ${esc(nombre)} · ${mesStk(perfPer)}</title>
   <style>
     *{box-sizing:border-box}
-    body{font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;margin:0;padding:26px 30px;background:#fff}
-    h1{font-size:21px;margin:0 0 2px}
-    .sub{color:#666;font-size:12.5px;margin-bottom:14px}
-    .resumen{background:#f4f7f4;border-left:4px solid #2f7d4f;padding:9px 13px;margin-bottom:18px;font-size:13px}
-    .ficha{border:1px solid #ddd;border-radius:7px;padding:11px 13px;margin-bottom:11px;page-break-inside:avoid}
-    .fh{display:flex;align-items:center;gap:9px;flex-wrap:wrap;border-bottom:1px solid #eee;padding-bottom:7px;margin-bottom:8px}
-    .num{background:#eee;border-radius:50%;width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
-    .eq{font-weight:700;font-size:14px;flex:1}
-    .pts{font-weight:700;font-size:15px;color:#2f7d4f}
-    .prio{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:9px;background:#eee}
-    .p-critico{background:#c0392b;color:#fff;font-weight:700}
-    .p-alta{background:#fdf0dc;color:#9a6212;border:1px solid #d99000;font-weight:700}
-    .p-media{background:#e8eff8;color:#31618f}
-    .p-baja{background:#eaf3ec;color:#2f7d4f}
-    .parada{font-size:10.5px;color:#c0392b;border:1px solid #c0392b;padding:1px 6px;border-radius:9px}
-    table.datos{width:100%;border-collapse:collapse;margin-bottom:6px}
-    table.datos th{text-align:left;color:#777;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;padding:2px 8px 2px 0;width:1%;white-space:nowrap;vertical-align:top}
-    table.datos td{padding:2px 16px 2px 0;font-size:12.5px;vertical-align:top}
-    .desc{margin:5px 0;font-size:12.5px}
-    .bloque{margin:7px 0}
-    .bloque b{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:#777}
-    .bloque ul{margin:3px 0 0;padding-left:18px;font-size:12.5px}
-    .vacio{color:#b00;font-size:12.5px;margin:3px 0 0;font-style:italic}
-    .reps,.analisis{font-size:12.5px;margin:5px 0 0}
-    .analisis{color:#555;background:#fafafa;padding:5px 8px;border-radius:5px}
-    .firma{margin-top:9px;border-top:1px dashed #ccc;padding-top:6px;font-size:11px;color:#888}
-    .lineas{height:34px;border-bottom:1px solid #ddd}
-    @media print{body{padding:12px}.ficha{border-color:#ccc}}
+    @page{size:A4 portrait;margin:12mm 12mm}
+    body{font:11.5px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;margin:0;padding:0;background:#fff;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h1{font-size:19px;margin:0 0 1px}
+    .sub{color:#666;font-size:11px;margin-bottom:10px}
+    .veredicto{border-left:5px solid ${color};background:${color}12;padding:10px 13px;margin-bottom:12px}
+    .veredicto .t{font-size:15px;font-weight:800;color:${color};letter-spacing:.4px;margin-bottom:3px}
+    .veredicto .m{font-size:12px}
+    .dos{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+    .caja{border:1px solid #ddd;border-radius:6px;padding:8px 11px}
+    .caja h3{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#777;margin:0 0 6px}
+    .kv{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #f0f0f0;font-size:11.5px}
+    .kv:last-child{border:0}
+    .kv b{font-family:ui-monospace,monospace}
+    .kv.tot{border-top:2px solid #333;margin-top:3px;padding-top:4px;font-weight:700}
+    .neg{color:#c0392b}
+    table{width:100%;border-collapse:collapse;font-size:11px}
+    th{text-align:left;font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#777;padding:4px 5px;border-bottom:1px solid #ccc}
+    td{padding:3px 5px;border-bottom:1px solid #eee;vertical-align:top}
+    td.d{color:#555;font-size:10.5px}
+    td.n{text-align:right;font-family:ui-monospace,monospace;font-weight:700;white-space:nowrap}
+    .c{font-size:9px;padding:0 5px;border-radius:7px;border:1px solid #ccc;color:#666}
+    .c-baja{border-color:#d99000;color:#9a6212}
+    .c-alta{border-color:#2f7d4f;color:#2f7d4f}
+    h2{font-size:12px;margin:12px 0 5px;padding-bottom:3px;border-bottom:2px solid #333}
+    .reb{background:#fdf0f0;border:1px solid #f0c0c0;border-radius:6px;padding:7px 11px;font-size:11px;margin-bottom:10px}
+    .reb b{color:#c0392b}
+    .firma{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:20px;font-size:10.5px;color:#888}
+    .firma div{border-top:1px solid #999;padding-top:4px}
+    .gen{font-size:9.5px;color:#999;margin-top:10px}
   </style></head><body>
   <h1>${esc(nombre)}</h1>
-  <div class="sub">Informe de reparaciones · ${mesStk(perfPer)} · EcoService</div>
-  <div class="resumen"><b>${suyas.length} reparaciones finalizadas</b> · ${total} puntos ·
-    1 punto ≈ 1 hora de mano de obra. El puntaje sale de la criticidad, la falla, lo que se cargó
-    que se hizo y los repuestos pedidos.</div>
-  ${fichas}
-  <div class="sub" style="margin-top:16px">Generado el ${new Date().toLocaleDateString('es-AR')} desde EcoService Gestión.</div>
+  <div class="sub">Informe de performance · ${mesStk(perfPer)} · EcoService S.R.L.</div>
+
+  <div class="veredicto">
+    <div class="t">${veredicto}</div>
+    <div class="m">${motivo}${notaMuestra}</div>
+  </div>
+
+  <div class="dos">
+    <div class="caja"><h3>Puntos del mes</h3>
+      ${desglose.map(([k,v])=>`<div class="kv"><span>${k}</span><b class="${v<0?'neg':''}">${v>0?'+':''}${v}</b></div>`).join('')}
+      <div class="kv tot"><span>Total</span><b>${M.total}</b></div>
+      <div class="kv"><span>Objetivo${f.es2T?' (mecánico de 2 tiempos)':''}</span><b>${f.obj}</b></div>
+      <div class="kv"><span>${llegoPts?'Superó el objetivo por':'Le faltaron'}</span><b class="${llegoPts?'':'neg'}">${Math.abs(M.total-f.obj)}</b></div>
+    </div>
+    <div class="caja"><h3>Calidad · reincidencia 90 días</h3>
+      <div class="kv"><span>Reparaciones base (con número de máquina)</span><b>${f.nBase}</b></div>
+      <div class="kv"><span>Volvieron al taller en 30 días</span><b class="${f.nReb?'neg':''}">${f.nReb}</b></div>
+      <div class="kv tot"><span>Reincidencia</span><b class="${f.habilitado?'':'neg'}">${f.pctR!=null?f.pctR+'%':'—'}</b></div>
+      <div class="kv"><span>Tope para cobrar</span><b>${PERF_REINC_MAX}%</b></div>
+      <div class="kv"><span>Resultado</span><b class="${f.habilitado?'':'neg'}">${f.habilitado?'habilitado':'bloqueado'}</b></div>
+    </div>
+  </div>
+
+  ${f.rebotes.length?`<div class="reb"><b>Volvieron al taller:</b> ${f.rebotes.map(r=>`${esc(r.eq)} ${esc(r.uni)} a los ${r.dias} d${r.fallaBase?` (entró por ${esc(r.fallaBase)}${r.fallaVuelta&&r.fallaVuelta!==r.fallaBase?`, volvió por ${esc(r.fallaVuelta)}`:''})`:''}`).join(' · ')}</div>`:''}
+  ${f.dormidas.length?`<div class="reb" style="background:#fff8ec;border-color:#f0d8a8"><b style="color:#9a6212">Abiertas hace más de ${PERF_DORMIDA_DIAS} días sin esperar repuestos (−2 c/u):</b> ${f.dormidas.map(d=>`${esc(d.eq)} ${esc(d.uni)} (${Math.round(d.dias)} d)`).join(' · ')}</div>`:''}
+
+  <h2>Reparaciones cerradas en el mes · ${reps.length}</h2>
+  ${reps.length?`<table><thead><tr><th>Máquina</th><th>Cómo se puntuó</th><th style="text-align:right">Pts</th></tr></thead>
+  <tbody>${reps.map(filaRep).join('')}</tbody></table>`:'<div class="sub">Ninguna.</div>'}
+  ${prevs.length||servs.length?`<div style="margin-top:8px;font-size:11px;color:#555">
+    ${prevs.length?`<b>Preventivos:</b> ${prevs.map(l=>esc(l.tit)).join(' · ')} (+2 c/u). `:''}
+    ${servs.length?`<b>Services cargados:</b> ${servs.length} (+2 c/u).`:''}</div>`:''}
+
+  <div class="firma"><div>Firma del mecánico</div><div>Firma del responsable</div></div>
+  <div class="gen">1 punto ≈ 1 hora de mano de obra estimada. Reincidencia: máquinas con número que volvieron por correctivo dentro de los 30 días de reparadas, sobre las reparadas en los últimos 90 días al cierre del mes. Generado el ${new Date().toLocaleDateString('es-AR')}.</div>
   </body></html>`);
   w.document.close();
   setTimeout(()=>{try{w.print();}catch(e){}},400);
@@ -4881,8 +4922,11 @@ async function vRepPerf(view){
     const habilitado=pctR==null||pctR<=PERF_REINC_MAX;
     const obj=objetivoDe(n);
     return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,obj,es2T:obj===PERF_OBJETIVO_2T,
-      cumple:M.total>=obj&&habilitado};
+      cumple:M.total>=obj&&habilitado,
+      rebotes:rebotes[n]||[],descartes:descartes[n]||[],dormidas:dormidas[n]||[]};
   }).sort((a,b)=>b.M.total-a.M.total);
+  // El informe individual lee de acá: mismos números que el ranking, siempre.
+  perfFilas=filas;
 
   const cardPerf=(f,i)=>{
     const ini=f.n.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
