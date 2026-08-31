@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-31 · reincidencia sin máquinas S/N';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-31 · bono anclado al mes y sin cerradas sin reparar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4335,7 +4335,18 @@ function barsGen(lista,color,fmt){
       <div style="height:5px;background:var(--papel);border-radius:3px"><div style="height:5px;width:${w}%;background:${color};border-radius:3px"></div></div>
     </div>`;}).join('')||'<div class="sub" style="padding:10px 0">Sin datos</div>';
 }
-function mesDe(iso){return String(iso||'').slice(0,7)||'sin fecha';}
+/* Mes de una fecha, EN HORA DE CÓRDOBA. Las fechas con hora vienen en UTC:
+   una reparación cerrada el 31/8 a las 22:30 acá es 1/9 01:30 UTC, y con un
+   slice directo caía en septiembre — y en el bono del mes equivocado. Las
+   fechas puras (YYYY-MM-DD, sin hora) no tienen ese problema. */
+function mesDe(iso){
+  const s=String(iso||'');
+  if(!s)return 'sin fecha';
+  if(s.length<=10||!s.includes('T'))return s.slice(0,7)||'sin fecha';
+  const d=new Date(s);
+  if(isNaN(d))return s.slice(0,7)||'sin fecha';
+  return d.toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
+}
 function diasEntre(a,b){if(!a||!b)return null;const d=(new Date(b)-new Date(a))/86400000;return d>=0?d:null;}
 
 function tabsRep(){
@@ -4699,13 +4710,30 @@ async function vRepPerf(view){
   const normTipo=v=>String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
   const esPrev=r=>r.tipo_mant==='preventivo';
   const nomMec=r=>r.mecanicos?r.mecanicos.nombre:null;
-  const fin=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado);
+  // Una incidencia cerrada "sin reparar" (nunca llegó al taller, se resolvió
+  // en el objetivo, estaba repetida) NO es una reparación: no da puntos ni
+  // entra en la base de reincidencia. Quedaba con estado finalizado y fecha
+  // de cierre, y puntuaba por la tabla de pesos como si se hubiera hecho.
+  const fin=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado&&!r.motivo_cierre);
   const finMes=fin.filter(r=>mesDe(r.fecha_finalizado)===perfPer);
 
-  // Reincidencia 90 días rodantes (no solo el mes): finalizadas de los últimos
-  // 90 días cuya unidad volvió como correctivo dentro de los 30 días siguientes.
-  const hoy=Date.now(), MS90=90*86400000, MS30=30*86400000;
-  const base90=fin.filter(r=>!esPrev(r)&&tieneNumero(r.numero_unidad)&&hoy-new Date(r.fecha_finalizado).getTime()<=MS90);
+  // FECHA DE CORTE. Todo lo que depende de "hoy" —la ventana de 90 días de
+  // reincidencia, las dormidas— se ancla al último día del mes que se está
+  // mirando, o a hoy si el mes está en curso. Sin esto el bono de agosto daba
+  // un número el 31/8 y otro el 5/9, y un bono tiene que ser reproducible.
+  const corte=(function(){
+    const [aa,mm]=perfPer.split('-').map(Number);
+    if(!aa||!mm)return Date.now();
+    // último instante del mes en Córdoba (UTC-3): día 1 del siguiente a las 03:00Z
+    const finMesMs=Date.UTC(aa,mm,1,3,0,0)-1;
+    return Math.min(Date.now(),finMesMs);
+  })();
+  const MS90=90*86400000, MS30=30*86400000;
+  // Reincidencia 90 días hacia atrás desde el corte: finalizadas en esa
+  // ventana cuya unidad volvió como correctivo dentro de los 30 días
+  // siguientes (y antes del corte).
+  const base90=fin.filter(r=>!esPrev(r)&&tieneNumero(r.numero_unidad)
+    &&(()=>{const t=new Date(r.fecha_finalizado).getTime();return t<=corte&&corte-t<=MS90;})());
   // Una vuelta cuenta contra la calidad SOLO si puede ser el mismo problema.
   // Si las DOS fallas son específicas y DISTINTAS (entró por trinquete,
   // volvió por pistón), no es atribuible al arreglo → se descarta sola.
@@ -4720,10 +4748,11 @@ async function vRepPerf(view){
     const k=normU(f.numero_unidad), ff=new Date(f.fecha_finalizado).getTime();
     const m=nomMec(f)||'Sin asignar';
     const tk=normTipo(f.tipo_equipo);
-    const cands=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k
+    // Una vuelta que se cerró "sin reparar" (nunca llegó) no es un rebote real
+    const cands=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&!o.motivo_cierre&&normU(o.numero_unidad)===k
         &&(!tk||!normTipo(o.tipo_equipo)||normTipo(o.tipo_equipo)===tk))
       .map(o=>({o,c:new Date(o.created_at).getTime()}))
-      .filter(x=>x.c>ff&&x.c-ff<=MS30).sort((a,b)=>a.c-b.c);
+      .filter(x=>x.c>ff&&x.c-ff<=MS30&&x.c<=corte).sort((a,b)=>a.c-b.c);
     let contado=false;
     for(const x of cands){
       const base={eq:f.tipo_equipo||'—',uni:f.numero_unidad||'',dias:Math.round((x.c-ff)/86400000),
@@ -4743,10 +4772,14 @@ async function vRepPerf(view){
   const base90PorMec={};
   base90.forEach(f=>{const m=nomMec(f)||'Sin asignar';base90PorMec[m]=(base90PorMec[m]||0)+1;});
 
-  // Dormidas HOY: abiertas hace más de N días que no esperan repuestos
+  // Dormidas AL CORTE: abiertas hace más de N días a esa fecha, que no
+  // esperan repuestos. Una que se cerró después del corte todavía estaba
+  // abierta ese día y cuenta igual; si se cerró antes, no.
   const dormidas={};
-  todas.filter(r=>r.estado!=='finalizado'&&r.estado!=='esperando_repuestos').forEach(r=>{
-    const d=diasEntre(r.created_at,new Date().toISOString());
+  todas.filter(r=>r.estado!=='esperando_repuestos'&&!r.motivo_cierre
+    &&(r.estado!=='finalizado'||!r.fecha_finalizado||new Date(r.fecha_finalizado).getTime()>corte)
+    &&new Date(r.created_at).getTime()<=corte).forEach(r=>{
+    const d=diasEntre(r.created_at,new Date(corte).toISOString());
     if(d!=null&&d>PERF_DORMIDA_DIAS){const m=nomMec(r)||'Sin asignar';(dormidas[m]=dormidas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',dias:Math.round(d*10)/10});}
   });
 
