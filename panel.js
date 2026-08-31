@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-29 · combustible simplificado';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-08-31 · reincidencia sin máquinas S/N';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4685,6 +4685,18 @@ async function vRepPerf(view){
   const meses=[...new Set(todas.filter(r=>r.fecha_finalizado).map(r=>mesDe(r.fecha_finalizado)))].filter(m=>m!=='sin fecha').sort().reverse();
   if(!perfPer)perfPer=meses[0]||'';
   const normU=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  // "S.n", "S/N", "Sn", "sin número"… normalizan todos a lo mismo, y el
+  // sistema las trataba como UNA máquina: Leo arreglaba una motosierra sin
+  // número el lunes y otra distinta el miércoles, y contaba como que "volvió
+  // a los 2 días". 8 de sus 11 reincidencias de agosto eran eso. Sin número
+  // no hay forma de saber si es la misma máquina, así que no se compara.
+  const SIN_NUMERO=new Set(['','SN','SINNUMERO','SINNRO','SINN','S','N','X','NA','ND','NOTIENE','SINPATENTE','NINGUNO','NINGUNA','0']);
+  // Con acentos: "sin número" tiene que dar SINNUMERO, no SINNMERO
+  const normUAcc=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const tieneNumero=v=>{const n=normUAcc(v);return n.length>0&&!SIN_NUMERO.has(n);};
+  // El tipo también tiene que coincidir: un "Extensible S.n" y una "Plana S.n"
+  // no son la misma máquina aunque compartan "número".
+  const normTipo=v=>String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
   const esPrev=r=>r.tipo_mant==='preventivo';
   const nomMec=r=>r.mecanicos?r.mecanicos.nombre:null;
   const fin=todas.filter(r=>r.estado==='finalizado'&&r.fecha_finalizado);
@@ -4693,7 +4705,7 @@ async function vRepPerf(view){
   // Reincidencia 90 días rodantes (no solo el mes): finalizadas de los últimos
   // 90 días cuya unidad volvió como correctivo dentro de los 30 días siguientes.
   const hoy=Date.now(), MS90=90*86400000, MS30=30*86400000;
-  const base90=fin.filter(r=>!esPrev(r)&&normU(r.numero_unidad)&&hoy-new Date(r.fecha_finalizado).getTime()<=MS90);
+  const base90=fin.filter(r=>!esPrev(r)&&tieneNumero(r.numero_unidad)&&hoy-new Date(r.fecha_finalizado).getTime()<=MS90);
   // Una vuelta cuenta contra la calidad SOLO si puede ser el mismo problema.
   // Si las DOS fallas son específicas y DISTINTAS (entró por trinquete,
   // volvió por pistón), no es atribuible al arreglo → se descarta sola.
@@ -4707,7 +4719,9 @@ async function vRepPerf(view){
   base90.forEach(f=>{
     const k=normU(f.numero_unidad), ff=new Date(f.fecha_finalizado).getTime();
     const m=nomMec(f)||'Sin asignar';
-    const cands=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k)
+    const tk=normTipo(f.tipo_equipo);
+    const cands=todas.filter(o=>o.id!==f.id&&!esPrev(o)&&normU(o.numero_unidad)===k
+        &&(!tk||!normTipo(o.tipo_equipo)||normTipo(o.tipo_equipo)===tk))
       .map(o=>({o,c:new Date(o.created_at).getTime()}))
       .filter(x=>x.c>ff&&x.c-ff<=MS30).sort((a,b)=>a.c-b.c);
     let contado=false;
@@ -4815,7 +4829,7 @@ async function vRepPerf(view){
   // Descuento por dormidas (presente, no del mes)
   Object.entries(dormidas).forEach(([m,ds])=>{
     const M=mecs[m];if(!M)return;
-    ds.forEach(d=>{M.total-=2;M.lineas.push({tit:d.eq+' '+d.uni,det:'abierta hace '+d.dias+' d sin esperar repuestos',pts:'−2',mal:true});});
+    ds.forEach(d=>{M.total-=2;M.dormidas=(M.dormidas||0)+2;M.lineas.push({tit:d.eq+' '+d.uni,det:'abierta hace '+d.dias+' d sin esperar repuestos',pts:'−2',mal:true});});
   });
 
   // Objetivo por mecánico: el de 2T tiene el suyo. Las habilidades vienen del
@@ -4901,7 +4915,7 @@ async function vRepPerf(view){
       </div>
       <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${barra}%;background:${colBarra};border-radius:3px"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-2);flex-wrap:wrap;gap:4px">
-        <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}${f.M.serv?' · services +'+f.M.serv:''}</span>
+        <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}${f.M.serv?' · services +'+f.M.serv:''}${f.M.dormidas?` · <span style="color:var(--rojo)">dormidas −${f.M.dormidas}</span>`:''}</span>
         <span>${calidad}</span>
       </div>${motivo}${detalle}</div>`;};
   const cobran=filas.filter(f=>f.cumple), noCobran=filas.filter(f=>!f.cumple);
