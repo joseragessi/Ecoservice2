@@ -71,6 +71,22 @@ async function resolverUnidadAprox(patenteRaw) {
   return null;
 }
 
+// La tarjeta de combustible es fija por unidad y viene impresa en dígitos, no
+// en letras: se lee bien aunque la patente del mismo ticket salga mal (el caso
+// del 01/09, que quedó imputado a "Archivo" cuando el ticket decía KCG906).
+// Por eso, cuando hay tarjeta, gana sobre la lectura de la patente.
+async function resolverUnidadPorTarjeta(tarjetaRaw) {
+  const t = String(tarjetaRaw || '').replace(/\D/g, '');
+  if (!t) return null;
+  const { data: unidades } = await supabase
+    .from('unidades').select('id, patente, objetivo_id, tarjeta_combustible').eq('activo', true);
+  const conTarjeta = (unidades || []).filter(u => u.tarjeta_combustible);
+  const iguales = conTarjeta.filter(u => String(u.tarjeta_combustible).replace(/\D/g, '') === t);
+  // Si dos unidades tienen cargada la misma tarjeta, el maestro está mal y no
+  // hay forma de elegir: se cae al camino de la patente en vez de adivinar.
+  return iguales.length === 1 ? iguales[0] : null;
+}
+
 async function resolverProveedor(nombre, cuit) {
   if (cuit) {
     const { data: existente } = await supabase
@@ -136,12 +152,19 @@ async function buscarDuplicado(datos, capatazId, litrosTotal) {
   try {
     const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const { data: recientes } = await supabase.from('cargas_combustible')
-      .select('id, fecha, numero_remito, numero_factura, litros_total, patente_raw, capataz_id, capataces(nombre), proveedores(nombre)')
+      .select('id, fecha, numero_remito, numero_factura, lote, litros_total, patente_raw, capataz_id, capataces(nombre), proveedores(nombre)')
       .neq('estado', 'anulada').gte('fecha', desde)
       .order('fecha', { ascending: false }).limit(300);
     const num = numNorm(datos.numero);
+    const lote = numNorm(datos.lote);
     const pat = normalizarPatente(datos.patente || '');
     for (const c of (recientes || [])) {
+      // (a0) Mismo lote de tarjeta. Es el identificador más fuerte de estos
+      // tickets: el N° de comprobante (Compr) se repite entre estaciones, el
+      // lote no. Va primero, antes del número.
+      if (lote && numNorm(c.lote) === lote) {
+        return { carga: c, motivo: 'mismo lote de tarjeta' };
+      }
       // (a) Mismo número de comprobante
       if (num && (numNorm(c.numero_remito) === num || numNorm(c.numero_factura) === num)) {
         return { carga: c, motivo: 'mismo número de comprobante' };
@@ -294,8 +317,16 @@ async function guardarCarga(sesion) {
       capataz_id:     capataz.id,
       proveedor_id:   proveedorId,
       fecha:          datos.fecha,
-      numero_remito:  esFactura ? null : datos.numero,
+      // El lote va en su propia columna. Si el OCR no leyó el N° de comprobante
+      // pero sí el lote, el lote hace de identificador visible: sin eso la
+      // carga aparecía como "s/n" y no se podía encontrar en la lista.
+      numero_remito:  esFactura ? null : (datos.numero || datos.lote || null),
       numero_factura: esFactura ? datos.numero : null,
+      lote:           datos.lote || null,
+      tarjeta:        datos.tarjeta || null,
+      km_anterior:    datos.km_anterior ?? null,
+      km_actual:      datos.km_actual ?? null,
+      saldo_tarjeta:  datos.saldo_tarjeta ?? null,
       patente_raw:    datos.patente,
       chofer_raw:     datos.chofer,
       litros_total:   litros || null,
@@ -437,19 +468,42 @@ async function _procesarComprobante(telefono, mediaUrl, mediaType) {
   // Fecha ausente o disparatada (OCR leyó 2024, o nada): se usa la de hoy.
   datos.fecha = fechaCargaValida(datos.fecha);
 
-  const resUni = await resolverUnidadAprox(datos.patente);
-  const unidad = resUni ? resUni.unidad : null;
-  let notaPatente = '';
-  if (resUni && resUni.corregida) {
-    // La lectura del ticket no existe en la flota, pero hay una única patente
-    // real muy parecida: se usa esa y se avisa.
-    notaPatente = `🅿️ Patente: leí "${datos.patente}", la tomo como *${unidad.patente}* (es la de tu flota).\n`;
-    datos.patente = unidad.patente;
+  // Primero la tarjeta (dígitos, se lee bien); si no hay, la patente del OCR.
+  let unidad = null, notaPatente = '';
+  const uniTarjeta = await resolverUnidadPorTarjeta(datos.tarjeta);
+  if (uniTarjeta) {
+    unidad = uniTarjeta;
+    const leida = normalizarPatente(datos.patente);
+    if (leida && leida !== normalizarPatente(uniTarjeta.patente)) {
+      notaPatente = `💳 Patente: el ticket dice "${datos.patente}", pero esa tarjeta es de *${uniTarjeta.patente}*. Va a esa.\n`;
+    }
+    datos.patente = uniTarjeta.patente;
+  } else {
+    const resUni = await resolverUnidadAprox(datos.patente);
+    unidad = resUni ? resUni.unidad : null;
+    if (resUni && resUni.corregida) {
+      // La lectura del ticket no existe en la flota, pero hay una única patente
+      // real muy parecida: se usa esa y se avisa.
+      notaPatente = `🅿️ Patente: leí "${datos.patente}", la tomo como *${unidad.patente}* (es la de tu flota).\n`;
+      datos.patente = unidad.patente;
+    }
+    // Tarjeta que no está en ningún maestro: se avisa una sola vez para que se
+    // cargue en Maestros → Unidades, si no el match nunca va a mejorar.
+    if (datos.tarjeta) {
+      notaPatente += `💳 La tarjeta ${String(datos.tarjeta).slice(-4)} no está asignada a ninguna unidad. Cargala en Maestros → Unidades.\n`;
+    }
   }
   const itemsComb = (datos.items || []).filter(i => i.es_combustible !== false);
 
+  // El ticket de tarjeta trae importe pero NO es factura: la factura la emite
+  // la tarjeta a fin de mes. Se muestra el monto igual, porque el capataz lo
+  // tiene delante y si no lo ve piensa que no se leyó.
   const lineaDoc = datos.tipo_doc === 'factura'
     ? `📄 Factura ${datos.numero} — ${pesos(datos.total)}`
+    : datos.es_tarjeta
+    ? `💳 Tarjeta · lote ${datos.lote || 's/n'} — ${pesos(datos.total)} (sin facturar)` +
+      (datos.km_actual != null ? `\n🛞 ${datos.km_actual.toLocaleString('es-AR')} km` : '') +
+      (datos.saldo_tarjeta != null ? `\n💰 Saldo: ${pesos(datos.saldo_tarjeta)}` : '')
     : `📄 Remito ${datos.numero} — sin facturar`;
   const encabezado = `📸 Leí tu comprobante, *${nombre}*:\n\n⛽ ${datos.proveedor}\n${lineaDoc}\n${resumenProductos(datos)}\n${notaPatente}\n`;
 
