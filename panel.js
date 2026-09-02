@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-02 · tickets de tarjeta (lote/km/saldo) + editar carga de combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-02 · tarjeta (lote/km/saldo) + editar carga + filtros de combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1014,6 +1014,35 @@ function objReconocido(nombre){
   return (combAlias.objetivos||[]).some(o=>normObj(o.nombre)===n)
     ||(combAlias.alias||[]).some(a=>a.alias===n);
 }
+// Qué parte de una carga fue a un objetivo dado.
+//
+// Una carga se reparte entre varios objetivos (tres bidones a tres lugares en
+// la misma cargada), así que "esta carga es de PROMEDON" no es sí o no: puede
+// ser 15 de 45 litros. Esto devuelve los ítems que fueron a `obj` y cuántos
+// litros son, para que la tabla muestre eso y no la carga entera.
+//
+// `destinoDe` y `objDe` se pasan de afuera porque resuelven alias contra
+// combAlias, que solo existe una vez cargada la vista.
+function itemsDeObjetivo(c, obj, destinoDe, objDe){
+  const its = c.cargas_combustible_items || [];
+  const sumar = arr => arr.reduce((s,i)=>s+(Number(i.litros)||0), 0);
+  if(!obj){
+    return { items: its, litros: its.length ? sumar(its) : (Number(c.litros_total)||0), parcial: false };
+  }
+  // Cargas viejas sin ítems detallados: se imputan enteras al objetivo de la
+  // cabecera, que es todo lo que se sabe de ellas.
+  if(!its.length){
+    return { items: [], litros: objDe(c)===obj ? (Number(c.litros_total)||0) : 0, parcial: false };
+  }
+  const sel = its.filter(i => destinoDe(i,c)===obj);
+  return {
+    items: sel,
+    litros: sumar(sel),
+    litrosCarga: sumar(its),
+    parcial: sel.length > 0 && sel.length < its.length,
+  };
+}
+
 let combMesAnterior=null;       // {mes, objetivo, litros} para la comparación
 let combCargas=[];              // cache de cargas para el modal de detalle
 let combRemStep='';             // '' | 'upload' | 'extract' | 'preview'
@@ -1124,13 +1153,22 @@ async function vCombustible(view){
     });
     const fmtL=n=>Math.round(n).toLocaleString('es-AR')+' lt';
     const pct=(n,t)=>t?Math.round(n*100/t):0;
-    const barras=(obj,color,max)=>{const ents=Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,7);
+    // Antes cortaba en los 7 más grandes y un objetivo chico simplemente no
+    // aparecía (39 lt a PROMEDON al lado de uno de 1.088 lt). Ahora salen
+    // todos y la caja scrollea: que un objetivo sea chico no es motivo para
+    // ocultarlo, justamente lo chico es lo que se revisa.
+    const barras=(obj,color,max)=>{const ents=Object.entries(obj).sort((a,b)=>b[1]-a[1]);
       const mx=max||Math.max(...ents.map(([,v])=>v),1);
-      return ents.length?ents.map(([n,v])=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+      const filas=ents.length?ents.map(([n,v])=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
         <span style="width:180px;font-size:12px;font-weight:500;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n}</span>
         <div style="flex:1;height:15px;background:var(--papel);border-radius:5px;overflow:hidden"><div style="width:${Math.round(v*100/mx)}%;height:100%;background:${color}"></div></div>
         <span class="mono" style="width:80px;text-align:right;font-size:12px;font-weight:600;flex-shrink:0">${fmtL(v)}</span></div>`).join('')
-        :'<div class="sub" style="padding:8px 0">Sin datos en el período.</div>';};
+        :'<div class="sub" style="padding:8px 0">Sin datos en el período.</div>';
+      // Scroll a partir de 8 filas: hasta ahí entran sin empujar la página.
+      return ents.length>7
+        ? `<div style="max-height:232px;overflow-y:auto;padding-right:4px">${filas}</div>
+           <div class="sub" style="font-size:10.5px;margin-top:2px">${ents.length} objetivos · scrolleá para ver el resto</div>`
+        : filas;};
     const chips=['','sin_facturar','facturada','anulada'].map(e=>
       `<div class="chip-f ${filtroComb===e?'on':''}" onclick="filtroComb='${e}';go('combustible')">${e?cap(e):'Todas'}</div>`).join('');
     const hoyM=new Date();
@@ -1205,7 +1243,11 @@ async function vCombustible(view){
     ${(combObj||combUni)?`<div style="margin-bottom:12px;font-size:12.5px;color:var(--tinta-2)">
       Filtrando por ${combObj?`objetivo <b>${escStk(combObj)}</b>`:''}${combObj&&combUni?' y ':''}${combUni?`unidad <b>${escStk(combUni)}</b>`:''}
       · ${vivas.length} de ${todasVivas.length} cargas
-      <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';go('combustible')">Limpiar</button></div>`:''}
+      <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';go('combustible')">Limpiar</button>
+      ${combObj?`<div class="sub" style="font-size:11px;margin-top:5px">
+        Los KPI y los gráficos de abajo cuentan esas cargas <b>completas</b>, incluidos los litros que
+        fueron a otros objetivos en la misma cargada. Los litros que corresponden solo a
+        ${escStk(combObj)} son los del recuadro verde y los de la columna Litros de la tabla.</div>`:''}</div>`:''}
     ${(function(){
       // Destinos escritos a mano que no matchean ningún objetivo ni alias.
       // Mientras no se unifiquen, cada variante suma por separado en los
@@ -1240,7 +1282,7 @@ async function vCombustible(view){
       </div>`;})()}
     ${detalleObj}
     <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">Litros totales</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(litTot)}</div><div class="kpi-sub">${vivas.length} cargas</div></div>
+      <div class="kpi"><div class="kpi-label">Litros totales</div><div class="kpi-val" style="color:var(--brote-2)">${fmtL(litTot)}</div><div class="kpi-sub">${vivas.length} cargas${combObj?' que tocan '+escStk(combObj):''}</div></div>
       <div class="kpi plain"><div class="kpi-label">A unidades</div><div class="kpi-val">${fmtL(litUni)}</div><div class="kpi-sub">${pct(litUni,litTot)}% · al tanque</div></div>
       <div class="kpi plain"><div class="kpi-label">A bidones</div><div class="kpi-val">${fmtL(litBid)}</div><div class="kpi-sub">${pct(litBid,litTot)}% · a objetivos</div></div>
       <div class="kpi plain"><div class="kpi-label">Estado</div><div class="kpi-val">${nFact}/${nSf}</div><div class="kpi-sub">facturadas / sin facturar</div></div>
@@ -1255,8 +1297,13 @@ async function vCombustible(view){
       <div style="margin-top:10px">${barras(bidObj,'#7C5CBF')}</div></div>
     <div class="filters">${chips}</div>
     <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Objetivo</th><th>Patente</th><th>Productos</th><th class="num">Litros</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${cs.length?cs.map(c=>{
-        const items=(c.cargas_combustible_items||[]).map(i=>{
+      <tbody>${vivas.length?vivas.map(c=>{
+        // Con un objetivo filtrado se muestran solo los productos que fueron
+        // ahí. Antes la tabla usaba la lista SIN filtrar: elegías un objetivo,
+        // los gráficos cambiaban y la tabla seguía mostrando todo el mes.
+        const parte=itemsDeObjetivo(c,combObj,destinoDe,objDe);
+        const itemsMostrar=combObj&&parte.items.length?parte.items:(c.cargas_combustible_items||[]);
+        const items=itemsMostrar.map(i=>{
           const det=i.destino_detalle?' · '+i.destino_detalle:'';
           const dest=i.destino==='bidon'?`<span class="uni-chip" style="background:var(--diesel-soft);color:var(--diesel)">bidones${det}</span>`
             :i.destino==='equipo'?((i.equipo_id||i.unidad_id)
@@ -1271,13 +1318,15 @@ async function vCombustible(view){
           <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
           <td><span class="uni-chip">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></td>
           <td style="font-size:12px">${items||'—'}</td>
-          <td class="num">${c.litros_total?c.litros_total+' lt':'—'}</td>
+          <td class="num">${combObj&&parte.parcial
+            ?`${Math.round(parte.litros*1000)/1000} lt<div class="sub mono" style="font-size:10.5px">de ${c.litros_total||parte.litrosCarga} lt</div>`
+            :(c.litros_total?c.litros_total+' lt':'—')}</td>
           <td><span class="badge ${anulada?'b-red':c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td>
           <td class="num" style="white-space:nowrap">${anulada
             ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();restaurarCarga('${c.id}')">Restaurar</button>`
             :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();editarCarga('${c.id}')">Editar</button>
               <button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo);margin-left:5px" onclick="event.stopPropagation();anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
-        :'<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
+        :`<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>${(combObj||combUni)?'Ninguna carga del período coincide con el filtro.':'No hay cargas registradas.'}</div></div></td></tr>`}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
 }
 function verCarga(id){
