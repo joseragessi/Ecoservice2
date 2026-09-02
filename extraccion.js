@@ -12,14 +12,23 @@ Devolvé SOLO un objeto JSON válido, sin texto antes ni después y sin comillas
 Primero clasificá el tipo de documento:
 - "factura": dice FACTURA A/B/C, TIQUE FACTURA, o tiene desglose de IVA y TOTAL en pesos.
 - "remito": dice REMITO, "DOCUMENTO NO VALIDO COMO FACTURA" o "EXIJA SU FACTURA".
-  Los remitos NO tienen montos: dejá neto, iva, otros_tributos, total y los precios en null.
+  Los remitos de surtidor NO tienen montos: dejá neto, iva, otros_tributos, total
+  y los precios en null.
+- "remito" TAMBIÉN es el "COMPROBANTE DE OPERACION ONLINE" de una tarjeta de combustible
+  (Edenred, Ticket Car, YPF Ruta). Ver la sección de abajo: estos SÍ traen importes.
 
 Devolvé exactamente esta estructura:
 {
   "tipo_doc": "factura" | "remito",
+  "es_tarjeta": boolean,            // true solo si es comprobante de tarjeta de combustible
   "proveedor": string,              // razón social del emisor (la estación de servicio)
   "cuit": string,                   // CUIT del emisor, formato XX-XXXXXXXX-X
-  "numero": string,                 // N° de factura o de remito
+  "numero": string,                 // N° de factura, de remito o de comprobante
+  "lote": string | null,            // solo tarjeta: el campo "Lote"
+  "tarjeta": string | null,         // solo tarjeta: el campo "Tarj" / "Tarjeta", solo dígitos
+  "km_anterior": number | null,     // solo tarjeta: "KILOMETRAJE anterior"
+  "km_actual": number | null,       // solo tarjeta: "KILOMETRAJE actual"
+  "saldo_tarjeta": number | null,   // solo tarjeta: el campo "Saldo"
   "fecha": string,                  // ISO YYYY-MM-DD
   "patente": string | null,         // patente del vehículo (VEH / Vehículo / PAT / Patente). Sin espacios.
   "chofer": string | null,
@@ -51,6 +60,31 @@ MUY IMPORTANTE — cómo leer los litros en los remitos de surtidor:
 - El nombre del producto es el texto que sigue al paréntesis (ej "UPOWER DIESEL", "PUMA SUPER", "ION PUMA DIESEL").
 - Los puntos suspensivos "....." son solo relleno de impresión, no son parte de ningún número.
 
+MUY IMPORTANTE — comprobantes de TARJETA de combustible (Edenred, Ticket Car, YPF Ruta):
+Se reconocen porque dicen "COMPROBANTE DE OPERACION ONLINE" y traen los campos
+Lote, Compr, Tarj, Autorizacion, Criptograma, KILOMETRAJE y Saldo.
+Para estos: "es_tarjeta": true, "tipo_doc": "remito".
+- El importe SÍ se lee: poné el precio por litro en "precio_unit", el importe de la línea
+  en "subtotal" y el mismo importe en "total". La tarjeta NO discrimina IVA (la factura la
+  emite la tarjeta a fin de mes, consolidada): dejá neto, iva y otros_tributos en null.
+- "numero" es el campo **Compr** (ej: 2951), NO el Lote. El Lote va en su propio campo.
+- "tarjeta" son los dígitos del campo Tarj, sin espacios.
+- El producto viene bajo "TOTAL CARGADO" con la forma:
+    NOMBRE_PRODUCTO / Cantidad: LTS <litros> / Precio: $ <precio> / Total: $ <importe>
+  Ejemplo: "ION DIESEL", Cantidad 39,002 → litros 39.002 ; Precio 2.465,0000 → 2465
+  ; Total 96.139,93 → 96139.93.
+- "Saldo" es el saldo que le queda a la tarjeta DESPUÉS de la carga, no un importe cobrado.
+- KILOMETRAJE: leé "anterior" y "actual" como enteros, sacando los separadores de miles
+  ("219.625" → 219625). Si el anterior viene en 0, ponelo en 0, no en null: el 0 es el dato.
+- **IGNORÁ el campo "Rendimiento"**: lo calcula la terminal con el kilometraje anterior y
+  cuando ese viene en 0 imprime un número absurdo (563,1 KM/LTS). No lo devuelvas.
+- La patente figura suelta cerca de la razón social del cliente (ej: "ECOSERVICE SRL
+  (34108.1)" y abajo "KCG906"). El número largo debajo de "CONDUCTOR" es un DNI o legajo,
+  NO es la patente y NO es el chofer: dejá "chofer" en null si solo aparece ese número.
+
+Para los comprobantes que NO son de tarjeta poné "es_tarjeta": false y dejá lote, tarjeta,
+km_anterior, km_actual y saldo_tarjeta en null.
+
 El chofer suele figurar como "Chofer: APELLIDO NOMBRE". La patente como "Patente: XXXXX".
 
 MUY IMPORTANTE — número de comprobante:
@@ -70,6 +104,65 @@ Cuidado con letras que se confunden en la impresión térmica: U/V, O/0, I/1, B/
 no se lee con seguridad, igual transcribí lo que mejor se vea (el sistema la valida contra la flota).
 Si un dato no está o no se lee con seguridad, poné null. No inventes valores, pero SÍ leé los litros
 del remito siguiendo la regla de arriba: casi siempre están presentes aunque el remito no tenga montos.`;
+
+// ── Saneamiento de los campos de tarjeta ──────────────────────
+// El ticket térmico de Edenred se lee mal seguido y hay tres formas conocidas
+// de que la lectura salga plausible pero falsa. Se corrigen acá, no en el
+// prompt, porque el modelo no es determinístico y esto sí tiene que serlo.
+function sanearTarjeta(p) {
+  if (!p) return p;
+  const num = v => {
+    if (v == null || v === '') return null;
+    const crudo = String(v).replace(/[^0-9.,-]/g, '');
+    // Sin un solo dígito no hay número: "ilegible" o "---" limpiaban a cadena
+    // vacía y Number('') da 0, así que un saldo que no se leyó se guardaba
+    // como $0. Un cero falso es peor que un dato ausente.
+    if (!/\d/.test(crudo)) return null;
+    const n = Number(crudo.replace(/\./g, '').replace(',', '.'));
+    return isFinite(n) ? n : null;
+  };
+  const soloDigitos = v => {
+    const d = String(v == null ? '' : v).replace(/\D/g, '');
+    return d || null;
+  };
+
+  p.es_tarjeta = p.es_tarjeta === true;
+  p.lote    = p.lote ? String(p.lote).trim() : null;
+  p.tarjeta = soloDigitos(p.tarjeta);
+
+  // El odómetro de una camioneta de la flota no pasa del millón de km. Un valor
+  // fuera de rango es lectura mala del térmico: mejor null que un km inventado
+  // que después arrastre el cálculo de rendimiento de esa unidad.
+  const km = v => { const n = num(v); return n != null && n >= 0 && n <= 1000000 ? Math.round(n) : null; };
+  p.km_anterior   = km(p.km_anterior);
+  p.km_actual     = km(p.km_actual);
+  p.saldo_tarjeta = num(p.saldo_tarjeta);
+
+  // Si el odómetro "actual" quedó por debajo del "anterior", uno de los dos se
+  // leyó mal y no hay forma de saber cuál: se descartan los dos. El km sirve
+  // para medir rendimiento; un par invertido daría consumo negativo.
+  if (p.km_anterior != null && p.km_actual != null && p.km_actual < p.km_anterior) {
+    p.km_anterior = null;
+    p.km_actual   = null;
+    p._km_dudoso  = true;
+  }
+
+  // El modelo confunde Lote con Compr (los dos están pegados en el ticket).
+  // Si devolvió el mismo número en los dos lados, el de comprobante es el que
+  // no podemos sostener: el lote es más largo y más distintivo.
+  if (p.lote && p.numero && String(p.numero).replace(/\D/g, '') === p.lote.replace(/\D/g, '')) {
+    p.numero = null;
+  }
+
+  // Un comprobante de tarjeta nunca discrimina IVA: si el modelo lo inventó,
+  // se borra. La factura consolidada la emite la tarjeta a fin de mes.
+  if (p.es_tarjeta) {
+    p.neto = null;
+    p.iva = null;
+    p.otros_tributos = null;
+  }
+  return p;
+}
 
 /**
  * @param {Buffer} imagenBuffer - bytes de la imagen del comprobante
@@ -129,6 +222,7 @@ async function extraerComprobante(imagenBuffer, mediaType) {
     }
   });
 
+  sanearTarjeta(parsed);
   return parsed;
 }
 
@@ -202,4 +296,4 @@ async function parsearDestinoCombustible({ texto, items, patente, objetivo_capat
   return JSON.parse(salida.replace(/```json/gi, '').replace(/```/g, '').trim());
 }
 
-module.exports = { extraerComprobante, parsearDestinoCombustible };
+module.exports = { extraerComprobante, parsearDestinoCombustible, sanearTarjeta };
