@@ -815,6 +815,148 @@ router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
   }
 });
 
+// Listas para los desplegables del modal de edición. Van juntas en una sola
+// llamada: son tres tablas chicas y el modal las necesita a las tres antes de
+// poder dibujarse, así que pedirlas por separado solo agrega latencia.
+router.get('/api/combustible/listas', auth, async (req, res) => {
+  try {
+    const [prov, uni, cap] = await Promise.all([
+      supabase.from('proveedores').select('id, nombre').order('nombre'),
+      supabase.from('unidades').select('id, patente, codigo, marca_modelo').eq('activo', true).order('patente'),
+      supabase.from('capataces').select('id, nombre').eq('activo', true).order('nombre'),
+    ]);
+    if (prov.error) throw prov.error;
+    res.json({
+      proveedores: prov.data || [],
+      unidades:    uni.data  || [],
+      capataces:   cap.data  || [],
+    });
+  } catch (err) {
+    console.error('combustible listas:', err);
+    res.status(500).json({ error: 'Error cargando las listas' });
+  }
+});
+
+// ── Editar una carga completa ─────────────────────────────────
+// Hasta ahora una carga solo se podía anular: si el bot leía mal un dato había
+// que anularla y cargarla de nuevo a mano. Acá se edita cabecera e ítems.
+//
+// Los ítems se REEMPLAZAN enteros (borrar + insertar) en vez de parchearse uno
+// por uno. Es más simple de sostener y evita el estado intermedio donde la
+// carga tiene ítems viejos y nuevos mezclados si algo falla a mitad de camino.
+// El costo es que se pierden los id de los ítems, que no los usa nadie.
+
+// Números que llegan del formulario: pueden venir en formato argentino
+// ("2.465,0000") o ya como número. Cadena vacía es "borrar el dato", no cero.
+function numCampo(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const crudo = String(v).replace(/[^0-9.,-]/g, '');
+  if (!/\d/.test(crudo)) return null;
+  const n = Number(crudo.replace(/\./g, '').replace(',', '.'));
+  return isFinite(n) ? n : null;
+}
+
+router.put('/api/combustible/:id', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const { data: actual, error: e0 } = await supabase.from('cargas_combustible')
+      .select('id, estado').eq('id', req.params.id).single();
+    if (e0 || !actual) return res.status(404).json({ error: 'No encontré la carga' });
+
+    const ESTADOS = ['sin_facturar', 'facturada', 'anulada'];
+    const estado = ESTADOS.includes(b.estado) ? b.estado : actual.estado;
+
+    const items = Array.isArray(b.items) ? b.items : null;
+    if (!items || !items.length) {
+      return res.status(400).json({ error: 'La carga tiene que tener al menos un producto' });
+    }
+    for (const it of items) {
+      if (!String(it.producto || '').trim()) {
+        return res.status(400).json({ error: 'Hay un producto sin nombre' });
+      }
+      const l = numCampo(it.litros);
+      // El tope de 500 es el mismo que usa la extracción: una carga real de la
+      // flota no llega ahí y un número más grande siempre fue un error de lectura.
+      if (l != null && (l < 0 || l > 500)) {
+        return res.status(400).json({ error: `Litros fuera de rango en "${it.producto}" (${it.litros})` });
+      }
+      if (!['unidad', 'bidon', 'equipo'].includes(it.destino)) {
+        return res.status(400).json({ error: `Destino inválido en "${it.producto}"` });
+      }
+    }
+
+    const kmAnt = numCampo(b.km_anterior);
+    const kmAct = numCampo(b.km_actual);
+    if (kmAnt != null && kmAct != null && kmAct < kmAnt) {
+      return res.status(400).json({ error: 'El km actual no puede ser menor al anterior' });
+    }
+
+    const litros = items.reduce((s, i) => s + (numCampo(i.litros) || 0), 0);
+    const dests  = items.map(i => i.destino);
+    const destino = dests.every(d => d === 'unidad') ? 'unidad'
+                  : dests.every(d => d === 'bidon')  ? 'bidon' : 'mixto';
+
+    const patch = {
+      fecha:          b.fecha || undefined,
+      estado,
+      destino,
+      proveedor_id:   b.proveedor_id || null,
+      capataz_id:     b.capataz_id   || null,
+      unidad_id:      b.unidad_id    || null,
+      objetivo_id:    b.objetivo_id  || null,
+      numero_remito:  b.numero_remito  || null,
+      numero_factura: b.numero_factura || null,
+      lote:           b.lote    ? String(b.lote).trim() : null,
+      tarjeta:        b.tarjeta ? String(b.tarjeta).replace(/\D/g, '') || null : null,
+      km_anterior:    kmAnt,
+      km_actual:      kmAct,
+      saldo_tarjeta:  numCampo(b.saldo_tarjeta),
+      neto:           numCampo(b.neto),
+      iva:            numCampo(b.iva),
+      otros_tributos: numCampo(b.otros_tributos),
+      total:          numCampo(b.total),
+      chofer_raw:     b.chofer_raw || null,
+      litros_total:   litros || null,
+      editado_por:    req.usuario || null,
+      editado_at:     new Date().toISOString(),
+    };
+    if (patch.fecha === undefined) delete patch.fecha;
+
+    const { error: e1 } = await supabase.from('cargas_combustible')
+      .update(patch).eq('id', req.params.id);
+    if (e1) throw e1;
+
+    // Supabase no siempre rechaza la promesa: el error viene en r.error y un
+    // borrado fallido dejaría los ítems viejos conviviendo con los nuevos.
+    const del = await supabase.from('cargas_combustible_items')
+      .delete().eq('carga_id', req.params.id);
+    if (del.error) throw del.error;
+
+    const filas = items.map(it => ({
+      carga_id:        req.params.id,
+      producto:        String(it.producto).trim(),
+      es_combustible:  it.es_combustible !== false,
+      litros:          numCampo(it.litros),
+      precio_unit:     numCampo(it.precio_unit),
+      subtotal:        numCampo(it.subtotal),
+      destino:         it.destino,
+      unidad_id:       it.destino === 'unidad' ? (b.unidad_id || null) : (it.unidad_id || null),
+      equipo_id:       it.equipo_id   || null,
+      objetivo_id:     it.destino === 'bidon' ? (it.objetivo_id || b.objetivo_id || null) : (it.objetivo_id || null),
+      destino_detalle: it.destino === 'unidad' ? null : (it.destino_detalle || null),
+    }));
+    const ins = await supabase.from('cargas_combustible_items').insert(filas);
+    if (ins.error) throw ins.error;
+
+    console.log(`[combustible] carga ${req.params.id} editada por ${req.usuario} (${filas.length} ítems, ${litros} lt)`);
+    res.json({ ok: true, id: req.params.id, litros_total: litros });
+  } catch (err) {
+    console.error('editar carga:', err);
+    res.status(500).json({ error: 'Error guardando la carga: ' + (err.message || 'error') });
+  }
+});
+
 // ── Viajes / bateas (roll off) ────────────────────────────────
 router.get('/api/viajes', auth, async (req, res) => {
   try {
@@ -2584,7 +2726,7 @@ const CAMPOS_MAESTRO = {
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus', 'grupo_stock'],
   capataces: ['nombre', 'telefono', 'objetivo_id', 'rol', 'activo', 'es_chofer', 'unidad_id', 'usuario'],
   centros_costo: ['nombre', 'activo', 'codigo_flexxus'],
-  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo'],
+  unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo', 'tarjeta_combustible'],
 };
 
 function filtrarCampos(tipo, body) {
