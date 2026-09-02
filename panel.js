@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-08-31 · informe de una hoja con conclusión';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-02 · tickets de tarjeta (lote/km/saldo) + editar carga de combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1266,16 +1266,17 @@ async function vCombustible(view){
           return `${i.producto}${i.litros?' '+i.litros+'lt':''} ${dest}`;}).join('<br>');
         const anulada=c.estado==='anulada';
         return `<tr class="click-row" style="cursor:pointer;${anulada?'opacity:.55':''}" onclick="verCarga('${c.id}')"><td class="mono">${fechaAR(c.fecha)}</td>
-          <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}</div></td>
+          <td><div style="font-weight:500">${c.proveedores?c.proveedores.nombre:'—'}</div><div class="sub mono">${c.numero_remito||c.numero_factura||''}${c.lote&&c.lote!==c.numero_remito?' · lote '+escStk(c.lote):''}</div></td>
           <td>${c.capataces?c.capataces.nombre:quienCargoCombus(c)}</td>
           <td>${c.objetivos?c.objetivos.nombre:'<span class="sub">—</span>'}</td>
           <td><span class="uni-chip">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></td>
           <td style="font-size:12px">${items||'—'}</td>
           <td class="num">${c.litros_total?c.litros_total+' lt':'—'}</td>
           <td><span class="badge ${anulada?'b-red':c.estado==='facturada'?'b-green':'b-gray'}">${cap(c.estado)}</span></td>
-          <td class="num">${anulada
+          <td class="num" style="white-space:nowrap">${anulada
             ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();restaurarCarga('${c.id}')">Restaurar</button>`
-            :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo)" onclick="event.stopPropagation();anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
+            :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();editarCarga('${c.id}')">Editar</button>
+              <button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo);margin-left:5px" onclick="event.stopPropagation();anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
         :'<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>No hay cargas registradas.</div></div></td></tr>'}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
 }
@@ -1296,6 +1297,10 @@ function verCarga(id){
         <span style="font-weight:600;font-size:13px">${i.producto||'—'}</span>
         <span class="mono" style="font-weight:700">${i.litros?Number(i.litros).toLocaleString('es-AR')+' lt':'—'}</span></div>
       <div>${destTag}</div></div>`;}).join('');
+  // Un ticket de tarjeta (Edenred) trae importe pero NO está facturado: la
+  // factura la emite la tarjeta a fin de mes. Antes la caja de totales solo
+  // aparecía si estaba facturada, así que el importe leído no se veía nunca.
+  const esTarjeta=!!(c.lote||c.tarjeta);
   const totBox=esFactura
     ? `<div style="background:var(--papel);border-radius:10px;padding:12px 14px;margin-top:14px">
         <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Litros totales</span><span class="mono">${Number(litrosTot).toLocaleString('es-AR')} lt</span></div>
@@ -1306,9 +1311,21 @@ function verCarga(id){
        ${c.iva==null?'<div style="font-size:11px;color:var(--tinta-3);margin-top:8px;text-align:center">Esta carga está facturada pero el IVA no está cargado en el sistema todavía. El dato fiscal para ARCA vive en el módulo Compras.</div>':''}`
     : `<div style="background:var(--papel);border-radius:10px;padding:12px 14px;margin-top:14px">
         <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Litros totales</span><span class="mono">${Number(litrosTot).toLocaleString('es-AR')} lt</span></div>
+        ${c.total!=null?`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Importe del ticket</span><span class="mono">${money(c.total)}</span></div>`:''}
         <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--tinta-3)"><span>IVA</span><span class="mono">— al facturar</span></div>
        </div>
-       <div style="font-size:11px;color:var(--tinta-3);margin-top:8px;text-align:center">Remito sin facturar — el IVA (crédito fiscal para ARCA) se discrimina cuando llega la factura A del proveedor.</div>`;
+       <div style="font-size:11px;color:var(--tinta-3);margin-top:8px;text-align:center">${esTarjeta
+         ?'Comprobante de tarjeta sin facturar — el IVA (crédito fiscal para ARCA) se discrimina cuando llega la factura consolidada de la tarjeta.'
+         :'Remito sin facturar — el IVA (crédito fiscal para ARCA) se discrimina cuando llega la factura A del proveedor.'}</div>`;
+  // Bloque de tarjeta: solo si la carga tiene alguno de estos datos.
+  const fila=(et,val)=>`<div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">${et}</span><span style="font-weight:600" class="mono">${val}</span></div>`;
+  const tarjBox=(c.lote||c.tarjeta||c.km_actual!=null||c.saldo_tarjeta!=null)
+    ? `<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:16px 0 4px">Tarjeta de combustible</div>
+       ${c.lote?fila('Lote',escStk(c.lote)):''}
+       ${c.tarjeta?fila('Tarjeta','•••• '+String(c.tarjeta).slice(-4)):''}
+       ${c.km_actual!=null?fila('Kilometraje',Number(c.km_actual).toLocaleString('es-AR')+' km'):''}
+       ${c.saldo_tarjeta!=null?fila('Saldo',money(c.saldo_tarjeta)):''}`
+    : '';
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=200;
   bg.innerHTML=`<div class="modal" style="max-width:560px">
     <div style="padding:18px 22px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:flex-start">
@@ -1319,13 +1336,205 @@ function verCarga(id){
       <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Patente</span><span style="font-weight:600" class="mono">${c.unidades?c.unidades.patente:(c.patente_raw||'—')}</span></div>
       <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Comprobante</span><span style="font-weight:600">${esFactura?'Factura · Facturada':'Remito · Sin facturar'}</span></div>
       <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--linea)"><span style="color:var(--tinta-2)">Objetivo</span><span style="font-weight:600">${c.objetivos?c.objetivos.nombre:'—'}</span></div>
+      ${tarjBox}
       <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--tinta-3);font-weight:600;margin:16px 0 4px">Productos cargados</div>
       ${prodCards||'<div class="sub">Sin productos detallados.</div>'}
       ${totBox}
+      ${c.editado_por?`<div style="font-size:11px;color:var(--tinta-3);margin-top:10px;text-align:center">Editada por ${escStk(c.editado_por)}${c.editado_at?' el '+fechaAR(c.editado_at):''}</div>`:''}
+    </div>
+    <div style="padding:14px 22px;border-top:1px solid var(--linea);background:var(--hueso);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn ghost" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      <button class="btn" onclick="this.closest('.modal-bg').remove();editarCarga('${c.id}')">Editar</button>
     </div></div>`;
   document.body.appendChild(bg);
   bg.addEventListener('click',e=>{if(e.target===bg)bg.remove();});
 }
+/* ===== Combustible · editar una carga ===== */
+// Las listas de los desplegables se piden una vez por sesión de panel: son
+// maestros chicos que no cambian mientras se edita una carga.
+let combListas=null;
+
+// Los importes se muestran con formato argentino en los inputs porque es como
+// figuran en el ticket que el usuario tiene delante. El backend los vuelve a
+// parsear igual, así que un formato raro no rompe nada, solo se normaliza.
+function fmtNumEdit(v,dec){
+  if(v==null||v==='')return '';
+  const n=Number(v);
+  if(!isFinite(n))return String(v);
+  return n.toLocaleString('es-AR',{minimumFractionDigits:dec||0,maximumFractionDigits:dec==null?4:dec});
+}
+function valEdit(id){const e=document.getElementById(id);return e?e.value.trim():'';}
+
+async function editarCarga(id){
+  const c=(combCargas||[]).find(x=>String(x.id)===String(id));
+  if(!c){toast('No encontré la carga','error');return;}
+  if(!combListas){
+    try{combListas=await api('/api/combustible/listas');}
+    catch(e){toast('No pude cargar las listas: '+e.message,'error');return;}
+  }
+  if(!objetivos.length){try{objetivos=await api('/api/objetivos');}catch(e){}}
+
+  const items=(c.cargas_combustible_items||[]).map(i=>({...i}));
+  if(!items.length)items.push({producto:'',litros:null,precio_unit:null,subtotal:null,destino:'unidad',destino_detalle:null,objetivo_id:null,es_combustible:true});
+  window._edItems=items;
+
+  const opts=(lista,sel,etiqueta)=>(lista||[]).map(o=>
+    `<option value="${o.id}" ${String(sel)===String(o.id)?'selected':''}>${escStk(etiqueta(o))}</option>`).join('');
+
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+  bg.id='ed-carga-bg';
+  bg.innerHTML=`<div class="modal" style="max-width:640px;max-height:92vh;padding:0;overflow:hidden;display:flex;flex-direction:column">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:flex-start;flex-shrink:0">
+      <div><div style="font-size:16px;font-weight:700">Editar carga</div>
+        <div class="sub">${escStk(c.numero_remito||c.numero_factura||c.lote||'s/n')} · ${fechaAR(c.fecha)}</div></div>
+      <button style="cursor:pointer;font-size:20px;color:var(--tinta-3);background:none;border:none" onclick="cerrarEdicionCarga()">✕</button></div>
+
+    <div style="padding:18px 22px;overflow:auto;flex:1">
+      <div class="ed-tit">Comprobante</div>
+      <div class="ed-grid">
+        <div class="ed-campo"><label>Fecha</label><input type="date" id="ed-fecha" class="mono" value="${(c.fecha||'').slice(0,10)}"></div>
+        <div class="ed-campo"><label>Estado</label><select id="ed-estado">
+          <option value="sin_facturar" ${c.estado==='sin_facturar'?'selected':''}>Sin facturar</option>
+          <option value="facturada" ${c.estado==='facturada'?'selected':''}>Facturada</option>
+          <option value="anulada" ${c.estado==='anulada'?'selected':''}>Anulada</option>
+        </select></div>
+        <div class="ed-campo" style="grid-column:1/-1"><label>Proveedor (estación)</label><select id="ed-proveedor">
+          <option value="">— sin proveedor —</option>${opts(combListas.proveedores,c.proveedor_id,o=>o.nombre)}</select></div>
+        <div class="ed-campo"><label>N° de remito</label><input id="ed-remito" class="mono" value="${escStk(c.numero_remito||'')}"></div>
+        <div class="ed-campo"><label>N° de factura</label><input id="ed-factura" class="mono" value="${escStk(c.numero_factura||'')}"></div>
+      </div>
+
+      <div class="ed-tit">Imputación</div>
+      <div class="ed-grid-3">
+        <div class="ed-campo"><label>Unidad</label><select id="ed-unidad">
+          <option value="">— sin unidad —</option>${opts(combListas.unidades,c.unidad_id,u=>u.patente||u.codigo||'unidad')}</select>
+          ${!c.unidad_id&&c.patente_raw?`<div class="ed-hint">El ticket decía <b>${escStk(c.patente_raw)}</b>.</div>`:''}</div>
+        <div class="ed-campo"><label>Objetivo</label><select id="ed-objetivo">
+          <option value="">— sin objetivo —</option>${opts(objetivos,c.objetivo_id,o=>o.nombre)}</select></div>
+        <div class="ed-campo"><label>Capataz</label><select id="ed-capataz">
+          <option value="">— sin capataz —</option>${opts(combListas.capataces,c.capataz_id,o=>o.nombre)}</select></div>
+      </div>
+
+      <div class="ed-tit">Tarjeta de combustible <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">· dejalo vacío si el comprobante no es de tarjeta</span></div>
+      <div class="ed-grid-3">
+        <div class="ed-campo"><label>Lote</label><input id="ed-lote" class="mono" value="${escStk(c.lote||'')}"></div>
+        <div class="ed-campo"><label>Tarjeta</label><input id="ed-tarjeta" class="mono" value="${escStk(c.tarjeta||'')}"></div>
+        <div class="ed-campo"><label>Saldo</label><input id="ed-saldo" class="mono" value="${fmtNumEdit(c.saldo_tarjeta,2)}" placeholder="203.860,07"></div>
+        <div class="ed-campo"><label>Km anterior</label><input id="ed-km-ant" class="mono" value="${c.km_anterior!=null?fmtNumEdit(c.km_anterior,0):''}"></div>
+        <div class="ed-campo"><label>Km actual</label><input id="ed-km-act" class="mono" value="${c.km_actual!=null?fmtNumEdit(c.km_actual,0):''}"></div>
+      </div>
+      <div class="ed-nota">El <b>Rendimiento</b> que imprime el ticket no se guarda: lo calcula la terminal contra el km anterior y cuando ese viene en 0 da un número imposible. El rendimiento real sale del km de la carga anterior de la misma unidad.</div>
+
+      <div class="ed-tit">Productos cargados</div>
+      <div id="ed-items"></div>
+      <button class="btn ghost" style="width:100%;margin-top:10px;border-style:dashed" onclick="edAgregarItem()">+ Agregar producto</button>
+
+      <div class="ed-tit">Importes</div>
+      <div class="ed-grid">
+        <div class="ed-campo"><label>Total del comprobante</label><input id="ed-total" class="mono" value="${fmtNumEdit(c.total,2)}" placeholder="96.139,93"></div>
+        <div class="ed-campo"><label>IVA <span style="font-weight:400;color:var(--tinta-3)">(solo factura A)</span></label><input id="ed-iva" class="mono" value="${fmtNumEdit(c.iva,2)}"></div>
+        <div class="ed-campo"><label>Neto gravado</label><input id="ed-neto" class="mono" value="${fmtNumEdit(c.neto,2)}"></div>
+        <div class="ed-campo"><label>Otros tributos</label><input id="ed-otros" class="mono" value="${fmtNumEdit(c.otros_tributos,2)}"></div>
+      </div>
+    </div>
+
+    <div style="padding:14px 22px;border-top:1px solid var(--linea);background:var(--hueso);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-shrink:0">
+      <div class="sub" style="font-size:10.5px">${c.editado_por?'Última edición: '+escStk(c.editado_por):'Sin ediciones previas'}</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost" onclick="cerrarEdicionCarga()">Cancelar</button>
+        <button class="btn" id="ed-guardar" onclick="guardarCarga('${c.id}')">Guardar cambios</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(bg);
+  edRenderItems();
+}
+
+function edRenderItems(){
+  const cont=document.getElementById('ed-items');
+  if(!cont)return;
+  const its=window._edItems||[];
+  cont.innerHTML=its.map((i,ix)=>`
+    <div style="border:1px solid var(--linea);border-radius:10px;padding:12px 13px;margin-top:9px;background:var(--hueso)">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:9px">
+        <input class="ed-in" style="flex:1;font-weight:600" value="${escStk(i.producto||'')}" placeholder="ej: ION DIESEL"
+          oninput="_edItems[${ix}].producto=this.value">
+        ${its.length>1?`<button class="btn ghost" style="padding:5px 9px;font-size:11px;color:var(--rojo)" onclick="edQuitarItem(${ix})">Quitar</button>`:''}
+      </div>
+      <div class="ed-grid-3">
+        <div class="ed-campo"><label>Litros</label><input class="ed-in mono" value="${i.litros!=null?fmtNumEdit(i.litros,null):''}" oninput="_edItems[${ix}].litros=this.value"></div>
+        <div class="ed-campo"><label>Precio unit.</label><input class="ed-in mono" value="${i.precio_unit!=null?fmtNumEdit(i.precio_unit,null):''}" oninput="_edItems[${ix}].precio_unit=this.value"></div>
+        <div class="ed-campo"><label>Subtotal</label><input class="ed-in mono" value="${i.subtotal!=null?fmtNumEdit(i.subtotal,2):''}" oninput="_edItems[${ix}].subtotal=this.value"></div>
+      </div>
+      <div class="ed-grid" style="margin-top:10px">
+        <div class="ed-campo"><label>Destino</label><select class="ed-in" onchange="_edItems[${ix}].destino=this.value;edRenderItems()">
+          <option value="unidad" ${i.destino==='unidad'?'selected':''}>Unidad (al tanque)</option>
+          <option value="bidon" ${i.destino==='bidon'?'selected':''}>Bidones</option>
+          <option value="equipo" ${i.destino==='equipo'?'selected':''}>Equipo</option>
+        </select></div>
+        <div class="ed-campo"><label>${i.destino==='bidon'?'Objetivo de los bidones':i.destino==='equipo'?'Nombre del equipo':'Detalle'}</label>
+          ${i.destino==='bidon'
+            ?`<select class="ed-in" onchange="_edItems[${ix}].objetivo_id=this.value||null;_edItems[${ix}].destino_detalle=this.value?this.options[this.selectedIndex].text:null">
+                <option value="">— el objetivo de la carga —</option>
+                ${(objetivos||[]).map(o=>`<option value="${o.id}" ${String(i.objetivo_id)===String(o.id)?'selected':''}>${escStk(o.nombre)}</option>`).join('')}
+              </select>`
+            :i.destino==='equipo'
+            ?`<input class="ed-in" value="${escStk(i.destino_detalle||'')}" placeholder="ej: bobcat" oninput="_edItems[${ix}].destino_detalle=this.value">`
+            :`<input class="ed-in" value="va al tanque de la unidad" disabled style="background:var(--papel);color:var(--tinta-3)">`}
+        </div>
+      </div>
+    </div>`).join('');
+}
+function edAgregarItem(){
+  (window._edItems=window._edItems||[]).push({producto:'',litros:null,precio_unit:null,subtotal:null,destino:'unidad',destino_detalle:null,objetivo_id:null,es_combustible:true});
+  edRenderItems();
+}
+function edQuitarItem(ix){
+  window._edItems.splice(ix,1);
+  edRenderItems();
+}
+function cerrarEdicionCarga(){
+  const bg=document.getElementById('ed-carga-bg');
+  if(bg)bg.remove();
+  window._edItems=null;
+}
+
+async function guardarCarga(id){
+  const btn=document.getElementById('ed-guardar');
+  const its=(window._edItems||[]).filter(i=>String(i.producto||'').trim());
+  if(!its.length){toast('Cargá al menos un producto con nombre','error');return;}
+  const body={
+    fecha:          valEdit('ed-fecha')||null,
+    estado:         valEdit('ed-estado'),
+    proveedor_id:   valEdit('ed-proveedor')||null,
+    unidad_id:      valEdit('ed-unidad')||null,
+    objetivo_id:    valEdit('ed-objetivo')||null,
+    capataz_id:     valEdit('ed-capataz')||null,
+    numero_remito:  valEdit('ed-remito')||null,
+    numero_factura: valEdit('ed-factura')||null,
+    lote:           valEdit('ed-lote')||null,
+    tarjeta:        valEdit('ed-tarjeta')||null,
+    saldo_tarjeta:  valEdit('ed-saldo')||null,
+    km_anterior:    valEdit('ed-km-ant')||null,
+    km_actual:      valEdit('ed-km-act')||null,
+    total:          valEdit('ed-total')||null,
+    iva:            valEdit('ed-iva')||null,
+    neto:           valEdit('ed-neto')||null,
+    otros_tributos: valEdit('ed-otros')||null,
+    items: its,
+  };
+  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  try{
+    await api('/api/combustible/'+id,{method:'PUT',body:JSON.stringify(body)});
+    cerrarEdicionCarga();
+    invalidarCacheApi();
+    toast('Carga actualizada');
+    go('combustible');
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Guardar cambios';}
+    toast('No pude guardar: '+e.message,'error');
+  }
+}
+
 async function anularCarga(id,num,litros){
   if(!confirm(`¿Anular la carga ${num}${litros?' ('+litros+' lt)':''}?\n\nNo se borra: queda como "anulada" y deja de contar en los análisis. La podés restaurar desde el filtro Anulada.`))return;
   try{await api('/api/combustible/'+id+'/anular',{method:'POST',body:'{}'});go('combustible');}
@@ -7269,6 +7478,7 @@ function cardMaestro(m,ix){
     sub=m.marca_modelo||'sin modelo';
     extra=`${m.tipo_activo?`<div class="mcard-row"><span>Tipo</span><b>${m.tipo_activo}</b></div>`:''}
       <div class="mcard-row"><span>Patente</span><b class="mono">${m.patente||'—'}</b></div>
+      ${m.tarjeta_combustible?`<div class="mcard-row"><span>Tarjeta</span><b class="mono">•••• ${String(m.tarjeta_combustible).slice(-4)}</b></div>`:''}
       <div class="mcard-row"><span>Responsable</span><b>${m.responsable||'—'}</b></div>
       ${m.tipo_rodado?`<div class="mcard-row"><span>Preventivo</span><span class="badge b-green" style="font-size:10px">${({camioneta:'Camioneta',tractor:'Tractor',desmalezadora:'Desmalezadora',mini_tractor:'Mini tractor',giro_cero:'Giro cero'})[m.tipo_rodado]||m.tipo_rodado}</span></div>`:''}
       ${m.objetivos?`<div class="mcard-row"><span>Objetivo</span><b>${m.objetivos.nombre}</b></div>`:''}`;
@@ -7346,7 +7556,8 @@ function abrirModalMaestro(m){
          <option value="">— sin asignar —</option>
          ${(objetivos||[]).map(o=>`<option value="${o.id}" ${String(m.objetivo_id)===String(o.id)?'selected':''}>${o.nombre}</option>`).join('')}
        </select></div>
-       <div class="sub">El <b>objetivo</b> es lo que usa Compras para repartir el gasto de combustible. La <b>patente</b> es lo que usa el bot para reconocer la unidad en el ticket.</div>`
+       <div class="mm-field"><label>Tarjeta de combustible <span style="font-weight:400;color:var(--tinta-3)">(el número largo del ticket Edenred)</span></label><input id="mm-tarjeta" class="mono" value="${(m.tarjeta_combustible||'').replace(/"/g,'&quot;')}" placeholder="ej: 3084620214027102"></div>
+       <div class="sub">El <b>objetivo</b> es lo que usa Compras para repartir el gasto de combustible. La <b>patente</b> es lo que usa el bot para reconocer la unidad en el ticket. Con la <b>tarjeta</b> cargada, el bot reconoce la unidad por el número de tarjeta —que se lee bien— en vez de por la patente, que en el ticket térmico sale mal seguido.</div>`
     : `<div class="mm-field"><label>Nombre</label><input id="mm-nombre" value="${(m.nombre||'').replace(/"/g,'&quot;')}"></div>`;
   if(maestroTab==='mecanicos'){
     campos+=`<div class="mm-field"><label>Habilidades</label><div class="mm-habs">${HABILIDADES.map(([v,l])=>`<label class="mm-hab"><input type="checkbox" class="hab-chk" value="${v}" ${(m.habilidades||[]).includes(v)?'checked':''}> ${l}</label>`).join('')}</div></div>`;
@@ -7420,6 +7631,8 @@ async function guardarMaestro(){
       objetivo_id:document.getElementById('mm-objetivo').value||null,
       tipo_rodado:document.getElementById('mm-rodado').value||null,
       tipo_activo:document.getElementById('mm-tipo-activo').value.trim().toLowerCase()||null,
+      // Solo los dígitos: el número se copia del ticket y viene con espacios.
+      tarjeta_combustible:(document.getElementById('mm-tarjeta').value||'').replace(/\D/g,'')||null,
     };
   }else{
     const nombre=document.getElementById('mm-nombre').value.trim();
