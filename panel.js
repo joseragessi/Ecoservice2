@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-03 · PDF de combustible por objetivo con máquinas del censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-03 · reincidencia del mes (un rebote cuenta solo el mes en que volvió)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4878,7 +4878,7 @@ const PERF_OBJETIVO=30;            // puntos del mes para cobrar (provisorio)
 // no por una lista de nombres: si mañana cambia la persona, sigue andando.
 const PERF_OBJETIVO_2T=110;
 const PERF_HAB_2T='motor_2t';
-const PERF_REINC_MAX=15;           // % de reincidencia (90 días) que bloquea
+const PERF_REINC_MAX=15;           // % de reincidencia del MES que bloquea (rebotes cuya vuelta fue en el mes / reparaciones que podían volver)
 const PERF_DORMIDA_DIAS=7;         // abierta sin justificar más de esto descuenta
 /* ── Puntaje = horas de taller estimadas (matriz equipo × falla) ──────────
    Rediseño 13-ago: la escala vieja (pesado 5 / mediano 3 / liviano 1) no medía
@@ -4965,7 +4965,7 @@ function informeMecanico(nombre){
     veredicto='NO COBRA';color='#c0392b';
     motivo=`Llegó a los puntos (${M.total} de ${f.obj}), pero <b>${f.nReb} de sus ${f.nBase} reparaciones volvieron al taller</b> (${f.pctR}%, el tope es ${PERF_REINC_MAX}%). La calidad bloquea el bono.`;
   }
-  const notaMuestra=f.pocaMuestra&&f.nBase>0?` <i>Con ${f.nBase} reparaciones en 90 días, cada rebote pesa mucho en el porcentaje.</i>`:'';
+  const notaMuestra=f.pocaMuestra&&f.nBase>0?` <i>Con ${f.nBase} reparaciones que podían volver este mes, cada rebote pesa mucho en el porcentaje.</i>`:'';
 
   // ── Desglose de puntos ──
   const desglose=[
@@ -5033,9 +5033,10 @@ function informeMecanico(nombre){
       <div class="kv"><span>Objetivo${f.es2T?' (mecánico de 2 tiempos)':''}</span><b>${f.obj}</b></div>
       <div class="kv"><span>${llegoPts?'Superó el objetivo por':'Le faltaron'}</span><b class="${llegoPts?'':'neg'}">${Math.abs(M.total-f.obj)}</b></div>
     </div>
-    <div class="caja"><h3>Calidad · reincidencia 90 días</h3>
-      <div class="kv"><span>Reparaciones base (con número de máquina)</span><b>${f.nBase}</b></div>
-      <div class="kv"><span>Volvieron al taller en 30 días</span><b class="${f.nReb?'neg':''}">${f.nReb}</b></div>
+    <div class="caja"><h3>Calidad · reincidencia del mes</h3>
+      <div class="kv"><span>Reparaciones que podían volver este mes</span><b>${f.nBase}</b></div>
+      <div class="kv"><span>Volvieron al taller este mes</span><b class="${f.nReb?'neg':''}">${f.nReb}</b></div>
+      ${(f.anteriores||[]).length?`<div class="kv" style="opacity:.7"><span>Rebotes de meses anteriores (ya contaron)</span><b>${f.anteriores.length}</b></div>`:''}
       <div class="kv tot"><span>Reincidencia</span><b class="${f.habilitado?'':'neg'}">${f.pctR!=null?f.pctR+'%':'—'}</b></div>
       <div class="kv"><span>Tope para cobrar</span><b>${PERF_REINC_MAX}%</b></div>
       <div class="kv"><span>Resultado</span><b class="${f.habilitado?'':'neg'}">${f.habilitado?'habilitado':'bloqueado'}</b></div>
@@ -5230,11 +5231,20 @@ async function vRepPerf(view){
     return Math.min(Date.now(),finMesMs);
   })();
   const MS90=90*86400000, MS30=30*86400000;
-  // Reincidencia 90 días hacia atrás desde el corte: finalizadas en esa
-  // ventana cuya unidad volvió como correctivo dentro de los 30 días
-  // siguientes (y antes del corte).
+  // REINCIDENCIA DEL MES (cambio 03-sep, decisión de José: "si ya fue
+  // reportada en el mes anterior y le impactó, al mes siguiente no debería
+  // volver a pasar; si la reincidencia es nueva, sí").
+  //   Antes: ventana móvil de 90 días → un rebote de agosto seguía bloqueando
+  //   el bono en septiembre y octubre. Tres meses de castigo por una vuelta.
+  //   Ahora: cuenta SOLO la vuelta que ocurrió dentro del mes que se mira.
+  //   Las de meses anteriores se muestran aparte, como ya contadas.
+  // El denominador acompaña: las reparaciones que PODÍAN volver este mes son
+  // las cerradas desde 30 días antes del inicio del mes hasta el corte (una
+  // cerrada el 10/8 puede rebotar hasta el 9/9). Numerador y denominador
+  // sobre la misma población, si no el porcentaje no significa nada.
+  const iniMes=(function(){const [aa,mm]=perfPer.split('-').map(Number);return (aa&&mm)?Date.UTC(aa,mm-1,1,3,0,0):0;})();
   const base90=fin.filter(r=>!esPrev(r)&&tieneNumero(r.numero_unidad)
-    &&(()=>{const t=new Date(r.fecha_finalizado).getTime();return t<=corte&&corte-t<=MS90;})());
+    &&(()=>{const t=new Date(r.fecha_finalizado).getTime();return t<=corte&&t>=iniMes-MS30;})());
   // Una vuelta cuenta contra la calidad SOLO si puede ser el mismo problema.
   // Si las DOS fallas son específicas y DISTINTAS (entró por trinquete,
   // volvió por pistón), no es atribuible al arreglo → se descarta sola.
@@ -5243,8 +5253,9 @@ async function vRepPerf(view){
   const FALLA_GENERICA=['','otro','ingreso taller','preventivo','service / mantenimiento','service/mantenimiento'];
   const normFalla=v=>String(v||'').toLowerCase().trim();
   const fallaEspecifica=v=>!FALLA_GENERICA.includes(normFalla(v));
-  const rebotes={};      // mecánico → [{eq,uni,dias,idVuelta,fallaBase,fallaVuelta}] · cuentan
+  const rebotes={};      // mecánico → [{eq,uni,dias,idVuelta,fallaBase,fallaVuelta}] · cuentan ESTE mes
   const descartes={};    // mecánico → los que NO cuentan, para mostrarlos igual
+  const anteriores={};   // mecánico → vueltas de meses anteriores: ya contaron en su mes
   base90.forEach(f=>{
     const k=normU(f.numero_unidad), ff=new Date(f.fecha_finalizado).getTime();
     const m=nomMec(f)||'Sin asignar';
@@ -5257,13 +5268,21 @@ async function vRepPerf(view){
     let contado=false;
     for(const x of cands){
       const base={eq:f.tipo_equipo||'—',uni:f.numero_unidad||'',dias:Math.round((x.c-ff)/86400000),
-        idBase:f.id,idVuelta:x.o.id,fallaBase:f.tipo_falla||'',fallaVuelta:x.o.tipo_falla||''};
+        idBase:f.id,idVuelta:x.o.id,fallaBase:f.tipo_falla||'',fallaVuelta:x.o.tipo_falla||'',
+        fechaVuelta:x.o.created_at};
       if(x.o.rebote_descartado){
         (descartes[m]=descartes[m]||[]).push(Object.assign({por:'manual',motivo:x.o.rebote_motivo||''},base));
         continue;
       }
       if(fallaEspecifica(f.tipo_falla)&&fallaEspecifica(x.o.tipo_falla)&&normFalla(f.tipo_falla)!==normFalla(x.o.tipo_falla)){
         (descartes[m]=descartes[m]||[]).push(Object.assign({por:'auto'},base));
+        continue;
+      }
+      // La vuelta fue en un mes anterior: ya impactó en ese mes. Se muestra
+      // pero no cuenta de nuevo. Si después hubo otra vuelta dentro de este
+      // mes, esa sí se evalúa (por eso continue y no break).
+      if(x.c<iniMes){
+        (anteriores[m]=anteriores[m]||[]).push(base);
         continue;
       }
       (rebotes[m]=rebotes[m]||[]).push(base);
@@ -5383,7 +5402,7 @@ async function vRepPerf(view){
     const obj=objetivoDe(n);
     return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,obj,es2T:obj===PERF_OBJETIVO_2T,
       cumple:M.total>=obj&&habilitado,
-      rebotes:rebotes[n]||[],descartes:descartes[n]||[],dormidas:dormidas[n]||[]};
+      rebotes:rebotes[n]||[],descartes:descartes[n]||[],anteriores:anteriores[n]||[],dormidas:dormidas[n]||[]};
   }).sort((a,b)=>b.M.total-a.M.total);
   // El informe individual lee de acá: mismos números que el ranking, siempre.
   perfFilas=filas;
@@ -5411,7 +5430,7 @@ async function vRepPerf(view){
     const barra=Math.min(100,Math.max(2,Math.round(f.M.total*100/f.obj)));
     const colBarra=f.cumple?'var(--brote)':!f.habilitado?'#B4B2A9':'var(--diesel)';
     const calidad=f.pctR==null?'<span class="sub">sin base de cálculo aún</span>'
-      :`reincidencia 90d: <b style="color:${f.habilitado?'var(--brote-2)':'#A32D2D'}">${f.pctR}%</b> (${f.nReb} de ${f.nBase})${f.pocaMuestra?' <span class="sub" title="Con menos de 8 reparaciones en 90 días el % salta mucho con un solo caso">⚠ muestra chica</span>':''} — límite ${PERF_REINC_MAX}%`;
+      :`reincidencia del mes: <b style="color:${f.habilitado?'var(--brote-2)':'#A32D2D'}">${f.pctR}%</b> (${f.nReb} de ${f.nBase})${f.pocaMuestra?' <span class="sub" title="Con menos de 8 reparaciones que podían volver este mes, el % salta mucho con un solo caso">⚠ muestra chica</span>':''} — límite ${PERF_REINC_MAX}%`;
     const detalle=!abierto?'':`
       <div style="border-top:1px solid var(--linea);margin-top:10px;padding-top:10px">
         <div class="field-l" style="margin-bottom:6px">Por qué ${f.M.total} puntos</div>
@@ -5421,7 +5440,7 @@ async function vRepPerf(view){
           return `<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--linea);font-size:12px">
           <div>${marca}<b style="font-weight:600">${l.tit}</b> <span class="sub">· ${l.det}</span>${l.motivoIA?`<div class="sub" style="font-size:11px;opacity:.85;padding-left:2px">${String(l.motivoIA).replace(/</g,'&lt;')}</div>`:''}</div>
           <b class="mono" style="color:${l.mal?'#A32D2D':'var(--brote-2)'};white-space:nowrap">${l.pts}${l.id?` <button class="btn-salir" style="padding:1px 6px;font-size:10px;font-weight:400" onclick="event.stopPropagation();editarPuntaje('${l.id}','${String(l.pts||'').replace('+','')}')" title="Corregir el puntaje a mano">✏️</button>`:''}</b></div>`;}).join('')||'<div class="sub">Sin reparaciones finalizadas en el período.</div>'}
-        ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (90 d)</div>
+        ${(rebotes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes que cuentan contra la calidad (este mes)</div>
           ${rebotes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0" onclick="event.stopPropagation()">
             <div style="display:flex;gap:8px;align-items:center">
               <span style="flex:1;cursor:pointer" onclick="toggleRebote('${x.idBase}','${x.idVuelta}')" title="Tocá para ver qué se hizo">▸ ↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d${x.fallaBase?` · ${x.fallaBase} → ${x.fallaVuelta||'s/falla'}`:''}</span>
@@ -5431,12 +5450,18 @@ async function vRepPerf(view){
             <div id="reb-det-${x.idVuelta}" style="display:none"></div>
             <div id="reb-ia-${x.idVuelta}"></div>
           </div>`).join('')}`:''}
+        ${(anteriores[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Rebotes de meses anteriores · ya contaron en su mes</div>
+          ${anteriores[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center;opacity:.65" onclick="event.stopPropagation()">
+            <span style="flex:1;cursor:pointer" onclick="toggleRebote('${x.idBase}','${x.idVuelta}')" title="Tocá para ver qué se hizo">↩ ${x.eq} ${x.uni} volvió a los ${x.dias} d${x.fechaVuelta?' · el '+fechaAR(String(x.fechaVuelta).slice(0,10)):''}${x.fallaBase?` · ${x.fallaBase} → ${x.fallaVuelta||'s/falla'}`:''}</span>
+            <span class="badge b-gray" style="font-size:10px">impactó en ${x.fechaVuelta?mesStk(String(x.fechaVuelta).slice(0,7)):'mes anterior'}</span>
+            <div id="reb-det-${x.idVuelta}" style="display:none;flex-basis:100%"></div>
+          </div>`).join('')}`:''}
         ${(descartes[f.n]||[]).length?`<div class="field-l" style="margin:10px 0 4px">Vueltas que NO cuentan</div>
           ${descartes[f.n].map(x=>`<div class="sub" style="font-size:11.5px;padding:2px 0;display:flex;gap:8px;align-items:center;opacity:.75" onclick="event.stopPropagation()">
             <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
             ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
           </div>`).join('')}`:''}
-        <div class="sub" style="font-size:11px;margin-top:8px">🤖 Cada reparación se analiza al finalizarla: criticidad, falla, lo que hizo el taller y los repuestos → <b>1 punto ≈ 1 hora de mano de obra</b> (la espera de repuestos no cuenta). ✏️ podés corregir cualquier puntaje a mano. 📋 = sin analizar todavía, puntúa por la tabla de pesos. Aparte: preventivo +2 · service cargado +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% en 90 d).</div>
+        <div class="sub" style="font-size:11px;margin-top:8px">🤖 Cada reparación se analiza al finalizarla: criticidad, falla, lo que hizo el taller y los repuestos → <b>1 punto ≈ 1 hora de mano de obra</b> (la espera de repuestos no cuenta). ✏️ podés corregir cualquier puntaje a mano. 📋 = sin analizar todavía, puntúa por la tabla de pesos. Aparte: preventivo +2 · service cargado +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% de rebotes en el mes; un rebote cuenta solo en el mes en que la máquina volvió).</div>
       </div>`;
     return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
@@ -5485,7 +5510,7 @@ async function vRepPerf(view){
     <b>${svSinAtribuir.length}</b> service/s del mes no se le sumaron a nadie: los cargó el panel, no un mecánico desde la app
     (${svSinAtribuir.slice(0,6).map(u=>escStk(u)).join(' · ')}${svSinAtribuir.length>6?' …':''}).
   </div>`:''}
-  <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> · para el mecánico de 2 tiempos (habilidad <b>Motor 2T</b> en Maestros): <b>${PERF_OBJETIVO_2T} pts</b> (5 máquinas × 22 días). Provisorios — se ajustan con 2-3 meses de datos. Para cobrar además la reincidencia de 90 días tiene que ser ≤ ${PERF_REINC_MAX}%.</div>
+  <div class="sub" style="margin-bottom:12px">Objetivo del mes: <b>${PERF_OBJETIVO} pts</b> · para el mecánico de 2 tiempos (habilidad <b>Motor 2T</b> en Maestros): <b>${PERF_OBJETIVO_2T} pts</b> (5 máquinas × 22 días). Provisorios — se ajustan con 2-3 meses de datos. Para cobrar además la reincidencia del mes tiene que ser ≤ ${PERF_REINC_MAX}% — un rebote cuenta solo en el mes en que la máquina volvió, no arrastra a los meses siguientes.</div>
   ${cards||'<div class="empty" style="height:200px"><div>Sin reparaciones finalizadas en el período.</div></div>'}`;
 }
 
