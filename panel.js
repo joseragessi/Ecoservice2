@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-03 · orden de compra con OCR y buscador de proveedores';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-03 · PDF de combustible por objetivo con máquinas del censo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1135,6 +1135,7 @@ async function vCombustible(view){
     // filtradas (si no, al elegir uno desaparecerían los demás).
     const objetivosLista=[...new Set(todasVivas.flatMap(c=>[objDe(c),
       ...(c.cargas_combustible_items||[]).filter(i=>i.destino==='bidon').map(i=>destinoDe(i,c))]))].filter(Boolean).sort();
+    combObjetivosMes=objetivosLista;   // los usa el selector del PDF por objetivo
     const unidadesLista=[...new Set(todasVivas.map(uniDe))].filter(Boolean).sort();
     let litTot=0,litUni=0,litBid=0,nFact=0,nSf=0;
     const porObj={},porTipo={},bidObj={};
@@ -1238,7 +1239,8 @@ async function vCombustible(view){
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible</div>
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div>
-      <div class="spacer"></div>${selObj} ${selUni} ${selMes}</div>
+      <div class="spacer"></div>${selObj} ${selUni} ${selMes}
+      <button class="btn-salir" style="margin-left:6px" onclick="combPDFObjetivos()">🖨 PDF por objetivo</button></div>
     ${tabs}
     ${(combObj||combUni)?`<div style="margin-bottom:12px;font-size:12.5px;color:var(--tinta-2)">
       Filtrando por ${combObj?`objetivo <b>${escStk(combObj)}</b>`:''}${combObj&&combUni?' y ':''}${combUni?`unidad <b>${escStk(combUni)}</b>`:''}
@@ -1413,6 +1415,141 @@ function fmtNumEdit(v,dec){
   return n.toLocaleString('es-AR',{minimumFractionDigits:dec||0,maximumFractionDigits:dec==null?4:dec});
 }
 function valEdit(id){const e=document.getElementById(id);return e?e.value.trim():'';}
+
+/* ═══ Combustible · PDF por objetivo ═══════════════════════════
+   Una hoja A4 por objetivo elegido: litros del mes (tanque y bidones), por
+   unidad, por tipo, las cargas ítem por ítem, y las máquinas del último censo
+   con el consumo contra el parque. Los datos los calcula el backend con la
+   misma lógica del reporte mensual. */
+let combObjetivosMes=[];
+let combPDFSel=new Set();
+
+function combPDFObjetivos(){
+  const lista=combObjetivosMes||[];
+  if(!lista.length){toast('No hay objetivos con cargas en el período elegido','error');return;}
+  if(!combMes){toast('Elegí un mes concreto en el selector (no "Últimas 200 cargas") para que el reporte tenga período','error');return;}
+  if(combObj&&!combPDFSel.size)combPDFSel.add(combObj);
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='comb-pdf-modal';
+  bg.innerHTML=`<div class="modal" style="max-width:520px">
+    <div style="font-size:16px;font-weight:700">PDF de combustible por objetivo</div>
+    <div class="sub" style="margin:3px 0 12px">${mesStk(combMes)} · una hoja por objetivo, con sus máquinas y su consumo</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="combPDFSel=new Set(combObjetivosMes);combPDFPintar()">Todos</button>
+      <button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="combPDFSel=new Set();combPDFPintar()">Ninguno</button>
+      <span class="sub" style="align-self:center" id="comb-pdf-n"></span></div>
+    <div id="comb-pdf-lista" style="max-height:50vh;overflow:auto;border:1px solid var(--linea);border-radius:10px;padding:6px 10px"></div>
+    <div class="sub" style="margin-top:10px;font-size:11.5px">Los objetivos sin censo de maquinaria salen con los litros pero sin el cruce contra las máquinas. El importe aparece solo para las cargas que ya tienen precio (facturadas o de tarjeta).</div>
+    <div class="modal-acciones">
+      <button class="btn ghost" onclick="document.getElementById('comb-pdf-modal').remove()">Cancelar</button>
+      <button class="btn" id="comb-pdf-go" onclick="combPDFGenerar()">Generar PDF</button></div></div>`;
+  document.body.appendChild(bg);
+  combPDFPintar();
+}
+function combPDFPintar(){
+  const c=document.getElementById('comb-pdf-lista');if(!c)return;
+  c.innerHTML=(combObjetivosMes||[]).map(o=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--linea)">
+    <input type="checkbox" ${combPDFSel.has(o)?'checked':''} onchange="this.checked?combPDFSel.add('${escStk(o).replace(/'/g,"\\'")}'):combPDFSel.delete('${escStk(o).replace(/'/g,"\\'")}');combPDFPintar()" style="accent-color:var(--brote)">${escStk(o)}</label>`).join('');
+  const n=document.getElementById('comb-pdf-n');if(n)n.textContent=`${combPDFSel.size} de ${(combObjetivosMes||[]).length}`;
+  const b=document.getElementById('comb-pdf-go');if(b)b.disabled=!combPDFSel.size;
+}
+async function combPDFGenerar(){
+  if(!combPDFSel.size)return;
+  const btn=document.getElementById('comb-pdf-go');if(btn){btn.disabled=true;btn.textContent='Armando…';}
+  let d;
+  try{d=await api('/api/combustible/reporte-objetivos?mes='+combMes+'&objetivos='+encodeURIComponent([...combPDFSel].join('|')));}
+  catch(e){toast('No pude armar el reporte: '+e.message,'error');if(btn){btn.disabled=false;btn.textContent='Generar PDF';}return;}
+  document.getElementById('comb-pdf-modal').remove();
+  const w=window.open('','_blank');
+  w.document.write(combPDFHtml(d));
+  w.document.close();
+}
+
+function combPDFHtml(d){
+  const e=escStk;
+  const fL=v=>Number(v||0).toLocaleString('es-AR',{maximumFractionDigits:0});
+  const f1=v=>Number(v||0).toLocaleString('es-AR',{maximumFractionDigits:1});
+  const pes=v=>'$ '+Number(v||0).toLocaleString('es-AR',{maximumFractionDigits:0});
+  const fD=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${+m[3]}/${+m[2]}`:'—';};
+  const barras=(obj,color)=>{const ents=Object.entries(obj||{}).sort((a,b)=>b[1]-a[1]);const mx=Math.max(...ents.map(([,v])=>v),1);
+    return ents.length?ents.map(([n,v])=>`<div class="bar"><span class="n">${e(n)}</span><span class="t"><i style="width:${Math.round(v/mx*100)}%;background:${n==='Bidones'?'#7C5CD6':color}"></i></span><span class="v">${fL(v)} lt</span></div>`).join('')
+      :'<div class="mini">Sin datos.</div>';};
+  const LAB={dos_tiempos:'2 tiempos',cortadora:'Cortadoras',tractor:'Tractores',vehiculo:'Vehículos',fijo:'Equipos fijos',sin_motor:'Sin motor',otro:'Sin clasificar'};
+  const n=d.hojas.length;
+  const hojas=d.hojas.map((H,ix)=>{
+    const M=H.maquinas;
+    const pctUni=H.litros?Math.round(H.litros_unidad/H.litros*100):0, pctBid=H.litros?100-pctUni:0;
+    const maqHtml=M?`
+    <div class="sec"><h2>Máquinas del objetivo <span class="mini">· censo ${e(M.censo_periodo)}</span></h2>
+      <div class="dos">
+        <table><thead><tr><th>Familia</th><th class="der">Cant.</th><th class="der">Consumo ref.</th></tr></thead><tbody>
+          ${['dos_tiempos','cortadora','tractor','vehiculo','fijo'].filter(k=>M.familias[k]).map(k=>`<tr><td>${LAB[k]}</td><td class="der mono">${M.familias[k]}</td><td class="der mono">${k==='vehiculo'?(M.consumo_ref.vehiculo_mes?M.consumo_ref.vehiculo_mes+' lt/mes':'—'):(M.consumo_ref[k]?M.consumo_ref[k]+' lt/jornada':'—')}</td></tr>`).join('')}
+          ${M.familias.otro?`<tr><td style="color:#8A968E">Sin clasificar</td><td class="der mono" style="color:#8A968E">${M.familias.otro}</td><td class="der mono" style="color:#8A968E">—</td></tr>`:''}
+          ${M.familias.sin_motor?`<tr><td style="color:#8A968E">Sin motor</td><td class="der mono" style="color:#8A968E">${M.familias.sin_motor}</td><td class="der mono" style="color:#8A968E">—</td></tr>`:''}
+        </tbody><tfoot><tr><td>Con motor</td><td class="der mono">${M.con_motor}</td><td class="der mono">de ${M.total}</td></tr></tfoot></table>
+        <table><thead><tr><th>Detalle del censo</th><th class="der">Cant.</th></tr></thead><tbody>
+          ${Object.entries(M.tipos||{}).sort((a,b)=>b[1]-a[1]).slice(0,14).map(([t,c])=>`<tr><td>${e(t)}</td><td class="der mono">${c}</td></tr>`).join('')}
+        </tbody></table>
+      </div></div>
+    <div class="sec"><h2>Consumo contra el parque</h2>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+        <div class="k"><div class="kl">Uso de máquinas</div><div class="kv" style="color:${(M.uso_maquinas_pct||0)>100?'#A3253A':'#0F7E40'}">${M.uso_maquinas_pct!=null?M.uso_maquinas_pct+'%':'—'}</div><div class="ks">${fL(H.litros_bidon)} lt en bidones sobre ${fL(M.capacidad_maquinas)} de capacidad</div></div>
+        <div class="k"><div class="kl">Uso de vehículos</div><div class="kv">${M.uso_vehiculos_pct!=null?M.uso_vehiculos_pct+'%':'—'}</div><div class="ks">${fL(H.litros_unidad)} lt al tanque sobre ${fL(M.capacidad_vehiculos)} estimados</div></div>
+        <div class="k"><div class="kl">Litros por máquina</div><div class="kv">${M.litros_por_maquina!=null?M.litros_por_maquina:'—'}</div><div class="ks">${M.litros_maquina_habil!=null?f1(M.litros_maquina_habil)+' lt por jornada hábil':''}</div></div>
+      </div>
+      <div class="mini">La capacidad es un <b>techo</b>: lo que gastaría el parque entero trabajando a jornada completa los ${d.dias_habiles} días hábiles${d.mes_en_curso?' transcurridos':' del mes'}. No es lo esperado. Solo pasar el 100% exige explicación: significa que se cargó más de lo que esas máquinas pueden quemar.${M.uso_vehiculos_pct!=null?' El uso de vehículos se compara contra un estimado ('+(M.consumo_ref.vehiculo_mes||'—')+' lt/mes por vehículo), no contra un dato medido.':''}</div>
+    </div>`
+    :`<div class="sec"><h2>Máquinas del objetivo</h2>
+      <div class="nota"><b>Este objetivo no tiene censo de maquinaria respondido.</b><br>Sin saber qué máquinas hay no se puede calcular el consumo por máquina ni el uso del parque. Los litros de arriba son correctos; lo que falta es contra qué compararlos. El censo se pide desde Stock.</div></div>`;
+    const importeHtml=H.cargas_con_importe
+      ?`<div class="nota"><b>Sobre el importe:</b> las cargas guardan litros, no precios. El monto sale solo de las ${H.cargas_con_importe} carga${H.cargas_con_importe===1?'':'s'} que ya tienen comprobante con importe (facturadas o tickets de tarjeta), así que <b>no es el gasto total del objetivo</b>: es lo que hasta hoy tiene precio.${H.cargas_sin_importe?` Las ${H.cargas_sin_importe} restante${H.cargas_sin_importe===1?'':'s'} todavía no lo tienen.`:''}</div>`
+      :`<div class="nota"><b>Sobre el importe:</b> ninguna de las cargas de este objetivo tiene comprobante con importe todavía, así que el reporte muestra litros y no pesos. En cuanto lleguen las facturas o entren tickets de tarjeta, el monto aparece solo.</div>`;
+    return `<div class="hoja">
+    <div class="cab"><div><h1>${e(H.objetivo)}</h1><div class="sub">Combustible · ${e(mesStk(H.mes))}${d.mes_en_curso?' (en curso, al día '+d.ultimo_dia+')':''}</div></div>
+      <div style="text-align:right"><div style="font-weight:700;font-size:14px;color:#159B51">EcoService</div><div class="mini">Emitido el ${fD(d.emitido)}/${String(d.emitido).slice(0,4)}</div></div></div>
+    <div class="kpis">
+      <div class="k"><div class="kl">Litros del objetivo</div><div class="kv" style="color:#0F7E40">${fL(H.litros)}</div><div class="ks">${H.cargas} carga${H.cargas===1?'':'s'}</div></div>
+      <div class="k"><div class="kl">Al tanque</div><div class="kv">${fL(H.litros_unidad)}</div><div class="ks">${pctUni}% · vehículos</div></div>
+      <div class="k"><div class="kl">En bidones</div><div class="kv">${fL(H.litros_bidon)}</div><div class="ks">${pctBid}% · máquinas</div></div>
+      <div class="k"><div class="kl">Importe</div><div class="kv" style="font-size:17px">${H.cargas_con_importe?pes(H.importe):'—'}</div><div class="ks">${H.cargas_con_importe?H.cargas_con_importe+' de '+H.cargas+' con precio':'sin cargas con precio'}</div></div>
+    </div>
+    <div class="sec"><h2>Litros por unidad</h2>${barras(H.por_unidad,'#3B7DC4')}<div class="mini" style="margin-top:6px">Los bidones alimentan las máquinas del objetivo; el resto va al tanque de cada vehículo.</div></div>
+    <div class="sec"><h2>Litros por tipo de combustible</h2>${barras(H.por_tipo,'#159B51')}</div>
+    ${maqHtml}
+    <div class="sec"><h2>Cargas del período</h2>
+      ${H.detalle.length?`<table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Capataz</th><th>Producto</th><th>Destino</th><th class="der">Litros</th></tr></thead><tbody>
+        ${H.detalle.map(r=>`<tr><td class="mono">${fD(r.fecha)}</td><td>${e(r.proveedor)}</td><td>${e(r.capataz)}</td><td>${e(r.producto)}</td><td>${e(r.destino)}</td><td class="der mono">${fL(r.litros)}${r.parcial?'<span class="mini"> *</span>':''}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="5">Total</td><td class="der mono">${fL(H.litros)}</td></tr></tfoot></table>
+        ${H.detalle.some(r=>r.parcial)?`<div class="mini" style="margin-top:6px">* Carga repartida entre varios objetivos: acá figuran solo los litros que fueron a ${e(H.objetivo)}.</div>`:''}`
+        :'<div class="mini">Sin cargas en el período.</div>'}
+    </div>
+    ${importeHtml}
+    <div class="pie"><span>EcoService · Combustible por objetivo</span><span>${e(H.objetivo)} · ${e(mesStk(H.mes))} · hoja ${ix+1} de ${n}</span></div>
+  </div>`;}).join('');
+
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Combustible por objetivo · ${e(mesStk(d.mes))}</title>
+  <style>
+  *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;color:#16221C;margin:0;padding:0;font-size:12px;line-height:1.45;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .hoja{padding:11mm 10mm;page-break-after:always}.hoja:last-child{page-break-after:auto}
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:-.4px}h2{font-size:13px;margin:0 0 9px;padding-bottom:5px;border-bottom:2px solid #16221C;letter-spacing:-.2px;page-break-after:avoid}
+  .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #159B51;padding-bottom:9px;margin-bottom:14px}
+  .sub{color:#4A5A51;font-size:12px}.mini{color:#8A968E;font-size:11px}.sec{margin-bottom:16px;page-break-inside:avoid}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+  .k{border:1px solid #E6EBE4;border-radius:9px;padding:9px 10px;background:#FBFCFA}
+  .kl{font-size:8.5px;text-transform:uppercase;letter-spacing:.8px;color:#8A968E;font-weight:600;line-height:1.25}
+  .kv{font-family:ui-monospace,monospace;font-size:21px;font-weight:700;margin-top:4px;letter-spacing:-1px}
+  .ks{font-size:10px;color:#4A5A51;margin-top:2px;line-height:1.35}.dos{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  table{width:100%;border-collapse:collapse;font-size:11px}th{text-align:left;font-size:8.5px;text-transform:uppercase;letter-spacing:.5px;color:#8A968E;padding:5px 6px;border-bottom:1px solid #E6EBE4;line-height:1.25}
+  td{padding:5px 6px;border-bottom:1px solid #F2F5F0}.mono{font-family:ui-monospace,monospace}.der{text-align:right;white-space:nowrap}
+  tfoot td{font-weight:700;border-top:1px solid #16221C;border-bottom:none}tr{page-break-inside:avoid}
+  .bar{display:flex;align-items:center;gap:8px;margin-bottom:6px}.bar .n{width:44%;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar .t{flex:1;height:12px;background:#F2F5F0;border-radius:4px;overflow:hidden}.bar .t i{display:block;height:100%}
+  .bar .v{width:62px;text-align:right;font-family:ui-monospace,monospace;font-size:11px;font-weight:600}
+  .nota{background:#FBF0DC;border:1px solid #EED9AE;border-radius:7px;padding:8px 11px;font-size:10.5px;color:#854F0B;line-height:1.45;margin-top:10px}
+  .pie{margin-top:26px;padding-top:10px;border-top:1px solid #E6EBE4;font-size:10.5px;color:#8A968E;display:flex;justify-content:space-between}
+  @page{size:A4 portrait;margin:0}
+  </style></head><body>${hojas}
+  <script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`;
+}
 
 async function editarCarga(id){
   const c=(combCargas||[]).find(x=>String(x.id)===String(id));

@@ -839,6 +839,135 @@ router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
   }
 });
 
+// ── Reporte de combustible por objetivo (PDF, una hoja por objetivo) ──
+// Por cada objetivo elegido: litros del período (tanque y bidones), por
+// unidad, por tipo de combustible, las cargas ítem por ítem, y las máquinas
+// del último censo con el consumo contra el parque. Usa los mismos cálculos
+// que el reporte mensual: alias de objetivos, familias de consumo y capacidad
+// teórica. Si algo cambia ahí, cambia acá.
+router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
+  try {
+    const mes = /^\d{4}-\d{2}$/.test(String(req.query.mes || '')) ? req.query.mes
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+    const pedidos = String(req.query.objetivos || '').split('|').map(s => s.trim()).filter(Boolean);
+    if (!pedidos.length) return res.status(400).json({ error: 'Elegí al menos un objetivo' });
+
+    const [a, m] = mes.split('-').map(Number);
+    const desde = `${mes}-01`;
+    const hasta = m === 12 ? `${a + 1}-01-01` : `${a}-${String(m + 1).padStart(2, '0')}-01`;
+    const hoyCba = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
+    const esMesEnCurso = hoyCba.getFullYear() === a && (hoyCba.getMonth() + 1) === m;
+    const ultimoDia = esMesEnCurso ? hoyCba.getDate() : new Date(Date.UTC(a, m, 0)).getUTCDate();
+    let diasHabiles = 0;
+    for (let d2 = 1; d2 <= ultimoDia; d2++) { const dow = new Date(Date.UTC(a, m - 1, d2)).getUTCDay(); if (dow !== 0 && dow !== 6) diasHabiles++; }
+
+    const [cargas, aliasObj, censos, objsMaestro] = await Promise.all([
+      supabase.from('cargas_combustible')
+        .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente, codigo), objetivos(nombre), capataces(nombre)')
+        .gte('fecha', desde).lt('fecha', hasta).neq('estado', 'anulada').order('fecha').limit(3000),
+      supabase.from('objetivos_alias').select('alias, objetivos(nombre)').then(r => r, () => ({ data: [] })),
+      supabase.from('censos_stock').select('objetivo_id, periodo, censos_stock_items(tipo_equipo, cantidad, numeros)')
+        .eq('estado', 'respondido').order('periodo', { ascending: false }),
+      supabase.from('objetivos').select('id, nombre, grupo_stock'),
+    ]);
+    if (cargas.error) throw cargas.error;
+
+    const mapaAlias = {};
+    ((aliasObj && aliasObj.data) || []).forEach(x => { if (x.objetivos) mapaAlias[x.alias] = x.objetivos.nombre; });
+    const resolver = nom => { if (!nom) return null; return mapaAlias[normObjetivo(nom)] || nom; };
+    const norm = s => normObjetivo(s || '');
+
+    // Censo más reciente por objetivo (vienen ordenados por período desc).
+    const censoPorId = {};
+    (censos.data || []).forEach(c => { if (!censoPorId[c.objetivo_id]) censoPorId[c.objetivo_id] = c; });
+    const idPorNombre = {}, grupoPorNombre = {};
+    (objsMaestro.data || []).forEach(o => { idPorNombre[norm(o.nombre)] = o.id; grupoPorNombre[norm(o.nombre)] = o.grupo_stock || null; });
+
+    const hojas = pedidos.map(objetivo => {
+      const objN = norm(resolver(objetivo));
+      const H = { objetivo, mes, dias_habiles: diasHabiles, ultimo_dia: ultimoDia, mes_en_curso: esMesEnCurso,
+        litros: 0, litros_unidad: 0, litros_bidon: 0, cargas: 0,
+        importe: 0, cargas_con_importe: 0, cargas_sin_importe: 0,
+        por_unidad: {}, por_tipo: {}, detalle: [] };
+      const cargasTocadas = new Set();
+
+      (cargas.data || []).forEach(c => {
+        const objC = c.objetivos ? c.objetivos.nombre : null;
+        const its = c.cargas_combustible_items || [];
+        const patente = (c.unidades && c.unidades.patente) || c.patente_raw || null;
+        const litrosCarga = its.length ? its.reduce((s, i) => s + (Number(i.litros) || 0), 0) : (Number(c.litros_total) || 0);
+        const totalCarga = Number(c.total) || 0;
+        let litrosAca = 0;
+        const filas = its.length ? its : [{ producto: '—', litros: c.litros_total, destino: 'unidad', destino_detalle: null, _vieja: true }];
+        filas.forEach(i => {
+          const l = Number(i.litros) || 0;
+          if (!l) return;
+          const esBidon = i.destino === 'bidon';
+          const dest = norm(resolver(esBidon ? (i.destino_detalle || objC) : objC));
+          if (dest !== objN) return;
+          litrosAca += l;
+          H.litros += l;
+          if (esBidon) H.litros_bidon += l; else H.litros_unidad += l;
+          const kUni = esBidon ? 'Bidones' : (patente || 'Sin patente');
+          H.por_unidad[kUni] = (H.por_unidad[kUni] || 0) + l;
+          const kTipo = String(i.producto || '—').trim().toUpperCase();
+          H.por_tipo[kTipo] = (H.por_tipo[kTipo] || 0) + l;
+          H.detalle.push({ fecha: c.fecha, proveedor: c.proveedores ? c.proveedores.nombre : (c.tarjeta ? 'Tarjeta' : '—'),
+            capataz: c.capataces ? c.capataces.nombre : '—', producto: i.producto || '—',
+            destino: esBidon ? 'bidones' : (patente || 'tanque'), litros: l, parcial: litrosCarga > l + 0.001 });
+        });
+        if (litrosAca > 0) {
+          cargasTocadas.add(c.id);
+          // El importe se reparte proporcional a los litros que fueron acá.
+          if (totalCarga > 0 && litrosCarga > 0) { H.importe += totalCarga * litrosAca / litrosCarga; H.cargas_con_importe++; }
+          else H.cargas_sin_importe++;
+        }
+      });
+      H.cargas = cargasTocadas.size;
+      H.litros = Math.round(H.litros * 100) / 100;
+      H.litros_unidad = Math.round(H.litros_unidad * 100) / 100;
+      H.litros_bidon = Math.round(H.litros_bidon * 100) / 100;
+      H.importe = Math.round(H.importe);
+      H.detalle.sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)));
+
+      // Máquinas del censo.
+      const oid = idPorNombre[objN];
+      const censo = oid ? censoPorId[oid] : null;
+      if (censo) {
+        const fam = agruparPorFamilia(censo.censos_stock_items || []);
+        const grupo = grupoPorNombre[objN] || null;
+        const familias = { dos_tiempos: fam.dos_tiempos, cortadora: fam.cortadora, tractor: fam.tractor,
+          vehiculo: fam.vehiculo, fijo: fam.fijo, sin_motor: fam.sin_motor, otro: fam.otro };
+        const tipos = {};
+        Object.values(fam.detalle).forEach(d => Object.entries(d).forEach(([t, n]) => { tipos[t] = (tipos[t] || 0) + n; }));
+        const capMaq = capacidadTeorica({ ...familias, vehiculo: 0 }, diasHabiles, grupo);
+        const capVeh = capacidadTeorica({ dos_tiempos: 0, tractor: 0, cortadora: 0, fijo: 0, vehiculo: familias.vehiculo }, diasHabiles, grupo);
+        const nMaq = fam.con_motor;
+        H.maquinas = {
+          censo_periodo: censo.periodo, total: fam.total, con_motor: nMaq, familias, tipos,
+          consumo_ref: { dos_tiempos: CONSUMO_JORNADA.dos_tiempos, cortadora: CONSUMO_JORNADA.cortadora,
+            tractor: CONSUMO_JORNADA.tractor, fijo: CONSUMO_JORNADA.fijo,
+            vehiculo_mes: (CONSUMO_VEHICULO_MES && CONSUMO_VEHICULO_MES[grupo || 'privado']) || null },
+          capacidad_maquinas: capMaq, capacidad_vehiculos: capVeh,
+          uso_maquinas_pct: capMaq ? Math.round(H.litros_bidon / capMaq * 100) : null,
+          uso_vehiculos_pct: capVeh ? Math.round(H.litros_unidad / capVeh * 100) : null,
+          litros_por_maquina: nMaq ? Math.round(H.litros_bidon / nMaq) : null,
+          litros_maquina_habil: nMaq && diasHabiles ? Math.round(H.litros_bidon / nMaq / diasHabiles * 10) / 10 : null,
+        };
+      } else {
+        H.maquinas = null;
+      }
+      return H;
+    });
+
+    res.json({ mes, dias_habiles: diasHabiles, ultimo_dia: ultimoDia, mes_en_curso: esMesEnCurso, hojas,
+      emitido: new Date().toISOString(), por: req.usuario || null });
+  } catch (err) {
+    console.error('combustible reporte-objetivos:', err);
+    res.status(500).json({ error: 'No pude armar el reporte' });
+  }
+});
+
 // Listas para los desplegables del modal de edición. Van juntas en una sola
 // llamada: son tres tablas chicas y el modal las necesita a las tres antes de
 // poder dibujarse, así que pedirlas por separado solo agrega latencia.
