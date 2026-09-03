@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-02 · órdenes de compra + stock en taller + tarjeta/editar carga + filtros combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-03 · orden de compra con OCR y buscador de proveedores';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -8570,29 +8570,47 @@ function ordPDF(id){
   w.document.close();
 }
 
-/* Alta y edición manual. Cada ítem con su centro de costo. */
+/* Alta y edición. La orden se carga con FOTO: el mismo OCR de facturas lee
+   proveedor, CUIT, ítems y montos del remito o presupuesto; Owen elige el
+   proveedor de la lista de los que ya facturaron, el centro de costo de la
+   lista, y guarda. El tipeo queda para corregir, no para cargar. */
+let ordProveedores=null;
 function ordNueva(){ordEditarForm(null);}
 function ordEditar(id){ordEditarForm((ordData||[]).find(x=>x.id===id)||null);}
-function ordEditarForm(o){
+async function ordEditarForm(o){
   const esNueva=!o;
-  o=o||{proveedor:'',cuit:'',fecha:new Date().toISOString().slice(0,10),descripcion:'',items:[{descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''}]};
+  if(!ordProveedores){try{ordProveedores=await api('/api/compras/ordenes/proveedores');}catch(e){ordProveedores=[];}}
+  if(!COMPRAS_OBJ.length){try{const l=await api('/api/compras/listas');COMPRAS_OBJ=l.objetivos||[];COMPRAS_UNI=l.unidades||[];}catch(e){}}
+  o=o||{proveedor:'',cuit:'',fecha:new Date().toISOString().slice(0,10),descripcion:'',items:[]};
   window._ordItems=(o.items||[]).map(i=>({...i}));
-  if(!window._ordItems.length)window._ordItems.push({descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''});
+  window._ordOCR=null;
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='ord-form';
-  bg.innerHTML=`<div class="modal" style="max-width:720px;padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:92vh">
+  bg.innerHTML=`<div class="modal" style="max-width:760px;padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:92vh">
     <div style="padding:16px 22px;border-bottom:1px solid var(--linea);flex-shrink:0"><div style="font-size:16px;font-weight:700">${esNueva?'Nueva orden de compra':'Editar '+escStk(o.numero)}</div>
-      <div class="sub">${esNueva?'Para lo que no viene de un pedido ni entró por foto. El número se asigna al guardar.':'Una orden facturada ya no se edita.'}</div></div>
+      <div class="sub">${esNueva?'Subí la foto del remito o del presupuesto y se llena solo. El número se asigna al guardar.':'Una orden facturada ya no se edita.'}</div></div>
     <div style="padding:16px 22px;overflow:auto;flex:1">
+      ${esNueva?`<div id="of-drop" style="border:2px dashed var(--brote);border-radius:12px;padding:18px;text-align:center;background:var(--brote-soft);margin-bottom:14px;cursor:pointer" onclick="document.getElementById('of-file').click()">
+        <div style="font-weight:600;color:var(--brote-2)">📷 Foto o PDF del remito / presupuesto</div>
+        <div class="sub" style="margin-top:4px">Lee proveedor, CUIT, ítems y montos. Podés subir varias páginas.</div>
+        <input type="file" id="of-file" accept="image/*,application/pdf" multiple style="display:none" onchange="ordOCR(this)">
+      </div>
+      <div id="of-ocr-estado"></div>`:''}
       <div class="grid g-2">
-        <div class="mm-field"><label>Proveedor</label><input id="of-prov" value="${escStk(o.proveedor||'')}"></div>
+        <div class="mm-field"><label>Proveedor <span style="font-weight:400;color:var(--tinta-3)">· escribí para buscar entre los ${(ordProveedores||[]).length} conocidos</span></label>
+          <input id="of-prov" list="of-prov-list" value="${escStk(o.proveedor||'')}" autocomplete="off" oninput="ordProvElegido(this.value)">
+          <datalist id="of-prov-list">${(ordProveedores||[]).map(p=>`<option value="${escStk(p.nombre)}">${p.cuit?'CUIT '+p.cuit:''}</option>`).join('')}</datalist></div>
         <div class="mm-field"><label>CUIT</label><input id="of-cuit" class="mono" value="${escStk(o.cuit||'')}"></div>
         <div class="mm-field"><label>Fecha</label><input id="of-fecha" type="date" class="mono" value="${(o.fecha||'').slice(0,10)}"></div>
         <div class="mm-field"><label>Descripción de la compra</label><input id="of-desc" value="${escStk(o.descripcion||'')}"></div>
       </div>
-      <div class="mm-label">Ítems · cada uno con su centro de costo</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:6px">
+        <div class="mm-label" style="margin:0">Ítems · cada uno con su centro de costo</div>
+        <div class="ed-campo" style="min-width:260px"><label>Centro de costo para todos</label>
+          <input list="of-obj-list" placeholder="elegí uno y se aplica a los ítems vacíos" autocomplete="off" onchange="ordObjTodos(this.value)"></div>
+      </div>
       <datalist id="of-obj-list">${COMPRAS_OBJ.map(x=>`<option value="${x.replace(/"/g,'&quot;')}">`).join('')}</datalist>
       <div id="of-items"></div>
-      <button class="btn ghost" style="width:100%;margin-top:10px;border-style:dashed;font-size:12px" onclick="ordAddItem()">+ Agregar ítem</button>
+      <button class="btn ghost" style="width:100%;margin-top:10px;border-style:dashed;font-size:12px" onclick="ordAddItem()">+ Agregar ítem a mano</button>
       <div id="of-total" class="sub" style="margin-top:10px;text-align:right"></div>
     </div>
     <div style="padding:12px 22px;border-top:1px solid var(--linea);background:var(--hueso);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0">
@@ -8600,20 +8618,77 @@ function ordEditarForm(o){
       <button class="btn" id="of-save" onclick="ordGuardar(${esNueva?'null':`'${o.id}'`})">Guardar orden</button>
     </div></div>`;
   document.body.appendChild(bg);
+  if(!window._ordItems.length&&!esNueva)window._ordItems.push({descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''});
   ordRenderItems();
+}
+
+// Al elegir un proveedor de la lista, el CUIT se completa solo.
+function ordProvElegido(nombre){
+  const p=(ordProveedores||[]).find(x=>x.nombre===nombre);
+  const c=document.getElementById('of-cuit');
+  if(p&&p.cuit&&c&&!c.value)c.value=p.cuit;
+}
+function ordObjTodos(obj){
+  if(!obj)return;
+  (window._ordItems||[]).forEach(i=>{if(!i.objetivo)i.objetivo=obj;});
+  ordRenderItems();
+}
+
+// OCR del remito/presupuesto: el mismo endpoint que lee facturas. Devuelve
+// proveedor, CUIT, ítems (descripción, cantidad, monto sin IVA, código) y
+// totales. Los precios de los ítems se llevan a "con IVA" con la proporción
+// del comprobante, para que el total y el tramo se midan como se acordó.
+async function ordOCR(input){
+  const fs=[...(input.files||[])].slice(0,6);if(!fs.length)return;
+  const est=document.getElementById('of-ocr-estado');
+  if(est)est.innerHTML='<div class="sub" style="margin:-6px 0 12px;text-align:center">⏳ Leyendo el comprobante…</div>';
+  try{
+    const pgs=[];for(const f of fs)pgs.push(await comprasPrepararArchivo(f));
+    const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:pgs[0].data,fileType:pgs[0].type,paginas:pgs.map(x=>({data:x.data,type:x.type}))})});
+    if(d.__error)throw new Error(d.__error);
+    window._ordOCR=d;
+    const g=id=>document.getElementById(id);
+    // Proveedor: si el CUIT ya es conocido, se usa el nombre con que está cargado.
+    const cuit=String(d.cuit||'').replace(/\D/g,'');
+    const conocido=cuit?(ordProveedores||[]).find(p=>p.cuit===cuit):null;
+    if(g('of-prov')&&!g('of-prov').value)g('of-prov').value=conocido?conocido.nombre:(d.proveedor||'');
+    if(g('of-cuit')&&!g('of-cuit').value)g('of-cuit').value=d.cuit||'';
+    if(g('of-fecha')&&d.fecha_factura)g('of-fecha').value=d.fecha_factura;
+    if(g('of-desc')&&!g('of-desc').value)g('of-desc').value=`${d.numero_factura?'Comp. '+d.numero_factura+' · ':''}${conocido?conocido.nombre:(d.proveedor||'')}`.trim();
+    const tn=Number(d.total_sin_iva)||0, ti=Number(d.total_iva)||0;
+    const factorIVA=tn>0?(tn+ti)/tn:1;
+    const nuevos=(d.items||[]).filter(i=>i.descripcion).map(i=>{
+      const cant=Number(i.cantidad)||1;
+      const unitSinIva=cant?(Number(i.monto_sin_iva)||0)/cant:0;
+      return {descripcion:i.descripcion,cantidad:cant,codigo:i.codigo||'',precio:unitSinIva?Math.round(unitSinIva*factorIVA*100)/100:null,objetivo:'',unidad:'',comentario:''};
+    });
+    window._ordItems=nuevos.length?nuevos:[{descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''}];
+    ordRenderItems();
+    if(est)est.innerHTML=`<div class="sub" style="margin:-6px 0 12px;text-align:center;color:var(--brote-2)">✓ Leído: ${nuevos.length} ítem${nuevos.length===1?'':'s'}${d.numero_factura?' · comp. '+escStk(d.numero_factura):''}${tn?' · '+money(tn+ti)+' c/IVA':''}${conocido?' · proveedor ya conocido':''}. Falta elegir el centro de costo.</div>`;
+    (d.__avisos||[]).forEach(a=>toast('⚠ '+a,'error'));
+    // Si el OCR reconoció un total con IVA distinto de la suma de ítems, ese
+    // manda: es lo que dice el papel.
+    window._ordTotalOCR=tn?Math.round((tn+ti)*100)/100:null;
+    ordTotal();
+    const objTodos=document.querySelector('#ord-form input[placeholder^="elegí uno"]');if(objTodos)objTodos.focus();
+  }catch(e){
+    if(est)est.innerHTML=`<div class="aviso-amarillo" style="margin:-6px 0 12px">No pude leer el comprobante: ${escStk(e.message||'')}. Cargalo a mano o probá con otra foto.</div>`;
+  }
+  input.value='';
 }
 function ordRenderItems(){
   const c=document.getElementById('of-items');if(!c)return;
   const its=window._ordItems||[];
-  c.innerHTML=its.map((i,ix)=>`<div style="border:1px solid var(--linea);border-radius:10px;padding:10px 12px;margin-top:8px;background:var(--hueso)">
+  if(!its.length){c.innerHTML='<div class="sub" style="padding:14px;text-align:center;border:1px dashed var(--linea-2);border-radius:10px;margin-top:8px">Subí la foto arriba, o agregá ítems a mano.</div>';ordTotal();return;}
+  c.innerHTML=its.map((i,ix)=>`<div style="border:1px solid var(--linea);border-radius:10px;padding:10px 12px;margin-top:8px;background:${i.objetivo?'var(--hueso)':'#FFFBF3'}">
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
       <input class="ed-in" style="flex:3;font-weight:600" placeholder="Descripción" value="${escStk(i.descripcion||'')}" oninput="_ordItems[${ix}].descripcion=this.value">
       <input class="ed-in mono" style="flex:1" placeholder="Código" value="${escStk(i.codigo||'')}" oninput="_ordItems[${ix}].codigo=this.value">
       ${its.length>1?`<button class="btn ghost" style="padding:4px 8px;font-size:11px;color:var(--rojo)" onclick="_ordItems.splice(${ix},1);ordRenderItems()">✕</button>`:''}</div>
     <div class="ed-grid-3">
       <div class="ed-campo"><label>Cantidad</label><input class="mono" value="${i.cantidad||1}" oninput="_ordItems[${ix}].cantidad=this.value;ordTotal()"></div>
-      <div class="ed-campo"><label>Precio unit. c/IVA</label><input class="mono" value="${i.precio!=null?i.precio:''}" oninput="_ordItems[${ix}].precio=this.value;ordTotal()"></div>
-      <div class="ed-campo"><label>Centro de costo</label><input list="of-obj-list" value="${escStk(i.objetivo||'')}" oninput="_ordItems[${ix}].objetivo=this.value" autocomplete="off"></div>
+      <div class="ed-campo"><label>Precio unit. c/IVA</label><input class="mono" value="${i.precio!=null?fmtNumEdit(i.precio,2):''}" oninput="_ordItems[${ix}].precio=this.value;ordTotal()"></div>
+      <div class="ed-campo"><label>Centro de costo${i.objetivo?'':' <span style="color:var(--diesel)">· falta</span>'}</label><input list="of-obj-list" value="${escStk(i.objetivo||'')}" oninput="_ordItems[${ix}].objetivo=this.value" onchange="ordRenderItems()" autocomplete="off"></div>
     </div>
     <div class="ed-grid" style="margin-top:6px">
       <div class="ed-campo"><label>Unidad</label><select onchange="_ordItems[${ix}].unidad=this.value"><option value="">—</option>${COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}" ${i.unidad===u?'selected':''}>${escStk(u)}</option>`).join('')}</select></div>
@@ -8624,22 +8699,28 @@ function ordRenderItems(){
 function ordAddItem(){(window._ordItems=window._ordItems||[]).push({descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''});ordRenderItems();}
 function ordTotal(){
   const n=v=>{const s=String(v==null?'':v).replace(/[^\d.,-]/g,'');if(!/\d/.test(s))return 0;return Number(s.replace(/\./g,'').replace(',','.'))||0;};
-  const t=(window._ordItems||[]).reduce((s,i)=>s+n(i.precio)*(n(i.cantidad)||1),0);
+  const suma=(window._ordItems||[]).reduce((s,i)=>s+n(i.precio)*(n(i.cantidad)||1),0);
+  const t=window._ordTotalOCR||suma;
   const tramo=t>=800000?'comparativos (2+ presupuestos y aprobación)':t>500000?'con presupuesto':'compra directa';
-  const el=document.getElementById('of-total');if(el)el.innerHTML=`Total estimado <b class="mono">${money(t)}</b> · ${tramo}`;
+  const el=document.getElementById('of-total');if(el)el.innerHTML=`Total estimado <b class="mono">${money(t)}</b>${window._ordTotalOCR&&Math.abs(suma-t)>1?` <span class="sub">(del comprobante; los ítems suman ${money(suma)})</span>`:''} · ${tramo}`;
 }
 async function ordGuardar(id){
   const g=x=>(document.getElementById(x)||{}).value||'';
   const n=v=>{const s=String(v==null?'':v).replace(/[^\d.,-]/g,'');if(!/\d/.test(s))return null;return Number(s.replace(/\./g,'').replace(',','.'));};
   const items=(window._ordItems||[]).filter(i=>String(i.descripcion||'').trim()).map(i=>({...i,cantidad:n(i.cantidad)||1,precio:n(i.precio)}));
   if(!items.length){toast('Cargá al menos un ítem','error');return;}
-  if(items.some(i=>!String(i.objetivo||'').trim())){toast('Cada ítem necesita un centro de costo','error');return;}
-  const body={proveedor:g('of-prov'),cuit:g('of-cuit'),fecha:g('of-fecha'),descripcion:g('of-desc'),items};
+  const sinObj=items.filter(i=>!String(i.objetivo||'').trim());
+  if(sinObj.length){toast(`${sinObj.length} ítem${sinObj.length===1?'':'s'} sin centro de costo. Usá "Centro de costo para todos" si van al mismo.`,'error');return;}
+  if(!g('of-prov').trim()){toast('Falta el proveedor','error');return;}
+  const ocr=window._ordOCR||{};
+  const body={proveedor:g('of-prov'),cuit:g('of-cuit'),fecha:g('of-fecha'),descripcion:g('of-desc'),items,
+    total_estimado:window._ordTotalOCR||null,remito_numero:ocr.numero_factura||null,creado_via:ocr.items?'panel+ocr':'panel'};
   const btn=document.getElementById('of-save');if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   try{
     const r=id?await api('/api/compras/ordenes/'+id,{method:'PUT',body:JSON.stringify(body)})
               :await api('/api/compras/ordenes',{method:'POST',body:JSON.stringify(body)});
     document.getElementById('ord-form').remove();
+    window._ordTotalOCR=null;window._ordOCR=null;
     if(r.orden)toast(`${r.orden.numero} guardada${r.requiere?` · este tramo pide ${r.requiere} presupuesto${r.requiere===1?'':'s'}`:''}`);
     if(r.fraccionamiento&&r.fraccionamiento.aviso)toast(`⚠ Fraccionamiento: con ${r.fraccionamiento.ordenes.join(', ')} suma ${money(r.fraccionamiento.suma)}`,'error');
     go('compras');

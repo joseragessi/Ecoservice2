@@ -948,6 +948,32 @@ router.get('/api/compras/ordenes', auth, async (req, res) => {
   }
 });
 
+// Proveedores conocidos: los que ya facturaron alguna vez, más los de órdenes
+// anteriores. Para que Owen elija de una lista en vez de tipear, y para que
+// el CUIT que leyó el OCR encuentre el nombre con que ya está cargado.
+router.get('/api/compras/ordenes/proveedores', auth, async (req, res) => {
+  try {
+    const [fac, ord] = await Promise.all([
+      supabaseCompras.from('facturas').select('data'),
+      supabaseCompras.from('ordenes_compra').select('proveedor, cuit').neq('estado', 'anulada'),
+    ]);
+    const m = new Map();
+    const suma = (nombre, cuit) => {
+      const c = String(cuit || '').replace(/\D/g, '');
+      const n = String(nombre || '').trim();
+      if (!n && !c) return;
+      const k = c || ORD.norm(n);
+      const e = m.get(k) || { nombre: n, cuit: c || null, veces: 0 };
+      e.veces++;
+      if (!e.nombre && n) e.nombre = n;
+      m.set(k, e);
+    };
+    (fac.data || []).forEach(r => { const d = r.data || {}; suma(d.proveedor, d.cuit); });
+    (ord.data || []).forEach(o => suma(o.proveedor, o.cuit));
+    res.json([...m.values()].filter(p => p.nombre).sort((a, b) => b.veces - a.veces));
+  } catch (err) { res.status(500).json({ error: 'No pude listar proveedores' }); }
+});
+
 // Candidatas para una factura que se está cargando: órdenes abiertas del
 // mismo proveedor (por CUIT primero, nombre después). Va ANTES de /:id para
 // que "candidatas" no se lea como un id.
@@ -1059,9 +1085,10 @@ router.post('/api/compras/ordenes', auth, async (req, res) => {
       ...b, items, total_estimado: total, tramo,
       sin_cotizacion: !cots.length,
       cotizaciones: cots,
+      remito_numero: b.remito_numero || null,
       // Comparativos sin aprobación quedan en borrador hasta que José apruebe.
       estado: tramo === 'comparativos' && !b.aprobar ? 'borrador' : 'abierta',
-      creado_via: 'panel',
+      creado_via: b.creado_via === 'panel+ocr' ? 'panel+ocr' : 'panel',
     }, req.usuario);
     res.json({ ok: true, orden: r.orden, fraccionamiento: r.fraccionamiento,
       requiere: ORD.cotizacionesRequeridas(tramo), tramo });
