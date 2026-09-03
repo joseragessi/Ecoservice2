@@ -1,8 +1,10 @@
 const express = require('express');
-const { agruparPorFamilia, LABEL_FAMILIA, capacidadTeorica,
+const { agruparPorFamilia, LABEL_FAMILIA, capacidadTeorica, familiaConsumo,
         CONSUMO_JORNADA, CONSUMO_VEHICULO_MES } = require('./familias_consumo');
 const cambios = require('./cambios');
 const { validarItemPanol } = require('./panol_reglas');
+const ORD = require('./ordenes');
+const { crearOrden, centrosDeCosto, unidadesTextoCompras } = require('./ordenes_db');
 const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
@@ -162,7 +164,7 @@ function soloAdmin(req, res, next) {
 router.get('/api/usuarios', auth, soloAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase.from('usuarios_panel')
-      .select('id, usuario, nombre, modulos, admin, activo, created_at')
+      .select('id, usuario, nombre, modulos, admin, activo, created_at, telefono')
       .order('usuario');
     if (error) throw error;
     res.json(data || []);
@@ -170,7 +172,7 @@ router.get('/api/usuarios', auth, soloAdmin, async (req, res) => {
 });
 router.post('/api/usuarios', auth, soloAdmin, async (req, res) => {
   try {
-    const { id, usuario, nombre, clave, modulos, admin, activo } = req.body || {};
+    const { id, usuario, nombre, clave, modulos, admin, activo, telefono } = req.body || {};
     if (!usuario || !String(usuario).trim()) return res.status(400).json({ error: 'Falta el usuario' });
     const fila = {
       usuario: String(usuario).trim().toLowerCase(),
@@ -179,6 +181,9 @@ router.post('/api/usuarios', auth, soloAdmin, async (req, res) => {
       admin: !!admin,
       activo: activo !== false,
     };
+    // Teléfono de WhatsApp: con él, alguien de Compras puede crear órdenes
+    // mandando la foto del remito al bot. Solo dígitos, sin + ni espacios.
+    if (telefono !== undefined) fila.telefono = String(telefono || '').replace(/\D/g, '') || null;
     if (clave) fila.clave_hash = hashClavePanel(clave);
     let q;
     if (id) q = supabase.from('usuarios_panel').update(fila).eq('id', id).select().single();
@@ -746,7 +751,26 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
         `\nTu pedido de insumos ya está disponible en depósito. ✅\n\n_EcoService · Depósito_`
       );
     }
-    res.json({ ...data, _notificado: notificado });
+    // Al pasar a "en compra" nace la orden de compra como borrador: la
+    // imputación ya se sabe (el objetivo del pedido), lo que falta es
+    // proveedor y precio, que llegan con la foto del remito o los completa
+    // quien compra. Solo la primera vez: si ya tiene orden, no se duplica.
+    let orden_compra = null;
+    if (req.body.estado === 'en_compra' && !data.orden_compra_id) {
+      try {
+        const cc = await centrosDeCosto();
+        const ped = { ...data, capataz_nombre: data.capataces ? data.capataces.nombre : null,
+          objetivo_nombre: data.objetivos ? data.objetivos.nombre : (data.objetivo_texto || null) };
+        const datos = ORD.ordenDesdeInsumo(ped, data.pedidos_insumos_items || [], cc);
+        const r = await crearOrden(datos, req.usuario);
+        orden_compra = r.orden;
+        await supabase.from('pedidos_insumos').update({ orden_compra_id: orden_compra.id, orden_compra_numero: orden_compra.numero })
+          .eq('id', req.params.id).then(() => {}, () => {});
+      } catch (e) {
+        console.error('[ordenes] no pude crear la orden del insumo', req.params.id, e.message);
+      }
+    }
+    res.json({ ...data, _notificado: notificado, orden_compra });
   } catch (err) {
     console.error('insumo update:', err);
     res.status(500).json({ error: 'Error actualizando el pedido' });
@@ -834,6 +858,323 @@ router.get('/api/combustible/listas', auth, async (req, res) => {
   } catch (err) {
     console.error('combustible listas:', err);
     res.status(500).json({ error: 'Error cargando las listas' });
+  }
+});
+
+// ── Número de orden como lo escribe el proveedor ──────────────
+// El proveedor copia el número a mano en la factura: "OC-2026-0041",
+// "O/C 2026-41", "OC 41", "Orden 0041". Todas tienen que encontrar la misma
+// orden. Se saca todo lo que no sea dígito y se comparan año + correlativo;
+// si solo vino el correlativo, se asume el año en curso.
+function normalizarNumeroOC(texto, anio) {
+  const t = String(texto || '').toUpperCase();
+  if (!t.trim()) return null;
+  const a = anio || new Date().getFullYear();
+  // Año de 4 cifras seguido de correlativo: "2026-0041", "2026 41", "202641"
+  let m = t.match(/(20\d{2})\D{0,3}(\d{1,5})(?!\d)/);
+  if (m) return `OC-${m[1]}-${String(Number(m[2])).padStart(4, '0')}`;
+  // Solo el correlativo: "OC 41", "N° 0041"
+  m = t.match(/(\d{1,5})(?!\d)/);
+  if (m) return `OC-${a}-${String(Number(m[1])).padStart(4, '0')}`;
+  return null;
+}
+
+// Devuelve { encontrada, candidatas, motivo } para el panel.
+async function buscarOrdenParaFactura(parsed) {
+  const out = { leida: parsed.orden_compra_leida || null, encontrada: null, candidatas: [], motivo: '' };
+  try {
+    const num = normalizarNumeroOC(parsed.orden_compra_leida);
+    if (num) {
+      const { data } = await supabaseCompras.from('ordenes_compra').select('*').eq('numero', num).maybeSingle();
+      if (data) {
+        const oc = aplanar(data);
+        if (oc.estado === 'facturada') {
+          out.motivo = `La factura referencia ${num}, pero esa orden ya se cerró con la factura ${(oc.facturada || {}).numero_factura || ''}. Puede ser un duplicado.`;
+          out.encontrada = oc;   // se muestra igual, con el aviso
+          out.ya_facturada = true;
+        } else if (oc.estado === 'anulada') {
+          out.motivo = `La factura referencia ${num}, pero esa orden está anulada.`;
+        } else {
+          out.encontrada = oc;
+          // El proveedor de la orden y el de la factura tienen que coincidir.
+          const cuitF = String(parsed.cuit || '').replace(/\D/g, ''), cuitO = String(oc.cuit || '').replace(/\D/g, '');
+          if (cuitF && cuitO && cuitF !== cuitO) {
+            out.motivo = `La factura referencia ${num}, pero esa orden es de otro proveedor (${oc.proveedor || oc.cuit}). Revisá el número.`;
+            out.proveedor_distinto = true;
+          }
+        }
+      } else {
+        out.motivo = `La factura referencia "${parsed.orden_compra_leida}" (${num}) y no existe ninguna orden con ese número.`;
+      }
+    }
+    if (!out.encontrada) {
+      const cuit = String(parsed.cuit || '').replace(/\D/g, '');
+      const prov = ORD.norm(parsed.proveedor || '');
+      const { data } = await supabaseCompras.from('ordenes_compra').select('*')
+        .in('estado', ['abierta', 'borrador']).order('created_at', { ascending: false }).limit(300);
+      const todas = (data || []).map(aplanar);
+      const cand = todas.filter(o => (cuit && o.cuit === cuit)
+        || (prov && o.proveedor && (ORD.norm(o.proveedor) === prov || ORD.norm(o.proveedor).includes(prov) || prov.includes(ORD.norm(o.proveedor)))));
+      out.candidatas = cand;
+      if (!num && !cand.length) out.motivo = out.motivo || 'La factura no trae número de orden de compra y no hay órdenes abiertas de este proveedor.';
+      else if (!num && cand.length) out.motivo = `La factura no trae número de orden. Hay ${cand.length} orden${cand.length === 1 ? '' : 'es'} abierta${cand.length === 1 ? '' : 's'} de este proveedor.`;
+    }
+  } catch (e) {
+    out.motivo = 'No pude buscar órdenes: ' + (e.message || '');
+    out.error = true;
+  }
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ÓRDENES DE COMPRA
+// La orden es la decisión de quien compra escrita ANTES de que llegue la
+// factura: qué, a quién, a qué precio y para qué centro de costo. Cuando
+// Administración carga la factura, la encuentra y hereda la imputación.
+// La lógica pura está en ordenes.js; acá solo lo que toca la base.
+// ═══════════════════════════════════════════════════════════════
+
+router.get('/api/compras/ordenes', auth, async (req, res) => {
+  try {
+    let q = supabaseCompras.from('ordenes_compra').select('*').order('created_at', { ascending: false }).limit(500);
+    const est = String(req.query.estado || '');
+    if (est) q = q.eq('estado', est);
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json((data || []).map(aplanar));
+  } catch (err) {
+    console.error('ordenes lista:', err.message);
+    res.status(500).json({ error: 'No pude cargar las órdenes (¿corriste el SQL de ordenes_compra?)' });
+  }
+});
+
+// Candidatas para una factura que se está cargando: órdenes abiertas del
+// mismo proveedor (por CUIT primero, nombre después). Va ANTES de /:id para
+// que "candidatas" no se lea como un id.
+router.get('/api/compras/ordenes/candidatas', auth, async (req, res) => {
+  try {
+    const cuit = String(req.query.cuit || '').replace(/\D/g, '');
+    const prov = ORD.norm(req.query.proveedor || '');
+    const { data, error } = await supabaseCompras.from('ordenes_compra').select('*')
+      .in('estado', ['abierta', 'borrador']).order('created_at', { ascending: false }).limit(300);
+    if (error) throw error;
+    const todas = (data || []).map(aplanar);
+    const porCuit = cuit ? todas.filter(o => o.cuit && o.cuit === cuit) : [];
+    const porNombre = prov ? todas.filter(o => o.proveedor && (ORD.norm(o.proveedor) === prov
+      || ORD.norm(o.proveedor).includes(prov) || prov.includes(ORD.norm(o.proveedor)))) : [];
+    // Los borradores de insumos no tienen proveedor: se ofrecen igual, aparte,
+    // porque la factura que llega puede ser la de ese pedido.
+    const sinProveedor = todas.filter(o => !o.proveedor && !o.cuit && o.estado === 'borrador');
+    const vistos = new Set();
+    const cand = [...porCuit, ...porNombre].filter(o => !vistos.has(o.id) && vistos.add(o.id));
+    res.json({ candidatas: cand, sin_proveedor: sinProveedor.slice(0, 20) });
+  } catch (err) {
+    console.error('ordenes candidatas:', err.message);
+    res.status(500).json({ error: 'No pude buscar órdenes' });
+  }
+});
+
+// Financiero: cotizado / facturado / pagado por objetivo, para un mes.
+// Cotizado sale de las órdenes (abiertas + facturadas del mes), facturado y
+// pagado de las facturas. Va antes de /:id por la misma razón.
+router.get('/api/compras/ordenes/financiero', auth, async (req, res) => {
+  try {
+    const mes = /^\d{4}-\d{2}$/.test(String(req.query.mes || '')) ? req.query.mes
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+    const [ord, fac] = await Promise.all([
+      supabaseCompras.from('ordenes_compra').select('*').gte('fecha', mes + '-01').lte('fecha', mes + '-31').neq('estado', 'anulada'),
+      supabaseCompras.from('facturas').select('*'),
+    ]);
+    if (ord.error) throw ord.error;
+    const porObj = {};
+    const fila = k => (porObj[k] = porObj[k] || { objetivo: k, cotizado: 0, facturado: 0, pagado: 0, ordenes: 0, facturas: 0, sin_orden: 0 });
+    (ord.data || []).map(aplanar).forEach(o => {
+      const its = o.items || [];
+      const tot = Number(o.total_estimado) || 0;
+      const suma = ORD.totalDeItems(its);
+      its.forEach(i => {
+        const k = i.objetivo || 'Sin asignar';
+        // Si los ítems tienen precio se reparte por precio; si no, en partes iguales.
+        const parte = suma ? (Number(i.precio) || 0) * (Number(i.cantidad) || 1) / suma * tot : tot / (its.length || 1);
+        fila(k).cotizado += parte;
+      });
+      if (its.length) fila(its[0].objetivo || 'Sin asignar').ordenes++;
+    });
+    (fac.data || []).map(aplanar).forEach(f => {
+      if (!String(f.fecha_factura || '').startsWith(mes)) return;
+      const total = (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0);
+      const partes = f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length
+        ? Object.entries(f.assignments).map(([ix, a]) => ({ k: a.objetivo || 'Sin asignar',
+            peso: Math.abs(Number(((f.items || [])[+ix] || {}).monto_sin_iva)) || 1 }))
+        : [{ k: (f.totalAssign || {}).objetivo || 'Sin asignar', peso: 1 }];
+      const sumaPeso = partes.reduce((s, p) => s + p.peso, 0) || 1;
+      partes.forEach(p => {
+        const monto = total * p.peso / sumaPeso;
+        fila(p.k).facturado += monto;
+        if (f.pagada) fila(p.k).pagado += monto;
+      });
+      const k0 = partes[0].k;
+      fila(k0).facturas++;
+      if (!f.orden_id) fila(k0).sin_orden++;
+    });
+    const filas = Object.values(porObj).map(r => ({
+      ...r,
+      cotizado: Math.round(r.cotizado), facturado: Math.round(r.facturado), pagado: Math.round(r.pagado),
+      comprometido: Math.round(Math.max(0, r.cotizado - r.facturado)),
+    })).sort((a, b) => (b.cotizado + b.facturado) - (a.cotizado + a.facturado));
+    const tot = filas.reduce((s, r) => ({ cotizado: s.cotizado + r.cotizado, facturado: s.facturado + r.facturado,
+      pagado: s.pagado + r.pagado, comprometido: s.comprometido + r.comprometido }), { cotizado: 0, facturado: 0, pagado: 0, comprometido: 0 });
+    res.json({ mes, filas, total: tot, tramos: ORD.TRAMOS });
+  } catch (err) {
+    console.error('ordenes financiero:', err.message);
+    res.status(500).json({ error: 'No pude armar el financiero' });
+  }
+});
+
+router.get('/api/compras/ordenes/:id', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (error || !data) return res.status(404).json({ error: 'Orden inexistente' });
+    res.json(aplanar(data));
+  } catch (err) { res.status(500).json({ error: 'No pude cargar la orden' }); }
+});
+
+// Alta manual (formulario del panel). Sirve para lo que no viene de ningún
+// pedido ni entró por foto, y para corregir.
+router.post('/api/compras/ordenes', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const items = (Array.isArray(b.items) ? b.items : []).map(i => ({
+      descripcion: String(i.descripcion || '').trim(), cantidad: Number(i.cantidad) || 1,
+      codigo: i.codigo ? String(i.codigo).trim() : null, precio: Number(i.precio) || null,
+      objetivo: String(i.objetivo || '').trim(), unidad: String(i.unidad || '').trim(),
+      comentario: String(i.comentario || '').trim(),
+    })).filter(i => i.descripcion);
+    if (!items.length) return res.status(400).json({ error: 'La orden necesita al menos un ítem' });
+    if (items.some(i => !i.objetivo)) return res.status(400).json({ error: 'Cada ítem necesita un centro de costo' });
+    const total = Number(b.total_estimado) || ORD.totalDeItems(items);
+    const tramo = ORD.tramoDeMonto(total);
+    const cots = Array.isArray(b.cotizaciones) ? b.cotizaciones : [];
+    const r = await crearOrden({
+      ...b, items, total_estimado: total, tramo,
+      sin_cotizacion: !cots.length,
+      cotizaciones: cots,
+      // Comparativos sin aprobación quedan en borrador hasta que José apruebe.
+      estado: tramo === 'comparativos' && !b.aprobar ? 'borrador' : 'abierta',
+      creado_via: 'panel',
+    }, req.usuario);
+    res.json({ ok: true, orden: r.orden, fraccionamiento: r.fraccionamiento,
+      requiere: ORD.cotizacionesRequeridas(tramo), tramo });
+  } catch (err) {
+    console.error('ordenes crear:', err.message);
+    res.status(500).json({ error: err.message || 'No pude crear la orden' });
+  }
+});
+
+router.put('/api/compras/ordenes/:id', auth, async (req, res) => {
+  try {
+    const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (!prev) return res.status(404).json({ error: 'Orden inexistente' });
+    if (prev.estado === 'facturada') return res.status(422).json({ error: 'Una orden facturada ya no se edita: la imputación quedó en la factura.' });
+    const b = req.body || {};
+    const items = Array.isArray(b.items) ? b.items : (prev.data || {}).items || [];
+    const total = b.total_estimado != null ? Number(b.total_estimado) || 0 : (ORD.totalDeItems(items) || Number(prev.total_estimado) || 0);
+    const data = { ...(prev.data || {}), ...(b.data || {}),
+      descripcion: b.descripcion !== undefined ? b.descripcion : (prev.data || {}).descripcion,
+      items, tramo: ORD.tramoDeMonto(total),
+      objetivo_pendiente: items.some(i => !i.objetivo),
+      editado_por: req.usuario || null, editado_at: new Date().toISOString() };
+    const patch = { data, total_estimado: total };
+    if (b.proveedor !== undefined) patch.proveedor = b.proveedor || null;
+    if (b.cuit !== undefined) patch.cuit = String(b.cuit || '').replace(/\D/g, '') || null;
+    if (b.fecha) patch.fecha = b.fecha;
+    // Un borrador (insumo sin proveedor, comparativos sin aprobar) pasa a
+    // abierta cuando ya tiene lo que le faltaba.
+    if (b.estado && ['abierta', 'borrador'].includes(b.estado)) patch.estado = b.estado;
+    const { data: row, error } = await supabaseCompras.from('ordenes_compra').update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ ok: true, orden: aplanar(row) });
+  } catch (err) {
+    console.error('ordenes editar:', err.message);
+    res.status(500).json({ error: err.message || 'No pude editar la orden' });
+  }
+});
+
+// Agregar un presupuesto. Con uno la orden pasa el tramo "presupuesto"; con
+// dos o más y aprobación, el de comparativos.
+router.post('/api/compras/ordenes/:id/cotizacion', auth, async (req, res) => {
+  try {
+    const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (!prev) return res.status(404).json({ error: 'Orden inexistente' });
+    const b = req.body || {};
+    const precio = Number(String(b.precio || '').replace(/[^\d.,-]/g, '').replace(/\./g, '').replace(',', '.'));
+    if (!b.proveedor || !precio) return res.status(400).json({ error: 'El presupuesto necesita proveedor y precio' });
+    const cots = ((prev.data || {}).cotizaciones || []).map(c => ({ ...c, elegida: b.elegida ? false : c.elegida }));
+    cots.push({ proveedor: String(b.proveedor).trim(), precio, plazo: b.plazo || null, elegida: !!b.elegida || cots.length === 0,
+      cargada_por: req.usuario || null, cargada_at: new Date().toISOString() });
+    const elegida = cots.find(c => c.elegida) || cots[0];
+    const data = { ...(prev.data || {}), cotizaciones: cots, sin_cotizacion: false };
+    const patch = { data, proveedor: elegida.proveedor, total_estimado: elegida.precio };
+    data.tramo = ORD.tramoDeMonto(elegida.precio);
+    const { data: row, error } = await supabaseCompras.from('ordenes_compra').update(patch).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ ok: true, orden: aplanar(row), requiere: ORD.cotizacionesRequeridas(data.tramo), tiene: cots.length });
+  } catch (err) {
+    console.error('ordenes cotizacion:', err.message);
+    res.status(500).json({ error: 'No pude agregar el presupuesto' });
+  }
+});
+
+// Aprobar una orden de comparativos (José). Queda registrado quién.
+router.post('/api/compras/ordenes/:id/aprobar', auth, async (req, res) => {
+  try {
+    const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (!prev) return res.status(404).json({ error: 'Orden inexistente' });
+    const cots = (prev.data || {}).cotizaciones || [];
+    const req2 = ORD.cotizacionesRequeridas((prev.data || {}).tramo);
+    if (cots.length < req2 && !(req.body || {}).forzar) {
+      return res.status(422).json({ error: `Este tramo pide ${req2} presupuesto${req2 === 1 ? '' : 's'} y la orden tiene ${cots.length}. Cargalos, o aprobá forzando y quedá registrado.` });
+    }
+    const data = { ...(prev.data || {}), aprobado_por: req.usuario || 'panel', aprobado_at: new Date().toISOString(),
+      aprobado_forzado: cots.length < req2 };
+    const { data: row, error } = await supabaseCompras.from('ordenes_compra')
+      .update({ data, estado: 'abierta' }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ ok: true, orden: aplanar(row) });
+  } catch (err) { res.status(500).json({ error: 'No pude aprobar' }); }
+});
+
+router.post('/api/compras/ordenes/:id/anular', auth, async (req, res) => {
+  try {
+    const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (!prev) return res.status(404).json({ error: 'Orden inexistente' });
+    if (prev.estado === 'facturada') return res.status(422).json({ error: 'Está facturada: anulá la factura, no la orden.' });
+    const data = { ...(prev.data || {}), anulada_por: req.usuario || null, anulada_at: new Date().toISOString(),
+      motivo_anulacion: String((req.body || {}).motivo || '').trim() || null };
+    const { error } = await supabaseCompras.from('ordenes_compra').update({ estado: 'anulada', data }).eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: 'No pude anular' }); }
+});
+
+// Emparejar los ítems de una factura (recién extraídos) con una orden.
+// Devuelve el match, la imputación que heredaría y la diferencia de precio.
+// No guarda nada: es lo que el panel muestra para que quien carga confirme.
+router.post('/api/compras/ordenes/:id/emparejar', auth, async (req, res) => {
+  try {
+    const { data: row } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
+    if (!row) return res.status(404).json({ error: 'Orden inexistente' });
+    const orden = aplanar(row);
+    const b = req.body || {};
+    const items = Array.isArray(b.items) ? b.items : [];
+    const total = (Number(b.total_sin_iva) || 0) + (Number(b.total_iva) || 0);
+    const { matches, orden_sin_factura } = ORD.emparejarItems(items, orden.items || []);
+    const imput = ORD.imputacionDesdeOrden(orden, matches, items);
+    const dif = ORD.diferenciaVsCotizado(orden, total);
+    res.json({ orden, matches, orden_sin_factura, ...imput, diferencia: dif });
+  } catch (err) {
+    console.error('ordenes emparejar:', err.message);
+    res.status(500).json({ error: 'No pude emparejar' });
   }
 });
 
@@ -1970,9 +2311,26 @@ router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
     const ahora = new Date().toISOString();
     const { data, error } = await supabase.from('repuestos_taller')
       .update({ estado: 'a_comprar', estado_desde: ahora, aprobado_at: ahora, aprobado_por: req.usuario || 'panel' })
-      .eq('id', req.params.id).select().single();
+      .eq('id', req.params.id).select('*, incidencias(id, numero_unidad, tipo_equipo, tipo_falla, objetivos(nombre))').single();
     if (error) throw error;
-    res.json(data);
+
+    // La aprobación ES la orden de compra: ya hay proveedor, precio, ítems y
+    // la imputación de la reparación. Se genera sola para que nadie la
+    // cargue dos veces. Best-effort: si la tabla de órdenes no existe todavía
+    // la aprobación no se frena, pero queda avisado en la respuesta.
+    let orden = null, orden_error = null;
+    try {
+      const [cc, unis] = await Promise.all([centrosDeCosto(), unidadesTextoCompras()]);
+      const datos = ORD.ordenDesdeRepuesto(data, data.incidencias || {}, cc, unis);
+      const r = await crearOrden(datos, req.usuario);
+      orden = r.orden;
+      await supabase.from('repuestos_taller').update({ orden_compra_id: orden.id, orden_compra_numero: orden.numero }).eq('id', req.params.id)
+        .then(() => {}, () => {});   // columnas opcionales: si no existen, sigue
+    } catch (e) {
+      orden_error = e.message;
+      console.error('[ordenes] no pude crear la orden del repuesto', req.params.id, e.message);
+    }
+    res.json({ ...data, orden_compra: orden, orden_error });
   } catch (err) {
     console.error('repuestos aprobar:', err.message);
     res.status(500).json({ error: err.message || 'No pude aprobar' });
@@ -2898,6 +3256,18 @@ async function procesarImputacion(id, letraIn, permitirAlta, force, usuario) {
     if (e0 || !fila) return { status: 404, body: { error: 'Factura inexistente' } };
     const f = fila.data || {};
     if (f.flexxus && f.flexxus.ok && !force) {
+      let hostActual = null;
+      try { hostActual = new URL(process.env.FLEXXUS_URL).host; } catch (e) {}
+      // Si se imputó en OTRA instancia de Flexxus (o antes de que se guardara
+      // cuál), el comprobante no existe en la de ahora: bloquearla sin decir
+      // por qué mandaba a buscar un comprobante inexistente en el ERP.
+      if (hostActual && f.flexxus.entorno !== hostActual) {
+        return { status: 409, body: { error:
+          'Esta factura figura imputada' + (f.flexxus.fecha ? ' el ' + f.flexxus.fecha : '') +
+          ', pero en ' + (f.flexxus.entorno || 'la instancia anterior de Flexxus') +
+          ', no en ' + hostActual + '. En Flexxus de producción no existe. ' +
+          'Si corresponde cargarla, reimputala forzando.' } };
+      }
       return { status: 409, body: { error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') } };
     }
     const { imputarFactura } = require('./flexxus');
@@ -3006,8 +3376,16 @@ router.post('/api/compras/facturas/:id/flexxus-encolar', auth, async (req, res) 
       .select('*').eq('id', id).single();
     if (!fila) return res.status(404).json({ error: 'Factura inexistente' });
     const f = fila.data || {};
-    if (f.flexxus && f.flexxus.ok && !b.force)
+    if (f.flexxus && f.flexxus.ok && !b.force) {
+      let hostActual = null;
+      try { hostActual = new URL(process.env.FLEXXUS_URL).host; } catch (e) {}
+      if (hostActual && f.flexxus.entorno !== hostActual) {
+        return res.status(409).json({ error:
+          'Esta factura figura imputada en ' + (f.flexxus.entorno || 'la instancia anterior de Flexxus') +
+          ', no en ' + hostActual + '. En Flexxus de producción no existe. Si corresponde cargarla, reimputala forzando.' });
+      }
       return res.status(409).json({ error: 'Esta factura ya fue imputada en Flexxus el ' + (f.flexxus.fecha || '') });
+    }
     const j = f.flexxus_job;
     // Candado anti doble imputación: si ya hay un job corriendo (y no quedó
     // colgado de hace más de 5 min), no se encola otro.
@@ -3269,8 +3647,8 @@ function expandirFactura(d) {
   const TIPO = { p: 'percepcion', i: 'impuesto', x: 'otro' };
   const num = v => (v == null || v === '' ? null : Number(v));
   const item = x => Array.isArray(x)
-    ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0, cantidad: num(x[2]) || 1 }
-    : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0, cantidad: num(x && (x.cantidad ?? x.q)) || 1 };
+    ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0, cantidad: num(x[2]) || 1, codigo: x[3] ? String(x[3]).trim() || null : null }
+    : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0, cantidad: num(x && (x.cantidad ?? x.q)) || 1, codigo: (x && x.codigo) ? String(x.codigo).trim() || null : null };
   const otro = x => Array.isArray(x)
     ? { concepto: x[0] ?? null, monto: num(x[1]) || 0, tipo: TIPO[x[2]] || x[2] || 'otro' }
     : { concepto: (x && (x.concepto ?? x.c)) ?? null, monto: num(x && (x.monto ?? x.m)) || 0, tipo: TIPO[x && x.tipo] || (x && x.tipo) || 'otro' };
@@ -3280,6 +3658,7 @@ function expandirFactura(d) {
     letra: d.l ?? null,
     proveedor: d.p ?? null,
     cuit: d.c ?? null,
+    orden_compra_leida: d.oc ? String(d.oc).trim() || null : null,
     total_sin_iva: num(d.tn) || 0,
     total_iva: num(d.ti) || 0,
     // Alícuotas discriminadas: [[21, 103281.87], [10.5, 700777.52]].
@@ -3469,8 +3848,9 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         : '') +
       'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
       '{"f":"YYYY-MM-DD","n":"numero","l":"A|B|C","p":"razon social emisor","c":"cuit emisor",' +
+      '"oc":"numero de orden de compra o null",' +
       '"tn":neto_sin_iva,"ti":iva_total,"iv":[[porcentaje,monto]],' +
-      '"i":[["descripcion",monto_sin_iva,cantidad]],' +
+      '"i":[["descripcion",monto_sin_iva,cantidad,"codigo"]],' +
       '"o":[["concepto",monto,"p|i|x"]]}\n' +
       'Reglas:\n' +
       '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n- cantidad = la CANTIDAD facturada del ítem (columna Cant./Un.). Si no figura o es ilegible: 1. El monto_sin_iva sigue siendo el TOTAL del renglón, NO el precio unitario.\n' +
@@ -3478,6 +3858,14 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       'COCCONI, no corrijas apellidos). Nunca el nombre de fantasía/logo si figura la razón social. ' +
       'ECOSERVICE (CUIT 30-70793029-9) es el CLIENTE: jamás va como emisor ni su CUIT en "c".\n' +
       '- "c": CUIT del emisor, dígito por dígito.\n' +
+      '- "oc": el NÚMERO DE ORDEN DE COMPRA que el proveedor copió en la factura, si figura. Buscalo ' +
+      'en el encabezado, en observaciones o en la referencia: "OC-2026-0041", "Orden de compra N° 41", ' +
+      '"O/C 2026-0041", "OC: 0041", "Su pedido: OC-2026-0041", "Ref. OC 41". Transcribilo tal cual ' +
+      'está impreso. Si no figura ninguna referencia a orden de compra: null. NO confundas con el N° ' +
+      'de remito, de pedido interno del proveedor ni de presupuesto.\n' +
+      '- Cada ítem lleva 4 campos: descripción, monto, cantidad y el CÓDIGO de artículo si la ' +
+      'factura lo imprime (columna Código/Art./Cód.); si no hay, "". El código sirve para cruzar con ' +
+      'la orden de compra.\n' +
       '- "l": la letra sola impresa en el recuadro grande del centro (C = monotributista). Si no se ve, null.\n' +
       '- PROHIBIDO tomar como ítem o concepto las líneas de TOTALES del pie ("Subtotal", "Total", ' +
       '"Importe Total", "Total a pagar", "Neto Gravado", "IVA 21%", "Importe Otros Tributos"): son ' +
@@ -3621,6 +4009,11 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         avisos.push('Los ítems suman ' + sumaItems.toFixed(2) + ' y el neto leído es ' + Number(parsed.total_sin_iva).toFixed(2) + ': verificá los montos contra el papel.');
       }
       if (avisos.length) parsed.__avisos = avisos;
+      // ── Orden de compra: se busca ACÁ, en el mismo paso del OCR, para que
+      // cuando aparezca la pantalla de revisión la vinculación ya esté hecha.
+      // 1) por el número que el proveedor copió en la factura; 2) si no lo
+      // trae, las abiertas del mismo proveedor; 3) nada → quien carga decide.
+      parsed.__orden = await buscarOrdenParaFactura(parsed);
       res.json(parsed);
     }
   } catch (err) {
@@ -3760,7 +4153,32 @@ router.post('/api/compras/factura', auth, async (req, res) => {
       .from('facturas').insert({ numero_factura: datos.numero_factura || null, data: datos })
       .select().single();
     if (error) throw error;
-    res.json(aplanar(data));
+    const factura = aplanar(data);
+
+    // Si la factura vino con orden, la orden se cierra: una OC = una factura
+    // (decisión 02-sep). Queda registrado qué factura la cerró y cuánto se
+    // apartó de lo cotizado. Best-effort: la factura ya está guardada.
+    if (datos.orden_id) {
+      try {
+        const { data: oc } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', datos.orden_id).single();
+        if (oc && oc.estado !== 'facturada') {
+          const total = (Number(datos.total_sin_iva) || 0) + (Number(datos.total_iva) || 0);
+          const dif = ORD.diferenciaVsCotizado(aplanar(oc), total);
+          const d2 = { ...(oc.data || {}), facturada: {
+            factura_id: factura.id, numero_factura: datos.numero_factura || null,
+            total_facturado: total, ...dif, at: new Date().toISOString(), por: req.usuario || null,
+            matches: datos.orden_matches || null,
+          } };
+          await supabaseCompras.from('ordenes_compra').update({ estado: 'facturada', factura_id: factura.id, data: d2 }).eq('id', oc.id);
+          factura.orden_cerrada = oc.numero;
+          factura.orden_diferencia = dif;
+        }
+      } catch (e) {
+        console.error('[ordenes] no pude cerrar la orden', datos.orden_id, e.message);
+        factura.orden_error = e.message;
+      }
+    }
+    res.json(factura);
   } catch (err) {
     console.error('compras crear factura:', err);
     res.status(500).json({ error: 'Error guardando la factura' });
@@ -3828,6 +4246,16 @@ router.delete('/api/compras/factura/:id', auth, async (req, res) => {
     }
     const { error } = await supabaseCompras.from('facturas').delete().eq('id', req.params.id);
     if (error) throw error;
+    // Si esta factura había cerrado una orden, la orden vuelve a abierta: si
+    // no, quedaría "facturada" apuntando a una factura que ya no existe y la
+    // factura real, cuando se recargue, no la encontraría.
+    if (inv && inv.orden_id) {
+      try {
+        const { data: oc } = await supabaseCompras.from('ordenes_compra').select('data').eq('id', inv.orden_id).single();
+        const d2 = { ...((oc && oc.data) || {}), facturada: null, reabierta_at: new Date().toISOString(), reabierta_motivo: 'se borró la factura ' + (inv.numero_factura || '') };
+        await supabaseCompras.from('ordenes_compra').update({ estado: 'abierta', factura_id: null, data: d2 }).eq('id', inv.orden_id);
+      } catch (e) { console.error('[ordenes] no pude reabrir la orden', inv.orden_id, e.message); }
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('compras borrar factura:', err);
@@ -6252,15 +6680,120 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 // La pregunta "¿cuántas motoguadañas tenemos y dónde?" contestada en una
 // sola llamada: el último censo respondido de CADA objetivo (sea del mes
 // que sea), con su grupo, los números informados y los faltantes abiertos.
+/* ── Qué máquinas del censo están en el taller ──────────────────
+   Una máquina está "en el taller" mientras tenga una reparación abierta, en
+   cualquier estado. No se guarda en ningún lado: se deriva del estado de la
+   incidencia, así que cuando el mecánico la finaliza vuelve a contarse como
+   disponible sola, sin ningún paso manual que se pueda olvidar.
+
+   El match es por OBJETIVO + NÚMERO, nunca por número solo: el 237 existe en
+   Cosquin y también en Circunvalación, y cruzando solo por número una
+   reparación de un objetivo descontaría stock del otro.
+
+   Cuando el número no alcanza para identificar la unidad —máquinas censadas
+   sin número, "sn", números repetidos dentro del mismo objetivo— la
+   reparación igual se descuenta del total del tipo, pero sin señalar cuál es.
+   Se descuenta antes que señalar: que el conteo esté bien importa más que
+   saber cuál. */
+function normNum(v) {
+  return String(v == null ? '' : v).trim().toUpperCase().replace(/[\s.\-_/]/g, '');
+}
+// Un número que no identifica nada: vacío, "SN", "S/N", "-", "0".
+function numVago(v) {
+  const n = normNum(v);
+  return !n || n === 'SN' || n === 'SIN' || n === 'SINNUMERO' || n === '0' || /^[-–—]+$/.test(n);
+}
+
+function cruzarTaller(filas, incidencias) {
+  // Reparaciones abiertas agrupadas por objetivo.
+  const porObj = new Map();
+  (incidencias || []).forEach(i => {
+    if (!i.objetivo_id) return;
+    if (!porObj.has(i.objetivo_id)) porObj.set(i.objetivo_id, []);
+    porObj.get(i.objetivo_id).push(i);
+  });
+
+  const usadas = new Set();   // incidencias ya asignadas a una fila
+
+  filas.forEach(f => {
+    f.en_taller = 0;
+    f.numeros_taller = [];
+    f.taller_detalle = [];
+    f.numeros_ambiguos = [];
+    const abiertas = porObj.get(f.objetivo_id) || [];
+
+    // Un número que aparece dos veces en el mismo ítem no permite decir cuál
+    // de las dos máquinas entró al taller.
+    const cuenta = {};
+    (f.numeros || []).forEach(n => { if (!numVago(n)) cuenta[normNum(n)] = (cuenta[normNum(n)] || 0) + 1; });
+    f.numeros_ambiguos = (f.numeros || []).filter(n => numVago(n) || cuenta[normNum(n)] > 1);
+
+    // disponibles se calcula SIEMPRE, también sin reparaciones abiertas: con
+    // el return antes de esta línea, todo objetivo sin nada en el taller
+    // —la mayoría— mostraba "undefined disponibles".
+    f.disponibles = Number(f.cantidad) || 0;
+    if (!abiertas.length || !f.tipo) return;
+
+    const famFila = familiaConsumo(f.tipo);
+
+    abiertas.forEach(inc => {
+      if (usadas.has(inc.id)) return;
+      const nInc = normNum(inc.numero_unidad);
+
+      // (a) Match por número, dentro del mismo objetivo y sin ambigüedad.
+      if (nInc && cuenta[nInc] === 1) {
+        usadas.add(inc.id);
+        f.en_taller++;
+        const original = (f.numeros || []).find(n => normNum(n) === nInc);
+        f.numeros_taller.push(original);
+        f.taller_detalle.push({ id: inc.id, numero: original, estado: inc.estado,
+          falla: inc.tipo_falla || null, desde: inc.created_at, parado: !!inc.equipo_parado });
+        return;
+      }
+
+      // (b) El número no identifica una unidad: o no vino, o está repetido en
+      // el censo (el 218 de Cosquin figura dos veces). Se descuenta del total
+      // del tipo igual —es lo que pidió José— pero sin señalar cuál es, y
+      // solo dentro de la misma familia, para que una motosierra rota no
+      // descuente un tractor.
+      const famInc = familiaConsumo(inc.tipo_equipo || inc.numero_unidad || '');
+      const mismaFamilia = famInc !== 'otro' && famInc === famFila;
+      const cabe = f.en_taller < (Number(f.cantidad) || 0);
+      if (mismaFamilia && cabe) {
+        usadas.add(inc.id);
+        f.en_taller++;
+        f.taller_detalle.push({ id: inc.id, numero: inc.numero_unidad || null, estado: inc.estado,
+          falla: inc.tipo_falla || null, desde: inc.created_at, parado: !!inc.equipo_parado,
+          sin_identificar: true });
+      }
+    });
+
+    f.disponibles = Math.max(0, (Number(f.cantidad) || 0) - f.en_taller);
+  });
+
+  // Reparaciones abiertas que no se pudieron colgar de ningún ítem del censo:
+  // el equipo no está censado, o el objetivo no tiene censo. Se devuelven
+  // aparte en vez de descartarse, porque son justamente las que avisan que al
+  // censo le falta algo.
+  const sinUbicar = (incidencias || []).filter(i => !usadas.has(i.id));
+  return { filas, sin_ubicar: sinUbicar };
+}
+
 router.get('/api/stock/general', auth, async (req, res) => {
   try {
-    const [objs, censos, faltantes] = await Promise.all([
+    const [objs, censos, faltantes, incid] = await Promise.all([
       supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true),
       supabase.from('censos_stock')
         .select('id, periodo, objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
         .eq('estado', 'respondido').order('periodo', { ascending: false }),
       supabase.from('stock_faltantes').select('*').eq('estado', 'abierto')
         .then(r => r, () => ({ data: [] })),   // si la tabla no existe aún, sin faltantes
+      // Reparaciones abiertas. El criterio es el mismo que usa el resto del
+      // panel para contar activas (estado distinto de finalizado), para que el
+      // badge de Reparaciones y este conteo no se contradigan.
+      supabase.from('incidencias')
+        .select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, equipo_parado, created_at')
+        .neq('estado', 'finalizado'),
     ]);
     if (objs.error) throw objs.error;
 
@@ -6296,11 +6829,17 @@ router.get('/api/stock/general', auth, async (req, res) => {
           capataz: c.capataces ? c.capataces.nombre : null,
           periodo: c.periodo, respondido_at: c.respondido_at,
           tipo: i.tipo_equipo, cantidad: i.cantidad,
+          // La familia la resuelve el backend para que el clasificador viva en
+          // un solo lugar: si el front tuviera su propia copia, el día que se
+          // agregue un tipo de equipo habría que acordarse de tocar los dos.
+          familia: familiaConsumo(i.tipo_equipo),
+          familia_label: LABEL_FAMILIA[familiaConsumo(i.tipo_equipo)] || 'Sin clasificar',
           numeros: i.numeros || [], observacion: i.observacion || null,
         });
       });
     });
-    res.json({ filas, faltantes: faltantes.data || [] });
+    const { sin_ubicar } = cruzarTaller(filas, incid.data || []);
+    res.json({ filas, faltantes: faltantes.data || [], taller_sin_ubicar: sin_ubicar });
   } catch (err) {
     console.error('stock general:', err);
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });

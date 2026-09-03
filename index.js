@@ -6,6 +6,7 @@ const twilio   = require('twilio');
 const { procesarMensaje } = require('./conversacion');
 const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
         continuarConversacion } = require('./combustible');
+const { esPedidoDeOrden, procesarOrdenFoto } = require('./ordenes_bot');
 const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
         continuarInsumos } = require('./insumos');
 const { iniciarStock, tieneSesionActiva: tieneSesionStock,
@@ -107,8 +108,14 @@ app.post('/webhook', async (req, res) => {
     } else {
       // ── Flujo CAPATACES (combustible / insumos / incidencias) ──
       if (numMedia > 0) {
-        // Una imagen es un comprobante de combustible
-        respuesta = await procesarComprobante(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
+        // Foto con "oc ..." de alguien de Compras: es una orden de compra
+        // (remito o presupuesto + a qué objetivo va). Si el remitente no es
+        // de compras, devuelve null y la foto sigue como comprobante de
+        // combustible, igual que siempre.
+        if (esPedidoDeOrden(mensaje)) {
+          respuesta = await procesarOrdenFoto(telefono, req.body.MediaUrl0, req.body.MediaContentType0, mensaje);
+        }
+        if (!respuesta) respuesta = await procesarComprobante(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
       } else if (await tieneSesionCombustible(telefono)) {
         respuesta = await continuarConversacion(telefono, mensaje);
       } else if (await tieneSesionInsumos(telefono)) {

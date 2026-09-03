@@ -32,10 +32,22 @@ const supabase = require('./supabase');
 let _avisoTabla = false;
 const CACHE_MS = 6 * 60 * 60 * 1000;   // plan y centros: 6 h
 
+// La clave lleva el host adelante porque el plan de cuentas y los centros de
+// costo son DISTINTOS en cada entorno de Flexxus. Sin esto, al pasar de la
+// instancia de prueba a la de producción el sistema seguía imputando hasta 6
+// horas con los códigos de prueba —sin fallar y sin avisar—, que es la peor
+// forma de equivocarse: los comprobantes entran, a las cuentas que no son.
+// Con el host en la clave, cambiar FLEXXUS_URL vacía la caché por sí solo.
+function ck(clave) {
+  let host = 'sin-url';
+  try { host = new URL(process.env.FLEXXUS_URL).host; } catch (e) {}
+  return host + '::' + clave;
+}
+
 async function cacheLeer(clave) {
   try {
     const { data, error } = await supabase.from('flexxus_cache')
-      .select('valor, vence').eq('clave', clave).maybeSingle();
+      .select('valor, vence').eq('clave', ck(clave)).maybeSingle();
     if (error) {
       if (!_avisoTabla) { _avisoTabla = true; console.warn('[flexxus] sin tabla flexxus_cache (se usa solo memoria):', error.message); }
       return null;
@@ -49,7 +61,7 @@ async function cacheLeer(clave) {
 async function cacheGuardar(clave, valor, venceMs) {
   try {
     await supabase.from('flexxus_cache').upsert({
-      clave, valor,
+      clave: ck(clave), valor,
       vence: venceMs ? new Date(venceMs).toISOString() : null,
       actualizado: new Date().toISOString(),
     }, { onConflict: 'clave' });
@@ -621,8 +633,15 @@ async function imputarFactura(f, letra, opts = {}) {
     throw e;
   });
   console.log(`[flexxus] factura ${f.numero_factura} imputada (${body.tipocomprobante} ${body.numerocomprobante}, prov ${provExistente ? provExistente.codigoproveedor : 'NUEVO'})`);
+  let entorno = null;
+  try { entorno = new URL(process.env.FLEXXUS_URL).host; } catch (e) {}
   return {
     ok: true,
+    // A qué instancia de Flexxus se mandó. Sin esto, una factura imputada en
+    // la instancia de prueba queda marcada como imputada a secas y el panel la
+    // bloquea aunque en producción no exista. Las imputadas antes de este
+    // cambio no lo tienen: son las de prueba.
+    entorno,
     tipocomprobante: body.tipocomprobante,
     numerocomprobante: body.numerocomprobante,
     proveedor_codigo: provExistente ? provExistente.codigoproveedor : null,

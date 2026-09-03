@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-02 · tarjeta (lote/km/saldo) + editar carga + filtros de combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-02 · órdenes de compra + stock en taller + tarjeta/editar carga + filtros combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2268,6 +2268,11 @@ async function vStockGeneral(view){
   const nObjs=new Set(vis.filter(f=>!f.sin_censo).map(f=>f.objetivo)).size;
   const nSinCenso=vis.filter(f=>f.sin_censo).length;
   const enDep=vis.filter(f=>f.grupo==='deposito').reduce((a,f)=>a+cantDe(f),0);
+  // Totales de taller sobre lo que está filtrado, para que el KPI y la tabla
+  // digan lo mismo.
+  const totTaller=vis.reduce((a,f)=>a+(Number(f.en_taller)||0),0);
+  const totDisp=vis.reduce((a,f)=>a+(f.disponibles==null?cantDe(f):Number(f.disponibles)),0);
+  const sinUbicar=stkGen.taller_sin_ubicar||[];
   // faltantes que aplican al filtro actual
   const faltVis=faltantes.filter(fa=>{
     const fila=filas.find(f=>f.objetivo_id===fa.objetivo_id);
@@ -2314,12 +2319,51 @@ async function vStockGeneral(view){
     <button class="btn-salir" style="padding:6px 10px;font-size:11.5px" onclick="stkGen=null;go('stock')">↻</button>
   </div>
 
-  <div class="kpis" style="grid-template-columns:repeat(3,minmax(160px,1fr))">
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
     <div class="kpi"><div class="kpi-label">${F.tipo?escStk(F.tipo):'Equipos'}</div><div class="kpi-val">${total}</div><div class="kpi-sub">en ${nObjs} objetivo${nObjs===1?'':'s'}</div></div>
+    <div class="kpi"><div class="kpi-label">En el taller</div><div class="kpi-val" style="color:${totTaller?'var(--rojo)':'inherit'}">${totTaller}</div><div class="kpi-sub">${totTaller?'con reparación abierta':'nada parado'}</div></div>
+    <div class="kpi"><div class="kpi-label">Disponibles</div><div class="kpi-val" style="color:var(--brote-2)">${totDisp}</div><div class="kpi-sub">${total?Math.round(totDisp/total*100):100}% del parque</div></div>
     <div class="kpi"><div class="kpi-label">En depósito</div><div class="kpi-val">${enDep}</div><div class="kpi-sub">del grupo depósito</div></div>
     <div class="kpi"><div class="kpi-label">Faltantes abiertos</div><div class="kpi-val" style="color:${faltVis.length?'var(--rojo)':'inherit'}">${faltVis.length}</div><div class="kpi-sub">${faltVis.length?'revisar abajo':'sin faltantes'}</div></div>
     ${nSinCenso?`<div class="kpi"><div class="kpi-label">Sin stock cargado</div><div class="kpi-val" style="color:var(--diesel)">${nSinCenso}</div><div class="kpi-sub">objetivos por cargar</div></div>`:''}
   </div>
+
+  ${(()=>{
+    // Resumen del parque por familia. Los tipos se agrupan porque en el censo
+    // cada capataz escribe el nombre a su manera ("Motoguadaña", "Motoguadaña
+    // 291", "motoguadañas echo" son lo mismo). Es el mismo clasificador que
+    // usa el reporte de combustible.
+    const fam={};
+    vis.filter(f=>!f.sin_censo&&f.tipo).forEach(f=>{
+      const k=f.familia||'otro';
+      (fam[k]=fam[k]||{cant:0,taller:0,disp:0,objs:{},label:f.familia_label||k});
+      fam[k].cant+=cantDe(f);
+      fam[k].taller+=Number(f.en_taller)||0;
+      fam[k].disp+=(f.disponibles==null?cantDe(f):Number(f.disponibles));
+      if(f.en_taller)fam[k].objs[f.objetivo]=(fam[k].objs[f.objetivo]||0)+Number(f.en_taller);
+    });
+    const orden=['dos_tiempos','cortadora','tractor','vehiculo','fijo','otro','sin_motor'];
+    const ks=Object.keys(fam).sort((a,b)=>orden.indexOf(a)-orden.indexOf(b));
+    if(!ks.length)return '';
+    return `<div class="panel" style="margin-bottom:14px">
+      <div class="panel-title">Parque general <span class="sub" style="font-weight:400">· agrupado por familia de equipo</span></div>
+      <table><thead><tr><th>Familia</th><th style="text-align:right">Total</th><th style="text-align:right">En taller</th><th style="text-align:right">Disp.</th><th>Dónde está parado</th></tr></thead><tbody>
+      ${ks.map(k=>{
+        const d=fam[k], sinMotor=k==='sin_motor';
+        const donde=Object.keys(d.objs).sort((a,b)=>d.objs[b]-d.objs[a])
+          .map(o=>`${escStk(o)} ${d.objs[o]}`).join(' · ');
+        return `<tr${d.taller?' style="background:#FEF9F9"':''}>
+          <td${sinMotor?' style="color:var(--tinta-3)"':''}>${escStk(d.label||k)}</td>
+          <td class="mono" style="text-align:right">${d.cant}</td>
+          <td class="mono" style="text-align:right;${d.taller?'color:var(--rojo);font-weight:700':'color:var(--tinta-3)'}">${d.taller||'—'}</td>
+          <td class="mono" style="text-align:right;color:var(--brote-2)">${d.disp}</td>
+          <td class="sub" style="font-size:11.5px">${donde||(sinMotor?'no van al taller':'—')}</td></tr>`;}).join('')}
+      </tbody></table>
+      ${sinUbicar.length?`<div class="sub" style="margin-top:9px;font-size:11.5px;color:var(--diesel)">
+        ⚠ ${sinUbicar.length} reparación${sinUbicar.length===1?'':'es'} abierta${sinUbicar.length===1?'':'s'} que no se pudo colgar de ninguna máquina del censo
+        —el equipo no está censado, o su objetivo todavía no informó stock—. No se descuentan de ningún total.</div>`:''}
+    </div>`;
+  })()}
 
   ${faltVis.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
     <div class="panel-title" style="color:var(--rojo)">⚠ Faltantes sin resolver</div>
@@ -2339,7 +2383,7 @@ async function vStockGeneral(view){
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
       <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span></span>
     </div>
-    <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th style="text-align:right">Disp.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
     ${Object.keys(filasPorObj).sort().map(obj=>{
       const fs=filasPorObj[obj];
       // Objetivo sin censo: una sola fila que invita a cargarlo
@@ -2348,21 +2392,42 @@ async function vStockGeneral(view){
         return `<tr style="background:var(--hueso)">
           <td style="font-weight:600">${escStk(obj)}</td>
           <td>${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>'}</td>
-          <td colspan="4" class="sub" style="font-style:italic">Todavía no informó stock</td>
+          <td colspan="5" class="sub" style="font-style:italic">Todavía no informó stock</td>
           <td class="sub" style="font-size:11.5px">—</td>
           <td><button class="mini-btn" style="color:var(--brote);font-weight:600" onclick="editarStockObjetivo('${f.objetivo_id}')">＋ Cargar stock</button></td>
         </tr>`;
       }
       return fs.map((f,ix)=>{
+        // Un número tachado en rojo es una máquina que está en el taller. Sale
+        // del estado de la incidencia, así que cuando el mecánico la finaliza
+        // vuelve a contarse como disponible sola, sin tocar el censo.
+        const enTaller=new Set((f.numeros_taller||[]).map(n=>norm(n)));
+        const ambiguos=new Set((f.numeros_ambiguos||[]).map(n=>norm(n)));
         const chips=(f.numeros||[]).map(n=>{
           const id=padronPorNum[norm(n)];
+          if(enTaller.has(norm(n))){
+            const d=(f.taller_detalle||[]).find(t=>norm(t.numero)===norm(n));
+            return `<span class="uni-chip" title="en el taller${d&&d.falla?' · '+escStk(d.falla):''}" style="background:var(--rojo-soft);color:#A3253A;border:1px solid #F2C4CB;text-decoration:line-through${id?';cursor:pointer':''}"${id?` onclick="fichaMaquina('${id}')"`:''}>${escStk(n)}</span>`;
+          }
+          // Número que no identifica una unidad (repetido en el censo, "sn"):
+          // apagado, para que se vea por qué no se puede señalar cuál es.
+          if(ambiguos.has(norm(n))){
+            return `<span class="uni-chip" title="este número no identifica una máquina: está repetido en el censo o sin numerar" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">${escStk(n)}</span>`;
+          }
           return id?`<span class="uni-chip" style="cursor:pointer" onclick="fichaMaquina('${id}')" title="ver ficha">${escStk(n)}</span>`
                    :`<span class="uni-chip">${escStk(n)}</span>`;}).join('');
-        return `<tr>
+        const nT=Number(f.en_taller)||0;
+        const disp=f.disponibles==null?(Number(f.cantidad)||0):f.disponibles;
+        // Reparaciones descontadas sin poder decir de qué máquina son.
+        const anon=(f.taller_detalle||[]).filter(t=>t.sin_identificar).length;
+        return `<tr${nT?' style="background:#FEF9F9"':''}>
           ${ix===0?`<td rowspan="${fs.length}" style="font-weight:600;vertical-align:top">${escStk(obj)}</td>
           <td rowspan="${fs.length}" style="vertical-align:top">${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>'}</td>`:''}
           <td>${escStk(f.tipo)}</td>
           <td class="mono" style="text-align:right">${f.cantidad}</td>
+          <td class="mono" style="text-align:right">${nT
+            ?`<span style="color:var(--rojo);font-weight:700">${disp}</span><span class="sub" style="display:block;font-size:10.5px;font-weight:400">${nT} en taller${anon?` · ${anon} s/ident.`:''}</span>`
+            :`<span style="color:var(--brote-2)">${disp}</span>`}</td>
           <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${chips||'<span class="sub">—</span>'}</div></td>
           <td class="sub" style="font-size:12px">${escStk(f.observacion||'')}</td>
           ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${fFecha(f.periodo)}</td>
@@ -2372,7 +2437,7 @@ async function vStockGeneral(view){
           </div></td>`:''}
         </tr>`;}).join('');
     }).join('')}
-    ${!vis.length?'<tr><td colspan="8" class="sub" style="padding:18px">Nada que mostrar con estos filtros.</td></tr>':''}
+    ${!vis.length?'<tr><td colspan="9" class="sub" style="padding:18px">Nada que mostrar con estos filtros.</td></tr>':''}
     </tbody></table>
   </div>`;
 }
@@ -6988,6 +7053,8 @@ function renderUsuariosPanel(){
       <input class="busca" id="up-nombre" style="width:100%;margin-bottom:10px" value="${(u.nombre||'').replace(/"/g,'&quot;')}" placeholder="ej. Soledad — Administración">
       <div class="mm-label">${esNuevo?'Clave':'Nueva clave (dejar vacío para no cambiarla)'}</div>
       <input class="busca" id="up-clave" type="password" style="width:100%;margin-bottom:12px" placeholder="${esNuevo?'clave inicial':'sin cambio'}">
+      <div class="mm-label">WhatsApp <span style="font-weight:400;color:var(--tinta-3)">· para mandar órdenes de compra por foto (solo con el módulo Compras)</span></div>
+      <input class="busca mono" id="up-telefono" style="width:100%;margin-bottom:12px" value="${(u.telefono||'').replace(/"/g,'&quot;')}" placeholder="ej. 5493511234567 (sin + ni espacios)">
       <div class="mm-label" style="margin-bottom:6px">Módulos que puede ver</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">
         ${MODS_PANEL.map(([k,l])=>`<label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer">
@@ -7011,7 +7078,7 @@ function renderUsuariosPanel(){
           :(u.modulos||[]).map(m=>`<span class="badge b-gray">${m}</span>`).join('')||'<span class="badge b-amber">sin módulos</span>'}
       </div>
       <div style="display:flex;gap:6px;margin-top:8px">
-        <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick='uPanelEdit=${JSON.stringify({id:u.id,usuario:u.usuario,nombre:u.nombre,modulos:u.modulos||[],admin:u.admin,activo:u.activo}).replace(/'/g,"&#39;")};renderUsuariosPanel()'>✎ Editar</button>
+        <button class="btn-salir" style="padding:5px 10px;font-size:12px" onclick='uPanelEdit=${JSON.stringify({id:u.id,usuario:u.usuario,nombre:u.nombre,modulos:u.modulos||[],admin:u.admin,activo:u.activo,telefono:u.telefono||''}).replace(/'/g,"&#39;")};renderUsuariosPanel()'>✎ Editar</button>
         <button class="btn-salir" style="padding:5px 10px;font-size:12px;${u.activo?'color:var(--rojo)':''}" onclick="toggleUsuarioPanel('${u.id}',${!u.activo})">${u.activo?'Desactivar':'Reactivar'}</button>
       </div>
     </div>`).join('')+'</div>'
@@ -7024,6 +7091,7 @@ async function guardarUsuarioPanel(){
     usuario:document.getElementById('up-usuario').value.trim(),
     nombre:document.getElementById('up-nombre').value.trim(),
     clave:document.getElementById('up-clave').value||null,
+    telefono:(document.getElementById('up-telefono').value||'').replace(/\D/g,'')||null,
     modulos:MODS_PANEL.map(([k])=>k).filter(k=>document.getElementById('up-m-'+k).checked),
     admin:document.getElementById('up-admin').checked,
     activo:u.activo!==false,
@@ -7769,6 +7837,7 @@ function tabsCompras(){return `<div class="toggle-imp" style="margin-bottom:16px
   <button class="${comprasTab==='cuenta'?'on':''}" onclick="comprasTab='cuenta';go('compras')">Estado de cuenta</button>
   <button class="${comprasTab==='consumos'?'on':''}" onclick="comprasTab='consumos';go('compras')">Consumos</button>
   <button class="${comprasTab==='repuestos'?'on':''}" onclick="comprasTab='repuestos';go('compras')">Repuestos</button>
+  <button class="${comprasTab==='ordenes'?'on':''}" onclick="comprasTab='ordenes';go('compras')">Órdenes</button>
   <button class="${comprasTab==='indicadores'?'on':''}" onclick="comprasTab='indicadores';go('compras')">Indicadores</button>
 </div>`;}
 
@@ -8310,6 +8379,317 @@ function pintarConsSide(g){
    Lo que el taller espera para reparar: pedidos cargados por el mecánico
    (app) o desde el detalle de la reparación (panel). */
 let rtData=null, rtEstado='', rtBusca='';
+/* ═══ Compras · Órdenes de compra ═══════════════════════════════
+   La orden es la decisión de quien compra, escrita antes de que llegue la
+   factura. Nacen solas de un repuesto aprobado, de un insumo en compra o de
+   una foto por WhatsApp; el formulario de acá es para lo que no vino de
+   ningún lado y para corregir. */
+let ordData=null, ordF={estado:'abierta',q:''}, ordSub='lista';  // 'lista' | 'financiero'
+let ordMes=null;
+
+function ordBadge(e){return e==='abierta'?'<span class="badge b-amber">abierta</span>':e==='borrador'?'<span class="badge b-gray">borrador</span>':e==='facturada'?'<span class="badge b-green">facturada</span>':'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">anulada</span>';}
+function ordOrigen(o){
+  const t=o.origen_tipo;
+  const badge=t==='repuesto'?'<span class="badge" style="background:var(--violeta-soft);color:#4A3A9C">Reparación</span>'
+    :t==='insumo'?'<span class="badge" style="background:var(--violeta-soft);color:#4A3A9C">Insumos</span>'
+    :t==='bot'?'<span class="badge b-blue">WhatsApp</span>':'<span class="badge b-gray">manual</span>';
+  return badge;
+}
+function ordTramo(o){const t=o.tramo||'directa';const lab={directa:'Directa',presupuesto:'Presupuesto',comparativos:'Comparativos'}[t]||t;
+  const cots=(o.cotizaciones||[]).length;const req={directa:0,presupuesto:1,comparativos:2}[t]||0;
+  const falta=cots<req;
+  return `<span class="badge ${falta?'b-amber':'b-gray'}" title="${cots} de ${req} presupuestos">${lab}${req?` · ${cots}/${req}`:''}</span>`;}
+
+async function vComprasOrdenes(view){
+  if(ordSub==='financiero'){vOrdenesFinanciero(view);return;}
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Cargando órdenes…</div>';
+  try{ordData=await api('/api/compras/ordenes');}
+  catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
+  const todas=ordData||[];
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const vis=todas.filter(o=>(ordF.estado==='todas'||o.estado===ordF.estado)&&
+    (!ordF.q||norm([o.numero,o.proveedor,o.descripcion,(o.items||[]).map(i=>i.descripcion+' '+i.objetivo).join(' ')].join(' ')).includes(norm(ordF.q))));
+  const abiertas=todas.filter(o=>o.estado==='abierta');
+  const borradores=todas.filter(o=>o.estado==='borrador');
+  const comprometido=abiertas.reduce((s,o)=>s+(Number(o.total_estimado)||0),0);
+  const mesISO=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
+  const factMes=todas.filter(o=>o.estado==='facturada'&&String((o.facturada||{}).at||'').startsWith(mesISO));
+  const conDif=factMes.filter(o=>Math.abs(((o.facturada||{}).pct)||0)>5);
+  const pendientes=todas.filter(o=>o.estado!=='anulada'&&o.estado!=='facturada'&&(o.objetivo_pendiente||(o.cotizaciones||[]).length<({directa:0,presupuesto:1,comparativos:2}[o.tramo||'directa']||0)));
+
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Órdenes de compra</div>
+    <div class="view-desc">Lo que se compró y para qué, antes de que llegue la factura</div></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn-salir" onclick="ordSub='financiero';go('compras')">📊 Financiero</button>
+      <button class="btn" onclick="ordNueva()">＋ Nueva orden</button></div></div>
+  ${tabsCompras()}
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="kpi"><div class="kpi-label">Abiertas</div><div class="kpi-val" style="color:#4A3A9C">${abiertas.length}</div><div class="kpi-sub">esperando factura</div></div>
+    <div class="kpi"><div class="kpi-label">Comprometido</div><div class="kpi-val" style="font-size:20px">${money(comprometido)}</div><div class="kpi-sub">suma de lo abierto</div></div>
+    <div class="kpi"><div class="kpi-label">Facturadas este mes</div><div class="kpi-val" style="color:var(--brote-2)">${factMes.length}</div><div class="kpi-sub">cerradas al vincular</div></div>
+    <div class="kpi"><div class="kpi-label">Con diferencia</div><div class="kpi-val" style="color:${conDif.length?'var(--diesel)':'inherit'}">${conDif.length}</div><div class="kpi-sub">factura ≠ cotizado &gt;5%</div></div>
+    <div class="kpi"><div class="kpi-label">Por completar</div><div class="kpi-val" style="color:${pendientes.length?'var(--rojo)':'inherit'}">${pendientes.length}</div><div class="kpi-sub">sin objetivo o sin presupuesto</div></div>
+  </div>
+  ${borradores.length?`<div class="aviso-amarillo" style="margin-bottom:12px">${borradores.length} orden${borradores.length===1?'':'es'} en <b>borrador</b>: le${borradores.length===1?'':'s'} falta proveedor, objetivo, presupuesto o aprobación. No se van a poder vincular a una factura hasta completarlas.</div>`:''}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+    <div class="toggle-imp" style="margin:0">
+      ${['abierta','borrador','facturada','anulada','todas'].map(e=>`<button class="${ordF.estado===e?'on':''}" onclick="ordF.estado='${e}';go('compras')">${e==='todas'?'Todas':cap(e)}</button>`).join('')}
+    </div>
+    <input placeholder="Buscar N°, proveedor, ítem, objetivo…" value="${escStk(ordF.q)}" onchange="ordF.q=this.value;go('compras')" style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+  </div>
+  <div class="panel">
+    <table><thead><tr><th>N°</th><th>Fecha</th><th>Proveedor</th><th>Origen</th><th>Ítems · imputación</th><th class="tr">Cotizado</th><th>Tramo</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${vis.length?vis.map(o=>{
+      const objs=[...new Set((o.items||[]).map(i=>i.objetivo).filter(Boolean))];
+      const fac=o.facturada||{};
+      return `<tr style="cursor:pointer" onclick="ordVer('${o.id}')">
+        <td class="mono" style="font-weight:600">${escStk(o.numero)}</td>
+        <td class="mono" style="font-size:12px">${fechaAR(o.fecha)}</td>
+        <td><b>${escStk(o.proveedor||'—')}</b>${o.cuit?`<div class="sub mono" style="font-size:10.5px">${escStk(o.cuit)}</div>`:''}</td>
+        <td>${ordOrigen(o)}<div class="sub" style="font-size:10.5px">${escStk(o.descripcion||'')}</div></td>
+        <td style="font-size:12px">${(o.items||[]).length} ítem${(o.items||[]).length===1?'':'s'} → ${objs.length?escStk(objs.slice(0,3).join(' · '))+(objs.length>3?' +'+(objs.length-3):''):'<span style="color:var(--rojo)">sin objetivo</span>'}${o.objetivo_pendiente?' <span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">pendiente</span>':''}</td>
+        <td class="tr mono">${o.total_estimado?money(o.total_estimado):'<span class="sub">s/cotiz.</span>'}</td>
+        <td>${ordTramo(o)}</td>
+        <td>${ordBadge(o.estado)}${o.estado==='facturada'?`<div class="sub mono" style="font-size:10.5px">${escStk(fac.numero_factura||'')}${fac.pct!=null&&Math.abs(fac.pct)>5?` <span style="color:var(--diesel)">${fac.pct>0?'+':''}${fac.pct}%</span>`:''}</div>`:''}${(o.fraccionamiento||{}).aviso?'<div class="sub" style="font-size:10.5px;color:var(--diesel)">⚠ fraccionamiento</div>':''}</td>
+        <td><button class="mini-btn" onclick="event.stopPropagation();ordVer('${o.id}')">Ver</button></td></tr>`;}).join('')
+      :'<tr><td colspan="9" class="sub" style="padding:18px">Ninguna orden con este filtro.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+
+function ordVer(id){
+  const o=(ordData||[]).find(x=>x.id===id);
+  if(!o)return;
+  const fac=o.facturada||{};
+  const req={directa:0,presupuesto:1,comparativos:2}[o.tramo||'directa']||0;
+  const cots=o.cotizaciones||[];
+  const puedeEditar=o.estado!=='facturada'&&o.estado!=='anulada';
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='ord-modal';
+  bg.innerHTML=`<div class="modal" style="max-width:720px;padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:92vh">
+    <div style="padding:16px 22px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:flex-start;flex-shrink:0">
+      <div><div style="font-size:18px;font-weight:700" class="mono">${escStk(o.numero)} ${ordBadge(o.estado)}</div>
+        <div class="sub" style="margin-top:3px">${escStk(o.proveedor||'sin proveedor')}${o.cuit?' · '+escStk(o.cuit):''} · ${fechaAR(o.fecha)} · ${ordOrigen(o)}</div></div>
+      <button style="cursor:pointer;font-size:20px;color:var(--tinta-3);background:none;border:none" onclick="document.getElementById('ord-modal').remove()">✕</button></div>
+    <div style="padding:16px 22px;overflow:auto;flex:1">
+      ${o.descripcion?`<div style="font-size:13px;margin-bottom:12px">${escStk(o.descripcion)}</div>`:''}
+      ${o.objetivo_pendiente?`<div class="aviso-amarillo" style="margin-bottom:12px">⚠ Hay ítems sin centro de costo${o.objetivo_original?` (venía como "<b>${escStk(o.objetivo_original)}</b>", que no existe en Compras)`:''}. Editá la orden y elegilo.</div>`:''}
+      ${(o.fraccionamiento||{}).aviso?`<div class="aviso-amarillo" style="margin-bottom:12px">⚠ <b>Fraccionamiento</b>: con ${escStk((o.fraccionamiento.ordenes||[]).join(', '))} suma ${money(o.fraccionamiento.suma)} al mismo proveedor y objetivo en 7 días. Ese total pide ${escStk(o.fraccionamiento.tramo_suma)}.</div>`:''}
+      <div class="mm-label">Ítems</div>
+      <table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="tr">Cant.</th><th class="tr">Precio</th><th>Centro de costo</th><th>Unidad</th></tr></thead><tbody>
+        ${(o.items||[]).map(i=>`<tr><td>${escStk(i.descripcion)}${i.codigo?`<div class="sub mono" style="font-size:10.5px">cód. ${escStk(i.codigo)}</div>`:''}${i.comentario?`<div class="sub" style="font-size:10.5px">${escStk(i.comentario)}</div>`:''}</td>
+          <td class="tr mono">${i.cantidad}</td><td class="tr mono">${i.precio?money(i.precio):'—'}</td>
+          <td>${i.objetivo?escStk(i.objetivo):'<span style="color:var(--rojo)">sin asignar</span>'}</td><td class="sub" style="font-size:11px">${escStk((i.unidad||'').split(' — ').slice(0,3).join(' · '))}</td></tr>`).join('')}
+        <tr class="tot-row"><td><b>Total cotizado</b></td><td></td><td class="tr mono"><b>${o.total_estimado?money(o.total_estimado):'—'}</b></td><td colspan="2">${ordTramo(o)}${o.sin_cotizacion?' <span class="sub">sin cotización</span>':''}</td></tr>
+      </tbody></table>
+
+      <div class="mm-label" style="margin-top:16px">Presupuestos ${req?`<span class="sub" style="font-weight:400">· este tramo pide ${req}</span>`:''}</div>
+      ${cots.length?cots.map((c,ix)=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--linea);font-size:12.5px">
+          <span>${c.elegida?'✓ ':''}<b>${escStk(c.proveedor)}</b>${c.plazo?` · ${escStk(c.plazo)}`:''}${c.origen?` <span class="sub">(${escStk(c.origen)})</span>`:''}</span>
+          <span class="mono">${money(c.precio)}</span></div>`).join('')
+        :'<div class="sub">Sin presupuestos cargados.</div>'}
+      ${puedeEditar?`<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input id="ord-cot-prov" placeholder="Proveedor" style="flex:2;min-width:140px;padding:6px 9px;border:1px solid var(--linea-2);border-radius:8px;font-size:12.5px">
+        <input id="ord-cot-precio" placeholder="Precio total c/IVA" class="mono" style="flex:1;min-width:110px;padding:6px 9px;border:1px solid var(--linea-2);border-radius:8px;font-size:12.5px">
+        <input id="ord-cot-plazo" placeholder="Plazo" style="flex:1;min-width:80px;padding:6px 9px;border:1px solid var(--linea-2);border-radius:8px;font-size:12.5px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="ord-cot-elegida" ${!cots.length?'checked':''}> elegido</label>
+        <button class="btn" style="padding:6px 12px;font-size:12px" onclick="ordAgregarCotizacion('${o.id}')">+ Presupuesto</button></div>`:''}
+
+      ${o.estado==='facturada'?`<div class="mm-label" style="margin-top:16px">Factura</div>
+        <div style="font-size:12.5px">Cerrada con <b class="mono">${escStk(fac.numero_factura||'')}</b> el ${fechaAR(fac.at)} por ${escStk(fac.por||'')}.
+          Facturado <b class="mono">${money(fac.facturado)}</b>${fac.cotizado?` · cotizado ${money(fac.cotizado)} → <b style="color:${Math.abs(fac.pct||0)>5?'var(--diesel)':'inherit'}">${fac.diferencia>=0?'+':''}${money(fac.diferencia)}${fac.pct!=null?' ('+(fac.pct>=0?'+':'')+fac.pct+'%)':''}</b>`:' · sin cotización previa'}</div>`:''}
+      ${o.aprobado_por?`<div class="sub" style="margin-top:10px;font-size:11.5px">Aprobada por ${escStk(o.aprobado_por)} el ${fechaAR(o.aprobado_at)}${o.aprobado_forzado?' <b style="color:var(--diesel)">(forzada, sin los presupuestos que pedía el tramo)</b>':''}</div>`:''}
+      <div class="sub" style="margin-top:6px;font-size:11px">Creada por ${escStk(o.creado_por||'')} vía ${escStk(o.creado_via||'panel')}${o.editado_por?` · editada por ${escStk(o.editado_por)}`:''}</div>
+    </div>
+    <div style="padding:12px 22px;border-top:1px solid var(--linea);background:var(--hueso);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;flex-shrink:0">
+      <div style="display:flex;gap:6px">
+        <button class="btn ghost" style="font-size:12px" onclick="ordPDF('${o.id}')">🖨 Para el proveedor</button>
+        ${puedeEditar?`<button class="btn ghost" style="font-size:12px;color:var(--rojo)" onclick="ordAnular('${o.id}')">Anular</button>`:''}
+      </div>
+      <div style="display:flex;gap:6px">
+        ${o.estado==='borrador'&&o.tramo==='comparativos'?`<button class="btn" style="font-size:12px" onclick="ordAprobar('${o.id}')">✓ Aprobar</button>`:''}
+        ${o.estado==='borrador'&&o.tramo!=='comparativos'&&!o.objetivo_pendiente&&o.proveedor?`<button class="btn" style="font-size:12px" onclick="ordCambiarEstado('${o.id}','abierta')">Pasar a abierta</button>`:''}
+        ${puedeEditar?`<button class="btn ghost" style="font-size:12px" onclick="document.getElementById('ord-modal').remove();ordEditar('${o.id}')">✏️ Editar</button>`:''}
+        <button class="btn ghost" style="font-size:12px" onclick="document.getElementById('ord-modal').remove()">Cerrar</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(bg);
+}
+
+async function ordAgregarCotizacion(id){
+  const g=x=>(document.getElementById(x)||{}).value||'';
+  try{
+    const r=await api('/api/compras/ordenes/'+id+'/cotizacion',{method:'POST',body:JSON.stringify({proveedor:g('ord-cot-prov'),precio:g('ord-cot-precio'),plazo:g('ord-cot-plazo'),elegida:(document.getElementById('ord-cot-elegida')||{}).checked})});
+    document.getElementById('ord-modal').remove();
+    toast(`Presupuesto cargado · ${r.tiene} de ${r.requiere||0} que pide el tramo`);
+    go('compras');
+  }catch(e){toast(e.message,'error');}
+}
+async function ordAprobar(id){
+  try{await api('/api/compras/ordenes/'+id+'/aprobar',{method:'POST',body:'{}'});document.getElementById('ord-modal').remove();toast('Orden aprobada');go('compras');}
+  catch(e){
+    if(e.message&&/forz/i.test(e.message)&&confirm(e.message+'\n\n¿Aprobar igual? Queda registrado como forzada.')){
+      try{await api('/api/compras/ordenes/'+id+'/aprobar',{method:'POST',body:JSON.stringify({forzar:true})});document.getElementById('ord-modal').remove();toast('Orden aprobada (forzada)');go('compras');}catch(e2){toast(e2.message,'error');}
+    }else toast(e.message,'error');
+  }
+}
+async function ordCambiarEstado(id,estado){
+  try{await api('/api/compras/ordenes/'+id,{method:'PUT',body:JSON.stringify({estado})});document.getElementById('ord-modal').remove();go('compras');}
+  catch(e){toast(e.message,'error');}
+}
+async function ordAnular(id){
+  const motivo=prompt('¿Por qué se anula? (queda registrado)');
+  if(motivo===null)return;
+  try{await api('/api/compras/ordenes/'+id+'/anular',{method:'POST',body:JSON.stringify({motivo})});document.getElementById('ord-modal').remove();toast('Orden anulada');go('compras');}
+  catch(e){toast(e.message,'error');}
+}
+
+/* Documento para mandarle al proveedor: lo que importa es que el número
+   quede grande y claro, porque es lo que tiene que copiar en la factura. */
+function ordPDF(id){
+  const o=(ordData||[]).find(x=>x.id===id);if(!o)return;
+  const w=window.open('','_blank');
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escStk(o.numero)}</title>
+  <style>body{font-family:system-ui,sans-serif;color:#16221C;max-width:720px;margin:30px auto;padding:0 20px;font-size:13px}
+  h1{font-size:30px;margin:0;letter-spacing:-.5px}.sub{color:#586B60}table{width:100%;border-collapse:collapse;margin-top:16px}
+  th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#8C9B92;padding:6px;border-bottom:2px solid #16221C}
+  td{padding:7px 6px;border-bottom:1px solid #E6EBE4}.tr{text-align:right}.mono{font-family:ui-monospace,monospace}
+  .caja{border:2px solid #159B51;border-radius:10px;padding:12px 16px;margin:18px 0;background:#E5F5EC}
+  @media print{@page{margin:14mm}}</style></head><body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #159B51;padding-bottom:10px">
+    <div><div style="font-weight:700;font-size:16px;color:#159B51">EcoService SRL</div><div class="sub">CUIT 30-70793029-9 · Córdoba</div></div>
+    <div style="text-align:right"><div class="sub">Orden de compra</div><h1 class="mono">${escStk(o.numero)}</h1><div class="sub">${fechaAR(o.fecha)}</div></div></div>
+  <div style="margin-top:14px"><b>Proveedor:</b> ${escStk(o.proveedor||'—')}${o.cuit?' · CUIT '+escStk(o.cuit):''}</div>
+  ${o.descripcion?`<div style="margin-top:4px" class="sub">${escStk(o.descripcion)}</div>`:''}
+  <table><thead><tr><th>Descripción</th><th class="tr">Cant.</th><th class="tr">Precio</th></tr></thead><tbody>
+  ${(o.items||[]).map(i=>`<tr><td>${escStk(i.descripcion)}${i.codigo?` <span class="sub mono">(${escStk(i.codigo)})</span>`:''}</td><td class="tr mono">${i.cantidad}</td><td class="tr mono">${i.precio?money(i.precio):'—'}</td></tr>`).join('')}
+  <tr><td><b>Total</b></td><td></td><td class="tr mono"><b>${o.total_estimado?money(o.total_estimado):'a cotizar'}</b></td></tr></tbody></table>
+  <div class="caja"><b>Importante:</b> indicar el número <b class="mono">${escStk(o.numero)}</b> en la factura, en el campo de referencia u observaciones. Las facturas sin número de orden demoran su pago.</div>
+  <div class="sub" style="margin-top:20px;font-size:11px">Emitida por ${escStk(o.creado_por||'')} · EcoService · Compras</div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  w.document.close();
+}
+
+/* Alta y edición manual. Cada ítem con su centro de costo. */
+function ordNueva(){ordEditarForm(null);}
+function ordEditar(id){ordEditarForm((ordData||[]).find(x=>x.id===id)||null);}
+function ordEditarForm(o){
+  const esNueva=!o;
+  o=o||{proveedor:'',cuit:'',fecha:new Date().toISOString().slice(0,10),descripcion:'',items:[{descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''}]};
+  window._ordItems=(o.items||[]).map(i=>({...i}));
+  if(!window._ordItems.length)window._ordItems.push({descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''});
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='ord-form';
+  bg.innerHTML=`<div class="modal" style="max-width:720px;padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:92vh">
+    <div style="padding:16px 22px;border-bottom:1px solid var(--linea);flex-shrink:0"><div style="font-size:16px;font-weight:700">${esNueva?'Nueva orden de compra':'Editar '+escStk(o.numero)}</div>
+      <div class="sub">${esNueva?'Para lo que no viene de un pedido ni entró por foto. El número se asigna al guardar.':'Una orden facturada ya no se edita.'}</div></div>
+    <div style="padding:16px 22px;overflow:auto;flex:1">
+      <div class="grid g-2">
+        <div class="mm-field"><label>Proveedor</label><input id="of-prov" value="${escStk(o.proveedor||'')}"></div>
+        <div class="mm-field"><label>CUIT</label><input id="of-cuit" class="mono" value="${escStk(o.cuit||'')}"></div>
+        <div class="mm-field"><label>Fecha</label><input id="of-fecha" type="date" class="mono" value="${(o.fecha||'').slice(0,10)}"></div>
+        <div class="mm-field"><label>Descripción de la compra</label><input id="of-desc" value="${escStk(o.descripcion||'')}"></div>
+      </div>
+      <div class="mm-label">Ítems · cada uno con su centro de costo</div>
+      <datalist id="of-obj-list">${COMPRAS_OBJ.map(x=>`<option value="${x.replace(/"/g,'&quot;')}">`).join('')}</datalist>
+      <div id="of-items"></div>
+      <button class="btn ghost" style="width:100%;margin-top:10px;border-style:dashed;font-size:12px" onclick="ordAddItem()">+ Agregar ítem</button>
+      <div id="of-total" class="sub" style="margin-top:10px;text-align:right"></div>
+    </div>
+    <div style="padding:12px 22px;border-top:1px solid var(--linea);background:var(--hueso);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0">
+      <button class="btn ghost" onclick="document.getElementById('ord-form').remove()">Cancelar</button>
+      <button class="btn" id="of-save" onclick="ordGuardar(${esNueva?'null':`'${o.id}'`})">Guardar orden</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  ordRenderItems();
+}
+function ordRenderItems(){
+  const c=document.getElementById('of-items');if(!c)return;
+  const its=window._ordItems||[];
+  c.innerHTML=its.map((i,ix)=>`<div style="border:1px solid var(--linea);border-radius:10px;padding:10px 12px;margin-top:8px;background:var(--hueso)">
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+      <input class="ed-in" style="flex:3;font-weight:600" placeholder="Descripción" value="${escStk(i.descripcion||'')}" oninput="_ordItems[${ix}].descripcion=this.value">
+      <input class="ed-in mono" style="flex:1" placeholder="Código" value="${escStk(i.codigo||'')}" oninput="_ordItems[${ix}].codigo=this.value">
+      ${its.length>1?`<button class="btn ghost" style="padding:4px 8px;font-size:11px;color:var(--rojo)" onclick="_ordItems.splice(${ix},1);ordRenderItems()">✕</button>`:''}</div>
+    <div class="ed-grid-3">
+      <div class="ed-campo"><label>Cantidad</label><input class="mono" value="${i.cantidad||1}" oninput="_ordItems[${ix}].cantidad=this.value;ordTotal()"></div>
+      <div class="ed-campo"><label>Precio unit. c/IVA</label><input class="mono" value="${i.precio!=null?i.precio:''}" oninput="_ordItems[${ix}].precio=this.value;ordTotal()"></div>
+      <div class="ed-campo"><label>Centro de costo</label><input list="of-obj-list" value="${escStk(i.objetivo||'')}" oninput="_ordItems[${ix}].objetivo=this.value" autocomplete="off"></div>
+    </div>
+    <div class="ed-grid" style="margin-top:6px">
+      <div class="ed-campo"><label>Unidad</label><select onchange="_ordItems[${ix}].unidad=this.value"><option value="">—</option>${COMPRAS_UNI.map(u=>`<option value="${u.replace(/"/g,'&quot;')}" ${i.unidad===u?'selected':''}>${escStk(u)}</option>`).join('')}</select></div>
+      <div class="ed-campo"><label>Observación</label><input value="${escStk(i.comentario||'')}" oninput="_ordItems[${ix}].comentario=this.value"></div>
+    </div></div>`).join('');
+  ordTotal();
+}
+function ordAddItem(){(window._ordItems=window._ordItems||[]).push({descripcion:'',cantidad:1,codigo:'',precio:null,objetivo:'',unidad:'',comentario:''});ordRenderItems();}
+function ordTotal(){
+  const n=v=>{const s=String(v==null?'':v).replace(/[^\d.,-]/g,'');if(!/\d/.test(s))return 0;return Number(s.replace(/\./g,'').replace(',','.'))||0;};
+  const t=(window._ordItems||[]).reduce((s,i)=>s+n(i.precio)*(n(i.cantidad)||1),0);
+  const tramo=t>=800000?'comparativos (2+ presupuestos y aprobación)':t>500000?'con presupuesto':'compra directa';
+  const el=document.getElementById('of-total');if(el)el.innerHTML=`Total estimado <b class="mono">${money(t)}</b> · ${tramo}`;
+}
+async function ordGuardar(id){
+  const g=x=>(document.getElementById(x)||{}).value||'';
+  const n=v=>{const s=String(v==null?'':v).replace(/[^\d.,-]/g,'');if(!/\d/.test(s))return null;return Number(s.replace(/\./g,'').replace(',','.'));};
+  const items=(window._ordItems||[]).filter(i=>String(i.descripcion||'').trim()).map(i=>({...i,cantidad:n(i.cantidad)||1,precio:n(i.precio)}));
+  if(!items.length){toast('Cargá al menos un ítem','error');return;}
+  if(items.some(i=>!String(i.objetivo||'').trim())){toast('Cada ítem necesita un centro de costo','error');return;}
+  const body={proveedor:g('of-prov'),cuit:g('of-cuit'),fecha:g('of-fecha'),descripcion:g('of-desc'),items};
+  const btn=document.getElementById('of-save');if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  try{
+    const r=id?await api('/api/compras/ordenes/'+id,{method:'PUT',body:JSON.stringify(body)})
+              :await api('/api/compras/ordenes',{method:'POST',body:JSON.stringify(body)});
+    document.getElementById('ord-form').remove();
+    if(r.orden)toast(`${r.orden.numero} guardada${r.requiere?` · este tramo pide ${r.requiere} presupuesto${r.requiere===1?'':'s'}`:''}`);
+    if(r.fraccionamiento&&r.fraccionamiento.aviso)toast(`⚠ Fraccionamiento: con ${r.fraccionamiento.ordenes.join(', ')} suma ${money(r.fraccionamiento.suma)}`,'error');
+    go('compras');
+  }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar orden';}toast(e.message,'error');}
+}
+
+/* Financiero: cotizado / facturado / pagado por objetivo. Cotizado sale de
+   las órdenes; facturado y pagado de las facturas. Comprometido es lo que
+   está cotizado y todavía no llegó la factura. */
+async function vOrdenesFinanciero(view){
+  const mes=ordMes||new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
+  view.innerHTML=tabsCompras()+'<div class="cargando-v">Armando el financiero…</div>';
+  let d;
+  try{d=await api('/api/compras/ordenes/financiero?mes='+mes);}
+  catch(e){view.innerHTML=tabsCompras()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
+  const t=d.total||{};
+  const [a,m]=mes.split('-').map(Number);
+  const mesAnt=new Date(a,m-2,1).toLocaleDateString('sv-SE').slice(0,7), mesSig=new Date(a,m,1).toLocaleDateString('sv-SE').slice(0,7);
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Financiero de compras</div>
+    <div class="view-desc">Cotizado, facturado y pagado por centro de costo · ${mesNombre(mes)}</div></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="btn-salir" onclick="ordMes='${mesAnt}';go('compras')">‹</button>
+      <span class="mono" style="font-size:13px">${mes}</span>
+      <button class="btn-salir" onclick="ordMes='${mesSig}';go('compras')">›</button>
+      <button class="btn-salir" style="margin-left:8px" onclick="ordSub='lista';go('compras')">← Órdenes</button></div></div>
+  ${tabsCompras()}
+  <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+    <div class="kpi"><div class="kpi-label">Cotizado</div><div class="kpi-val" style="font-size:20px;color:#4A3A9C">${money(t.cotizado)}</div><div class="kpi-sub">órdenes del mes</div></div>
+    <div class="kpi"><div class="kpi-label">Comprometido</div><div class="kpi-val" style="font-size:20px;color:var(--diesel)">${money(t.comprometido)}</div><div class="kpi-sub">cotizado sin factura aún</div></div>
+    <div class="kpi"><div class="kpi-label">Facturado</div><div class="kpi-val" style="font-size:20px">${money(t.facturado)}</div><div class="kpi-sub">facturas del mes</div></div>
+    <div class="kpi"><div class="kpi-label">Pagado</div><div class="kpi-val" style="font-size:20px;color:var(--brote-2)">${money(t.pagado)}</div><div class="kpi-sub">de lo facturado</div></div>
+  </div>
+  <div class="panel">
+    <table><thead><tr><th>Centro de costo</th><th class="tr">Cotizado</th><th class="tr">Comprometido</th><th class="tr">Facturado</th><th class="tr">Pagado</th><th class="tr">Órd. / Fact.</th></tr></thead><tbody>
+    ${(d.filas||[]).map(r=>`<tr><td><b>${escStk(r.objetivo)}</b>${r.sin_orden?`<div class="sub" style="font-size:10.5px;color:var(--diesel)">${r.sin_orden} factura${r.sin_orden===1?'':'s'} sin orden</div>`:''}</td>
+      <td class="tr mono">${r.cotizado?money(r.cotizado):'—'}</td>
+      <td class="tr mono" style="color:${r.comprometido?'var(--diesel)':'inherit'}">${r.comprometido?money(r.comprometido):'—'}</td>
+      <td class="tr mono">${r.facturado?money(r.facturado):'—'}</td>
+      <td class="tr mono" style="color:var(--brote-2)">${r.pagado?money(r.pagado):'—'}</td>
+      <td class="tr mono sub">${r.ordenes} / ${r.facturas}</td></tr>`).join('')||'<tr><td colspan="6" class="sub" style="padding:18px">Sin movimientos en el mes.</td></tr>'}
+    </tbody></table>
+  </div>
+  <div class="sub" style="margin-top:10px;font-size:11.5px;line-height:1.5">
+    <b>Cómo leerlo.</b> Cotizado es lo que dicen las órdenes: una previsión, no plata gastada. Con la inflación un presupuesto de hace 20 días no es el precio final, y una compra directa "sin cotización" es una estimación.
+    Comprometido es la parte de eso que todavía no tiene factura: a lo que te estás obligando este mes. Facturado y pagado son datos firmes.
+    Las facturas <b>sin orden</b> aparecen en facturado pero no en cotizado: por eso facturado puede superar a cotizado.
+  </div>`;
+}
+
 async function vComprasRepuestos(view){
   view.innerHTML=tabsCompras()+'<div class="cargando-v">Cargando…</div>';
   try{
@@ -8442,8 +8822,14 @@ async function rtAprobar(id){
   const p=(rtData||[]).find(x=>String(x.id)===String(id))||{};
   if(!await uiConfirm('Nota: '+(p.nota_proveedor||'—')+' · '+money(p.nota_precio||0)+' · '+(p.nota_plazo||'—')+'\n\nAl aprobar pasa a A COMPRAR y Compras la ejecuta.','¿Aprobar la compra?',{ok:'✓ Aprobar'}))return;
   try{
-    await api('/api/compras/repuestos/'+id+'/aprobar',{method:'POST',body:'{}'});
-    toast('Aprobado ✓ — pasó a A COMPRAR');
+    const r=await api('/api/compras/repuestos/'+id+'/aprobar',{method:'POST',body:'{}'});
+    if(r&&r.orden_compra){
+      const oc=r.orden_compra;
+      toast(`Aprobado ✓ · nació la orden ${oc.numero}${oc.objetivo_pendiente?' — ⚠ sin centro de costo, completala en Órdenes':''}`);
+      if(oc.objetivo_pendiente)toast(`El objetivo "${oc.objetivo_original||''}" de la reparación no existe en Compras. Elegilo en Órdenes → ${oc.numero}.`,'error');
+    }else if(r&&r.orden_error){
+      toast('Aprobado ✓, pero no pude crear la orden de compra: '+r.orden_error,'error');
+    }else toast('Aprobado ✓ — pasó a A COMPRAR');
     rtData=await api('/api/compras/repuestos');renderRt();
   }catch(e){toast(e.message||'No pude aprobar','error');}
 }
@@ -8855,6 +9241,7 @@ async function vCompras(view){
   if(comprasTab==='cuenta'){vComprasCuenta(view);return;}
   if(comprasTab==='consumos'){vComprasConsumos(view);return;}
   if(comprasTab==='repuestos'){vComprasRepuestos(view);return;}
+  if(comprasTab==='ordenes'){vComprasOrdenes(view);return;}
   if(comprasTab==='indicadores'){vComprasInd(view);return;}
   // Pestañas retiradas — caen al resumen (las funciones quedan en el código)
   if(comprasTab==='financiero'||comprasTab==='combustible'){comprasTab='resumen';}
@@ -9471,6 +9858,10 @@ function vComprasDetalle(view){
     </div>
     <div class="panel">
       <div class="panel-title" style="margin-bottom:12px">Imputación</div>
+      ${inv.orden_numero?`<div style="font-size:12.5px;padding:8px 12px;background:var(--violeta-soft);border-radius:8px;margin-bottom:12px">
+        Orden de compra <b class="mono">${escStk(inv.orden_numero)}</b>${inv.orden_compra_leida?` <span class="sub">· la factura decía "${escStk(inv.orden_compra_leida)}"</span>`:''}. La imputación vino de la orden.
+        <button class="mini-btn" style="margin-left:6px" onclick="comprasTab='ordenes';ordSub='lista';ordF.estado='todas';ordF.q='${escStk(inv.orden_numero)}';comprasMode='lista';go('compras')">ver</button></div>`
+        :inv.sin_orden_confirmado?`<div class="sub" style="font-size:11.5px;margin-bottom:12px">Cargada <b>sin orden de compra</b> (confirmado al cargar).</div>`:''}
       ${ed?`
         <div class="toggle-imp" style="margin-bottom:14px">
           <button class="${comprasEditMode==='total'?'on':''}" onclick="comprasSetEditMode('total')">Total de factura</button>
@@ -9933,8 +10324,8 @@ let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentar
 // revisa en el modal al imputar a Flexxus.
 let comprasMsg='';
 
-function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';go('compras');}
-function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasPaginas=[];comprasExtracted=null;comprasOCRVuelo=null;go('compras');}
+function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;go('compras');}
+function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasPaginas=[];comprasExtracted=null;comprasOCRVuelo=null;comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;go('compras');}
 
 // Las fotos de factura se ACHICAN antes de subirlas (máx 1300px, JPEG 0.82):
 // una foto de celular de 4000px no se lee mejor y hace que la extracción tarde
@@ -10017,6 +10408,17 @@ async function comprasExtraer(){
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
   comprasOCRVuelo=null;
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
+  comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;
+  // Si el proveedor copió el número de orden en la factura y existe, la
+  // vinculación es instantánea: la pantalla ya aparece con la imputación
+  // heredada. Si la orden está facturada o es de otro proveedor, se muestra
+  // pero no se vincula sola: eso lo decide quien carga, con el aviso a la vista.
+  const oo=(comprasExtracted&&comprasExtracted.__orden)||{};
+  if(oo.encontrada&&!oo.ya_facturada&&!oo.proveedor_distinto){
+    comprasStep='assign';
+    await comprasVincularOrden(oo.encontrada.id);   // ya hace go('compras')
+    return;
+  }
   comprasStep='assign';go('compras');
 }
 
@@ -10081,6 +10483,15 @@ function cfAvisoFecha(){
 async function comprasGuardar(){
   comprasCaptura();
   const d=comprasExtracted||{};
+  // Orden de compra: o está vinculada, o quien carga confirmó que esta
+  // factura no lleva. Guardar sin ninguna de las dos es un olvido, y el
+  // olvido es justamente lo que la orden viene a evitar.
+  if(!comprasOrden&&!comprasSinOrdenOk){
+    toast('Vinculá una orden de compra, o confirmá que esta factura no lleva orden.','error');
+    const b=document.querySelector('.panel[style*="var(--rojo)"],.panel[style*="var(--diesel)"]');
+    if(b)b.scrollIntoView({behavior:'smooth',block:'center'});
+    return;
+  }
   // Objetivo y observaciones son obligatorios
   if(comprasAssignMode==='total'){
     if(!comprasAssign.objetivo){toast('Elegí un objetivo (centro de costo) antes de guardar.','error');return;}
@@ -10115,6 +10526,13 @@ async function comprasGuardar(){
     assignmentMode:comprasAssignMode,
     assignments:comprasAssignMode==='per-item'?comprasAssignments:{},
     totalAssign:comprasAssignMode==='total'?comprasAssign:{objetivo:'',unidad:'',comentario:''},
+    // Orden de compra: id y número para cerrarla al guardar, y el
+    // emparejamiento para saber después cómo se hizo cada imputación.
+    orden_id:comprasOrden?comprasOrden.id:null,
+    orden_numero:comprasOrden?comprasOrden.numero:null,
+    orden_matches:comprasOrdenMatch?comprasOrdenMatch.matches:null,
+    sin_orden_confirmado:!comprasOrden&&comprasSinOrdenOk,
+    orden_compra_leida:d.orden_compra_leida||null,
     createdAt:new Date().toISOString(),
     // El comprobante viaja aparte: el backend lo sube a Storage y guarda solo la ruta
     fileData:comprasFile?comprasFile.data:null,
@@ -10146,7 +10564,12 @@ async function comprasGuardar(){
       }
     }
     if(btn)btn.textContent='Guardando…';
-    await api('/api/compras/factura',{method:'POST',body:JSON.stringify(inv)});
+    const guardada=await api('/api/compras/factura',{method:'POST',body:JSON.stringify(inv)});
+    if(guardada&&guardada.orden_cerrada){
+      const df=guardada.orden_diferencia||{};
+      toast(`${guardada.orden_cerrada} cerrada como facturada`+(df.cotizado&&Math.abs(df.pct||0)>5?` · ${df.diferencia>=0?'+':''}${money(df.diferencia)} vs cotizado`:''));
+    }
+    comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;
     comprasMode='lista';comprasFile=null;comprasExtracted=null;go('compras');
   }catch(e){if(btn){btn.disabled=false;btn.textContent='Guardar factura';}alert('No se pudo guardar: '+(e.message||''));}
 }
@@ -10262,6 +10685,8 @@ function vComprasCarga(view){
         <div class="sub" style="margin-top:6px">Las <b>percepciones</b> se suman al total; los <b>impuestos/tasas</b> arrancan exentos. Podés cambiar cuáles se pagan con el check en el detalle de la factura, después de guardar.</div>`:''}
       </div>
       <div>
+        <div class="mm-label">Orden de compra</div>
+        ${bloqueOrdenFactura()}
         <div class="mm-label">Imputación</div>
         <div class="toggle-imp">
           <button class="${comprasAssignMode==='total'?'on':''}" onclick="comprasSetMode('total')">Total de factura</button>
@@ -10272,6 +10697,93 @@ function vComprasCarga(view){
       </div>
     </div>`;
 }
+
+/* ── Orden de compra en la carga de factura ─────────────────────
+   El OCR ya buscó la orden (por el número que el proveedor copió en la
+   factura, o por proveedor). Acá se muestra el resultado y se deja
+   vincular, elegir entre candidatas, o seguir sin orden con confirmación
+   explícita: un servicio o un alquiler no tienen orden y eso es normal,
+   pero tiene que ser una decisión, no un olvido. */
+let comprasOrden=null;        // {id, numero, ...} la orden vinculada a esta factura
+let comprasOrdenMatch=null;   // resultado de /emparejar: matches, assignments, diferencia
+let comprasSinOrdenOk=false;  // el usuario confirmó que esta factura no lleva orden
+
+function bloqueOrdenFactura(){
+  const d=comprasExtracted||{};
+  const o=d.__orden||{};
+  const est=e=>e==='abierta'?'<span class="badge b-amber">abierta</span>':e==='borrador'?'<span class="badge b-gray">borrador</span>':e==='facturada'?'<span class="badge b-green">facturada</span>':'';
+  // Ya vinculada
+  if(comprasOrden){
+    const m=comprasOrdenMatch||{};
+    const dif=m.diferencia||{};
+    const sin=(m.sin_asignar||[]).length;
+    return `<div class="panel" style="border-left:3px solid var(--brote);margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+        <div><b class="mono">${escStk(comprasOrden.numero)}</b> ${est(comprasOrden.estado)}
+          <div class="sub" style="margin-top:3px">${escStk(comprasOrden.descripcion||'')}${comprasOrden.origen_tipo==='repuesto'?' · nació de una reparación':comprasOrden.origen_tipo==='insumo'?' · nació de un pedido de insumos':comprasOrden.origen_tipo==='bot'?' · cargada por WhatsApp':''}</div>
+          <div class="sub" style="margin-top:2px">Cotizado <b class="mono">${money(comprasOrden.total_estimado)}</b>${dif.sin_cotizacion?' <span style="color:var(--diesel)">· sin cotización</span>':''}</div></div>
+        <button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="comprasDesvincularOrden()">Quitar</button>
+      </div>
+      ${o.ya_facturada?`<div class="aviso-amarillo" style="margin-top:10px">⚠ ${escStk(o.motivo||'')}</div>`:''}
+      ${o.proveedor_distinto?`<div class="aviso-amarillo" style="margin-top:10px">⚠ ${escStk(o.motivo||'')}</div>`:''}
+      <div style="margin-top:10px;font-size:12.5px">
+        ${(m.matches||[]).map(x=>{const it=(d.items||[])[x.ix_factura]||{};const oi=x.ix_orden!=null?(comprasOrden.items||[])[x.ix_orden]:null;
+          return `<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--linea)">
+            <span>${escStk(it.descripcion||'ítem '+(x.ix_factura+1))}</span>
+            <span style="text-align:right;white-space:nowrap">${oi?`<span style="color:var(--brote-2)">✓ ${escStk(oi.objetivo||'')}</span><div class="sub" style="font-size:10.5px">${x.metodo==='codigo'?'por código':x.metodo==='descripcion+cantidad'?'por descripción y cantidad':'por descripción'}</div>`:`<span style="color:var(--diesel)">no está en la orden</span><div class="sub" style="font-size:10.5px">asignalo abajo</div>`}</span></div>`;}).join('')}
+      </div>
+      ${(m.orden_sin_factura||[]).length?`<div class="sub" style="margin-top:8px;font-size:11.5px">${m.orden_sin_factura.length} ítem${m.orden_sin_factura.length===1?'':'s'} de la orden no vino en esta factura: ${m.orden_sin_factura.map(j=>escStk(((comprasOrden.items||[])[j]||{}).descripcion||'')).join(', ')}.</div>`:''}
+      ${dif.cotizado?`<div class="${Math.abs(dif.pct||0)>5?'aviso-amarillo':'sub'}" style="margin-top:10px;font-size:12px">
+        ${dif.diferencia>0?'⚠ ':''}Cotizado ${money(dif.cotizado)} · factura ${money(dif.facturado)} → <b>${dif.diferencia>=0?'+':''}${money(dif.diferencia)}${dif.pct!=null?' ('+(dif.pct>=0?'+':'')+dif.pct+'%)':''}</b></div>`:''}
+      <div class="sub" style="margin-top:8px;font-size:11.5px">La imputación de abajo viene de la orden${sin?`, salvo ${sin} ítem${sin===1?'':'s'} que no estaba${sin===1?'':'n'} y hay que asignar`:''}. Podés corregirla si algo no cierra. Al guardar, la orden se cierra como facturada.</div>
+    </div>`;
+  }
+  // Encontrada por número pero no vinculada todavía (se vincula sola al cargar; esto es por si la quitó)
+  const cands=[...(o.encontrada?[o.encontrada]:[]),...(o.candidatas||[])].filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i);
+  if(cands.length){
+    return `<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
+      ${o.leida?`<div style="font-size:12.5px">La factura dice <b class="mono">${escStk(o.leida)}</b>.</div>`:`<div style="font-size:12.5px">La factura no trae número de orden.</div>`}
+      ${o.motivo?`<div class="sub" style="margin-top:3px">${escStk(o.motivo)}</div>`:''}
+      <div style="margin-top:8px">
+        ${cands.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--linea)">
+          <div><b class="mono">${escStk(c.numero)}</b> ${est(c.estado)} <span class="sub">${escStk(c.proveedor||'')}</span>
+            <div class="sub" style="font-size:11px">${escStk(c.descripcion||'')} · ${(c.items||[]).length} ítems · ${money(c.total_estimado)}</div></div>
+          <button class="btn" style="padding:5px 12px;font-size:12px" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`).join('')}
+      </div>
+      <button class="btn ghost" style="width:100%;margin-top:10px;font-size:12px" onclick="comprasSinOrden()">Esta factura no lleva orden</button>
+    </div>`;
+  }
+  // Sin nada
+  return `<div class="panel" style="border-left:3px solid ${comprasSinOrdenOk?'var(--tinta-3)':'var(--rojo)'};margin-bottom:14px">
+    <div style="font-size:12.5px">${escStk(o.motivo||'Sin orden de compra para esta factura.')}</div>
+    ${comprasSinOrdenOk
+      ?`<div class="sub" style="margin-top:6px">Confirmado: se carga <b>sin orden</b>. La imputación la cargás abajo.</div>`
+      :`<div class="sub" style="margin-top:6px">Un servicio, un alquiler o una compra chica pueden no tener orden. Si es este caso, confirmalo; si no, pedile a quien compró que la cargue y volvé.</div>
+       <button class="btn ghost" style="width:100%;margin-top:10px;font-size:12px" onclick="comprasSinOrden()">Continuar sin orden</button>`}
+  </div>`;
+}
+
+async function comprasVincularOrden(id){
+  const d=comprasExtracted||{};
+  try{
+    const r=await api('/api/compras/ordenes/'+id+'/emparejar',{method:'POST',body:JSON.stringify({
+      items:d.items||[],total_sin_iva:d.total_sin_iva,total_iva:d.total_iva})});
+    comprasOrden=r.orden;comprasOrdenMatch=r;comprasSinOrdenOk=false;
+    // La imputación de la factura pasa a ser la de la orden, ítem por ítem.
+    comprasAssignMode='per-item';
+    comprasAssignments={};
+    Object.entries(r.assignments||{}).forEach(([ix,a])=>{comprasAssignments[ix]={objetivo:a.objetivo||'',unidad:a.unidad||'',comentario:a.comentario||''};});
+    if(!(d.items||[]).length){
+      // Factura sin ítems detallados: la orden se aplica al total con el objetivo dominante.
+      const oi=r.orden.items||[];
+      comprasAssignMode='total';
+      comprasAssign={objetivo:(oi[0]||{}).objetivo||'',unidad:(oi[0]||{}).unidad||'',comentario:(oi[0]||{}).comentario||r.orden.numero};
+    }
+    go('compras');
+  }catch(e){toast('No pude vincular la orden: '+e.message,'error');}
+}
+function comprasDesvincularOrden(){comprasOrden=null;comprasOrdenMatch=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};go('compras');}
+function comprasSinOrden(){comprasSinOrdenOk=true;comprasOrden=null;comprasOrdenMatch=null;go('compras');}
 
 /* ===== Kill switch (PIN de control) ===== */
 // Chequea el estado antes de dejar operar. Si está bloqueado, muestra una
