@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · no se finaliza sin mecánico + planilla general de stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · planilla por objetivo para todos los grupos, una hoja';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2520,7 +2520,7 @@ async function vStockGeneral(view){
   <div class="panel">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
       <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span></span>
-      <button class="mini-btn" onclick="imprimirStockGeneral()" title="todo el parque en una hoja, privados y depósito">🖨 Planilla general</button>
+      <button class="mini-btn" style="flex:none" onclick="imprimirStockGeneral()" title="todo el parque en una hoja, privados y depósito">🖨 Todo el parque</button>
     </div>
     <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th style="text-align:right">Disp.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
     ${Object.keys(filasPorObj).sort().map(obj=>{
@@ -2573,7 +2573,7 @@ async function vStockGeneral(view){
           ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${fFecha(f.periodo)}</td>
           <td rowspan="${fs.length}" style="vertical-align:top"><div style="display:flex;flex-direction:column;gap:5px">
             <button class="mini-btn" onclick="editarStockObjetivo('${f.objetivo_id}')" title="corregir el stock de este objetivo">✏️ Editar</button>
-            ${f.grupo==='deposito'?`<button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico">🖨 Planilla</button>`:''}
+            <button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico, una hoja">🖨 Planilla</button>
           </div></td>`:''}
         </tr>`;}).join('');
     }).join('')}
@@ -3826,25 +3826,40 @@ function imprimirPlanillaStock(objetivoId){
       for(let i=0;i<(Number(f.cantidad)||0);i++)renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">S/N</td><td class="sub">${esc(f.observacion||'')}</td><td class="raya"></td></tr>`;
     }
   });
+  // Una hoja siempre: hasta 28 máquinas va cómodo; hasta 60 se achica la
+  // letra; más de eso, la tabla se parte en dos columnas lado a lado.
+  const nFilas=(renglones.match(/<tr>/g)||[]).length;
+  const compacta=nFilas>28, dosCols=nFilas>60;
+  let cuerpo;
+  const cab='<thead><tr><th></th><th>Tipo</th><th>N°</th><th>Marca / obs.</th><th>No está → ¿dónde?</th></tr></thead>';
+  if(dosCols){
+    const trs=renglones.match(/<tr>[\s\S]*?<\/tr>/g)||[];
+    const mitad=Math.ceil(trs.length/2);
+    cuerpo=`<div class="dos"><table>${cab}<tbody>${trs.slice(0,mitad).join('')}</tbody></table><table>${cab}<tbody>${trs.slice(mitad).join('')}</tbody></table></div>`;
+  }else cuerpo=`<table>${cab}<tbody>${renglones}</tbody></table>`;
+  const grupoTxt=obj.grupo==='deposito'?'depósito · control quincenal':obj.grupo==='privado'?'privado · control mensual':'—';
   const html=`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Control físico · ${esc(obj.objetivo)}</title><style>
-    body{font-family:system-ui,sans-serif;color:#16221C;margin:24px;font-size:12px}
-    h1{font-size:17px;margin:0;border-bottom:2px solid #16221C;padding-bottom:6px}
-    .meta{display:flex;gap:18px;padding:8px 0 12px;font-size:11px;color:#4A5A51}
+    *{box-sizing:border-box}
+    body{font-family:system-ui,sans-serif;color:#16221C;margin:0;padding:10mm;font-size:${dosCols?'9.5px':compacta?'10.5px':'12px'};-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h1{font-size:${compacta?'15px':'17px'};margin:0;border-bottom:2px solid #16221C;padding-bottom:5px}
+    .meta{display:flex;gap:16px;flex-wrap:wrap;padding:6px 0 ${compacta?'6px':'10px'};font-size:${compacta?'10px':'11px'};color:#4A5A51}
     table{width:100%;border-collapse:collapse}
-    th{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:#8A968E;text-align:left;padding:4px 6px;border-bottom:1px solid #E6EBE4}
-    td{padding:5px 6px;border-bottom:1px solid #F0F3EE}
+    th{font-size:${compacta?'8.5px':'9.5px'};text-transform:uppercase;letter-spacing:.06em;color:#8A968E;text-align:left;padding:${compacta?'2px 4px':'4px 6px'};border-bottom:1px solid #E6EBE4}
+    td{padding:${dosCols?'2px 4px':compacta?'3px 5px':'5px 6px'};border-bottom:1px solid #F0F3EE;line-height:1.25}
+    tr{page-break-inside:avoid}
     .mono{font-family:ui-monospace,monospace}
-    .sub{color:#4A5A51;font-size:11px}
-    .cas{width:22px}.c{display:inline-block;width:13px;height:13px;border:1.5px solid #4A5A51;border-radius:3px}
-    .raya{width:130px;border-bottom:1px dotted #B8C2BA!important}
-    .extra{margin-top:12px;font-size:11px;color:#4A5A51}
-    .pie{display:flex;justify-content:space-between;margin-top:28px;font-size:11px;color:#4A5A51}
-    .firma{border-top:1px solid #4A5A51;padding-top:3px;min-width:160px;text-align:center}
-    @media print{body{margin:10mm}}
+    .sub{color:#4A5A51;font-size:${compacta?'9px':'11px'}}
+    .cas{width:20px}.c{display:inline-block;width:${compacta?'11px':'13px'};height:${compacta?'11px':'13px'};border:1.5px solid #4A5A51;border-radius:3px}
+    .raya{width:${dosCols?'70px':compacta?'100px':'130px'};border-bottom:1px dotted #B8C2BA!important}
+    .dos{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start}
+    .extra{margin-top:${compacta?'8px':'12px'};font-size:${compacta?'10px':'11px'};color:#4A5A51}
+    .pie{display:flex;justify-content:space-between;margin-top:${compacta?'14px':'28px'};font-size:${compacta?'10px':'11px'};color:#4A5A51}
+    .firma{border-top:1px solid #4A5A51;padding-top:3px;min-width:${compacta?'130px':'160px'};text-align:center}
+    @page{size:A4 portrait;margin:0}
   </style></head><body>
     <h1>Control físico de maquinaria</h1>
-    <div class="meta"><span><b>Objetivo:</b> ${esc(obj.objetivo)}</span><span><b>Grupo:</b> depósito · control quincenal</span><span><b>Según sistema al:</b> ${hoy} (censo de ${esc(obj.periodo)})</span></div>
-    <table><thead><tr><th></th><th>Tipo</th><th>N°</th><th>Marca / observación</th><th>No está → ¿dónde?</th></tr></thead><tbody>${renglones}</tbody></table>
+    <div class="meta"><span><b>Objetivo:</b> ${esc(obj.objetivo)}</span><span><b>Grupo:</b> ${grupoTxt}</span><span><b>Según sistema al:</b> ${hoy} (censo de ${esc(obj.periodo)})</span><span><b>Máquinas:</b> ${nFilas}</span></div>
+    ${cuerpo}
     <div class="extra">Máquinas encontradas que NO figuran arriba: _______________________________________________________________</div>
     <div class="pie"><span class="firma">Controló</span><span class="firma">Capataz</span><span>Fecha: ____ / ____ / ______</span></div>
     <script>window.print()<\/script></body></html>`;
