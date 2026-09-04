@@ -95,6 +95,13 @@ app.post('/webhook', async (req, res) => {
   console.log(`[IN] ${telefono} -> ${paraNumero} ${esProveedores ? '(proveedores)' : '(capataces)'}: ` +
               `${numMedia > 0 ? `[${numMedia} archivo(s)]` : mensaje}`);
 
+  // Twilio espera el 200 como máximo 15 segundos. Interpretar un listado de
+  // 30 máquinas con la IA tarda más que eso, y al no recibir respuesta Twilio
+  // marcaba error y REINTENTABA el mismo mensaje: el listado se procesaba dos
+  // veces. Se contesta 200 ya, y el mensaje se responde por la API de Twilio
+  // cuando esté listo (messages.create no depende de este 200).
+  res.sendStatus(200);
+
   try {
     let respuesta;
 
@@ -173,18 +180,37 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`[OUT] ${telefono}: ${(respuesta || '').slice(0, 80)}...`);
 
-    await twilioClient.messages.create({
-      from: paraNumero || process.env.TWILIO_WHATSAPP_NUMBER,
-      to:   telefono,
-      body: respuesta,
-    });
-
-    res.sendStatus(200);
+    // WhatsApp corta en 4.096 caracteres. Un listado grande (UCC: 30 tipos
+    // con números) puede pasarse; se manda en partes, cortando en un salto
+    // de línea para no partir un renglón a la mitad.
+    for (const parte of partirMensaje(respuesta)) {
+      await twilioClient.messages.create({
+        from: paraNumero || process.env.TWILIO_WHATSAPP_NUMBER,
+        to:   telefono,
+        body: parte,
+      });
+    }
   } catch (err) {
+    // El 200 ya se mandó: Twilio no reintenta. Queda el log.
     console.error('Error en webhook:', err);
-    res.sendStatus(500);
   }
 });
+
+function partirMensaje(texto, max) {
+  const M = max || 3500;
+  const t = String(texto || '');
+  if (t.length <= M) return [t];
+  const partes = [];
+  let resto = t;
+  while (resto.length > M) {
+    let corte = resto.lastIndexOf('\n', M);
+    if (corte < M * 0.5) corte = M;     // sin salto razonable: se corta seco
+    partes.push(resto.slice(0, corte).trimEnd());
+    resto = resto.slice(corte).trimStart();
+  }
+  if (resto) partes.push(resto);
+  return partes.map((p, i) => partes.length > 1 ? `${p}\n_(${i + 1}/${partes.length})_` : p);
+}
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
