@@ -68,7 +68,9 @@ Reglas:
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 1500,
+      // 4000: un listado de 30 tipos (UCC) ocupaba 1.200 y con 1.500 se
+      // cortaba a mitad del JSON cuando la IA lo escribía con más espacio.
+      max_tokens: 4000,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
