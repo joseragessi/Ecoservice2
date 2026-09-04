@@ -2996,6 +2996,22 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     }
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
     if (['correctivo', 'preventivo'].includes(req.body.tipo_mant)) patch.tipo_mant = req.body.tipo_mant;
+
+    // Ninguna reparación se cierra sin mecánico (decisión 04-sep). Se mira el
+    // mecánico que quedaría DESPUÉS del cambio: si en el mismo pedido viene la
+    // asignación y el cierre, vale; si viene el cierre solo y la incidencia
+    // no tiene mecánico, se frena con un mensaje que diga qué falta.
+    if (patch.estado === 'finalizado') {
+      let mec = patch.mecanico_id;
+      if (mec === undefined) {
+        const { data: prev } = await supabase.from('incidencias').select('mecanico_id').eq('id', req.params.id).single();
+        mec = prev ? prev.mecanico_id : null;
+      }
+      if (!mec) {
+        return res.status(422).json({ error: 'No se puede finalizar sin mecánico asignado. Asignalo primero y después cerrala.', sin_mecanico: true });
+      }
+    }
+
     const { data, error } = await supabase
       .from('incidencias').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), equipos(nombre), mecanicos(nombre)').single();
