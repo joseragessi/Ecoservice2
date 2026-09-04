@@ -2,18 +2,24 @@
 // La empresa tiene dos realidades y no se controlan igual:
 //
 //   PRIVADO   → la máquina vive en el objetivo (countries, clientes fijos).
-//               Se pide el stock 1 vez por mes.
 //   DEPÓSITO  → la máquina sale de la empresa cada día y vuelve. Es donde se
 //               pierden: se perdieron 10 motoguadañas (~$10.000.000).
-//               Se pide cada 15 días.
+//   Desde el 04-sep se pide a los dos TODOS LOS LUNES: el capataz recibe el
+//   listado que tiene el sistema (con lo que está en el taller marcado) y
+//   solo confirma o dice qué cambió.
 //
 // El pedido va al capataz de cada objetivo, uno por uno, con la plantilla
 // aprobada de Twilio (los mensajes libres no atraviesan la ventana de 24 hs).
 
 const supabase = require('./supabase');
 
-const DIAS = { deposito: 15, privado: 30 };
+// Decisión 04-sep: se pide TODOS LOS LUNES, a todos los grupos. Antes era
+// cada 15 días depósito y cada 30 privado; con el listado precargado (el
+// capataz solo confirma o dice qué cambió) el costo de preguntar bajó tanto
+// que conviene preguntar seguido. DIAS queda por si se quiere volver atrás.
+const DIAS = { deposito: 7, privado: 7 };
 const HORA_ENVIO = 8;      // 8 de la mañana, hora de Córdoba
+const DIA_ENVIO = 1;       // lunes (0 domingo … 6 sábado)
 
 function ahoraCordoba() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
@@ -32,8 +38,10 @@ async function objetivosQueTocan(grupo) {
     .select('id, nombre, stock_ultimo_pedido')
     .eq('activo', true).eq('grupo_stock', grupo);
   if (error) throw error;
-  const dias = DIAS[grupo] || 30;
-  const corte = Date.now() - dias * 86400000;
+  // Se resta medio día para que un pedido del lunes pasado a las 8:03 no
+  // deje afuera al de este lunes a las 8:00.
+  const dias = DIAS[grupo] || 7;
+  const corte = Date.now() - (dias - 0.5) * 86400000;
   return (data || []).filter(o =>
     !o.stock_ultimo_pedido || new Date(o.stock_ultimo_pedido).getTime() <= corte);
 }
@@ -49,7 +57,7 @@ async function chequearRecordatoriosStock(pedirStock) {
     const hoy = ahoraCordoba();
     const dow = hoy.getDay();                 // 0 domingo, 6 sábado
     if (hoy.getHours() !== HORA_ENVIO) return;
-    if (dow === 0 || dow === 6) return;
+    if (dow !== DIA_ENVIO) return;            // solo lunes
 
     for (const grupo of ['deposito', 'privado']) {
       const objs = await objetivosQueTocan(grupo);
@@ -66,4 +74,4 @@ async function chequearRecordatoriosStock(pedirStock) {
   }
 }
 
-module.exports = { chequearRecordatoriosStock, objetivosQueTocan, DIAS, HORA_ENVIO };
+module.exports = { chequearRecordatoriosStock, objetivosQueTocan, DIAS, HORA_ENVIO, DIA_ENVIO };
