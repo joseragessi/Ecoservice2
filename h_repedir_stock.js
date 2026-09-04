@@ -42,7 +42,10 @@ let ok=0,mal=0;const eq=(n,c,d)=>{if(c){ok++;console.log('✓ '+n);}else{mal++;c
   r=await pedir({periodo:'2026-09',objetivo_ids:['o1'],forzar:true});
   eq('se envía igual',r.enviados===1,JSON.stringify(r));
   eq('manda el WhatsApp al capataz',mandados.length===1&&mandados[0]==='5493512665495',JSON.stringify(mandados));
-  eq('el censo vuelve a pendiente',updates.some(u=>u.tabla==='censos_stock'&&u.patch.estado==='pendiente'));
+  eq('el censo NO pasa a pendiente (si no, desaparece de todas las vistas)',
+    !updates.some(u=>u.tabla==='censos_stock'&&u.patch.estado==='pendiente'),JSON.stringify(updates));
+  eq('se marca reenviado_at, que es lo que abre el pedido',
+    updates.some(u=>u.tabla==='censos_stock'&&u.patch.reenviado_at),JSON.stringify(updates));
   eq('lo cuenta como repedido',r.repedidos===1,String(r.repedidos));
   eq('NO borra el censo (solo cambia el estado)',!updates.some(u=>u.patch&&u.patch.items===null));
 
@@ -56,8 +59,12 @@ let ok=0,mal=0;const eq=(n,c,d)=>{if(c){ok++;console.log('✓ '+n);}else{mal++;c
   const guardo=CAPS[0].telefono;CAPS[0].telefono=null;mandados=[];updates=[];
   r=await pedir({periodo:'2026-09',objetivo_ids:['o1'],forzar:true});
   eq('avisa que no hay capataz, no explota',r.sin_capataz===1&&r.enviados===0,JSON.stringify(r));
-  eq('y NO le saca la respuesta que ya tenía',r.repedidos===0&&!updates.some(u=>u.tabla==='censos_stock'&&u.patch.estado==='pendiente'),JSON.stringify(r));
+  eq('y no marca nada',r.repedidos===0&&updates.length===0,JSON.stringify(r));
   CAPS[0].telefono=guardo;
+
+  console.log('\n— El bot reconoce el repedido —');
+  const S=require('./stock.js');
+  eq('exporta tienePedidoPendiente',typeof S.tienePedidoPendiente==='function');
 
   console.log(`\n${ok} ok · ${mal} mal`);process.exit(mal?1:0);
 })().catch(e=>{console.error('✗ el harness explotó:',e);process.exit(1);});
