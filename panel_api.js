@@ -5083,13 +5083,29 @@ async function pedirStockObjetivos(body) {
     const porObj = {};
     (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
 
-    let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0;
+    let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0, repedidos = 0;
 
+    // `forzar` vuelve a pedir aunque el objetivo ya haya respondido este
+    // período. Sirve cuando el censo llegó mal (el capataz mandó un pedido de
+    // reparación en vez del listado) o cuando se quiere un control extra.
+    // El censo NO se borra: se marca pendiente y el capataz lo rehace sobre
+    // lo que ya había, así no pierde lo cargado si no contesta.
+    const forzar = !!body.forzar;
     for (const o of (objs || [])) {
       const censo = porObj[o.id];
-      if (censo && censo.estado === 'respondido') { yaRespondidos++; continue; }
+      if (censo && censo.estado === 'respondido' && !forzar) { yaRespondidos++; continue; }
       const capsObj = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
       if (!capsObj.length) { sinCapataz++; continue; }
+      // El censo pasa a pendiente DESPUÉS de confirmar que hay a quién
+      // pedirle: si no, un objetivo sin capataz perdía la respuesta que ya
+      // tenía sin que nadie recibiera el pedido.
+      if (censo && censo.estado === 'respondido' && forzar) {
+        const { error: eR } = await supabase.from('censos_stock')
+          .update({ estado: 'pendiente', reenviado_at: new Date().toISOString() })
+          .eq('id', censo.id);
+        if (eR) { console.error('stock repedir:', eR.message); fallidos++; continue; }
+        repedidos++;
+      }
 
       if (!censo) {
         const { error } = await supabase.from('censos_stock')
@@ -5112,8 +5128,8 @@ async function pedirStockObjetivos(body) {
           .update({ stock_ultimo_pedido: new Date().toISOString() }).eq('id', o.id);
       }
     }
-    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} fallidos=${fallidos}`);
-    return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos };
+    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}${forzar ? ' [forzado]' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} repedidos=${repedidos} fallidos=${fallidos}`);
+    return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos, repedidos };
   }
 }
 
