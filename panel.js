@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · stock: en taller = con ingreso dado; una máquina, una vez';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · no se finaliza sin mecánico + planilla general de stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2520,6 +2520,7 @@ async function vStockGeneral(view){
   <div class="panel">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
       <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span></span>
+      <button class="mini-btn" onclick="imprimirStockGeneral()" title="todo el parque en una hoja, privados y depósito">🖨 Planilla general</button>
     </div>
     <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th style="text-align:right">Disp.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
     ${Object.keys(filasPorObj).sort().map(obj=>{
@@ -3752,6 +3753,60 @@ async function resolverFaltante(id){
 /* Planilla de control físico: UNA HOJA por objetivo, para imprimir y
    recorrer el depósito tildando máquina por máquina. Lo que no cierra se
    anota a mano y después se carga en el sistema. */
+/* Planilla GENERAL: todo el parque en una hoja A4, privados a un lado y
+   depósito al otro. Es para tener a mano qué hay en cada objetivo, no para
+   verificar físicamente (para eso está la planilla por objetivo con casillas).
+   Entra en una página con letra chica y dos columnas; si el parque crece
+   mucho el navegador la parte en dos, y se avisa. */
+function imprimirStockGeneral(){
+  const filas=(stkGen&&stkGen.filas||[]).filter(f=>!f.sin_censo&&f.tipo);
+  if(!filas.length)return alert('No hay censos cargados.');
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const hoy=new Date().toLocaleDateString('es-AR');
+  // Agrupar por objetivo, y los objetivos por grupo.
+  const porObj={};
+  filas.forEach(f=>{(porObj[f.objetivo]=porObj[f.objetivo]||{grupo:f.grupo,periodo:f.periodo,items:[]}).items.push(f);});
+  const objs=Object.keys(porObj).sort((a,b)=>a.localeCompare(b));
+  const grupos=[['privado','Privados'],['deposito','Depósito'],[null,'Sin grupo']];
+  const totales=g=>{const fs=filas.filter(f=>(f.grupo||null)===g);const c=fs.reduce((s,f)=>s+(Number(f.cantidad)||0),0);const t=fs.reduce((s,f)=>s+(Number(f.en_taller)||0),0);return {c,t,d:c-t};};
+  const cTot=filas.reduce((s,f)=>s+(Number(f.cantidad)||0),0), tTot=filas.reduce((s,f)=>s+(Number(f.en_taller)||0),0);
+  const sinCenso=(stkGen&&stkGen.filas||[]).filter(f=>f.sin_censo).map(f=>f.objetivo);
+
+  const bloqueObj=o=>{const d=porObj[o];const enT=d.items.reduce((s,f)=>s+(Number(f.en_taller)||0),0);const cant=d.items.reduce((s,f)=>s+(Number(f.cantidad)||0),0);
+    return `<div class="obj">
+      <div class="oh"><b>${esc(o)}</b><span class="mini">${esc(d.periodo||'')}${enT?` · <span class="rojo">${enT} en taller</span>`:''} · ${cant} eq.</span></div>
+      ${d.items.map(f=>{const nT=new Set((f.numeros_taller||[]).map(String));
+        const nums=(f.numeros||[]).length?' <span class="mono">'+f.numeros.map(n=>nT.has(String(n))?`<s>${esc(n)}</s>`:esc(n)).join(', ')+'</span>':'';
+        return `<div class="it"><span class="q">${f.cantidad}</span>${esc(f.tipo)}${nums}${f.observacion?` <span class="mini">· ${esc(f.observacion)}</span>`:''}</div>`;}).join('')}
+    </div>`;};
+  const seccion=(g,titulo)=>{const os=objs.filter(o=>(porObj[o].grupo||null)===g);if(!os.length)return '';const t=totales(g);
+    return `<div class="sec"><h2>${titulo} <span class="mini">· ${os.length} objetivo${os.length===1?'':'s'} · ${t.c} equipos${t.t?` · <span class="rojo">${t.t} en taller</span>`:''}</span></h2>
+      <div class="cols">${os.map(bloqueObj).join('')}</div></div>`;};
+
+  const w=window.open('','_blank');
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Stock general · ${esc(hoy)}</title>
+  <style>
+  *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;color:#16221C;margin:0;padding:8mm 9mm;font-size:9.5px;line-height:1.3;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #159B51;padding-bottom:5px;margin-bottom:7px}
+  h1{font-size:15px;margin:0;letter-spacing:-.3px}h2{font-size:11px;margin:8px 0 4px;padding-bottom:2px;border-bottom:1.5px solid #16221C}
+  .mini{color:#8A968E;font-size:8.5px;font-weight:400}.rojo{color:#A3253A;font-weight:600}.mono{font-family:ui-monospace,monospace;font-size:8.5px;color:#4A5A51}
+  .kpis{display:flex;gap:14px;font-size:9.5px}.kpis b{font-family:ui-monospace,monospace;font-size:12px}
+  .cols{column-count:2;column-gap:10px}
+  .obj{break-inside:avoid;border:1px solid #E6EBE4;border-radius:5px;padding:4px 6px;margin-bottom:5px;background:#FBFCFA}
+  .oh{display:flex;justify-content:space-between;align-items:baseline;gap:6px;border-bottom:1px solid #E6EBE4;padding-bottom:2px;margin-bottom:2px;font-size:10px}
+  .it{padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.q{display:inline-block;min-width:16px;font-family:ui-monospace,monospace;font-weight:700;color:#0F7E40}
+  s{color:#A3253A;text-decoration:line-through}
+  .pie{margin-top:6px;padding-top:4px;border-top:1px solid #E6EBE4;font-size:8px;color:#8A968E;display:flex;justify-content:space-between}
+  @page{size:A4 portrait;margin:0}
+  </style></head><body>
+  <div class="cab"><div><h1>Stock de maquinaria por objetivo</h1><div class="mini">EcoService · último censo respondido de cada objetivo · emitido el ${esc(hoy)}</div></div>
+    <div class="kpis"><span>Objetivos <b>${objs.length}</b></span><span>Equipos <b>${cTot}</b></span><span>En taller <b class="rojo">${tTot}</b></span><span>Disponibles <b style="color:#0F7E40">${cTot-tTot}</b></span></div></div>
+  ${grupos.map(([g,t])=>seccion(g,t)).join('')}
+  <div class="pie"><span>Tachado = en el taller con ingreso dado. Cantidad en verde = censadas.${sinCenso.length?` Sin censo: ${esc(sinCenso.join(', '))}.`:''}</span><span>Si sale en dos hojas, el parque creció: avisá para reajustar.</span></div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  w.document.close();
+}
+
 function imprimirPlanillaStock(objetivoId){
   const filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
   if(!filas.length)return alert('Ese objetivo no tiene censo cargado.');
@@ -6986,7 +7041,23 @@ async function confirmarCierreRep(){
 }
 
 async function avanzarRep(id,estado){
-  try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({estado})});await vReparaciones(document.getElementById('view'));refrescarContadores();}
+  // Finalizar sin mecánico no se puede (decisión 04-sep). Si el selector de
+  // mecánico está a la vista y tiene uno elegido, se manda junto con el cierre
+  // en un solo pedido; si no, se frena acá con el foco puesto en el selector,
+  // antes de ir al servidor a que diga lo mismo.
+  let body={estado};
+  if(estado==='finalizado'){
+    const sel=document.getElementById('rep-mec');
+    const r=(repData||[]).find(x=>String(x.id)===String(id))||{};
+    const elegido=sel&&sel.value?sel.value:null;
+    if(!r.mecanico_id&&!elegido){
+      toast('Asigná el mecánico antes de finalizar: sin mecánico la reparación no le suma a nadie.','error');
+      if(sel){sel.focus();sel.style.outline='2px solid var(--rojo)';setTimeout(()=>sel.style.outline='',2500);}
+      return;
+    }
+    if(!r.mecanico_id&&elegido)body.mecanico_id=elegido;
+  }
+  try{await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify(body)});await vReparaciones(document.getElementById('view'));refrescarContadores();}
   catch(e){alert('No pude avanzar: '+e.message);}
 }
 async function reasignarRep(id){
