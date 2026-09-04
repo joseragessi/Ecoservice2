@@ -230,8 +230,10 @@ router.post('/api/app/incidencia/:id/ingreso-taller', authApp('mecanico'), async
     const quien = (req.app_user && req.app_user.nombre) || 'taller';
     const patch = { fecha_ingreso_taller: ahora, ingreso_por: quien };
     if (inc.estado === 'pendiente') { patch.estado = 'diagnostico'; patch.fecha_diagnostico = ahora; }
-    // Si no tenía mecánico asignado, queda a nombre de quien la recibió
-    if (!inc.mecanico_id && req.app_user && req.app_user.mid) patch.mecanico_id = req.app_user.mid;
+    // El ingreso NO asigna mecánico (decisión 04-sep). Antes quedaba a nombre
+    // de quien la recibía, y eso era un mecánico eligiéndose a sí mismo. El
+    // mecánico lo asigna José desde el panel; hasta entonces la reparación se
+    // puede diagnosticar pero no cerrar.
 
     const { data, error } = await supabase.from('incidencias').update(patch)
       .eq('id', req.params.id).select('*, mecanicos(nombre)').single();
@@ -264,6 +266,12 @@ router.post('/api/app/incidencia/:id/estado', authApp('mecanico'), async (req, r
     if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
     if (String(inc.mecanico_id) !== String(req.app_user.mid)) {
       return res.status(403).json({ error: 'Esa reparación no es tuya' });
+    }
+    // Redundante con lo de arriba (si es suya, tiene mecánico), pero explícito:
+    // ninguna reparación se cierra sin mecánico asignado. Es lo que alimenta
+    // Performance; una finalizada sin mecánico no le suma a nadie y se pierde.
+    if (estado === 'finalizado' && !inc.mecanico_id) {
+      return res.status(422).json({ error: 'No se puede finalizar sin mecánico asignado. Pedile al panel que la asigne.' });
     }
 
     const patch = { estado };
