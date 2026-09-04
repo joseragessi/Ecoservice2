@@ -84,6 +84,13 @@ chequear('no descuenta más máquinas de las censadas', filas[0].en_taller === 1
 chequear('disponibles nunca es negativo', filas[0].disponibles === 0, `dio ${filas[0].disponibles}`);
 chequear('la reparación sobrante queda sin ubicar', r.sin_ubicar.length === 1, `dio ${r.sin_ubicar.length}`);
 
+// ── El caso del T22: dos reparaciones abiertas sobre la MISMA máquina ──
+filas = [fila('obj-ucc', 'Minitractor', 1, ['T22'])];
+r = cruzarTaller(filas, [inc('i1', 'obj-ucc', 'T22', 'minitractor'), inc('i2', 'obj-ucc', 'T22', 'minitractor')]);
+chequear('dos incidencias del T22 = UNA máquina en taller, no dos', filas[0].en_taller === 1, `dio ${filas[0].en_taller}`);
+chequear('disponibles 0, no negativo', filas[0].disponibles === 0, `dio ${filas[0].disponibles}`);
+chequear('la segunda incidencia no queda "sin ubicar" (es de la misma máquina)', r.sin_ubicar.length === 0, `dio ${r.sin_ubicar.length}`);
+
 // ── Una reparación no se cuenta dos veces ─────────────────────
 filas = [
   fila(CHACRAS, 'Motoguadaña', 5, ['50','51','45','49','47']),
