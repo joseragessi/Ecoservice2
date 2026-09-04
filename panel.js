@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · planilla por objetivo para todos los grupos, una hoja';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · stock: refresco automático + volver a pedir el stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2373,9 +2373,14 @@ function stkMarca(f){
   return '';
 }
 async function vStockGeneral(view){
+  // Se refresca si los datos tienen más de 30 s. Antes se cargaba UNA vez y
+  // quedaba congelado hasta salir del panel: si un capataz respondía el censo
+  // mientras mirabas la pantalla, seguías viendo el mes anterior sin ningún
+  // indicio de que estabas mirando algo viejo.
+  if(stkGen&&stkGen.__t&&Date.now()-stkGen.__t>30000)stkGen=null;
   if(!stkGen){
     view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando…</div>';
-    try{stkGen=await api('/api/stock/general');}
+    try{stkGen=await api('/api/stock/general');stkGen.__t=Date.now();}
     catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
     // El padrón para linkear cada número a su ficha (si falla, sin links).
     // OJO: /api/maquinas devuelve {maquinas, objetivos}, no un array.
@@ -4682,8 +4687,9 @@ function selCenso(id){
           <div class="mono" style="font-size:15px;font-weight:600">${i.cantidad}</div>
         </div>`).join('')
       :'<div class="sub" style="padding:8px 0">Respondió sin equipos.</div>'}
-    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px" onclick="cargarStockManual('${c.id}')">✏️ Editar el stock</button>
-      <button class="btn-salir" style="width:100%;margin-top:6px;color:var(--rojo)"
+    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px" onclick="cargarStockManual('${c.id}')">✏️ Editar el stock</button>`:''}
+    <button class="btn-salir" style="width:100%;margin-top:6px" onclick="repedirStock('${c.objetivo_id}','${escStk(c.objetivo||'').replace(/'/g,"\\'")}',${c.estado==='respondido'})">📲 ${c.estado==='respondido'?'Volver a pedir el stock':'Reenviar el pedido'}</button>
+    ${c.estado==='respondido'?`<button class="btn-salir" style="width:100%;margin-top:6px;color:var(--rojo)"
       onclick="borrarCenso('${c.id}')">🗑 Borrar esta respuesta</button>`:''}
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:10px">Histórico</div>
@@ -4767,6 +4773,24 @@ async function borrarCenso(id){
     toast('Respuesta borrada · el censo quedó pendiente');
     go('stock');
   }catch(e){toast('No pude borrar: '+e.message,'error');}
+}
+
+/* Volver a pedir el stock aunque el objetivo ya haya respondido este período.
+   No borra lo cargado: el censo pasa a pendiente y el capataz lo rehace sobre
+   lo que ya había (el bot le muestra el listado y él confirma o corrige). */
+async function repedirStock(objetivoId,nombre,yaRespondio){
+  const msg=yaRespondio
+    ? `Volver a pedirle el stock a ${nombre}.\n\nLo que ya cargó NO se borra: le llega el listado actual y confirma o corrige. El censo vuelve a quedar pendiente hasta que conteste.`
+    : `Reenviarle el pedido de stock a ${nombre}.`;
+  if(!await uiConfirm(msg,'¿Pedir el stock?',{ok:'📲 Pedir'}))return;
+  try{
+    const r=await api('/api/stock/pedir',{method:'POST',body:JSON.stringify({objetivo_ids:[objetivoId],forzar:true})});
+    if(r.enviados)toast(`Pedido enviado a ${nombre}`);
+    else if(r.sin_capataz)toast(`${nombre} no tiene capataz con teléfono cargado.`,'error');
+    else if(r.fallidos)toast('No pude mandar el WhatsApp. Revisá el teléfono del capataz.','error');
+    else toast('No se envió nada. Revisá que el objetivo tenga capataz activo.','error');
+    stkGen=null;stockData=null;go('stock');
+  }catch(e){toast('No pude pedir el stock: '+e.message,'error');}
 }
 
 async function cargarHistorico(objetivoId){
