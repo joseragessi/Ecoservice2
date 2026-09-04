@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-03 · reincidencia del mes (un rebote cuenta solo el mes en que volvió)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · Compras ve los pedidos de repuestos sin cotizar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -5672,8 +5672,12 @@ async function circEliminar(id){
     toast('Pedido eliminado');go('reparaciones');
   }catch(e){toast(e.message||'No pude eliminar','error');}
 }
-function circNota(id){
-  const p=(circData||[]).find(x=>String(x.id)===String(id))||{};
+// `vista` dice a dónde volver después de guardar: la misma pantalla desde la
+// que se abrió. Sin esto, cargar la cotización desde Compras te dejaba en
+// Reparaciones sin explicación.
+function circNota(id,vista){
+  const p=(circData||[]).find(x=>String(x.id)===String(id))
+    ||(rtData||[]).find(x=>String(x.id)===String(id))||{};
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
   bg.innerHTML=`<div class="modal" style="max-width:400px">
     <div class="modal-tit">📝 Nota de pedido</div>
@@ -5695,7 +5699,7 @@ function circNota(id){
     if(!v('prov')||!v('precio')||!v('plazo')){toast('Completá proveedor, precio y plazo','error');return;}
     try{
       await api('/api/compras/repuestos/'+id+'/referente',{method:'POST',body:JSON.stringify({accion:'nota',proveedor:v('prov'),precio:v('precio'),plazo:v('plazo')})});
-      bg.remove();toast('Nota guardada → COTIZADO ✓');go('reparaciones');
+      bg.remove();toast('Nota guardada → COTIZADO ✓ · quedó esperando tu aprobación');go(vista||'reparaciones');
     }catch(e){toast(e.message||'No pude guardar','error');}
   };
 }
@@ -8941,6 +8945,7 @@ async function vComprasRepuestos(view){
     <div class="view-head"><div><div class="view-title">Compras · Repuestos de taller</div>
       <div class="view-desc">Lo que el taller espera para reparar — pedidos de los mecánicos con sus notas</div></div></div>
     ${tabsCompras()}
+    <div id="rt-sincotizar"></div>
     <div id="rt-aprobacion"></div>
     <div id="rt-encurso"></div>
     <div id="rt-kpis"></div>
@@ -8962,6 +8967,52 @@ async function vComprasRepuestos(view){
    todavía les falta cotizar alguno. Antes desaparecían — la lista de
    Compras arranca en la aprobación, y estos no llegan ahí hasta estar
    completos. Compras necesita verlos para saber qué falta averiguar. */
+/* Pedidos que el mecánico marcó y todavía no tienen ningún precio.
+   Hasta ahora Compras no los veía: la lista de abajo arranca en la
+   aprobación y los dos recuadros de arriba exigen que ya haya alguna
+   cotización. Un pedido recién marcado quedaba visible solo en Reparaciones,
+   y quien compra no se enteraba de que tenía que ir a buscar el precio. */
+function renderRtSinCotizar(){
+  const cont=document.getElementById('rt-sincotizar');if(!cont)return;
+  const sin=(rtData||[]).filter(p=>
+    ['pedido','en_cotizacion'].includes(p.estado)&&
+    !(p.items||[]).some(i=>i.precio!=null||i.proveedor)&&
+    !p.nota_precio);
+  if(!sin.length){cont.innerHTML='';return;}
+  const dias=p=>Math.ceil((Date.now()-new Date(p.created_at))/86400000);
+  sin.sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));   // los más viejos arriba
+  cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--violeta);margin-bottom:14px">
+    <div class="panel-title" style="color:var(--violeta)">🧰 Pedidos sin cotizar (${sin.length})</div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">
+      Lo que el taller pidió y todavía no tiene precio. Hay que conseguir la cotización: cuando la cargues, pasa a tu aprobación y de ahí nace la orden de compra.</div>
+    ${sin.map(p=>{
+      const i=p.incidencias||{};
+      const its=p.items||[];
+      const d=dias(p);
+      const parado=i.equipo_parado;
+      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--hueso)">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div style="font-weight:700;font-size:13.5px">${escStk(i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo')}
+            <span class="uni-num">${escStk(i.numero_unidad||'—')}</span>
+            <span class="sub" style="font-weight:400">${i.objetivos?'· '+escStk(i.objetivos.nombre):''}</span></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${parado?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">máquina parada</span>':''}
+            ${i.prioridad==='critico'?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">crítico</span>':i.prioridad==='alta'?'<span class="badge b-amber">alta</span>':''}
+            <span class="badge ${d>=7?'b-amber':'b-gray'}">${d} día${d===1?'':'s'}</span>
+          </div>
+        </div>
+        <div class="sub" style="font-size:11.5px;margin:4px 0 7px">👨‍🔧 ${escStk(p.pedido_por||'—')}${i.mecanicos?' · asignado a '+escStk(i.mecanicos.nombre):''}${p.marca_modelo?' · '+escStk(p.marca_modelo):''}</div>
+        ${its.map(x=>`<div style="font-size:12.5px;padding:2px 0">
+          <span class="mono" style="color:var(--tinta-2)">x${x.cantidad||1}</span> ${escStk(x.descripcion)}${x.codigo?` <span class="sub mono">(${escStk(x.codigo)})</span>`:''}</div>`).join('')}
+        ${p.nota?`<div class="sub" style="font-size:11.5px;margin-top:6px;font-style:italic">💬 ${escStk(p.nota)}</div>`:''}
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="circNota('${p.id}','compras')">💲 Cargar cotización</button>
+          ${p.foto_url?`<a class="btn-salir" style="padding:7px 14px;font-size:12.5px;text-decoration:none" href="${escStk(p.foto_url)}" target="_blank">📷 Foto</a>`:''}
+        </div>
+      </div>`;}).join('')}
+  </div>`;
+}
+
 function renderRtEnCurso(){
   const cont=document.getElementById('rt-encurso');if(!cont)return;
   const enCurso=(rtData||[]).filter(p=>
@@ -9004,7 +9055,12 @@ function renderRtEnCurso(){
 
 function renderRtAprobacion(){
   const cont=document.getElementById('rt-aprobacion');if(!cont)return;
-  const cots=(rtData||[]).filter(p=>p.estado==='cotizado');
+  // Cotizados: los que ya tienen nota de pedido esperando la aprobación.
+  // Se incluyen los que tienen `nota_precio` aunque el estado no haya
+  // avanzado a 'cotizado': si la nota se cargó y el cambio de estado falló,
+  // el pedido quedaba fuera de todas las listas y desaparecía de Compras.
+  const cots=(rtData||[]).filter(p=>p.estado==='cotizado'
+    ||(p.nota_precio&&['pedido','en_cotizacion'].includes(p.estado)));
   if(!cots.length){cont.innerHTML='';return;}
   cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--azul);margin-bottom:14px">
     <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length})</div>
@@ -9088,6 +9144,7 @@ async function rtObservar(id){
 function renderRt(){
   const kp=document.getElementById('rt-kpis'),ls=document.getElementById('rt-lista');
   if(!kp||!ls)return;
+  renderRtSinCotizar();
   renderRtAprobacion();
   renderRtEnCurso();
   // La lista clásica de Compras muestra SOLO desde la aprobación en adelante:
@@ -9101,10 +9158,19 @@ function renderRt(){
   const repFaltan=abiertos.filter(p=>(p.items||[]).some(i=>!i.comprado)).length;
   const sem=Date.now()-7*86400000;
   const entSem=all.filter(p=>p.estado==='entregado'&&p.entregado_at&&new Date(p.entregado_at)>sem);
-  kp.innerHTML=`<div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
+  // Pedidos que todavía no tienen precio: no están en `all` (esa lista arranca
+  // en la aprobación) pero son trabajo pendiente de Compras igual. El KPI los
+  // contaba como 0 y escondía lo que el taller estaba esperando.
+  const sinCot=(rtData||[]).filter(p=>['pedido','en_cotizacion'].includes(p.estado)
+    &&!(p.items||[]).some(i=>i.precio!=null||i.proveedor)&&!p.nota_precio);
+  const itSinCot=sinCot.reduce((s,p)=>s+(p.items||[]).length,0);
+  kp.innerHTML=`<div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
+    <div class="kpi ${itSinCot?'amber':'plain'}" onclick="document.getElementById('rt-sincotizar').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="kpi-label">Sin cotizar</div><div class="kpi-val" style="${itSinCot?'color:var(--violeta)':''}">${itSinCot} ítems</div>
+      <div class="kpi-sub">de ${sinCot.length} pedido${sinCot.length===1?'':'s'} · falta el precio</div></div>
     <div class="kpi ${itFaltan?'amber':'plain'}" onclick="rtEstado='a_comprar';renderRt()" style="cursor:pointer">
       <div class="kpi-label">Falta comprar</div><div class="kpi-val" style="${itFaltan?'color:var(--diesel)':''}">${itFaltan} ítems</div>
-      <div class="kpi-sub">de ${repFaltan} reparación${repFaltan===1?'':'es'}</div></div>
+      <div class="kpi-sub">de ${repFaltan} reparación${repFaltan===1?'':'es'} · ya aprobado</div></div>
     <div class="kpi plain" onclick="rtEstado='comprado';renderRt()" style="cursor:pointer">
       <div class="kpi-label">Comprados · en camino</div><div class="kpi-val">${itComprados} ítems</div>
       <div class="kpi-sub">${cnt('comprado').length} pedido${cnt('comprado').length===1?'':'s'} completo${cnt('comprado').length===1?'':'s'}</div></div>
@@ -9174,7 +9240,7 @@ function renderRt(){
         <button class="btn ghost" style="padding:7px 14px;font-size:12.5px" onclick="go('reparaciones')">Ver reparación →</button>
       </div>`:''}
     </div>`;}).join('')
-    :`<div class="empty" style="height:160px"><div>${b||rtEstado?'Ningún pedido coincide.':'No hay pedidos de repuestos.<br><span class=\"sub\">Se cargan desde la app del mecánico o desde el detalle de una reparación.</span>'}</div></div>`;
+    :`<div class="empty" style="height:160px"><div>${b||rtEstado?(sinCot.length?'Ningún pedido aprobado coincide. Los '+sinCot.length+' pedidos sin cotizar están arriba.':'Ningún pedido coincide.'):'No hay pedidos de repuestos.<br><span class=\"sub\">Se cargan desde la app del mecánico o desde el detalle de una reparación.</span>'}</div></div>`;
 }
 async function rtItem(id,idx,comprado){
   try{
