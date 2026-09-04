@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · repuestos: se aprueba sin cotización previa, el precio se carga al comprar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · stock: en taller = con ingreso dado; una máquina, una vez';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2458,7 +2458,7 @@ async function vStockGeneral(view){
 
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
     <div class="kpi"><div class="kpi-label">${F.tipo?escStk(F.tipo):'Equipos'}</div><div class="kpi-val">${total}</div><div class="kpi-sub">en ${nObjs} objetivo${nObjs===1?'':'s'}</div></div>
-    <div class="kpi"><div class="kpi-label">En el taller</div><div class="kpi-val" style="color:${totTaller?'var(--rojo)':'inherit'}">${totTaller}</div><div class="kpi-sub">${totTaller?'con reparación abierta':'nada parado'}</div></div>
+    <div class="kpi"><div class="kpi-label">En el taller</div><div class="kpi-val" style="color:${totTaller?'var(--rojo)':'inherit'}">${totTaller}</div><div class="kpi-sub">${totTaller?'con ingreso dado en el taller':'nada ingresado'}</div></div>
     <div class="kpi"><div class="kpi-label">Disponibles</div><div class="kpi-val" style="color:var(--brote-2)">${totDisp}</div><div class="kpi-sub">${total?Math.round(totDisp/total*100):100}% del parque</div></div>
     <div class="kpi"><div class="kpi-label">En depósito</div><div class="kpi-val">${enDep}</div><div class="kpi-sub">del grupo depósito</div></div>
     <div class="kpi"><div class="kpi-label">Faltantes abiertos</div><div class="kpi-val" style="color:${faltVis.length?'var(--rojo)':'inherit'}">${faltVis.length}</div><div class="kpi-sub">${faltVis.length?'revisar abajo':'sin faltantes'}</div></div>
@@ -2499,6 +2499,7 @@ async function vStockGeneral(view){
       ${sinUbicar.length?`<div class="sub" style="margin-top:9px;font-size:11.5px;color:var(--diesel)">
         ⚠ ${sinUbicar.length} reparación${sinUbicar.length===1?'':'es'} abierta${sinUbicar.length===1?'':'s'} que no se pudo colgar de ninguna máquina del censo
         —el equipo no está censado, o su objetivo todavía no informó stock—. No se descuentan de ningún total.</div>`:''}
+      <div class="sub" style="margin-top:6px;font-size:11px">"En taller" cuenta solo las máquinas con <b>ingreso dado</b> por el taller. Una reparación abierta sin ingreso es una máquina que sigue en su objetivo.</div>
     </div>`;
   })()}
 
@@ -2535,9 +2536,10 @@ async function vStockGeneral(view){
         </tr>`;
       }
       return fs.map((f,ix)=>{
-        // Un número tachado en rojo es una máquina que está en el taller. Sale
-        // del estado de la incidencia, así que cuando el mecánico la finaliza
-        // vuelve a contarse como disponible sola, sin tocar el censo.
+        // Un número tachado en rojo es una máquina que INGRESÓ al taller (el
+        // taller le marcó el ingreso). Una incidencia sin ingreso no cuenta:
+        // la máquina sigue en el objetivo. Cuando el mecánico finaliza, vuelve
+        // a contarse como disponible sola, sin tocar el censo.
         const enTaller=new Set((f.numeros_taller||[]).map(n=>norm(n)));
         const ambiguos=new Set((f.numeros_ambiguos||[]).map(n=>norm(n)));
         const chips=(f.numeros||[]).map(n=>{
