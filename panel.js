@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · Compras ve los pedidos de repuestos sin cotizar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · repuestos: se aprueba sin cotización previa, el precio se carga al comprar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -8945,7 +8945,6 @@ async function vComprasRepuestos(view){
     <div class="view-head"><div><div class="view-title">Compras · Repuestos de taller</div>
       <div class="view-desc">Lo que el taller espera para reparar — pedidos de los mecánicos con sus notas</div></div></div>
     ${tabsCompras()}
-    <div id="rt-sincotizar"></div>
     <div id="rt-aprobacion"></div>
     <div id="rt-encurso"></div>
     <div id="rt-kpis"></div>
@@ -8967,52 +8966,6 @@ async function vComprasRepuestos(view){
    todavía les falta cotizar alguno. Antes desaparecían — la lista de
    Compras arranca en la aprobación, y estos no llegan ahí hasta estar
    completos. Compras necesita verlos para saber qué falta averiguar. */
-/* Pedidos que el mecánico marcó y todavía no tienen ningún precio.
-   Hasta ahora Compras no los veía: la lista de abajo arranca en la
-   aprobación y los dos recuadros de arriba exigen que ya haya alguna
-   cotización. Un pedido recién marcado quedaba visible solo en Reparaciones,
-   y quien compra no se enteraba de que tenía que ir a buscar el precio. */
-function renderRtSinCotizar(){
-  const cont=document.getElementById('rt-sincotizar');if(!cont)return;
-  const sin=(rtData||[]).filter(p=>
-    ['pedido','en_cotizacion'].includes(p.estado)&&
-    !(p.items||[]).some(i=>i.precio!=null||i.proveedor)&&
-    !p.nota_precio);
-  if(!sin.length){cont.innerHTML='';return;}
-  const dias=p=>Math.ceil((Date.now()-new Date(p.created_at))/86400000);
-  sin.sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));   // los más viejos arriba
-  cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--violeta);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--violeta)">🧰 Pedidos sin cotizar (${sin.length})</div>
-    <div class="sub" style="font-size:12px;margin-bottom:10px">
-      Lo que el taller pidió y todavía no tiene precio. Hay que conseguir la cotización: cuando la cargues, pasa a tu aprobación y de ahí nace la orden de compra.</div>
-    ${sin.map(p=>{
-      const i=p.incidencias||{};
-      const its=p.items||[];
-      const d=dias(p);
-      const parado=i.equipo_parado;
-      return `<div style="border:1px solid var(--linea);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--hueso)">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
-          <div style="font-weight:700;font-size:13.5px">${escStk(i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo')}
-            <span class="uni-num">${escStk(i.numero_unidad||'—')}</span>
-            <span class="sub" style="font-weight:400">${i.objetivos?'· '+escStk(i.objetivos.nombre):''}</span></div>
-          <div style="display:flex;gap:6px;align-items:center">
-            ${parado?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">máquina parada</span>':''}
-            ${i.prioridad==='critico'?'<span class="badge" style="background:var(--rojo-soft);color:var(--rojo)">crítico</span>':i.prioridad==='alta'?'<span class="badge b-amber">alta</span>':''}
-            <span class="badge ${d>=7?'b-amber':'b-gray'}">${d} día${d===1?'':'s'}</span>
-          </div>
-        </div>
-        <div class="sub" style="font-size:11.5px;margin:4px 0 7px">👨‍🔧 ${escStk(p.pedido_por||'—')}${i.mecanicos?' · asignado a '+escStk(i.mecanicos.nombre):''}${p.marca_modelo?' · '+escStk(p.marca_modelo):''}</div>
-        ${its.map(x=>`<div style="font-size:12.5px;padding:2px 0">
-          <span class="mono" style="color:var(--tinta-2)">x${x.cantidad||1}</span> ${escStk(x.descripcion)}${x.codigo?` <span class="sub mono">(${escStk(x.codigo)})</span>`:''}</div>`).join('')}
-        ${p.nota?`<div class="sub" style="font-size:11.5px;margin-top:6px;font-style:italic">💬 ${escStk(p.nota)}</div>`:''}
-        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-          <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="circNota('${p.id}','compras')">💲 Cargar cotización</button>
-          ${p.foto_url?`<a class="btn-salir" style="padding:7px 14px;font-size:12.5px;text-decoration:none" href="${escStk(p.foto_url)}" target="_blank">📷 Foto</a>`:''}
-        </div>
-      </div>`;}).join('')}
-  </div>`;
-}
-
 function renderRtEnCurso(){
   const cont=document.getElementById('rt-encurso');if(!cont)return;
   const enCurso=(rtData||[]).filter(p=>
@@ -9055,15 +9008,16 @@ function renderRtEnCurso(){
 
 function renderRtAprobacion(){
   const cont=document.getElementById('rt-aprobacion');if(!cont)return;
-  // Cotizados: los que ya tienen nota de pedido esperando la aprobación.
-  // Se incluyen los que tienen `nota_precio` aunque el estado no haya
-  // avanzado a 'cotizado': si la nota se cargó y el cambio de estado falló,
-  // el pedido quedaba fuera de todas las listas y desaparecía de Compras.
-  const cots=(rtData||[]).filter(p=>p.estado==='cotizado'
-    ||(p.nota_precio&&['pedido','en_cotizacion'].includes(p.estado)));
+  // TODO lo que está antes de la compra espera aprobación (decisión 04-sep:
+  // se elimina el paso de cotización del referente). Se aprueba con o sin
+  // precio: la aprobación dice "hace falta comprar esto", y el precio lo
+  // consigue quien compra. Los más viejos primero: son los que traban al taller.
+  const cots=(rtData||[]).filter(p=>['pedido','en_cotizacion','cotizado'].includes(p.estado))
+    .slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
   if(!cots.length){cont.innerHTML='';return;}
   cont.innerHTML=`<div class="panel" style="border:1.5px solid var(--azul);margin-bottom:14px">
     <div class="panel-title" style="color:var(--azul)">✍️ Pendientes de tu aprobación (${cots.length})</div>
+    <div class="sub" style="font-size:12px;margin-bottom:10px">Aprobar significa "hace falta comprar esto". El precio no es necesario acá: lo carga quien compra, al marcarlo comprado.</div>
     ${cots.map(p=>{
       const i=p.incidencias||{};
       const dCot=p.cotizado_at?Math.ceil((new Date(p.cotizado_at)-new Date(p.created_at))/86400000):null;
@@ -9072,17 +9026,17 @@ function renderRtAprobacion(){
           <div style="flex:1;min-width:260px">
             <div style="font-weight:700;font-size:14px">🧾 Orden de compra — ${i.tipo_equipo||(i.equipos&&i.equipos.nombre)||'Equipo'} <span class="uni-num">${i.numero_unidad||'—'}</span>
               ${i.equipo_parado?`<span class="badge" style="background:#FCEBED;color:#A32D2D">⛔ parada</span>`:''}</div>
-            <div class="sub" style="font-size:11.5px;margin:2px 0 8px">Solicita: <b>${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</b> · rep. #${String(i.id||'').slice(0,6)}${p.marca_modelo?' · '+p.marca_modelo:''}${dCot!=null?' · pedido→cotizado: '+dCot+' d':''}${p.foto_ruta?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">📷 foto</a>`:''}</div>
+            <div class="sub" style="font-size:11.5px;margin:2px 0 8px">Solicita: <b>${i.mecanicos?i.mecanicos.nombre:(p.pedido_por||'—')}</b> · rep. #${String(i.id||'').slice(0,6)}${p.marca_modelo?' · '+p.marca_modelo:''}${' · esperando '+Math.ceil((Date.now()-new Date(p.created_at))/86400000)+' d'}${p.foto_ruta?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','foto')" style="color:var(--azul)">📷 foto</a>`:''}</div>
             <div style="background:#fff;border:1px solid var(--linea);border-radius:9px;padding:8px 11px;margin-bottom:8px">
               ${(p.items||[]).map(x=>`<div style="font-size:12.5px;padding:2px 0">x${x.cantidad||1} ${x.descripcion}${x.codigo?' <span class="sub">· '+x.codigo+'</span>':''}</div>`).join('')||'<div class="sub">Sin ítems</div>'}
               ${p.nota?`<div class="sub" style="font-size:11.5px;border-top:1px dashed var(--linea);margin-top:5px;padding-top:5px">📝 ${p.nota}</div>`:''}
             </div>
-            <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px">
-              <span>Proveedor: <b>${p.nota_proveedor||'—'}</b></span>
-              <span>Precio: <b class="mono">${money(p.nota_precio||0)}</b></span>
-              <span>Entrega: <b>${p.nota_plazo||'—'}</b></span>
-              <span class="sub">cotizó ${p.cotizado_por||'—'}${p.cotizado_at?' · '+fechaAR(p.cotizado_at):''}${p.nota_adjunto?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','adjunto')" style="color:var(--azul)">📎 adjunto</a>`:''}</span>
-            </div>
+            ${p.nota_precio||p.nota_proveedor?`<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px">
+              <span>Proveedor: <b>${escStk(p.nota_proveedor||'—')}</b></span>
+              <span>Precio: <b class="mono">${p.nota_precio?money(p.nota_precio):'—'}</b></span>
+              <span>Entrega: <b>${escStk(p.nota_plazo||'—')}</b></span>
+              <span class="sub">cotizó ${escStk(p.cotizado_por||'—')}${p.cotizado_at?' · '+fechaAR(p.cotizado_at):''}${p.nota_adjunto?` · <a href="#" onclick="event.preventDefault();rtVerArchivo('${p.id}','adjunto')" style="color:var(--azul)">📎 adjunto</a>`:''}</span>
+            </div>`:`<div class="sub" style="font-size:11.5px">Sin precio todavía — se carga al comprar.</div>`}
           </div>
           <div style="display:flex;flex-direction:column;gap:7px;flex-shrink:0">
             <button class="btn" onclick="rtAprobar('${p.id}')">✓ Aprobar → a comprar</button>
@@ -9090,7 +9044,7 @@ function renderRtAprobacion(){
           </div>
         </div>
       </div>`;}).join('')}
-    <div class="sub" style="font-size:11px">"Observar" devuelve el pedido al Referente con tu comentario (vuelve a en cotización).</div>
+    <div class="sub" style="font-size:11px">"Observar" devuelve el pedido al mecánico con tu comentario, sin aprobarlo.</div>
   </div>`;
 }
 /* Aprobar un pedido al que todavía le faltan precios. Pasa igual a "a
@@ -9144,7 +9098,6 @@ async function rtObservar(id){
 function renderRt(){
   const kp=document.getElementById('rt-kpis'),ls=document.getElementById('rt-lista');
   if(!kp||!ls)return;
-  renderRtSinCotizar();
   renderRtAprobacion();
   renderRtEnCurso();
   // La lista clásica de Compras muestra SOLO desde la aprobación en adelante:
@@ -9161,13 +9114,13 @@ function renderRt(){
   // Pedidos que todavía no tienen precio: no están en `all` (esa lista arranca
   // en la aprobación) pero son trabajo pendiente de Compras igual. El KPI los
   // contaba como 0 y escondía lo que el taller estaba esperando.
-  const sinCot=(rtData||[]).filter(p=>['pedido','en_cotizacion'].includes(p.estado)
-    &&!(p.items||[]).some(i=>i.precio!=null||i.proveedor)&&!p.nota_precio);
+  const sinCot=(rtData||[]).filter(p=>['pedido','en_cotizacion','cotizado'].includes(p.estado));
   const itSinCot=sinCot.reduce((s,p)=>s+(p.items||[]).length,0);
+  const masViejo=sinCot.length?Math.max(...sinCot.map(p=>Math.ceil((Date.now()-new Date(p.created_at))/86400000))):0;
   kp.innerHTML=`<div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
-    <div class="kpi ${itSinCot?'amber':'plain'}" onclick="document.getElementById('rt-sincotizar').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
-      <div class="kpi-label">Sin cotizar</div><div class="kpi-val" style="${itSinCot?'color:var(--violeta)':''}">${itSinCot} ítems</div>
-      <div class="kpi-sub">de ${sinCot.length} pedido${sinCot.length===1?'':'s'} · falta el precio</div></div>
+    <div class="kpi ${itSinCot?'amber':'plain'}" onclick="document.getElementById('rt-aprobacion').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="kpi-label">Esperando aprobación</div><div class="kpi-val" style="${itSinCot?'color:var(--azul)':''}">${itSinCot} ítems</div>
+      <div class="kpi-sub">de ${sinCot.length} pedido${sinCot.length===1?'':'s'}${masViejo?` · el más viejo hace ${masViejo} d`:''}</div></div>
     <div class="kpi ${itFaltan?'amber':'plain'}" onclick="rtEstado='a_comprar';renderRt()" style="cursor:pointer">
       <div class="kpi-label">Falta comprar</div><div class="kpi-val" style="${itFaltan?'color:var(--diesel)':''}">${itFaltan} ítems</div>
       <div class="kpi-sub">de ${repFaltan} reparación${repFaltan===1?'':'es'} · ya aprobado</div></div>
@@ -9240,7 +9193,7 @@ function renderRt(){
         <button class="btn ghost" style="padding:7px 14px;font-size:12.5px" onclick="go('reparaciones')">Ver reparación →</button>
       </div>`:''}
     </div>`;}).join('')
-    :`<div class="empty" style="height:160px"><div>${b||rtEstado?(sinCot.length?'Ningún pedido aprobado coincide. Los '+sinCot.length+' pedidos sin cotizar están arriba.':'Ningún pedido coincide.'):'No hay pedidos de repuestos.<br><span class=\"sub\">Se cargan desde la app del mecánico o desde el detalle de una reparación.</span>'}</div></div>`;
+    :`<div class="empty" style="height:160px"><div>${b||rtEstado?(sinCot.length?'Ningún pedido aprobado coincide. Los '+sinCot.length+' que esperan aprobación están arriba.':'Ningún pedido coincide.'):'No hay pedidos de repuestos.<br><span class=\"sub\">Se cargan desde la app del mecánico o desde el detalle de una reparación.</span>'}</div></div>`;
 }
 async function rtItem(id,idx,comprado){
   try{
@@ -9251,12 +9204,54 @@ async function rtItem(id,idx,comprado){
   }catch(e){alert('No pude actualizar: '+e.message);renderRt();}
 }
 async function rtAvanzar(id,estado){
+  // Comprar es el momento en que se conoce el precio (decisión 04-sep: se
+  // aprueba sin precio). Se pide acá, y con eso se completa la orden de
+  // compra que hasta ahora estaba sin cotización.
+  if(estado==='comprado'){rtComprar(id);return;}
   try{
     await api('/api/compras/repuestos/'+id+'/estado',{method:'POST',body:JSON.stringify({estado})});
     const p=(rtData||[]).find(x=>x.id===id);
     if(p){p.estado=estado;if(estado==='entregado')p.entregado_at=new Date().toISOString();}
     renderRt();
   }catch(e){alert('No pude actualizar: '+e.message);}
+}
+
+function rtComprar(id){
+  const p=(rtData||[]).find(x=>String(x.id)===String(id))||{};
+  const i=p.incidencias||{};
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+  bg.innerHTML=`<div class="modal" style="max-width:420px">
+    <div class="modal-tit">🛒 Marcar comprado</div>
+    <div class="sub" style="margin:4px 0 12px;font-size:12px">${escStk(i.tipo_equipo||'Equipo')} ${escStk(i.numero_unidad||'')} · ${(p.items||[]).length} ítem${(p.items||[]).length===1?'':'s'}.
+      Cargá lo que se pagó: con eso se completa la orden de compra y el gasto queda imputado al objetivo.</div>
+    <div class="mm-field"><label>Proveedor</label><input id="rc-prov" list="rc-prov-list" value="${escStk(p.nota_proveedor||'')}" style="width:100%" autocomplete="off">
+      <datalist id="rc-prov-list">${(ordProveedores||[]).map(x=>`<option value="${escStk(x.nombre)}">`).join('')}</datalist></div>
+    <div class="mm-field"><label>Precio total con IVA $</label><input id="rc-precio" type="text" inputmode="decimal" value="${p.nota_precio!=null?String(p.nota_precio).replace('.',','):''}" style="width:100%" placeholder="ej: 48.500,00"></div>
+    <div class="sub" style="font-size:11.5px">Si todavía no tenés el importe, dejalo vacío: se marca comprado igual y el precio llega con la factura.</div>
+    <div class="modal-acciones">
+      <button class="btn-salir" id="rc-cancel">Cancelar</button>
+      <button class="btn" id="rc-ok">✓ Comprado</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  if(!ordProveedores)api('/api/compras/ordenes/proveedores').then(d=>{ordProveedores=d||[];
+    const dl=bg.querySelector('#rc-prov-list');if(dl)dl.innerHTML=(d||[]).map(x=>`<option value="${escStk(x.nombre)}">`).join('');}).catch(()=>{ordProveedores=[];});
+  setTimeout(()=>{const el=bg.querySelector('#rc-prov');if(el)el.focus();},50);
+  bg.querySelector('#rc-cancel').onclick=()=>bg.remove();
+  bg.querySelector('#rc-ok').onclick=async()=>{
+    const v=k=>(bg.querySelector('#rc-'+k).value||'').trim();
+    const btn=bg.querySelector('#rc-ok');btn.disabled=true;btn.textContent='Guardando…';
+    try{
+      const r=await api('/api/compras/repuestos/'+id+'/estado',{method:'POST',
+        body:JSON.stringify({estado:'comprado',proveedor:v('prov'),precio:v('precio')})});
+      bg.remove();
+      const pp=(rtData||[]).find(x=>x.id===id);if(pp){pp.estado='comprado';pp.nota_precio=r.nota_precio;pp.nota_proveedor=r.nota_proveedor;}
+      if(r.orden){
+        const lab={directa:'compra directa',presupuesto:'supera $500.000: pedía presupuesto',comparativos:'supera $800.000: pedía comparativos'}[r.orden.tramo]||r.orden.tramo;
+        toast(`Comprado ✓ · ${r.orden.numero} quedó en ${money(r.orden.total)} — ${lab}`);
+      }else toast('Comprado ✓');
+      rtData=await api('/api/compras/repuestos');renderRt();
+    }catch(e){btn.disabled=false;btn.textContent='✓ Comprado';toast(e.message||'No pude guardar','error');}
+  };
 }
 
 async function vComprasInd(view){
