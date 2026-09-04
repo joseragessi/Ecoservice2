@@ -6869,10 +6869,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
 // sola llamada: el último censo respondido de CADA objetivo (sea del mes
 // que sea), con su grupo, los números informados y los faltantes abiertos.
 /* ── Qué máquinas del censo están en el taller ──────────────────
-   Una máquina está "en el taller" mientras tenga una reparación abierta, en
-   cualquier estado. No se guarda en ningún lado: se deriva del estado de la
-   incidencia, así que cuando el mecánico la finaliza vuelve a contarse como
-   disponible sola, sin ningún paso manual que se pueda olvidar.
+   Una máquina está "en el taller" mientras tenga una reparación abierta CON
+   INGRESO DADO (fecha_ingreso_taller). Una incidencia sin ingreso es una
+   máquina que sigue en su objetivo. No se guarda en ningún lado: se deriva
+   de la incidencia, así que cuando el mecánico la finaliza vuelve a contarse
+   como disponible sola, sin ningún paso manual que se pueda olvidar.
 
    El match es por OBJETIVO + NÚMERO, nunca por número solo: el 237 existe en
    Cosquin y también en Circunvalación, y cruzando solo por número una
@@ -6924,6 +6925,7 @@ function cruzarTaller(filas, incidencias) {
 
     const famFila = familiaConsumo(f.tipo);
 
+    const yaMarcados = new Set();   // números ya contados en esta fila
     abiertas.forEach(inc => {
       if (usadas.has(inc.id)) return;
       const nInc = normNum(inc.numero_unidad);
@@ -6931,6 +6933,11 @@ function cruzarTaller(filas, incidencias) {
       // (a) Match por número, dentro del mismo objetivo y sin ambigüedad.
       if (nInc && cuenta[nInc] === 1) {
         usadas.add(inc.id);
+        // Dos reparaciones abiertas sobre la MISMA máquina son una máquina
+        // parada, no dos. El minitractor T22 tenía dos incidencias y el
+        // stock decía "2 en taller" con cantidad 1.
+        if (yaMarcados.has(nInc)) return;
+        yaMarcados.add(nInc);
         f.en_taller++;
         const original = (f.numeros || []).find(n => normNum(n) === nInc);
         f.numeros_taller.push(original);
@@ -6979,9 +6986,14 @@ router.get('/api/stock/general', auth, async (req, res) => {
       // Reparaciones abiertas. El criterio es el mismo que usa el resto del
       // panel para contar activas (estado distinto de finalizado), para que el
       // badge de Reparaciones y este conteo no se contradigan.
+      // "En el taller" = INGRESÓ físicamente (fecha_ingreso_taller marcada
+      // por el taller), no "tiene una reparación abierta". El T22 de UCC
+      // tenía incidencia pendiente y seguía en UCC: contarlo como parado era
+      // falso. Una reparación sin ingreso es una máquina que todavía está en
+      // su objetivo, trabajando o esperando que la vayan a buscar.
       supabase.from('incidencias')
-        .select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, equipo_parado, created_at')
-        .neq('estado', 'finalizado'),
+        .select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, equipo_parado, created_at, fecha_ingreso_taller')
+        .neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
     ]);
     if (objs.error) throw objs.error;
 
