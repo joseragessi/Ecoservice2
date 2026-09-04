@@ -36,10 +36,62 @@ async function resolverCapataz(tel) {
 function listado(items) {
   if (!items || !items.length) return '  (sin equipos todavía)';
   return items.map(i => {
-    const nums = i.numeros && i.numeros.length ? ` — N° ${i.numeros.join(', ')}` : '';
+    // Los números que están en el taller (con ingreso dado) van marcados:
+    // el capataz tiene que saber que esa máquina NO está en su objetivo y
+    // que no es un faltante, está en reparación.
+    const enT = new Set((i.numeros_taller || []).map(String));
+    const nums = i.numeros && i.numeros.length
+      ? ` — N° ${i.numeros.map(n => enT.has(String(n)) ? `${n} 🔧` : n).join(', ')}` : '';
+    const sinNumT = (i.en_taller_sin_numero || 0) > 0 ? ` _(${i.en_taller_sin_numero} en el taller)_` : '';
     const obs  = i.observacion ? ` _(${i.observacion})_` : '';
-    return `  • ${i.tipo} ×${i.cantidad}${nums}${obs}`;
+    return `  • ${i.tipo} ×${i.cantidad}${nums}${sinNumT}${obs}`;
   }).join('\n');
+}
+
+// Cuántas máquinas del listado están en el taller, para el pie del mensaje.
+function contarTaller(items) {
+  return (items || []).reduce((s, i) => s + (i.numeros_taller || []).length + (i.en_taller_sin_numero || 0), 0);
+}
+
+// ── Lo que está en el taller, por objetivo ────────────────────
+// Incidencias abiertas CON INGRESO DADO (fecha_ingreso_taller). Se cruza por
+// número de máquina; si no hay número, por familia de equipo (misma lógica
+// que Stock → General en el panel). Devuelve los items con numeros_taller y
+// en_taller_sin_numero completados.
+async function marcarTaller(objetivoId, items) {
+  try {
+    const { data: incs } = await supabase.from('incidencias')
+      .select('id, numero_unidad, tipo_equipo')
+      .eq('objetivo_id', objetivoId).neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null);
+    if (!incs || !incs.length) return items;
+    const normN = v => String(v == null ? '' : v).trim().toUpperCase().replace(/[\s.\-_/]/g, '');
+    const normT = v => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    const usadas = new Set();
+    const out = (items || []).map(i => ({ ...i, numeros_taller: [], en_taller_sin_numero: 0 }));
+    // Por número, una sola vez por máquina.
+    out.forEach(it => {
+      const nums = new Set((it.numeros || []).map(normN));
+      const vistos = new Set();
+      incs.forEach(inc => {
+        const n = normN(inc.numero_unidad);
+        if (!n || usadas.has(inc.id) || !nums.has(n) || vistos.has(n)) return;
+        usadas.add(inc.id); vistos.add(n);
+        it.numeros_taller.push((it.numeros || []).find(x => normN(x) === n));
+      });
+    });
+    // Sin número: por tipo, si el nombre del equipo cabe en el tipo censado.
+    incs.forEach(inc => {
+      if (usadas.has(inc.id)) return;
+      const t = normT(inc.tipo_equipo);
+      if (!t) return;
+      const it = out.find(x => { const tt = normT(x.tipo); return tt && (tt.includes(t) || t.includes(tt)) && x.en_taller_sin_numero + x.numeros_taller.length < (Number(x.cantidad) || 0); });
+      if (it) { usadas.add(inc.id); it.en_taller_sin_numero++; }
+    });
+    return out;
+  } catch (e) {
+    console.error('[stock] no pude cruzar con el taller:', e.message || e);
+    return items;
+  }
 }
 
 function resumenCenso(sesion) {
@@ -164,14 +216,11 @@ async function ultimoStockDelObjetivo(objetivoId, periodoActualStr) {
       return null;
     }
     console.log(`[stock] precargando ${censo.censos_stock_items.length} tipos del censo de ${censo.periodo}`);
-    return {
-      periodo: censo.periodo,
-      mismo_mes: censo.periodo === periodoActualStr,
-      items: censo.censos_stock_items.map(i => ({
-        tipo: i.tipo_equipo, cantidad: i.cantidad,
-        numeros: i.numeros || [], observacion: i.observacion || null,
-      })),
-    };
+    const items = await marcarTaller(objetivoId, censo.censos_stock_items.map(i => ({
+      tipo: i.tipo_equipo, cantidad: i.cantidad,
+      numeros: i.numeros || [], observacion: i.observacion || null,
+    })));
+    return { periodo: censo.periodo, mismo_mes: censo.periodo === periodoActualStr, items };
   } catch (e) {
     console.error('[stock] no pude traer el último censo:', e.message);
     return null;   // sin historial se sigue con el flujo de siempre
@@ -214,12 +263,14 @@ async function iniciarStock(telefono, resto) {
         periodoPrevio: previo.periodo,
       };
       const total = previo.items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0);
+      const nTaller = contarTaller(previo.items);
       const cuando = previo.mismo_mes
         ? 'Esto es lo que ya cargaste este mes'
         : `Esto es lo último que informaste (${mesLegible(previo.periodo)})`;
       return `Dale *${nombre}*. ${cuando} en *${capataz.objetivo_nombre || 'tu objetivo'}*:\n\n` +
-             `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*\n\n` +
-             `¿Está completo? Respondé *sí* para confirmarlo.\n` +
+             `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*` +
+             (nTaller ? `\n🔧 ${nTaller} en el taller: no ${nTaller === 1 ? 'la' : 'las'} cuentes como faltante.` : '') +
+             `\n\n¿Está bien? Respondé *sí* para confirmarlo.\n` +
              `Si algo cambió, decímelo en criollo:\n` +
              `_agregá 2 motosierras la 12 y la 15_\n` +
              `_la 21 no está_ (queda registrada como faltante)`;
@@ -243,6 +294,14 @@ async function iniciarStock(telefono, resto) {
  * Compara lo nuevo contra lo anterior y devuelve la lista de faltantes:
  * números que estaban y ya no, y bajas de cantidad por tipo.
  */
+// ¿Es un listado completo o un ajuste chico? Cinco o más renglones con
+// cantidad, o más de 250 caracteres, es alguien mandando todo de nuevo.
+function esListadoCompleto(texto) {
+  const t = String(texto || '');
+  const renglones = t.split(/\n/).filter(l => /\d/.test(l) && l.trim().length > 3).length;
+  return renglones >= 5 || t.length > 250;
+}
+
 function detectarFaltantes(previos, nuevos) {
   const clave = i => String(i.tipo || '').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
@@ -387,6 +446,24 @@ async function continuarStock(telefono, mensaje) {
              `\n\n${resumenCenso(sesion)}`;
     }
 
+    // Un mensaje LARGO con varios equipos no es un ajuste: es el listado
+    // completo de nuevo (el caso de UCC: 30 líneas). Pedirle a la IA que
+    // "corrija" lo previo con 30 líneas es pedirle que adivine; mejor tomarlo
+    // como listado nuevo y comparar contra lo anterior para los faltantes.
+    if (esListadoCompleto(texto)) {
+      const previos = sesion.items;
+      const r = await procesarListadoTexto(tel, sesion.capataz, texto);
+      const nueva = sesiones[tel];
+      if (nueva && nueva.items && previos) {
+        nueva.faltantesPend = detectarFaltantes(previos, nueva.items);
+        if (nueva.faltantesPend.length) {
+          const lista = nueva.faltantesPend.map(f => f.numero ? `${f.tipo} *N° ${f.numero}*` : `${f.tipo} (${f.detalle})`).join(', ');
+          return `${r}\n\n⚠️ Respecto de la vez pasada falta: ${lista}. Queda registrado como faltante.`;
+        }
+      }
+      return r;
+    }
+
     // Cualquier otra cosa -> es un ajuste: reinterpretar con la IA
     let actualizado;
     try {
@@ -442,4 +519,6 @@ module.exports = {
   iniciarStock: ses.conPersistencia('stock', sesiones, iniciarStock),
   continuarStock: ses.conPersistencia('stock', sesiones, continuarStock),
   tieneSesionActiva, periodoActual, tienePedidoPendiente,
+  // Para el harness: lógica pura, sin sesión.
+  _listado: listado, _contarTaller: contarTaller, _esListadoCompleto: esListadoCompleto, _detectarFaltantes: detectarFaltantes,
 };
