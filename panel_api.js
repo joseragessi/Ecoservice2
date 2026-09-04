@@ -5096,13 +5096,15 @@ async function pedirStockObjetivos(body) {
       if (censo && censo.estado === 'respondido' && !forzar) { yaRespondidos++; continue; }
       const capsObj = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
       if (!capsObj.length) { sinCapataz++; continue; }
-      // El censo pasa a pendiente DESPUÉS de confirmar que hay a quién
-      // pedirle: si no, un objetivo sin capataz perdía la respuesta que ya
-      // tenía sin que nadie recibiera el pedido.
+      // Repedir NO cambia el estado a pendiente. Pasarlo a pendiente hacía
+      // DESAPARECER la respuesta de todas las vistas —stock general, el
+      // histórico, los disponibles— porque todas miran el último censo
+      // RESPONDIDO: el panel volvía a mostrar el mes anterior como si fuera
+      // el actual. El censo sigue respondido y visible; se marca reenviado_at
+      // y, cuando el capataz contesta, se pisa con lo nuevo.
       if (censo && censo.estado === 'respondido' && forzar) {
         const { error: eR } = await supabase.from('censos_stock')
-          .update({ estado: 'pendiente', reenviado_at: new Date().toISOString() })
-          .eq('id', censo.id);
+          .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
         if (eR) { console.error('stock repedir:', eR.message); fallidos++; continue; }
         repedidos++;
       }
@@ -7011,7 +7013,7 @@ router.get('/api/stock/general', auth, async (req, res) => {
     const [objs, censos, faltantes, incid] = await Promise.all([
       supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true),
       supabase.from('censos_stock')
-        .select('id, periodo, objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+        .select('id, periodo, objetivo_id, estado, respondido_at, reenviado_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
         .eq('estado', 'respondido').order('periodo', { ascending: false }),
       supabase.from('stock_faltantes').select('*').eq('estado', 'abierto')
         .then(r => r, () => ({ data: [] })),   // si la tabla no existe aún, sin faltantes
@@ -7060,6 +7062,11 @@ router.get('/api/stock/general', auth, async (req, res) => {
           censo_id: c.id,
           capataz: c.capataces ? c.capataces.nombre : null,
           periodo: c.periodo, respondido_at: c.respondido_at,
+          // Si el último censo respondido NO es del mes en curso, el panel
+          // está mostrando datos viejos. Se marca para que se vea, en vez de
+          // pasar por actual lo que es del mes pasado.
+          periodo_vencido: c.periodo !== periodoStockActual(),
+          repedido: !!(c.reenviado_at && c.respondido_at && new Date(c.reenviado_at) > new Date(c.respondido_at)),
           tipo: i.tipo_equipo, cantidad: i.cantidad,
           // La familia la resuelve el backend para que el clasificador viva en
           // un solo lugar: si el front tuviera su propia copia, el día que se
