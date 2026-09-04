@@ -2463,7 +2463,12 @@ router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
   try {
     const { data: ped } = await supabase.from('repuestos_taller').select('estado').eq('id', req.params.id).single();
     if (!ped) return res.status(404).json({ error: 'Pedido inexistente' });
-    if (ped.estado !== 'cotizado') return res.status(422).json({ error: 'Solo se aprueban pedidos en estado "cotizado".' });
+    // Se aprueba desde cualquier estado previo a la compra (decisión 04-sep:
+    // se elimina el paso de cotización del referente). La aprobación dice
+    // "sí, hace falta comprar esto"; el precio lo consigue quien compra.
+    if (!['pedido', 'en_cotizacion', 'cotizado'].includes(ped.estado)) {
+      return res.status(422).json({ error: 'Este pedido ya fue aprobado o comprado.' });
+    }
     const ahora = new Date().toISOString();
     const { data, error } = await supabase.from('repuestos_taller')
       .update({ estado: 'a_comprar', estado_desde: ahora, aprobado_at: ahora, aprobado_por: req.usuario || 'panel' })
@@ -2558,18 +2563,45 @@ router.post('/api/compras/repuestos/:id/estado', auth, async (req, res) => {
     const estado = String((req.body || {}).estado || '');
     if (!['a_comprar', 'comprado', 'entregado'].includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
     const patch = { estado };
+    let infoOrden = null;
     if (estado === 'comprado') {
       // Marcar todo comprado de una: tildar todos los ítems
       const { data: ped } = await supabase.from('repuestos_taller')
-        .select('items').eq('id', req.params.id).single();
+        .select('items, orden_compra_id, nota_precio').eq('id', req.params.id).single();
       if (ped) patch.items = (Array.isArray(ped.items) ? ped.items : []).map(i => ({ ...i, comprado: true }));
       patch.comprado_at = new Date().toISOString();
+      // El precio se conoce recién acá (decisión 04-sep: se aprueba sin
+      // precio y lo consigue quien compra). Si viene, se guarda y se
+      // completa la orden de compra, que hasta ahora estaba sin cotización.
+      const b = req.body || {};
+      const precio = Number(String(b.precio || '').replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+      const proveedor = String(b.proveedor || '').trim();
+      if (precio) patch.nota_precio = precio;
+      if (proveedor) patch.nota_proveedor = proveedor;
+      if (precio || proveedor) { patch.cotizado_at = new Date().toISOString(); patch.cotizado_por = req.usuario || 'panel'; }
+      if (ped && ped.orden_compra_id && (precio || proveedor)) {
+        try {
+          const { data: oc } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', ped.orden_compra_id).single();
+          if (oc && oc.estado !== 'facturada' && oc.estado !== 'anulada') {
+            const items = ((oc.data || {}).items || []).map(i => ({ ...i, precio: i.precio }));
+            const total = precio || Number(oc.total_estimado) || 0;
+            const tramo = ORD.tramoDeMonto(total);
+            const d2 = { ...(oc.data || {}), items, tramo, sin_cotizacion: !total,
+              precio_cargado_al_comprar: !!precio, precio_cargado_por: req.usuario || null,
+              precio_cargado_at: new Date().toISOString() };
+            await supabaseCompras.from('ordenes_compra')
+              .update({ total_estimado: total, proveedor: proveedor || oc.proveedor, data: d2, estado: 'abierta' })
+              .eq('id', oc.id);
+            infoOrden = { numero: oc.numero, total, tramo };
+          }
+        } catch (e) { console.error('[ordenes] no pude completar la orden al comprar', e.message); }
+      }
     }
     if (estado === 'entregado') patch.entregado_at = new Date().toISOString();
     const { data, error } = await supabase.from('repuestos_taller')
       .update(patch).eq('id', req.params.id).select().single();
     if (error) throw error;
-    res.json(data);
+    res.json({ ...data, orden: infoOrden });
   } catch (err) {
     console.error('repuestos estado:', err);
     res.status(500).json({ error: 'Error actualizando el pedido' });
