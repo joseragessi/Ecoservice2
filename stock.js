@@ -503,12 +503,17 @@ async function tienePedidoPendiente(telefono) {
     if (!capataz || !capataz.objetivo_id) return false;
     const { data } = await supabase
       .from('censos_stock')
-      .select('id')
+      .select('id, estado, reenviado_at, respondido_at')
       .eq('periodo', periodoActual())
       .eq('objetivo_id', capataz.objetivo_id)
-      .eq('estado', 'pendiente')
       .maybeSingle();
-    return !!data;
+    if (!data) return false;
+    if (data.estado === 'pendiente') return true;
+    // Ya respondió, pero se le VOLVIÓ a pedir después de esa respuesta: el
+    // censo sigue respondido (para no borrarlo de las vistas) y el pedido
+    // está abierto igual. Se detecta comparando las dos fechas.
+    return !!(data.reenviado_at && data.respondido_at
+      && new Date(data.reenviado_at) > new Date(data.respondido_at));
   } catch (err) {
     console.error('[stock] error chequeando pedido pendiente:', err.message || err);
     return false;
