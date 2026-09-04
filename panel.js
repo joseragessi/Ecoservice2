@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · stock: refresco automático + volver a pedir el stock';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · repedir sin borrar el censo + aviso de censo vencido';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2575,7 +2575,9 @@ async function vStockGeneral(view){
             :`<span style="color:var(--brote-2)">${disp}</span>`}</td>
           <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${chips||'<span class="sub">—</span>'}</div></td>
           <td class="sub" style="font-size:12px">${escStk(f.observacion||'')}</td>
-          ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${fFecha(f.periodo)}</td>
+          ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${f.periodo_vencido
+            ?`<b style="color:var(--diesel)">${fFecha(f.periodo)}</b><div style="font-size:10px;color:var(--diesel);font-weight:600;font-family:inherit">no es de este mes</div>`
+            :fFecha(f.periodo)}${f.repedido?'<div style="font-size:10px;color:var(--tinta-3);font-family:inherit">repedido, sin reconfirmar</div>':''}</td>
           <td rowspan="${fs.length}" style="vertical-align:top"><div style="display:flex;flex-direction:column;gap:5px">
             <button class="mini-btn" onclick="editarStockObjetivo('${f.objetivo_id}')" title="corregir el stock de este objetivo">✏️ Editar</button>
             <button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico, una hoja">🖨 Planilla</button>
