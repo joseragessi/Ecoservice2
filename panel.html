@@ -356,6 +356,13 @@ th.sortable .arr{font-size:9px;margin-left:3px;color:var(--brote-2)}
   .ed-nota{background:var(--diesel-soft);border:1px solid #EED9AE;border-radius:var(--r-s);
     padding:9px 12px;margin-top:10px;font-size:11.5px;color:#854F0B;line-height:1.45}
   @media(max-width:620px){.ed-grid,.ed-grid-3{grid-template-columns:1fr}}
+  /* Stock → Desvíos */
+  .dsv-fila{display:grid;grid-template-columns:130px 1fr 170px 190px;gap:10px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--linea);font-size:12.5px}
+  .dsv-fila:last-child{border-bottom:none}.dsv-cerrada{opacity:.55}
+  .dsv-tipo{font-weight:600}.dsv-acc{display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap}
+  .nu{font-family:'JetBrains Mono',monospace;font-size:11.5px;padding:2px 8px;border-radius:5px;background:var(--diesel-soft);color:#854F0B;display:inline-block}
+  .nu.f{background:var(--rojo-soft);color:#A3253A;border:1px solid #F2C4CB}.nu.m{background:var(--azul-soft);color:var(--azul)}.nu.t{background:var(--papel);color:var(--tinta-3);text-decoration:line-through}.nu.n{background:var(--brote-soft);color:#0F5C33}
+  @media(max-width:760px){.dsv-fila{grid-template-columns:1fr;gap:4px}.dsv-acc{justify-content:flex-start}}
 </style>
 </head>
 <body>
