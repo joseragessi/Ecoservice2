@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · desvíos: solo máquinas con motor, números con prefijo, tipos por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · desvíos: renumeradas, textos en el número, nombre real por máquina';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2393,7 +2393,10 @@ async function vStockDesvios(view){
       <span>${chipNum(x.numero,'m','apareció esta semana en otro objetivo')}<span class="sub" style="margin-left:6px">esta semana está en <b>${escStk(x.destino)}</b></span></span>
       <span><span class="badge b-blue">movida</span></span>
       <span class="dsv-acc"><button class="mini-btn" onclick="dsvHistorial('${escStk(x.numero)}')">Historial</button></span></div>`;
-    const cuerpo=[...abiertos.map(filaF),...(f.taller||[]).map(filaT),...(f.movidas||[]).map(filaM),...(f.nuevos||[]).map(filaN),...cerrados.map(filaF)].join('');
+    const filaR=(f.renumeradas||[]).length?`<div class="dsv-fila" style="opacity:.7"><span class="dsv-tipo">Renumeradas</span>
+      <span>${f.renumeradas.map(x=>chipNum(x.numero,'',x.sentido)).join(' ')}<span class="sub" style="margin-left:6px">${f.renumeradas.length} máquina${f.renumeradas.length===1?'':'s'} que ${f.renumeradas.every(x=>/con/.test(x.sentido))?'ahora tienen número (antes sin)':f.renumeradas.every(x=>/sin/.test(x.sentido))?'ahora van sin número (antes con)':'cambiaron entre con y sin número'}</span></span>
+      <span><span class="badge b-gray">no es desvío</span></span><span></span></div>`:'';
+    const cuerpo=[...abiertos.map(filaF),...(f.taller||[]).map(filaT),...(f.movidas||[]).map(filaM),...(f.nuevos||[]).map(filaN),filaR,...cerrados.map(filaF)].join('');
     return `<div class="panel" style="margin-bottom:10px;padding:0;overflow:hidden${est==='con_faltantes'?';border-left:3px solid var(--rojo)':est==='sin_respuesta'?';border-left:3px solid var(--diesel)':''}">
       <div style="padding:11px 16px;border-bottom:${cuerpo?'1px solid var(--linea)':'none'};display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div><b style="font-size:14px">${escStk(f.objetivo)}</b> ${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge b-blue">privado</span>':''}<div class="sub" style="margin-top:2px">${meta}</div></div>
@@ -2539,10 +2542,11 @@ function dsvExportar(){
   @page{size:A4;margin:0}</style></head><body>
   <div class="cab"><div><h1>Desvíos de stock</h1><div class="sub">Semana del ${esc(fSem(d.semana))} contra la del ${esc(fSem(d.semana_anterior))} · EcoService · emitido ${new Date().toLocaleDateString('es-AR')}</div></div>
     <div class="kp"><span>Faltantes <b style="color:#A3253A">${T.faltantes||0}</b></span><span>Repiten <b>${T.repiten||0}</b></span><span>En taller <b>${T.taller||0}</b></span><span>Nuevos <b style="color:#0F7E40">${T.nuevos||0}</b></span><span>Sin respuesta <b>${T.sin_respuesta||0}</b>/${T.objetivos||0}</span></div></div>
-  ${filas.map(f=>`<div class="obj"><div class="oh">${esc(f.objetivo)} <span class="sub" style="font-weight:400">· ${f.anterior?f.anterior.total+' → ':''}${f.actual?f.actual.total:'—'} equipos · ${esc((f.actual||{}).capataz||'')}</span></div>
+  ${filas.map(f=>`<div class="obj"><div class="oh">${esc(f.objetivo)} <span class="sub" style="font-weight:400">· ${f.resumen?(f.anterior?f.resumen.antes+' → ':'')+f.resumen.ahora+' máquinas con motor':''}${f.resumen&&(f.resumen.herramientas_antes||f.resumen.herramientas_ahora)?' · herramientas '+f.resumen.herramientas_antes+' → '+f.resumen.herramientas_ahora:''} · ${esc((f.actual||{}).capataz||'')}</span></div>
     <table>${(f.faltantes||[]).filter(x=>!x.cerrado).map(x=>`<tr><td class="f">FALTANTE</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||('×'+(x.cantidad||1)+' s/n'))}</td><td class="sub">${x.semanas}ª semana</td></tr>`).join('')}
     ${(f.taller||[]).map(x=>`<tr><td class="t">en taller</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||'s/n')}</td><td class="sub">${x.incidencia&&x.incidencia.tipo_falla?esc(x.incidencia.tipo_falla):''}</td></tr>`).join('')}
     ${(f.nuevos||[]).map(x=>`<tr><td class="n">nuevo</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||('×'+(x.cantidad||1)+' s/n'))}</td><td></td></tr>`).join('')}
+    ${(f.renumeradas||[]).length?`<tr><td class="t">renumeradas</td><td colspan="3" class="sub">${f.renumeradas.map(x=>esc(x.numero)).join(', ')} · no es desvío</td></tr>`:''}
     ${(f.faltantes||[]).filter(x=>x.cerrado).map(x=>`<tr><td class="t">cerrado</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||'s/n')}</td><td class="sub">${esc(x.cerrado.motivo)}</td></tr>`).join('')}</table></div>`).join('')||'<div class="sub">Sin desvíos esta semana.</div>'}
   ${(d.filas||[]).filter(f=>f.estado==='sin_respuesta').length?`<div class="sub" style="margin-top:8px"><b>Sin respuesta:</b> ${(d.filas||[]).filter(f=>f.estado==='sin_respuesta').map(f=>esc(f.objetivo)).join(' · ')}</div>`:''}
   <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
