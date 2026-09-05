@@ -155,7 +155,30 @@ async function guardarCenso(sesion) {
     if (error) { console.error('Error insertando items del censo:', error); return null; }
     await sembrarInventario(objetivoId, sesion.items);
   }
+  // FOTO semanal: el censo mensual pisa lo anterior dentro del mes, así que
+  // para comparar semana contra semana se guarda cada respuesta aparte, una
+  // por objetivo y lunes. Best-effort: si la tabla no existe, el censo se
+  // guardó igual.
+  await guardarFotoSemanal(objetivoId, censo.id, sesion.items || [], sesion.capataz, 'bot');
   return censo;
+}
+
+async function guardarFotoSemanal(objetivoId, censoId, items, capataz, origen) {
+  try {
+    const { lunesDe } = require('./stock_desvios');
+    const semana = lunesDe(new Date());
+    const fila = {
+      objetivo_id: objetivoId, censo_id: censoId || null, semana,
+      capataz_id: capataz && capataz.id || null, capataz_nombre: capataz && capataz.nombre || null,
+      origen: origen || 'bot', respondido_at: new Date().toISOString(),
+      items: (items || []).map(i => ({ tipo: i.tipo || i.tipo_equipo, cantidad: Number(i.cantidad) || 0, numeros: i.numeros || [], observacion: i.observacion || null })),
+      total: (items || []).reduce((s, i) => s + (Number(i.cantidad) || 0), 0),
+    };
+    // Una por objetivo y semana: si responde dos veces el mismo lunes, la
+    // segunda pisa a la primera de ESA semana, nunca a la de otra.
+    const { error } = await supabase.from('stock_fotos').upsert(fila, { onConflict: 'objetivo_id,semana' });
+    if (error) console.error('[stock] no pude guardar la foto semanal:', error.message);
+  } catch (e) { console.error('[stock] foto semanal:', e.message || e); }
 }
 
 /**
@@ -520,8 +543,35 @@ async function tienePedidoPendiente(telefono) {
   }
 }
 
+/**
+ * Arma el mensaje que se le manda al capataz cuando se le pide el stock:
+ * su listado actual, con lo que está en el taller marcado, para que confirme
+ * o corrija. Es lo que hace útil el pedido — la plantilla de WhatsApp solo
+ * dice "pasanos el listado" y obliga a escribir todo de nuevo.
+ * Devuelve null si el objetivo nunca informó stock (ahí no hay qué mostrar).
+ */
+async function mensajePedidoStock(objetivoId, nombreObjetivo, nombreCapataz) {
+  const previo = await ultimoStockDelObjetivo(objetivoId, periodoActual());
+  if (!previo || !previo.items.length) return null;
+  const nom = String(nombreCapataz || '').split(' ')[0] || 'capataz';
+  const total = previo.items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0);
+  const nTaller = contarTaller(previo.items);
+  const cuando = previo.mismo_mes
+    ? 'Esto es lo que ya cargaste este mes'
+    : `Esto es lo último que informaste (${mesLegible(previo.periodo)})`;
+  return `📋 *Control de stock semanal*\n\n` +
+    `Hola *${nom}*. ${cuando} en *${nombreObjetivo || 'tu objetivo'}*:\n\n` +
+    `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*` +
+    (nTaller ? `\n🔧 ${nTaller} en el taller: no ${nTaller === 1 ? 'la' : 'las'} cuentes como faltante.` : '') +
+    `\n\n¿Está bien? Respondé *sí* para confirmarlo.\n` +
+    `Si algo cambió, decímelo en criollo:\n` +
+    `_agregá 2 motosierras la 12 y la 15_\n` +
+    `_la 21 no está_ (queda registrada como faltante)`;
+}
+
 module.exports = {
   iniciarStock: ses.conPersistencia('stock', sesiones, iniciarStock),
+  mensajePedidoStock, guardarFotoSemanal,
   continuarStock: ses.conPersistencia('stock', sesiones, continuarStock),
   tieneSesionActiva, periodoActual, tienePedidoPendiente,
   // Para el harness: lógica pura, sin sesión.
