@@ -124,7 +124,30 @@ eq('UCC: "Extensible" y "Motosierra extensible" son la misma familia → sin des
 
 // Cañuelas: "Toyot Hilux 40" → "Toyota / Camioneta ×1 s/n"
 r = D.compararFotos({ items: [{ tipo: 'Toyot Hilux', cantidad: 1, numeros: ['40'] }] }, { items: [{ tipo: 'Toyota / Camioneta', cantidad: 1, numeros: [] }] }, []);
-eq('Cañuelas: la Hilux 40 pasa a "sin número": la numerada falta y aparece una sin número de la misma familia', r.faltantes.length === 1 && r.faltantes[0].numero === '40' && r.nuevos.length === 1 && r.nuevos[0].numero === null, JSON.stringify(r));
+eq('Cañuelas: la Hilux 40 pasó a "sin número" → RENUMERADA, ni falta ni es nueva', r.faltantes.length === 0 && r.nuevos.length === 0 && r.renumeradas.length === 1 && r.renumeradas[0].numero === '40' && /sin número/.test(r.renumeradas[0].sentido), JSON.stringify(r));
+
+// Arrieta: "Motoguadaña ×4 s/n" → 171, 71, 7, 72 (segundo PDF del 04-sep)
+r = D.compararFotos({ items: [{ tipo: 'Motoguadaña', cantidad: 5, numeros: ['NM6'] }] }, { items: [{ tipo: 'Motoguadaña', cantidad: 4, numeros: ['171','71','7','72'] }] }, []);
+eq('Arrieta: las 4 sin número ahora tienen número → renumeradas, no nuevas', r.nuevos.length === 0 && r.renumeradas.length === 4, JSON.stringify(r.renumeradas));
+eq('Arrieta: la NM6 sí falta (numerada, no volvió)', r.faltantes.length === 1 && r.faltantes[0].numero === 'NM6', JSON.stringify(r.faltantes));
+
+// Jockey: "×3 s/n" → 10, H2 (solo 2 numeradas: 1 sin número sigue faltando)
+r = D.compararFotos({ items: [{ tipo: 'Motoguadaña', cantidad: 3, numeros: [] }] }, { items: [{ tipo: 'Motoguadaña', cantidad: 2, numeros: ['10','H2'] }] }, []);
+eq('Jockey: 2 renumeradas y 1 sin número que falta de verdad', r.renumeradas.length === 2 && r.faltantes.length === 1 && r.faltantes[0].numero === null && r.faltantes[0].cantidad === 1, JSON.stringify(r));
+
+// Fincas: texto en el campo número
+r = D.compararFotos({ items: [{ tipo: 'Fumigadora gibert', cantidad: 1, numeros: ['FUMIAGADORADE16LTS'] }, { tipo: 'Motosierra', cantidad: 1, numeros: ['52YSN'] }, { tipo: 'Extensible', cantidad: 1, numeros: ['STHILSNYECHOS2'] }] },
+  { items: [{ tipo: 'Fumigadora', cantidad: 1, numeros: [] }, { tipo: 'Motosierra', cantidad: 1, numeros: ['52YSN'] }, { tipo: 'Extensible', cantidad: 1, numeros: [] }] }, []);
+eq('Fincas: "FUMIAGADORADE16LTS" y "STHILSNYECHOS2" no son números → sin desvío', r.faltantes.length === 0 && r.nuevos.length === 0, JSON.stringify(r));
+eq('"UNA" no es número', D.numVago('UNA'));
+eq('"K" no es número', D.numVago('K'));
+eq('"HE1" sí es número (código corto)', !D.numVago('HE1'));
+eq('"52YSN" sí es número (código con dígitos, corto)', !D.numVago('52YSN'));
+eq('"101CYG755" sí es número', !D.numVago('101CYG755'));
+
+// El nombre que se muestra es el real de esa máquina, no el primero de la familia
+r = D.compararFotos({ items: [{ tipo: 'Fumigadora', cantidad: 1, numeros: [] }, { tipo: 'Motosierra', cantidad: 1, numeros: ['52YSN'] }] }, { items: [{ tipo: 'Fumigadora', cantidad: 1, numeros: [] }] }, []);
+eq('la 52YSN que falta se muestra como Motosierra, no como Fumigadora', r.faltantes.length === 1 && r.faltantes[0].tipo === 'Motosierra', JSON.stringify(r.faltantes));
 
 // Códigos de más de una letra se respetan
 eq('"NM6" NO se reduce a "6" (dos letras: es código)', D.normNum('NM6') === 'NM6');
