@@ -9,7 +9,7 @@ const crypto  = require('crypto');
 const path    = require('path');
 const supabase = require('./supabase');
 const supabaseCompras = require('./supabase_compras');
-const { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia, mensajeCierreSinReparar } = require('./notificar');
+const { notificarCapataz, notificarCapatazTemplate, notificarConFallback, mensajeEstadoIncidencia, mensajeCierreSinReparar } = require('./notificar');
 const { hashClave } = require('./app_api');
 const control = require('./control');
 const seg = require('./seguridad');
@@ -1332,6 +1332,200 @@ router.post('/api/compras/ordenes/:id/emparejar', auth, async (req, res) => {
     console.error('ordenes emparejar:', err.message);
     res.status(500).json({ error: 'No pude emparejar' });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// DESVÍOS SEMANALES DE STOCK
+// Compara la foto de una semana contra la anterior, por objetivo, cruzada
+// con el taller. Se calcula cada vez, no se guarda: si el capataz corrige
+// el censo, el desvío se corrige solo. Lo único que se persiste es el
+// CIERRE manual (stock_desvios_cierres) para que un faltante ya explicado
+// no vuelva a aparecer como abierto.
+// La lógica pura está en stock_desvios.js.
+// ═══════════════════════════════════════════════════════════════
+const DSV = require('./stock_desvios');
+
+async function fotosTodas() {
+  const { data, error } = await supabase.from('stock_fotos')
+    .select('id, objetivo_id, censo_id, semana, respondido_at, capataz_nombre, origen, items, total, objetivos(nombre, grupo_stock)')
+    .order('semana', { ascending: false }).limit(5000);
+  if (error) throw error;
+  return (data || []).map(f => ({ ...f, objetivo: f.objetivos ? f.objetivos.nombre : null, grupo: f.objetivos ? f.objetivos.grupo_stock : null }));
+}
+
+// Semanas que tienen fotos, para el selector.
+router.get('/api/stock/desvios/semanas', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('stock_fotos').select('semana').order('semana', { ascending: false }).limit(5000);
+    if (error) throw error;
+    const semanas = [...new Set((data || []).map(r => r.semana))];
+    const actual = DSV.lunesDe(new Date());
+    if (!semanas.includes(actual)) semanas.unshift(actual);
+    res.json({ semanas, actual });
+  } catch (err) { res.status(500).json({ error: 'No pude listar las semanas (¿corriste el SQL de stock_fotos?)' }); }
+});
+
+// El desvío de una semana. Filtros por query: objetivo, grupo, tipo (de
+// desvío), equipo (tipo de máquina), repetidos=1, q (número/texto).
+router.get('/api/stock/desvios', auth, async (req, res) => {
+  try {
+    const semana = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.semana || '')) ? req.query.semana : DSV.lunesDe(new Date());
+    const [fotos, objsRes, incRes, cierresRes] = await Promise.all([
+      fotosTodas(),
+      supabase.from('objetivos').select('id, nombre, grupo_stock, tipo').eq('activo', true),
+      supabase.from('incidencias').select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, fecha_ingreso_taller, created_at')
+        .neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
+      supabase.from('stock_desvios_cierres').select('*').then(r => r, () => ({ data: [] })),
+    ]);
+    const objs = (objsRes.data || []).filter(o => o.tipo === 'operativo' || !o.tipo);
+    const incs = incRes.data || [];
+    const cierres = {};
+    (cierresRes.data || []).forEach(c => { cierres[c.clave] = c; });
+
+    const porObj = {};
+    fotos.forEach(f => (porObj[f.objetivo_id] = porObj[f.objetivo_id] || []).push(f));
+
+    const filas = objs.map(o => {
+      const fs = (porObj[o.id] || []).slice().sort((a, b) => String(b.semana).localeCompare(String(a.semana)));
+      const actual = fs.find(f => f.semana === semana) || null;
+      const anterior = fs.find(f => f.semana < semana) || null;
+      const base = { objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
+        semana, actual: actual ? { id: actual.id, respondido_at: actual.respondido_at, capataz: actual.capataz_nombre, origen: actual.origen, total: actual.total } : null,
+        anterior: anterior ? { id: anterior.id, semana: anterior.semana, total: anterior.total } : null };
+      if (!actual) return { ...base, estado: fs.length ? 'sin_respuesta' : 'sin_fotos', faltantes: [], taller: [], nuevos: [], cantidad: [], resumen: null };
+      const tallerObj = incs.filter(i => i.objetivo_id === o.id);
+      // Se compara contra las últimas 8 fotos, no solo la anterior: un
+      // faltante sigue siendo faltante hasta que la máquina reaparece.
+      const anteriores = fs.filter(f => f.semana < semana);
+      const cmp = DSV.compararFotos(anteriores, actual, tallerObj);
+      const desde = fs.filter(f => f.semana <= semana);
+      const movidas = [];
+      cmp.faltantes = cmp.faltantes.filter(f => {
+        // Si el número aparece esta misma semana en OTRO objetivo, no falta: se movió.
+        const destino = f.numero ? DSV.movidaA(f.numero, semana, fotos, o.id) : null;
+        if (destino) { movidas.push({ ...f, destino }); return false; }
+        return true;
+      }).map(f => {
+        const clave = DSV.claveDesvio(o.id, f.tipo, f.numero);
+        const cierre = cierres[clave];
+        return { ...f, clave, semanas: DSV.semanasFaltando(desde, f.tipo, f.numero),
+          cerrado: !!cierre && cierre.semana_cierre <= semana ? { motivo: cierre.motivo, por: cierre.cerrado_por, at: cierre.cerrado_at } : null };
+      });
+      cmp.movidas = movidas;
+      // Nuevos que vienen de otro objetivo: también se marca de dónde.
+      cmp.nuevos = cmp.nuevos.map(n => {
+        if (!n.numero) return n;
+        const prev = fotos.find(x => x.semana < semana && x.objetivo_id !== o.id && (x.items || []).some(i => (i.numeros || []).some(y => DSV.normNum(y) === DSV.normNum(n.numero))));
+        return prev ? { ...n, viene_de: prev.objetivo || prev.objetivo_id, viene_de_semana: prev.semana } : n;
+      });
+      const abiertos = cmp.faltantes.filter(f => !f.cerrado);
+      const estado = !anterior ? 'primera_foto' : (abiertos.length ? 'con_faltantes' : (cmp.nuevos.length || cmp.taller.length || movidas.length ? 'con_cambios' : 'sin_cambios'));
+      return { ...base, estado, ...cmp, resumen: { ...cmp.resumen, faltantes_abiertos: abiertos.reduce((s, f) => s + (f.cantidad || 1), 0), repiten: abiertos.filter(f => f.semanas >= 2).length, movidas: movidas.length } };
+    });
+
+    // Filtros.
+    const q = String(req.query.q || '').trim();
+    const qn = DSV.normNum(q), ql = DSV.norm(q);
+    let vis = filas;
+    if (req.query.objetivo) vis = vis.filter(f => f.objetivo_id === req.query.objetivo);
+    if (req.query.grupo) vis = vis.filter(f => (f.grupo || '') === req.query.grupo);
+    if (req.query.tipo) {
+      const t = req.query.tipo;
+      vis = vis.filter(f => t === 'faltante' ? f.faltantes.some(x => !x.cerrado) : t === 'taller' ? f.taller.length : t === 'nuevo' ? f.nuevos.length : t === 'movida' ? (f.movidas || []).length : t === 'sin_respuesta' ? f.estado === 'sin_respuesta' : t === 'sin_cambios' ? f.estado === 'sin_cambios' : true);
+    }
+    if (req.query.equipo) { const e = DSV.norm(req.query.equipo); vis = vis.filter(f => [...f.faltantes, ...f.taller, ...f.nuevos].some(x => DSV.norm(x.tipo).includes(e))); }
+    if (req.query.repetidos === '1') vis = vis.filter(f => f.faltantes.some(x => !x.cerrado && x.semanas >= 2));
+    if (q) vis = vis.filter(f => DSV.norm(f.objetivo).includes(ql) || [...f.faltantes, ...f.taller, ...f.nuevos].some(x => (qn && DSV.normNum(x.numero) === qn) || DSV.norm(x.tipo).includes(ql)));
+
+    const tot = filas.reduce((s, f) => {
+      if (f.resumen) { s.faltantes += f.resumen.faltantes_abiertos; s.repiten += f.resumen.repiten; s.taller += f.taller.length; s.nuevos += f.resumen.nuevos; s.movidas += f.resumen.movidas || 0; if (f.resumen.faltantes_abiertos) s.objs_con_faltantes++; }
+      if (f.estado === 'sin_respuesta') s.sin_respuesta++;
+      if (f.estado === 'sin_fotos') s.sin_fotos++;
+      if (f.actual) s.respondieron++;
+      return s;
+    }, { faltantes: 0, repiten: 0, taller: 0, nuevos: 0, movidas: 0, objs_con_faltantes: 0, sin_respuesta: 0, sin_fotos: 0, respondieron: 0, objetivos: filas.length });
+    const semAnt = DSV.sumarDias(semana, -7);
+    res.json({ semana, semana_anterior: semAnt, filas: vis, totales: tot,
+      equipos: [...new Set(filas.flatMap(f => [...f.faltantes, ...f.taller, ...f.nuevos].map(x => x.tipo)))].sort() });
+  } catch (err) {
+    console.error('stock desvios:', err);
+    res.status(500).json({ error: 'No pude calcular los desvíos: ' + (err.message || '') });
+  }
+});
+
+// Trazabilidad de una máquina por número: todas las fotos donde apareció
+// (en cualquier objetivo) y sus reparaciones.
+router.get('/api/stock/maquina/:numero/historial', auth, async (req, res) => {
+  try {
+    const numero = String(req.params.numero || '');
+    const [fotos, incRes] = await Promise.all([
+      fotosTodas(),
+      supabase.from('incidencias').select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, created_at, fecha_ingreso_taller, fecha_finalizado, objetivos(nombre), mecanicos(nombre)')
+        .order('created_at', { ascending: false }).limit(2000),
+    ]);
+    const n = DSV.normNum(numero);
+    const apariciones = DSV.historialMaquina(fotos, numero);
+    const reparaciones = (incRes.data || []).filter(i => DSV.normNum(i.numero_unidad) === n)
+      .map(i => ({ id: i.id, objetivo: i.objetivos ? i.objetivos.nombre : null, tipo_equipo: i.tipo_equipo, falla: i.tipo_falla, estado: i.estado,
+        reportada: i.created_at, ingreso: i.fecha_ingreso_taller, finalizada: i.fecha_finalizado, mecanico: i.mecanicos ? i.mecanicos.nombre : null }));
+    // Objetivos distintos por los que pasó.
+    const objetivos = [...new Set(apariciones.map(a => a.objetivo).filter(Boolean))];
+    res.json({ numero, apariciones, reparaciones, objetivos, cambio_de_objetivo: objetivos.length > 1 });
+  } catch (err) { res.status(500).json({ error: 'No pude armar el historial' }); }
+});
+
+// Cerrar un faltante con motivo (o reabrirlo).
+router.post('/api/stock/desvios/cerrar', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.objetivo_id || !b.tipo) return res.status(400).json({ error: 'Falta objetivo o tipo' });
+    const clave = DSV.claveDesvio(b.objetivo_id, b.tipo, b.numero);
+    if (b.reabrir) {
+      const { error } = await supabase.from('stock_desvios_cierres').delete().eq('clave', clave);
+      if (error) throw error;
+      return res.json({ ok: true, reabierto: true });
+    }
+    const motivo = String(b.motivo || '').trim();
+    if (!motivo) return res.status(400).json({ error: 'El cierre necesita un motivo' });
+    const fila = { clave, objetivo_id: b.objetivo_id, tipo_equipo: b.tipo, numero: b.numero || null, motivo,
+      semana_cierre: DSV.lunesDe(new Date()), cerrado_por: req.usuario || null, cerrado_at: new Date().toISOString() };
+    const { error } = await supabase.from('stock_desvios_cierres').upsert(fila, { onConflict: 'clave' });
+    if (error) throw error;
+    res.json({ ok: true, clave });
+  } catch (err) { res.status(500).json({ error: 'No pude cerrar: ' + (err.message || '') }); }
+});
+
+// Todas las fotos de un objetivo (para ver la evolución semana a semana).
+router.get('/api/stock/fotos/:objetivo_id', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('stock_fotos').select('*').eq('objetivo_id', req.params.objetivo_id).order('semana', { ascending: false }).limit(60);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'No pude cargar las fotos' }); }
+});
+
+// Backfill: convierte los censos mensuales existentes en fotos, para tener
+// contra qué comparar desde la primera semana. Idempotente.
+router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
+  try {
+    const { data: censos, error } = await supabase.from('censos_stock')
+      .select('id, objetivo_id, periodo, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+      .eq('estado', 'respondido');
+    if (error) throw error;
+    let n = 0;
+    for (const c of (censos || [])) {
+      if (!c.respondido_at) continue;
+      const semana = DSV.lunesDe(c.respondido_at);
+      const items = (c.censos_stock_items || []).map(i => ({ tipo: i.tipo_equipo, cantidad: Number(i.cantidad) || 0, numeros: i.numeros || [], observacion: i.observacion || null }));
+      const { error: e2 } = await supabase.from('stock_fotos').upsert({
+        objetivo_id: c.objetivo_id, censo_id: c.id, semana, respondido_at: c.respondido_at,
+        capataz_nombre: c.capataces ? c.capataces.nombre : null, origen: 'backfill', items,
+        total: items.reduce((s, i) => s + i.cantidad, 0),
+      }, { onConflict: 'objetivo_id,semana', ignoreDuplicates: true });
+      if (!e2) n++;
+    }
+    res.json({ ok: true, fotos: n, censos: (censos || []).length });
+  } catch (err) { res.status(500).json({ error: 'No pude hacer el backfill: ' + (err.message || '') }); }
 });
 
 // ── Editar una carga completa ─────────────────────────────────
@@ -5083,7 +5277,7 @@ async function pedirStockObjetivos(body) {
     const porObj = {};
     (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
 
-    let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0, repedidos = 0;
+    let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0, repedidos = 0, conListado = 0;
 
     // `forzar` vuelve a pedir aunque el objetivo ya haya respondido este
     // período. Sirve cuando el censo llegó mal (el capataz mandó un pedido de
@@ -5117,9 +5311,26 @@ async function pedirStockObjetivos(body) {
         await supabase.from('censos_stock')
           .update({ reenviado_at: new Date().toISOString() }).eq('id', censo.id);
       }
+      // Se intenta mandar el LISTADO que ya tiene el sistema (con lo que está
+      // en el taller marcado): si la ventana de 24 hs está abierta, el capataz
+      // recibe algo que solo tiene que confirmar. Si está cerrada, WhatsApp
+      // solo deja plantillas, así que cae a la plantilla y el listado le llega
+      // en cuanto conteste cualquier cosa.
+      let cuerpo = null;
+      try {
+        const { mensajePedidoStock } = require('./stock');
+        cuerpo = await mensajePedidoStock(o.id, o.nombre, capsObj[0] && capsObj[0].nombre);
+      } catch (e) { console.error('[stock] no pude armar el listado:', e.message); }
       let algunoOk = false;
       for (const c of capsObj) {
-        const ok = await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK);
+        let ok;
+        if (cuerpo) {
+          const r = await notificarConFallback(c.telefono, cuerpo, TEMPLATE_STOCK);
+          ok = r.ok;
+          if (r.via === 'texto') conListado++;
+        } else {
+          ok = await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK);
+        }
         if (ok) algunoOk = true; else fallidos++;
       }
       if (algunoOk) {
@@ -5130,8 +5341,8 @@ async function pedirStockObjetivos(body) {
           .update({ stock_ultimo_pedido: new Date().toISOString() }).eq('id', o.id);
       }
     }
-    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}${forzar ? ' [forzado]' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} repedidos=${repedidos} fallidos=${fallidos}`);
-    return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos, repedidos };
+    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}${forzar ? ' [forzado]' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} repedidos=${repedidos} con_listado=${conListado} fallidos=${fallidos}`);
+    return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos, repedidos, con_listado: conListado };
   }
 }
 
@@ -5739,6 +5950,8 @@ router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
     if (eU) throw eU;
 
     const total = items.reduce((s2, i) => s2 + i.cantidad, 0);
+    // Foto semanal, igual que cuando responde el capataz por el bot.
+    await require('./stock').guardarFotoSemanal(censo.objetivo_id, censo.id, items, { nombre: req.usuario || 'panel' }, 'panel');
     console.log(`[stock] carga manual desde panel · ${censo.objetivos ? censo.objetivos.nombre : censo.objetivo_id} · ` +
       `${censo.periodo} · ${items.length} tipos, ${total} equipos · por ${req.usuario || '?'}`);
     res.json({ ok: true, tipos: items.length, equipos: total });
@@ -7129,6 +7342,7 @@ router.post('/api/stock/censos', auth, async (req, res) => {
     const { error: e2 } = await supabase.from('censos_stock_items')
       .insert(items.map(i => ({ ...i, censo_id: censoId })));
     if (e2) throw e2;
+    await require('./stock').guardarFotoSemanal(b.objetivo_id, censoId, items, { nombre: req.usuario || 'panel' }, 'panel');
     console.log(`[stock] censo cargado desde el panel: objetivo ${b.objetivo_id} · ${periodo} · ${items.length} tipos`);
     res.json({ ok: true, censo_id: censoId, items: items.length });
   } catch (err) {
