@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · repedir sin borrar el censo + aviso de censo vencido';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · Stock → Desvíos semanales (fotos, taller, movidas, trazabilidad)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2316,7 +2316,7 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['general','General'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
+const STOCK_TABS=[['general','General'],['desvios','Desvíos'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
 const STOCK_SUB={};   // las subvistas colgaban de Control, que se sacó
 function tabsStk(){
   return `<div class="toggle-imp" style="margin-bottom:16px">
@@ -2330,6 +2330,7 @@ function difStk(d){
 
 async function vStock(view){
   if(stockTab==='general')return vStockGeneral(view);
+  if(stockTab==='desvios')return vStockDesvios(view);
   if(stockTab==='panol')return vStockPanol(view);
   if(stockTab==='maquinas')return vMaquinas(view);
   // Control y sus subvistas se sacaron: si quedó guardado el tab viejo en
@@ -2339,6 +2340,206 @@ async function vStock(view){
     return vStockGeneral(view);
   }
   return vStockCenso(view);
+}
+
+/* ═══ Stock · Desvíos semanales ════════════════════════════════
+   Compara la foto de esta semana contra la anterior, por objetivo, cruzada
+   con el taller. Todo se calcula en el backend (stock_desvios.js); acá solo
+   se filtra y se muestra. Cada número es clickeable: abre la trazabilidad
+   completa de esa máquina (dónde estuvo cada semana, sus reparaciones). */
+let dsvSemana=null, dsvF={objetivo:'',grupo:'',tipo:'',equipo:'',repetidos:false,q:''}, dsvData=null, dsvSemanas=null;
+
+async function vStockDesvios(view){
+  view.innerHTML=tabsStk()+'<div class="cargando-v">Calculando desvíos…</div>';
+  try{
+    if(!dsvSemanas){dsvSemanas=await api('/api/stock/desvios/semanas');if(!dsvSemana)dsvSemana=dsvSemanas.actual;}
+    const qs=new URLSearchParams({semana:dsvSemana||''});
+    Object.entries(dsvF).forEach(([k,v])=>{if(v)qs.set(k,v===true?'1':v);});
+    dsvData=await api('/api/stock/desvios?'+qs.toString());
+  }catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}${/stock_fotos/.test(e.message||'')?'<br><br>Esta pestaña necesita las tablas <b>stock_fotos</b> y <b>stock_desvios_cierres</b> (SQL de la entrega del 04-sep).':''}</div>`;return;}
+  const d=dsvData, T=d.totales||{};
+  const fSem=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`lun ${+m[3]}/${+m[2]}`:s;};
+  const objsSel=[...new Set((d.filas||[]).map(f=>f.objetivo))].sort();
+  const chipNum=(n,cls,title)=>n?`<span class="nu ${cls||''}" style="cursor:pointer" title="${escStk(title||'ver historial')}" onclick="event.stopPropagation();dsvHistorial('${escStk(n)}')">${escStk(n)}</span>`:'';
+
+  const tarjeta=f=>{
+    const abiertos=(f.faltantes||[]).filter(x=>!x.cerrado), cerrados=(f.faltantes||[]).filter(x=>x.cerrado);
+    const est=f.estado;
+    const badgeEst=est==='sin_respuesta'?'<span class="badge b-amber">sin respuesta esta semana</span>'
+      :est==='sin_fotos'?'<span class="badge b-gray">nunca informó</span>'
+      :est==='primera_foto'?'<span class="badge b-blue">primera foto · sin contra qué comparar</span>'
+      :est==='con_faltantes'?`<span class="badge b-red">${abiertos.reduce((s,x)=>s+(x.cantidad||1),0)} faltante${abiertos.length===1?'':'s'}${(f.resumen||{}).repiten?' · '+f.resumen.repiten+' repite'+(f.resumen.repiten===1?'':'n'):''}</span>`
+      :est==='con_cambios'?'<span class="badge b-green">sin faltantes</span>':'<span class="badge b-green">sin cambios</span>';
+    const meta=f.actual?`${f.anterior?f.anterior.total+' → ':''}${f.actual.total} equipos · respondió ${escStk(f.actual.capataz||'—')}, ${f.actual.respondido_at?fechaAR(String(f.actual.respondido_at).slice(0,10))+' '+horaStk(f.actual.respondido_at):''}${f.actual.origen==='panel'?' (desde el panel)':''}`
+      :f.anterior?`última foto ${fSem(f.anterior.semana)} · ${f.anterior.total} equipos`:'';
+    const filaF=x=>`<div class="dsv-fila${x.cerrado?' dsv-cerrada':''}">
+      <span class="dsv-tipo">${escStk(x.tipo)}</span>
+      <span>${x.numero?chipNum(x.numero,'f','estaba, no está, y el taller no la tiene'):`<span class="sub">×${x.cantidad||1} sin número</span>`}<span class="sub" style="margin-left:6px">${x.numero?'estaba la semana pasada, no está esta, sin ingreso en el taller':escStk(x.detalle||'')}</span></span>
+      <span>${x.cerrado?`<span class="badge b-gray">cerrado · ${escStk(x.cerrado.motivo)}</span><div class="sub" style="font-size:10px">${escStk(x.cerrado.por||'')} · ${fechaAR(String(x.cerrado.at||'').slice(0,10))}</div>`
+        :`<span class="badge b-red">FALTANTE · ${x.semanas}ª semana</span>`}</span>
+      <span class="dsv-acc">${x.numero?`<button class="mini-btn" onclick="dsvHistorial('${escStk(x.numero)}')">Historial</button>`:''}
+        ${x.cerrado?`<button class="mini-btn" onclick="dsvCerrar('${f.objetivo_id}','${escStk(x.tipo).replace(/'/g,"\\\\'")}','${escStk(x.numero||'')}',true)">Reabrir</button>`
+        :`<button class="mini-btn" style="border-color:var(--brote);color:var(--brote-2)" onclick="dsvCerrar('${f.objetivo_id}','${escStk(x.tipo).replace(/'/g,"\\\\'")}','${escStk(x.numero||'')}',false)">Cerrar con motivo</button>`}</span></div>`;
+    const filaT=x=>`<div class="dsv-fila"><span class="dsv-tipo">${escStk(x.tipo)}</span>
+      <span>${x.numero?chipNum(x.numero,'t','en el taller con ingreso dado'):'<span class="sub">sin número</span>'}<span class="sub" style="margin-left:6px">${x.incidencia?`ingresó ${x.incidencia.fecha_ingreso_taller?fechaAR(String(x.incidencia.fecha_ingreso_taller).slice(0,10)):''}${x.incidencia.tipo_falla?' · '+escStk(x.incidencia.tipo_falla):''}`:escStk(x.motivo||'')}</span></span>
+      <span><span class="badge b-gray">en taller</span></span>
+      <span class="dsv-acc">${x.incidencia?`<button class="mini-btn" onclick="go('reparaciones');setTimeout(()=>{const b=document.querySelector('.busca');if(b){b.value='${escStk(x.numero||'')}';b.dispatchEvent(new Event('input'));}},400)">Ver reparación</button>`:''}</span></div>`;
+    const filaN=x=>`<div class="dsv-fila"><span class="dsv-tipo">${escStk(x.tipo)}</span>
+      <span>${x.numero?chipNum(x.numero,'n','no estaba la semana pasada'):`<span class="sub">×${x.cantidad||1} sin número</span>`}<span class="sub" style="margin-left:6px">${x.viene_de?`viene de <b>${escStk(x.viene_de)}</b>`:x.numero?'no estaba la semana pasada · apareció esta':escStk(x.detalle||'')}</span></span>
+      <span><span class="badge b-green">nuevo</span></span>
+      <span class="dsv-acc">${x.numero?`<button class="mini-btn" onclick="dsvHistorial('${escStk(x.numero)}')">¿De dónde vino?</button>`:''}</span></div>`;
+    const filaM=x=>`<div class="dsv-fila"><span class="dsv-tipo">${escStk(x.tipo)}</span>
+      <span>${chipNum(x.numero,'m','apareció esta semana en otro objetivo')}<span class="sub" style="margin-left:6px">esta semana está en <b>${escStk(x.destino)}</b></span></span>
+      <span><span class="badge b-blue">movida</span></span>
+      <span class="dsv-acc"><button class="mini-btn" onclick="dsvHistorial('${escStk(x.numero)}')">Historial</button></span></div>`;
+    const cuerpo=[...abiertos.map(filaF),...(f.taller||[]).map(filaT),...(f.movidas||[]).map(filaM),...(f.nuevos||[]).map(filaN),...cerrados.map(filaF)].join('');
+    return `<div class="panel" style="margin-bottom:10px;padding:0;overflow:hidden${est==='con_faltantes'?';border-left:3px solid var(--rojo)':est==='sin_respuesta'?';border-left:3px solid var(--diesel)':''}">
+      <div style="padding:11px 16px;border-bottom:${cuerpo?'1px solid var(--linea)':'none'};display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b style="font-size:14px">${escStk(f.objetivo)}</b> ${f.grupo==='deposito'?'<span class="badge b-amber">depósito</span>':f.grupo==='privado'?'<span class="badge b-blue">privado</span>':''}<div class="sub" style="margin-top:2px">${meta}</div></div>
+        <div style="display:flex;gap:6px;align-items:center">${badgeEst}${(f.taller||[]).length?`<span class="badge b-gray">${f.taller.length} en taller</span>`:''}${(f.movidas||[]).length?`<span class="badge b-blue">${f.movidas.length} movida${f.movidas.length===1?'':'s'}</span>`:''}${(f.nuevos||[]).length?`<span class="badge b-green">${(f.resumen||{}).nuevos||f.nuevos.length} nuevo${f.nuevos.length===1?'':'s'}</span>`:''}
+          <button class="mini-btn" onclick="dsvEvolucion('${f.objetivo_id}','${escStk(f.objetivo).replace(/'/g,"\\\\'")}')" title="semana a semana">📈</button>
+          ${est==='sin_respuesta'?`<button class="mini-btn" onclick="repedirStock('${f.objetivo_id}','${escStk(f.objetivo).replace(/'/g,"\\\\'")}',false)">📲 Reenviar</button>`:''}</div></div>
+      ${cuerpo}</div>`;};
+
+  const filas=d.filas||[];
+  const conAlgo=filas.filter(f=>['con_faltantes','con_cambios','primera_foto'].includes(f.estado));
+  const sinCambios=filas.filter(f=>f.estado==='sin_cambios');
+  const sinResp=filas.filter(f=>f.estado==='sin_respuesta');
+  const sinFotos=filas.filter(f=>f.estado==='sin_fotos');
+  const hayFiltro=Object.values(dsvF).some(v=>v);
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Desvíos de stock</div>
+    <div class="view-desc">Semana del <b>${fSem(d.semana)}</b> contra la del <b>${fSem(d.semana_anterior)}</b> · lo que el capataz informó, cruzado con el taller</div></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <select class="busca" style="width:auto" onchange="dsvSemana=this.value;go('stock')">${(dsvSemanas.semanas||[]).map(s=>`<option value="${s}" ${s===d.semana?'selected':''}>Semana del ${fSem(s)}${s===dsvSemanas.actual?' (esta)':''}</option>`).join('')}</select>
+      <button class="btn-salir" onclick="dsvExportar()">🖨 Exportar</button>
+      <button class="btn-salir" onclick="dsvBackfill()" title="convierte los censos mensuales viejos en fotos semanales, para tener contra qué comparar">⟲ Cargar historial</button></div></div>
+  ${tabsStk()}
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:12px">
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.tipo=dsvF.tipo==='faltante'?'':'faltante';go('stock')"><div class="kpi-label">Faltantes</div><div class="kpi-val" style="color:${T.faltantes?'var(--rojo)':'inherit'}">${T.faltantes||0}</div><div class="kpi-sub">en ${T.objs_con_faltantes||0} objetivo${T.objs_con_faltantes===1?'':'s'} · no están ni en el taller</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.repetidos=!dsvF.repetidos;go('stock')"><div class="kpi-label">Repiten</div><div class="kpi-val" style="color:${T.repiten?'#A3253A':'inherit'}">${T.repiten||0}</div><div class="kpi-sub">faltaban también la semana pasada</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.tipo=dsvF.tipo==='taller'?'':'taller';go('stock')"><div class="kpi-label">En taller</div><div class="kpi-val" style="color:var(--tinta-3)">${T.taller||0}</div><div class="kpi-sub">no cuentan como faltante</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.tipo=dsvF.tipo==='movida'?'':'movida';go('stock')"><div class="kpi-label">Movidas</div><div class="kpi-val" style="color:var(--azul)">${T.movidas||0}</div><div class="kpi-sub">aparecieron en otro objetivo</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.tipo=dsvF.tipo==='nuevo'?'':'nuevo';go('stock')"><div class="kpi-label">Nuevos</div><div class="kpi-val" style="color:var(--brote-2)">${T.nuevos||0}</div><div class="kpi-sub">aparecieron esta semana</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="dsvF.tipo=dsvF.tipo==='sin_respuesta'?'':'sin_respuesta';go('stock')"><div class="kpi-label">Sin respuesta</div><div class="kpi-val" style="color:${T.sin_respuesta?'var(--diesel)':'inherit'}">${T.sin_respuesta||0}</div><div class="kpi-sub">de ${T.objetivos||0} · ${T.respondieron||0} respondieron</div></div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+    <select class="busca" style="width:auto" onchange="dsvF.objetivo=this.value;go('stock')"><option value="">Todos los objetivos</option>${objsSel.map(o=>{const f=filas.find(x=>x.objetivo===o);return `<option value="${f?f.objetivo_id:''}" ${dsvF.objetivo===(f?f.objetivo_id:'')&&dsvF.objetivo?'selected':''}>${escStk(o)}</option>`;}).join('')}</select>
+    <select class="busca" style="width:auto" onchange="dsvF.grupo=this.value;go('stock')"><option value="">Privados y depósito</option><option value="privado" ${dsvF.grupo==='privado'?'selected':''}>Privados</option><option value="deposito" ${dsvF.grupo==='deposito'?'selected':''}>Depósito</option></select>
+    <select class="busca" style="width:auto" onchange="dsvF.tipo=this.value;go('stock')"><option value="">Todo tipo de desvío</option>${[['faltante','Con faltantes'],['taller','Con máquinas en taller'],['movida','Con movidas'],['nuevo','Con nuevos'],['sin_respuesta','Sin respuesta'],['sin_cambios','Sin cambios']].map(([k,t])=>`<option value="${k}" ${dsvF.tipo===k?'selected':''}>${t}</option>`).join('')}</select>
+    <select class="busca" style="width:auto" onchange="dsvF.equipo=this.value;go('stock')"><option value="">Todo tipo de máquina</option>${(d.equipos||[]).map(e=>`<option value="${escStk(e)}" ${dsvF.equipo===e?'selected':''}>${escStk(e)}</option>`).join('')}</select>
+    <label style="font-size:12.5px;display:flex;align-items:center;gap:5px"><input type="checkbox" ${dsvF.repetidos?'checked':''} onchange="dsvF.repetidos=this.checked;go('stock')" style="accent-color:var(--rojo)"> solo los que repiten</label>
+    <input placeholder="N° de máquina, objetivo…" value="${escStk(dsvF.q)}" onchange="dsvF.q=this.value;go('stock')" style="flex:1;min-width:160px;padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
+    ${hayFiltro?`<button class="btn-salir" style="padding:5px 10px;font-size:11.5px" onclick="dsvF={objetivo:'',grupo:'',tipo:'',equipo:'',repetidos:false,q:''};go('stock')">Limpiar</button>`:''}
+  </div>
+  ${T.sin_fotos===T.objetivos?`<div class="aviso-amarillo" style="margin-bottom:12px">Todavía no hay fotos semanales. Apretá <b>⟲ Cargar historial</b> para convertir los censos que ya tenés en fotos, o esperá al próximo lunes.</div>`:''}
+  ${conAlgo.map(tarjeta).join('')}
+  ${!hayFiltro&&sinCambios.length?`<div class="panel" style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:center"><div><b>Sin cambios esta semana</b><div class="sub">${sinCambios.map(f=>escStk(f.objetivo)).join(' · ')}</div></div><span class="badge b-green">${sinCambios.length} objetivo${sinCambios.length===1?'':'s'}</span></div></div>`:hayFiltro?sinCambios.map(tarjeta).join(''):''}
+  ${!hayFiltro&&sinResp.length?`<div class="panel" style="margin-bottom:10px;border-left:3px solid var(--diesel)"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b>Sin respuesta esta semana</b><div class="sub">${sinResp.map(f=>escStk(f.objetivo)).join(' · ')}</div></div><span class="badge b-amber">${sinResp.length}</span></div></div>`:hayFiltro?sinResp.map(tarjeta).join(''):''}
+  ${!hayFiltro&&sinFotos.length?`<div class="sub" style="margin:6px 4px;font-size:11.5px">Nunca informaron stock: ${sinFotos.map(f=>escStk(f.objetivo)).join(' · ')}</div>`:''}
+  ${(!filas.length)?'<div class="panel"><div class="sub" style="padding:14px">Ningún objetivo coincide con el filtro.</div></div>':''}
+  <div class="panel" style="margin-top:14px;font-size:12px;color:var(--tinta-2);line-height:1.6">
+    <b>Cómo se lee.</b> <span class="nu f">234</span> faltante: estaba y no está, y el taller no la tiene. <span class="nu t">212</span> en taller: no está en el objetivo pero sí tiene ingreso dado; no es faltante. <span class="nu m">234</span> movida: esta semana apareció en otro objetivo, no falta. <span class="nu n">240</span> nuevo: no estaba en ningún lado. Un faltante se compara contra las últimas 8 semanas: sigue siendo faltante hasta que reaparece. Tocá cualquier número para ver por dónde pasó esa máquina.
+    Un faltante queda abierto hasta que vuelve a aparecer en un censo o lo cerrás con un motivo. Los que repiten dos semanas seguidas son los que hay que ir a buscar.
+    <div class="aviso-amarillo" style="margin-top:8px">El desvío depende de tres cosas que el sistema no controla: que el capataz conteste el lunes, que escriba los <b>números</b> de máquina, y que el taller marque el <b>ingreso</b>. Cualquiera que falle da un desvío falso.</div>
+  </div>`;
+}
+
+async function dsvHistorial(numero){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='dsv-hist';
+  bg.innerHTML=`<div class="modal" style="max-width:560px"><div class="modal-tit">Máquina <span class="mono">${escStk(numero)}</span></div><div class="cargando-v">Buscando…</div></div>`;
+  document.body.appendChild(bg);
+  try{
+    const h=await api('/api/stock/maquina/'+encodeURIComponent(numero)+'/historial');
+    const fSem=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`lun ${+m[3]}/${+m[2]}`:s;};
+    bg.querySelector('.modal').innerHTML=`<div class="modal-tit">Máquina <span class="mono">${escStk(numero)}</span></div>
+      ${h.cambio_de_objetivo?`<div class="aviso-amarillo" style="margin:8px 0">Pasó por <b>${h.objetivos.length} objetivos</b>: ${h.objetivos.map(escStk).join(' → ')}. Si desapareció de uno y apareció en otro, no falta: se movió.</div>`:''}
+      <div class="mm-label" style="margin-top:10px">Dónde estuvo, semana a semana</div>
+      ${h.apariciones.length?`<table style="font-size:12.5px"><thead><tr><th>Semana</th><th>Objetivo</th><th>Como</th><th>Informó</th></tr></thead><tbody>
+        ${h.apariciones.map(a=>`<tr><td class="mono">${fSem(a.semana)}</td><td>${escStk(a.objetivo||'—')}</td><td>${escStk(a.tipo||'')}</td><td class="sub">${escStk(a.capataz||'—')}</td></tr>`).join('')}</tbody></table>`
+        :'<div class="sub">No aparece en ninguna foto semanal. O nunca se censó con este número, o se escribió distinto.</div>'}
+      <div class="mm-label" style="margin-top:14px">Reparaciones</div>
+      ${h.reparaciones.length?`<table style="font-size:12.5px"><thead><tr><th>Reportada</th><th>Objetivo</th><th>Falla</th><th>Ingreso</th><th>Estado</th></tr></thead><tbody>
+        ${h.reparaciones.map(r=>`<tr><td class="mono">${fechaAR(String(r.reportada||'').slice(0,10))}</td><td>${escStk(r.objetivo||'—')}</td><td>${escStk(r.falla||'—')}</td><td class="mono">${r.ingreso?fechaAR(String(r.ingreso).slice(0,10)):'<span class="sub">sin ingreso</span>'}</td><td>${r.estado==='finalizado'?'<span class="badge b-green">finalizada</span>':'<span class="badge b-amber">'+escStk(r.estado)+'</span>'}${r.mecanico?'<div class="sub" style="font-size:10.5px">'+escStk(r.mecanico)+'</div>':''}</td></tr>`).join('')}</tbody></table>`
+        :'<div class="sub">Sin reparaciones registradas con este número.</div>'}
+      <div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('dsv-hist').remove()">Cerrar</button></div>`;
+  }catch(e){bg.querySelector('.modal').innerHTML=`<div class="sub">${escStk(e.message)}</div><div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('dsv-hist').remove()">Cerrar</button></div>`;}
+}
+
+async function dsvCerrar(objetivoId,tipo,numero,reabrir){
+  if(reabrir){
+    if(!await uiConfirm(`Se reabre el faltante ${tipo}${numero?' N° '+numero:''}: vuelve a aparecer como abierto.`,'¿Reabrir?',{ok:'Reabrir'}))return;
+    try{await api('/api/stock/desvios/cerrar',{method:'POST',body:JSON.stringify({objetivo_id:objetivoId,tipo,numero:numero||null,reabrir:true})});toast('Reabierto');go('stock');}catch(e){toast(e.message,'error');}
+    return;
+  }
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=210;
+  bg.innerHTML=`<div class="modal" style="max-width:420px"><div class="modal-tit">Cerrar faltante</div>
+    <div class="sub" style="margin:4px 0 10px">${escStk(tipo)}${numero?' N° <b class="mono">'+escStk(numero)+'</b>':''}. Queda registrado quién y cuándo. Si la máquina vuelve a aparecer en un censo, el cierre no hace falta.</div>
+    <div class="mm-field"><label>Motivo</label><select id="dsv-mot" style="width:100%">
+      <option value="">— elegí —</option><option>Estaba en otro objetivo</option><option>Se vendió / dio de baja</option><option>Robo o pérdida (denunciado)</option><option>Error de carga del capataz</option><option>Está en el taller sin ingreso marcado</option><option value="otro">Otro</option></select></div>
+    <div class="mm-field"><label>Detalle</label><input id="dsv-det" style="width:100%" placeholder="opcional"></div>
+    <div class="modal-acciones"><button class="btn-salir" id="dsv-c">Cancelar</button><button class="btn" id="dsv-ok">Cerrar faltante</button></div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#dsv-c').onclick=()=>bg.remove();
+  bg.querySelector('#dsv-ok').onclick=async()=>{
+    const m=bg.querySelector('#dsv-mot').value, det=bg.querySelector('#dsv-det').value.trim();
+    if(!m){toast('Elegí un motivo','error');return;}
+    const motivo=(m==='otro'?'':m)+(det?(m==='otro'?'':' · ')+det:'');
+    if(!motivo.trim()){toast('Escribí el motivo','error');return;}
+    try{await api('/api/stock/desvios/cerrar',{method:'POST',body:JSON.stringify({objetivo_id:objetivoId,tipo,numero:numero||null,motivo})});bg.remove();toast('Faltante cerrado');go('stock');}
+    catch(e){toast(e.message,'error');}
+  };
+}
+
+async function dsvEvolucion(objetivoId,nombre){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='dsv-evo';
+  bg.innerHTML=`<div class="modal" style="max-width:620px"><div class="modal-tit">${escStk(nombre)} · semana a semana</div><div class="cargando-v">Cargando…</div></div>`;
+  document.body.appendChild(bg);
+  try{
+    const fotos=await api('/api/stock/fotos/'+objetivoId);
+    const fSem=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`lun ${+m[3]}/${+m[2]}`:s;};
+    bg.querySelector('.modal').innerHTML=`<div class="modal-tit">${escStk(nombre)} · semana a semana</div>
+      ${fotos.length?`<table style="font-size:12.5px"><thead><tr><th>Semana</th><th class="tr">Equipos</th><th>Detalle</th><th>Informó</th></tr></thead><tbody>
+        ${fotos.map((f,i)=>{const ant=fotos[i+1];const dif=ant?f.total-ant.total:null;
+          return `<tr><td class="mono">${fSem(f.semana)}</td><td class="tr mono">${f.total}${dif!=null&&dif!==0?` <span style="color:${dif<0?'var(--rojo)':'var(--brote-2)'}">(${dif>0?'+':''}${dif})</span>`:''}</td>
+            <td class="sub" style="font-size:11px">${(f.items||[]).map(it=>escStk(it.tipo)+' ×'+it.cantidad+((it.numeros||[]).length?' ('+it.numeros.map(escStk).join(', ')+')':'')).join(' · ')}</td>
+            <td class="sub">${escStk(f.capataz_nombre||'—')}<div style="font-size:10px">${f.origen==='backfill'?'del censo mensual':f.origen==='panel'?'panel':'WhatsApp'}</div></td></tr>`;}).join('')}</tbody></table>`
+        :'<div class="sub">Sin fotos todavía.</div>'}
+      <div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('dsv-evo').remove()">Cerrar</button></div>`;
+  }catch(e){bg.querySelector('.modal').innerHTML=`<div class="sub">${escStk(e.message)}</div><div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('dsv-evo').remove()">Cerrar</button></div>`;}
+}
+
+async function dsvBackfill(){
+  if(!await uiConfirm('Convierte cada censo mensual ya respondido en una foto de la semana en que se respondió. No borra ni cambia nada; solo agrega lo que falta. Se puede correr las veces que quieras.','¿Cargar historial?',{ok:'Cargar'}))return;
+  try{const r=await api('/api/stock/fotos/backfill',{method:'POST',body:'{}'});toast(`${r.fotos} fotos creadas de ${r.censos} censos`);dsvSemanas=null;go('stock');}
+  catch(e){toast(e.message,'error');}
+}
+
+function dsvExportar(){
+  const d=dsvData;if(!d)return;
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const fSem=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`lunes ${+m[3]}/${+m[2]}`:s;};
+  const T=d.totales||{};
+  const filas=(d.filas||[]).filter(f=>['con_faltantes','con_cambios','primera_foto'].includes(f.estado));
+  const w=window.open('','_blank');
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Desvíos de stock · ${esc(fSem(d.semana))}</title>
+  <style>body{font-family:system-ui,sans-serif;color:#16221C;margin:0;padding:10mm;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  h1{font-size:17px;margin:0}.sub{color:#586B60;font-size:10.5px}.cab{border-bottom:2.5px solid #159B51;padding-bottom:6px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-end}
+  .kp{display:flex;gap:16px;font-size:10.5px}.kp b{font-family:ui-monospace,monospace;font-size:13px}
+  .obj{border:1px solid #E6EBE4;border-radius:6px;padding:6px 9px;margin-bottom:7px;break-inside:avoid}.oh{font-weight:700;font-size:12px;margin-bottom:3px}
+  table{width:100%;border-collapse:collapse}td{padding:3px 5px;border-bottom:1px solid #F0F3EE}.mono{font-family:ui-monospace,monospace}
+  .f{color:#A3253A;font-weight:700}.t{color:#8A968E}.n{color:#0F7E40;font-weight:700}
+  @page{size:A4;margin:0}</style></head><body>
+  <div class="cab"><div><h1>Desvíos de stock</h1><div class="sub">Semana del ${esc(fSem(d.semana))} contra la del ${esc(fSem(d.semana_anterior))} · EcoService · emitido ${new Date().toLocaleDateString('es-AR')}</div></div>
+    <div class="kp"><span>Faltantes <b style="color:#A3253A">${T.faltantes||0}</b></span><span>Repiten <b>${T.repiten||0}</b></span><span>En taller <b>${T.taller||0}</b></span><span>Nuevos <b style="color:#0F7E40">${T.nuevos||0}</b></span><span>Sin respuesta <b>${T.sin_respuesta||0}</b>/${T.objetivos||0}</span></div></div>
+  ${filas.map(f=>`<div class="obj"><div class="oh">${esc(f.objetivo)} <span class="sub" style="font-weight:400">· ${f.anterior?f.anterior.total+' → ':''}${f.actual?f.actual.total:'—'} equipos · ${esc((f.actual||{}).capataz||'')}</span></div>
+    <table>${(f.faltantes||[]).filter(x=>!x.cerrado).map(x=>`<tr><td class="f">FALTANTE</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||('×'+(x.cantidad||1)+' s/n'))}</td><td class="sub">${x.semanas}ª semana</td></tr>`).join('')}
+    ${(f.taller||[]).map(x=>`<tr><td class="t">en taller</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||'s/n')}</td><td class="sub">${x.incidencia&&x.incidencia.tipo_falla?esc(x.incidencia.tipo_falla):''}</td></tr>`).join('')}
+    ${(f.nuevos||[]).map(x=>`<tr><td class="n">nuevo</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||('×'+(x.cantidad||1)+' s/n'))}</td><td></td></tr>`).join('')}
+    ${(f.faltantes||[]).filter(x=>x.cerrado).map(x=>`<tr><td class="t">cerrado</td><td>${esc(x.tipo)}</td><td class="mono">${esc(x.numero||'s/n')}</td><td class="sub">${esc(x.cerrado.motivo)}</td></tr>`).join('')}</table></div>`).join('')||'<div class="sub">Sin desvíos esta semana.</div>'}
+  ${(d.filas||[]).filter(f=>f.estado==='sin_respuesta').length?`<div class="sub" style="margin-top:8px"><b>Sin respuesta:</b> ${(d.filas||[]).filter(f=>f.estado==='sin_respuesta').map(f=>esc(f.objetivo)).join(' · ')}</div>`:''}
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  w.document.close();
 }
 
 /* ── General: toda la flota con filtros ───────────────────────
