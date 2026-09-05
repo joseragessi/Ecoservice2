@@ -13,10 +13,41 @@
 //   (nada)    estaba y sigue
 // Sin número de máquina solo se compara cantidad por tipo.
 
+const { familiaConsumo, FAMILIAS_CON_MOTOR } = require('./familias_consumo');
+
+// ¿Este tipo de equipo tiene motor? Las palas, machetes y tijeras no
+// generan desvíos: se cuentan aparte. El primer reporte real (04-sep) dio
+// 93 "faltantes", y más de la mitad eran herramientas de mano que el
+// capataz dejó de listar. No se pierden palas: se dejan de anotar.
+function conMotor(tipo) {
+  const f = familiaConsumo(tipo);
+  return FAMILIAS_CON_MOTOR.includes(f);
+}
+// Clave de agrupación para comparar cantidades sin número: por FAMILIA, no
+// por el nombre exacto. "Extensible" y "Motosierra extensible" son lo mismo.
+function familiaDe(tipo) {
+  const f = familiaConsumo(tipo);
+  return f === 'otro' || f === 'sin_motor' ? norm(tipo) : f;
+}
+
 function norm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 }
-function normNum(v) { return String(v == null ? '' : v).trim().toUpperCase().replace(/[\s.\-_/]/g, ''); }
+function normNum(v) { return String(v == null ? '' : v).trim().toUpperCase().replace(/[\s.\-_/º°]/g, ''); }
+// "E10" → "10", "Nº26" → "26". Un prefijo de UNA letra delante de dígitos es
+// cómo cada capataz escribe el mismo número (E de Echo, N de número). Se usa
+// solo como SEGUNDA chance y dentro de la misma familia: "T22" (el
+// minitractor) nunca se va a confundir con la motoguadaña "22".
+function sinPrefijo(n) { const m = String(n || '').match(/^[A-Z](\d+)$/); return m ? m[1] : null; }
+// ¿El número n está en el set, exacto o salvo un prefijo de una letra?
+function tieneNum(e, n) {
+  if (!e || !n) return false;
+  if (e.nums.has(n)) return true;
+  const sp = sinPrefijo(n);
+  if (sp && e.nums.has(sp)) return true;          // A tiene E10, B tiene 10
+  if (/^\d+$/.test(n) && e.prefijados && e.prefijados.has(n)) return true;   // A tiene 10, B tiene E10
+  return false;
+}
 function numVago(v) { const n = normNum(v); return !n || n === 'SN' || n === 'SIN' || n === '0' || /^[-–—]+$/.test(n); }
 
 // Lunes (00:00) de la semana a la que pertenece una fecha. Semana ISO: lunes
@@ -39,16 +70,19 @@ function sumarDias(ymd, n) {
 }
 
 // Aplana una foto a un mapa de máquinas: { tipoNorm: { tipo, cant, nums:Set } }
-function aplanar(items) {
+function aplanar(items, opts) {
+  const soloMotor = !opts || opts.soloMotor !== false;
   const m = {};
   (items || []).forEach(i => {
-    const k = norm(i.tipo || i.tipo_equipo);
-    if (!k) return;
-    const e = m[k] || (m[k] = { tipo: i.tipo || i.tipo_equipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0 });
+    const tipo = i.tipo || i.tipo_equipo;
+    if (!norm(tipo)) return;
+    if (soloMotor && !conMotor(tipo)) return;
+    const k = familiaDe(tipo);
+    const e = m[k] || (m[k] = { tipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0, prefijados: new Set() });
     e.cant += Number(i.cantidad) || 0;
     // `escritos` cuenta los números no vagos CON repetidos: el 218 dos veces
     // en Cosquin son dos máquinas escritas, aunque en el Set sea una.
-    (i.numeros || []).forEach(n => { if (numVago(n)) e.vagos++; else { e.nums.add(normNum(n)); e.escritos++; } });
+    (i.numeros || []).forEach(n => { if (numVago(n)) e.vagos++; else { const nn = normNum(n); e.nums.add(nn); e.escritos++; const sp = sinPrefijo(nn); if (sp) (e.prefijados = e.prefijados || new Set()).add(sp); } });
   });
   return m;
 }
@@ -60,11 +94,11 @@ function indexarTaller(incidencias) {
   (incidencias || []).forEach(inc => {
     const n = normNum(inc.numero_unidad);
     if (n && !numVago(inc.numero_unidad)) { if (!porNum[n]) porNum[n] = inc; }
-    else { const t = norm(inc.tipo_equipo); if (t) (porTipo[t] = porTipo[t] || []).push(inc); }
+    else { const t = familiaDe(inc.tipo_equipo); if (t) (porTipo[t] = porTipo[t] || []).push(inc); }
   });
   return { porNum, porTipo };
 }
-function tipoCompatible(a, b) { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); }
+function tipoCompatible(a, b) { const x = familiaDe(a), y = familiaDe(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); }
 
 // Cuántas semanas hacia atrás se mira para saber qué máquinas "debería"
 // tener un objetivo. Con una sola (la anterior) un faltante desaparecía del
@@ -81,22 +115,27 @@ const VENTANA_SEMANAS = 8;
  * Universo "esperado" = toda máquina numerada que apareció en alguna de las
  * anteriores. Para lo sin número se compara cantidad contra la inmediata.
  */
-function compararFotos(anteriores, actual, taller) {
+function compararFotos(anteriores, actual, taller, opts) {
+  const o = Object.assign({ soloMotor: true }, opts || {});
   const lista = Array.isArray(anteriores) ? anteriores.filter(Boolean).slice(0, VENTANA_SEMANAS) : (anteriores ? [anteriores] : []);
   const inmediata = lista[0] || null;
   // A0 = la inmediata (para comparar cantidades sin número).
   // A  = unión de las anteriores (para saber qué números "debería" tener).
-  const A0 = aplanar(inmediata && inmediata.items);
-  const A = aplanar(inmediata && inmediata.items);
+  const A0 = aplanar(inmediata && inmediata.items, o);
+  const A = aplanar(inmediata && inmediata.items, o);
   lista.slice(1).forEach(f => {
-    const m = aplanar(f.items);
+    const m = aplanar(f.items, o);
     Object.keys(m).forEach(k => {
-      const e = A[k] || (A[k] = { tipo: m[k].tipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0 });
+      const e = A[k] || (A[k] = { tipo: m[k].tipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0, prefijados: new Set() });
       m[k].nums.forEach(n => e.nums.add(n));
+      (m[k].prefijados || new Set()).forEach(n => e.prefijados.add(n));
     });
   });
-  const B = aplanar(actual && actual.items);
+  const B = aplanar(actual && actual.items, o);
   const T = indexarTaller(taller);
+  // Herramientas sin motor: se cuentan aparte, no generan desvío.
+  const herr = its => (its || []).filter(i => !conMotor(i.tipo || i.tipo_equipo)).reduce((s, i) => s + (Number(i.cantidad) || 0), 0);
+  const herramientas = { antes: herr(inmediata && inmediata.items), ahora: herr(actual && actual.items) };
   const faltantes = [], enTaller = [], nuevos = [], cantidad = [];
   const tallerUsado = new Set();
 
@@ -104,8 +143,9 @@ function compararFotos(anteriores, actual, taller) {
   Object.keys(A).forEach(k => {
     const a = A[k], b = B[k];
     a.nums.forEach(n => {
-      if (b && b.nums.has(n)) return;
-      // ¿está en otro tipo de B? (el capataz lo escribió con otro nombre)
+      if (tieneNum(b, n)) return;
+      // ¿está en otra familia de B con el número EXACTO? (el capataz lo
+      // escribió con otro nombre de tipo). Acá no vale el prefijo flexible.
       const enOtro = Object.values(B).some(x => x !== b && x.nums.has(n));
       if (enOtro) return;
       const inc = T.porNum[n];
@@ -117,7 +157,7 @@ function compararFotos(anteriores, actual, taller) {
   Object.keys(B).forEach(k => {
     const b = B[k], a = A[k];
     b.nums.forEach(n => {
-      if (a && a.nums.has(n)) return;
+      if (tieneNum(a, n)) return;
       const enOtro = Object.values(A).some(x => x !== a && x.nums.has(n));
       if (!enOtro) nuevos.push({ tipo: b.tipo, numero: n });
     });
@@ -134,7 +174,8 @@ function compararFotos(anteriores, actual, taller) {
     if (sinNumA > sinNumB) {
       let dif = sinNumA - sinNumB;
       // ¿hay en el taller, sin número, de ese tipo?
-      const cands = Object.keys(T.porTipo).filter(t => tipoCompatible(t, a.tipo)).flatMap(t => T.porTipo[t]).filter(i => !tallerUsado.has(i.id));
+      // porTipo ya está indexado por familia: se compara clave contra clave.
+      const cands = Object.keys(T.porTipo).filter(t => t === familiaDe(a.tipo)).flatMap(t => T.porTipo[t]).filter(i => !tallerUsado.has(i.id));
       const absorbidas = Math.min(dif, cands.length);
       cands.slice(0, absorbidas).forEach(inc => { tallerUsado.add(inc.id); enTaller.push({ tipo: a.tipo, numero: null, incidencia: inc, motivo: 'con ingreso en el taller (sin número)' }); });
       dif -= absorbidas;
@@ -145,9 +186,10 @@ function compararFotos(anteriores, actual, taller) {
     }
   });
 
-  const totA = Object.values(A).reduce((s, x) => s + x.cant, 0), totB = Object.values(B).reduce((s, x) => s + x.cant, 0);
-  return { faltantes, taller: enTaller, nuevos, cantidad,
-    resumen: { antes: totA, ahora: totB, faltantes: faltantes.reduce((s, f) => s + (f.cantidad || 1), 0), taller: enTaller.length, nuevos: nuevos.reduce((s, f) => s + (f.cantidad || 1), 0) } };
+  const totA = Object.values(A0).reduce((s, x) => s + x.cant, 0), totB = Object.values(B).reduce((s, x) => s + x.cant, 0);
+  return { faltantes, taller: enTaller, nuevos, cantidad, herramientas,
+    resumen: { antes: totA, ahora: totB, faltantes: faltantes.reduce((s, f) => s + (f.cantidad || 1), 0), taller: enTaller.length, nuevos: nuevos.reduce((s, f) => s + (f.cantidad || 1), 0),
+      herramientas_antes: herramientas.antes, herramientas_ahora: herramientas.ahora } };
 }
 
 // ¿Cuántas semanas seguidas viene faltando esta máquina? Mira las fotos
@@ -194,4 +236,4 @@ function movidaA(numero, semana, fotosTodas, objetivoIdOrigen) {
   return f ? (f.objetivo || f.objetivo_id) : null;
 }
 
-module.exports = { norm, normNum, numVago, lunesDe, sumarDias, aplanar, compararFotos, semanasFaltando, historialMaquina, claveDesvio, movidaA, VENTANA_SEMANAS };
+module.exports = { norm, normNum, numVago, lunesDe, sumarDias, aplanar, compararFotos, semanasFaltando, historialMaquina, claveDesvio, movidaA, conMotor, familiaDe, VENTANA_SEMANAS };
