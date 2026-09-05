@@ -1346,11 +1346,19 @@ router.post('/api/compras/ordenes/:id/emparejar', auth, async (req, res) => {
 const DSV = require('./stock_desvios');
 
 async function fotosTodas() {
-  const { data, error } = await supabase.from('stock_fotos')
-    .select('id, objetivo_id, censo_id, semana, respondido_at, capataz_nombre, origen, items, total, objetivos(nombre, grupo_stock)')
-    .order('semana', { ascending: false }).limit(5000);
-  if (error) throw error;
-  return (data || []).map(f => ({ ...f, objetivo: f.objetivos ? f.objetivos.nombre : null, grupo: f.objetivos ? f.objetivos.grupo_stock : null }));
+  // El nombre del objetivo se junta acá, no en la consulta: stock_fotos no
+  // tiene la relación declarada en Supabase y el embed fallaba con "Could
+  // not find a relationship". Dos consultas chicas y un mapa.
+  const [fRes, oRes] = await Promise.all([
+    supabase.from('stock_fotos')
+      .select('id, objetivo_id, censo_id, semana, respondido_at, capataz_nombre, origen, items, total')
+      .order('semana', { ascending: false }).limit(5000),
+    supabase.from('objetivos').select('id, nombre, grupo_stock'),
+  ]);
+  if (fRes.error) throw fRes.error;
+  const obj = {};
+  (oRes.data || []).forEach(o => { obj[o.id] = o; });
+  return (fRes.data || []).map(f => ({ ...f, objetivo: obj[f.objetivo_id] ? obj[f.objetivo_id].nombre : null, grupo: obj[f.objetivo_id] ? obj[f.objetivo_id].grupo_stock : null }));
 }
 
 // Semanas que tienen fotos, para el selector.
@@ -1419,7 +1427,7 @@ router.get('/api/stock/desvios', auth, async (req, res) => {
         return prev ? { ...n, viene_de: prev.objetivo || prev.objetivo_id, viene_de_semana: prev.semana } : n;
       });
       const abiertos = cmp.faltantes.filter(f => !f.cerrado);
-      const estado = !anterior ? 'primera_foto' : (abiertos.length ? 'con_faltantes' : (cmp.nuevos.length || cmp.taller.length || movidas.length ? 'con_cambios' : 'sin_cambios'));
+      const estado = !anterior ? 'primera_foto' : (abiertos.length ? 'con_faltantes' : (cmp.nuevos.length || cmp.taller.length || movidas.length || (cmp.renumeradas || []).length ? 'con_cambios' : 'sin_cambios'));
       return { ...base, estado, ...cmp, resumen: { ...cmp.resumen, faltantes_abiertos: abiertos.reduce((s, f) => s + (f.cantidad || 1), 0), repiten: abiertos.filter(f => f.semanas >= 2).length, movidas: movidas.length } };
     });
 
