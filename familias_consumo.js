@@ -22,7 +22,7 @@ const FAMILIAS_CONSUMO = [
   [/\b(pala|machete|horquilla|orquilla|escobilla|escobillon|rastrillo|azada|tijera|podon|gancho|gacho|maza|pison|carretilla|balde|manguera|cono|linga|arnes|casco|protector|soga|carro|remolque|acoplad|trailer|zorra|tanque|cisterna|sisterna|bidon|jardinera|barrendero|kit|llave|vaso)/i, 'sin_motor'],
 
   // Vehículos: van por kilómetros, no por horas de uso
-  [/camioneta|toyota|hilux|amarok|ranger|utilitar|furgon/i, 'vehiculo'],
+  [/camioneta|toyota|hilux|amarok|ranger|utilitar|furgon|fiat|strada|saveiro|partner|kangoo|s-?10|montana|chevrolet|renault|volkswagen|\bvw\b|peugeot|ford\b/i, 'vehiculo'],
   [/camion(?!eta)|volcador|chasis/i, 'vehiculo'],
   [/hidro\s*gr|hidrogr/i, 'vehiculo'],
 
