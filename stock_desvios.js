@@ -48,7 +48,18 @@ function tieneNum(e, n) {
   if (/^\d+$/.test(n) && e.prefijados && e.prefijados.has(n)) return true;   // A tiene 10, B tiene E10
   return false;
 }
-function numVago(v) { const n = normNum(v); return !n || n === 'SN' || n === 'SIN' || n === '0' || /^[-–—]+$/.test(n); }
+// Un "número" que no identifica nada: vacío, "sn", "-", "0". Y también lo
+// que el capataz escribió en el lugar del número sin ser un número: "UNA",
+// "K", "FUMIAGADORADE16LTS", "STHILSNYECHOS2" (más letras que dígitos y
+// largo, o sin ningún dígito). Se tratan como máquinas sin número.
+function numVago(v) {
+  const n = normNum(v);
+  if (!n || n === 'SN' || n === 'SIN' || n === 'SINNUMERO' || n === '0' || /^[-–—]+$/.test(n)) return true;
+  if (!/\d/.test(n)) return true;                                   // "UNA", "K"
+  const letras = (n.match(/[A-Z]/g) || []).length, digitos = (n.match(/\d/g) || []).length;
+  if (n.length >= 8 && letras > digitos) return true;               // "STHILSNYECHOS2"
+  return false;
+}
 
 // Lunes (00:00) de la semana a la que pertenece una fecha. Semana ISO: lunes
 // a domingo. Devuelve 'YYYY-MM-DD'.
@@ -82,7 +93,8 @@ function aplanar(items, opts) {
     e.cant += Number(i.cantidad) || 0;
     // `escritos` cuenta los números no vagos CON repetidos: el 218 dos veces
     // en Cosquin son dos máquinas escritas, aunque en el Set sea una.
-    (i.numeros || []).forEach(n => { if (numVago(n)) e.vagos++; else { const nn = normNum(n); e.nums.add(nn); e.escritos++; const sp = sinPrefijo(nn); if (sp) (e.prefijados = e.prefijados || new Set()).add(sp); } });
+    e.tipoDe = e.tipoDe || {};
+    (i.numeros || []).forEach(n => { if (numVago(n)) e.vagos++; else { const nn = normNum(n); e.nums.add(nn); e.escritos++; e.tipoDe[nn] = tipo; const sp = sinPrefijo(nn); if (sp) (e.prefijados = e.prefijados || new Set()).add(sp); } });
   });
   return m;
 }
@@ -126,8 +138,8 @@ function compararFotos(anteriores, actual, taller, opts) {
   lista.slice(1).forEach(f => {
     const m = aplanar(f.items, o);
     Object.keys(m).forEach(k => {
-      const e = A[k] || (A[k] = { tipo: m[k].tipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0, prefijados: new Set() });
-      m[k].nums.forEach(n => e.nums.add(n));
+      const e = A[k] || (A[k] = { tipo: m[k].tipo, cant: 0, nums: new Set(), vagos: 0, escritos: 0, prefijados: new Set(), tipoDe: {} });
+      m[k].nums.forEach(n => { e.nums.add(n); if (!e.tipoDe[n]) e.tipoDe[n] = (m[k].tipoDe || {})[n] || m[k].tipo; });
       (m[k].prefijados || new Set()).forEach(n => e.prefijados.add(n));
     });
   });
@@ -148,9 +160,10 @@ function compararFotos(anteriores, actual, taller, opts) {
       // escribió con otro nombre de tipo). Acá no vale el prefijo flexible.
       const enOtro = Object.values(B).some(x => x !== b && x.nums.has(n));
       if (enOtro) return;
+      const tipoReal = (a.tipoDe || {})[n] || a.tipo;
       const inc = T.porNum[n];
-      if (inc) { tallerUsado.add(inc.id); enTaller.push({ tipo: a.tipo, numero: n, incidencia: inc, motivo: 'con ingreso en el taller' }); }
-      else faltantes.push({ tipo: a.tipo, numero: n, detalle: null });
+      if (inc) { tallerUsado.add(inc.id); enTaller.push({ tipo: tipoReal, numero: n, incidencia: inc, motivo: 'con ingreso en el taller' }); }
+      else faltantes.push({ tipo: tipoReal, numero: n, detalle: null, familia: k });
     });
   });
   // Por número: en B y no en A → nuevo.
@@ -159,7 +172,7 @@ function compararFotos(anteriores, actual, taller, opts) {
     b.nums.forEach(n => {
       if (tieneNum(a, n)) return;
       const enOtro = Object.values(A).some(x => x !== a && x.nums.has(n));
-      if (!enOtro) nuevos.push({ tipo: b.tipo, numero: n });
+      if (!enOtro) nuevos.push({ tipo: (b.tipoDe || {})[n] || b.tipo, numero: n, familia: k });
     });
   });
   // Por cantidad, para lo que no tiene número: sin-número de la INMEDIATA
@@ -179,15 +192,43 @@ function compararFotos(anteriores, actual, taller, opts) {
       const absorbidas = Math.min(dif, cands.length);
       cands.slice(0, absorbidas).forEach(inc => { tallerUsado.add(inc.id); enTaller.push({ tipo: a.tipo, numero: null, incidencia: inc, motivo: 'con ingreso en el taller (sin número)' }); });
       dif -= absorbidas;
-      if (dif > 0) { faltantes.push({ tipo: a.tipo, numero: null, detalle: `había ${sinNumA} sin número, ahora ${sinNumB}`, cantidad: dif }); cantidad.push({ tipo: a.tipo, antes: a.cant, ahora: b.cant }); }
+      if (dif > 0) { faltantes.push({ tipo: a.tipo, numero: null, detalle: `había ${sinNumA} sin número, ahora ${sinNumB}`, cantidad: dif, familia: k }); cantidad.push({ tipo: a.tipo, antes: a.cant, ahora: b.cant }); }
     } else {
-      nuevos.push({ tipo: b.tipo, numero: null, detalle: `había ${sinNumA} sin número, ahora ${sinNumB}`, cantidad: sinNumB - sinNumA });
+      nuevos.push({ tipo: b.tipo, numero: null, detalle: `había ${sinNumA} sin número, ahora ${sinNumB}`, cantidad: sinNumB - sinNumA, familia: k });
       cantidad.push({ tipo: b.tipo, antes: a.cant, ahora: b.cant });
     }
   });
 
+  // NETEO dentro de cada familia: si desaparecen N sin número y aparecen N
+  // numerados (o al revés), no faltan ni aparecen: el capataz empezó (o
+  // dejó) de escribir el número. Arrieta: "×4 s/n" → 171, 71, 7, 72.
+  // Se anotan como "renumeradas" para que se vea, sin contar como desvío.
+  const renumeradas = [];
+  const fams = new Set([...faltantes, ...nuevos].map(x => x.familia).filter(Boolean));
+  fams.forEach(k => {
+    // sin número que faltan ↔ numerados nuevos
+    const fSin = faltantes.find(x => x.familia === k && x.numero === null);
+    const nNum = nuevos.filter(x => x.familia === k && x.numero !== null);
+    if (fSin && nNum.length) {
+      const n = Math.min(fSin.cantidad || 1, nNum.length);
+      nNum.slice(0, n).forEach(x => { renumeradas.push({ tipo: x.tipo, numero: x.numero, sentido: 'ahora con número' }); nuevos.splice(nuevos.indexOf(x), 1); });
+      fSin.cantidad = (fSin.cantidad || 1) - n;
+      if (fSin.cantidad <= 0) faltantes.splice(faltantes.indexOf(fSin), 1);
+      else fSin.detalle = `${fSin.cantidad} sin número menos que la semana pasada (otras ${n} ahora tienen número)`;
+    }
+    // numerados que faltan ↔ sin número nuevos
+    const nSin = nuevos.find(x => x.familia === k && x.numero === null);
+    const fNum = faltantes.filter(x => x.familia === k && x.numero !== null);
+    if (nSin && fNum.length) {
+      const n = Math.min(nSin.cantidad || 1, fNum.length);
+      fNum.slice(0, n).forEach(x => { renumeradas.push({ tipo: x.tipo, numero: x.numero, sentido: 'ahora sin número' }); faltantes.splice(faltantes.indexOf(x), 1); });
+      nSin.cantidad = (nSin.cantidad || 1) - n;
+      if (nSin.cantidad <= 0) nuevos.splice(nuevos.indexOf(nSin), 1);
+    }
+  });
+
   const totA = Object.values(A0).reduce((s, x) => s + x.cant, 0), totB = Object.values(B).reduce((s, x) => s + x.cant, 0);
-  return { faltantes, taller: enTaller, nuevos, cantidad, herramientas,
+  return { faltantes, taller: enTaller, nuevos, cantidad, herramientas, renumeradas,
     resumen: { antes: totA, ahora: totB, faltantes: faltantes.reduce((s, f) => s + (f.cantidad || 1), 0), taller: enTaller.length, nuevos: nuevos.reduce((s, f) => s + (f.cantidad || 1), 0),
       herramientas_antes: herramientas.antes, herramientas_ahora: herramientas.ahora } };
 }
