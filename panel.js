@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · Stock → Desvíos semanales (fotos, taller, movidas, trazabilidad)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-04 · desvíos: solo máquinas con motor, números con prefijo, tipos por familia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2370,7 +2370,8 @@ async function vStockDesvios(view){
       :est==='primera_foto'?'<span class="badge b-blue">primera foto · sin contra qué comparar</span>'
       :est==='con_faltantes'?`<span class="badge b-red">${abiertos.reduce((s,x)=>s+(x.cantidad||1),0)} faltante${abiertos.length===1?'':'s'}${(f.resumen||{}).repiten?' · '+f.resumen.repiten+' repite'+(f.resumen.repiten===1?'':'n'):''}</span>`
       :est==='con_cambios'?'<span class="badge b-green">sin faltantes</span>':'<span class="badge b-green">sin cambios</span>';
-    const meta=f.actual?`${f.anterior?f.anterior.total+' → ':''}${f.actual.total} equipos · respondió ${escStk(f.actual.capataz||'—')}, ${f.actual.respondido_at?fechaAR(String(f.actual.respondido_at).slice(0,10))+' '+horaStk(f.actual.respondido_at):''}${f.actual.origen==='panel'?' (desde el panel)':''}`
+    const R=f.resumen||{};
+    const meta=f.actual?`${f.anterior?R.antes+' → ':''}${R.ahora!=null?R.ahora:f.actual.total} máquinas con motor${(R.herramientas_antes||R.herramientas_ahora)?` · herramientas ${R.herramientas_antes||0} → ${R.herramientas_ahora||0} (no generan desvío)`:''} · respondió ${escStk(f.actual.capataz||'—')}, ${f.actual.respondido_at?fechaAR(String(f.actual.respondido_at).slice(0,10))+' '+horaStk(f.actual.respondido_at):''}${f.actual.origen==='panel'?' (desde el panel)':''}${f.anterior&&f.anterior.semana<dsvSemAnteriorLimite(d.semana)?` · <span style="color:var(--diesel)">contra un censo de ${fSem(f.anterior.semana)}, no de la semana pasada</span>`:''}`
       :f.anterior?`última foto ${fSem(f.anterior.semana)} · ${f.anterior.total} equipos`:'';
     const filaF=x=>`<div class="dsv-fila${x.cerrado?' dsv-cerrada':''}">
       <span class="dsv-tipo">${escStk(x.tipo)}</span>
@@ -2441,9 +2442,15 @@ async function vStockDesvios(view){
   <div class="panel" style="margin-top:14px;font-size:12px;color:var(--tinta-2);line-height:1.6">
     <b>Cómo se lee.</b> <span class="nu f">234</span> faltante: estaba y no está, y el taller no la tiene. <span class="nu t">212</span> en taller: no está en el objetivo pero sí tiene ingreso dado; no es faltante. <span class="nu m">234</span> movida: esta semana apareció en otro objetivo, no falta. <span class="nu n">240</span> nuevo: no estaba en ningún lado. Un faltante se compara contra las últimas 8 semanas: sigue siendo faltante hasta que reaparece. Tocá cualquier número para ver por dónde pasó esa máquina.
     Un faltante queda abierto hasta que vuelve a aparecer en un censo o lo cerrás con un motivo. Los que repiten dos semanas seguidas son los que hay que ir a buscar.
-    <div class="aviso-amarillo" style="margin-top:8px">El desvío depende de tres cosas que el sistema no controla: que el capataz conteste el lunes, que escriba los <b>números</b> de máquina, y que el taller marque el <b>ingreso</b>. Cualquiera que falle da un desvío falso.</div>
+    <div style="margin-top:6px">Solo cuentan las <b>máquinas con motor</b> (motoguadañas, motosierras, sopladoras, cortadoras, tractores, vehículos). Palas, machetes y tijeras se cuentan aparte y no generan desvío: se dejan de anotar, no se pierden. Los números se comparan tolerando un prefijo de una letra (E10 = 10, Nº26 = 26) dentro del mismo tipo de máquina.</div>
+    <div class="aviso-amarillo" style="margin-top:8px">El desvío depende de tres cosas que el sistema no controla: que el capataz conteste el lunes, que escriba los <b>números</b> de máquina, y que el taller marque el <b>ingreso</b>. Cualquiera que falle da un desvío falso. Y la primera comparación contra un censo de <b>otro mes</b> es ruidosa: cada capataz lista distinto cada vez. Se estabiliza cuando el mismo capataz responde dos lunes seguidos.</div>
   </div>`;
 }
+
+// La foto anterior "esperable" es la de la semana pasada. Si es más vieja,
+// se está comparando contra un censo de otro mes, escrito con otro nivel de
+// detalle, y el desvío es más ruidoso: se avisa en la tarjeta.
+function dsvSemAnteriorLimite(semana){const [y,m,d]=String(semana).split('-').map(Number);const t=new Date(Date.UTC(y,m-1,d-7));return t.toISOString().slice(0,10);}
 
 async function dsvHistorial(numero){
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='dsv-hist';
