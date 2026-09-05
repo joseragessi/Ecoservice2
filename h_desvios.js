@@ -97,6 +97,44 @@ eq('la 234 tiene 2 apariciones', h.length === 2, JSON.stringify(h));
 eq('ordenadas de la más reciente a la más vieja', h[0].semana === '2026-08-31' && h[1].semana === '2026-08-24');
 eq('muestra que antes estaba en OTRO objetivo', h[1].objetivo === 'Circunvalación');
 
+console.log('\n— Los casos del primer reporte real (PDF del 04-sep) —');
+// Fincas del Sur: 34 → 7. Gastón listó hasta el alicate en agosto y solo las máquinas en septiembre.
+const FIN_AGO = { items: [
+  { tipo: 'Motoguadaña', cantidad: 4, numeros: ['E10','E11','E12','E13'] }, { tipo: 'Motosierra', cantidad: 1, numeros: ['52YSN'] },
+  { tipo: 'Extensible', cantidad: 1, numeros: ['STHILSNYECHOS2'] }, { tipo: 'fiat strada U12', cantidad: 1, numeros: ['U12'] },
+  { tipo: 'Machete', cantidad: 2, numeros: [] }, { tipo: 'Pala de punta', cantidad: 2, numeros: [] }, { tipo: 'Pala ancha', cantidad: 2, numeros: [] },
+  { tipo: 'Tijera de podar', cantidad: 1, numeros: [] }, { tipo: 'Podón', cantidad: 1, numeros: [] }, { tipo: 'Horquilla', cantidad: 2, numeros: [] },
+  { tipo: 'Pinza', cantidad: 1, numeros: [] }, { tipo: 'Alicate', cantidad: 1, numeros: [] }, { tipo: 'Escalera', cantidad: 1, numeros: ['UNA'] },
+] };
+const FIN_SEP = { items: [{ tipo: 'Motoguadaña', cantidad: 4, numeros: ['10','11','12','13'] }, { tipo: 'Motosierra', cantidad: 1, numeros: ['52YSN'] }, { tipo: 'Extensible', cantidad: 1, numeros: [] }] };
+r = D.compararFotos(FIN_AGO, FIN_SEP, []);
+eq('Fincas: E10..E13 son 10..13 → NINGUNA motoguadaña falta', !r.faltantes.some(f => /^E?1[0-3]$/.test(String(f.numero))), JSON.stringify(r.faltantes));
+eq('Fincas: ni son "nuevas"', !r.nuevos.some(f => /^1[0-3]$/.test(String(f.numero))), JSON.stringify(r.nuevos));
+eq('Fincas: palas, machetes, pinzas NO son faltantes', !r.faltantes.some(f => /pala|machete|pinza|alicate|horquilla|tijera|podon|escalera/i.test(f.tipo)), JSON.stringify(r.faltantes.map(f => f.tipo)));
+eq('Fincas: las herramientas se cuentan aparte (13 → 0: 12 de mano + la escalera)', r.herramientas.antes === 13 && r.herramientas.ahora === 0, JSON.stringify(r.herramientas));
+eq('Fincas: la Strada U12 sí falta (vehículo con número que no volvió a listar)', r.faltantes.some(f => f.numero === 'U12'));
+
+// Ayres: "extensible sthil Nº26" → "Extensible 26"
+r = D.compararFotos({ items: [{ tipo: 'extensible sthil', cantidad: 1, numeros: ['Nº26'] }] }, { items: [{ tipo: 'Extensible', cantidad: 1, numeros: ['26'] }] }, []);
+eq('Ayres: Nº26 es 26, no falta ni es nueva', r.faltantes.length === 0 && r.nuevos.length === 0, JSON.stringify(r));
+
+// UCC: "Extensible ×1 s/n" → "Motosierra extensible ×1 s/n"
+r = D.compararFotos({ items: [{ tipo: 'Extensible', cantidad: 1, numeros: [] }] }, { items: [{ tipo: 'Motosierra extensible', cantidad: 1, numeros: [] }] }, []);
+eq('UCC: "Extensible" y "Motosierra extensible" son la misma familia → sin desvío', r.faltantes.length === 0 && r.nuevos.length === 0, JSON.stringify(r));
+
+// Cañuelas: "Toyot Hilux 40" → "Toyota / Camioneta ×1 s/n"
+r = D.compararFotos({ items: [{ tipo: 'Toyot Hilux', cantidad: 1, numeros: ['40'] }] }, { items: [{ tipo: 'Toyota / Camioneta', cantidad: 1, numeros: [] }] }, []);
+eq('Cañuelas: la Hilux 40 pasa a "sin número": la numerada falta y aparece una sin número de la misma familia', r.faltantes.length === 1 && r.faltantes[0].numero === '40' && r.nuevos.length === 1 && r.nuevos[0].numero === null, JSON.stringify(r));
+
+// Códigos de más de una letra se respetan
+eq('"NM6" NO se reduce a "6" (dos letras: es código)', D.normNum('NM6') === 'NM6');
+eq('"T22" queda "T22"', D.normNum('T22') === 'T22');
+eq('"SH-16" tampoco', D.normNum('SH-16') === 'SH16');
+eq('"E10" queda "E10" en normNum: la equivalencia con "10" se resuelve al comparar, dentro de la familia', D.normNum('E10') === 'E10');
+r = D.compararFotos({ items: [{ tipo: 'Minitractor', cantidad: 1, numeros: ['T22'] }, { tipo: 'Motoguadaña', cantidad: 1, numeros: ['22'] }] },
+  { items: [{ tipo: 'Minitractor', cantidad: 1, numeros: ['T22'] }] }, []);
+eq('T22 (tractor) y 22 (motoguadaña): la 22 falta, el T22 no la cubre', r.faltantes.length === 1 && r.faltantes[0].numero === '22', JSON.stringify(r.faltantes));
+
 console.log('\n— Clave de cierre —');
 eq('misma máquina, misma clave', D.claveDesvio('o1', 'Motoguadaña 291', '234') === D.claveDesvio('o1', 'motoguadaña 291', ' 234 '));
 eq('sin número, la clave es por tipo', D.claveDesvio('o1', 'Motosierra', null) === 'o1|motosierra|');
