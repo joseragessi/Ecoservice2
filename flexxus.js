@@ -402,7 +402,13 @@ async function imputarFactura(f, letra, opts = {}) {
   const codigoPercepcion = (concepto) => {
     const t = String(concepto || '').toLowerCase();
     if (/suss|seguridad social/.test(t)) return 'PER SUSS';
+    // IIBB primero que municipal: "Percep. IIBB. Cba" tiene "cba" adentro y
+    // caería en la regla municipal si esta fuera antes.
     if (/iibb|ingresos brutos|ing\.?\s*brutos|rentas/.test(t)) return 'PER IIBB';
+    // Percepción municipal. Acerco la imprime como "Percep. Mun. Cba"; otros
+    // proveedores usan "municipal", "muni" o "comercio e industria" (el
+    // nombre formal de la tasa de la Municipalidad de Córdoba).
+    if (/\bmun\b|munic|comercio\s*e?\s*industria|cbamun/.test(t)) return 'PER MUNICIPA';
     if (/ganancia/.test(t)) return 'PER GAN';
     if (/iva/.test(t)) return 'PER IVA';
     return process.env.FLEXXUS_CODIGO_PERCEPCION || null;
