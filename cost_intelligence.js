@@ -1,9 +1,9 @@
 // ============================================================
-// COST INTELLIGENCE V2.6 - ECOSERVICE
+// COST INTELLIGENCE V3.0 - ECOSERVICE
 // ============================================================
 // Inteligencia semanal de consumo y costo.
 //
-// V2.6 consolida clasificación + parque confiable y trazable usando información que
+// V3.0 consolida clasificación + parque confiable y trazable usando información que
 // YA existe en el módulo Combustible:
 //
 // 1) familia_consumo explícita                        -> se respeta
@@ -239,7 +239,7 @@ async function cargarMapaObjetivos() {
 async function obtenerParque(periodo) {
   const mapaObjetivos = await cargarMapaObjetivos();
  
-  // V2.6: el inventario oficial queda como REFERENCIA, no como denominador
+  // V3.0: el inventario oficial queda como REFERENCIA, no como denominador
   // automático. Para litros/equipo priorizamos evidencia temporal:
   //   A) censo respondido del período y consistente -> confianza alta
   //   B) último censo anterior razonablemente reciente -> confianza media
@@ -276,7 +276,7 @@ async function obtenerParque(periodo) {
  
   if (errorCensos) throw errorCensos;
   if (errorInv) {
-    console.warn('[cost-intelligence V2.6] stock_objetivo no disponible:', errorInv.message);
+    console.warn('[cost-intelligence V3.0] stock_objetivo no disponible:', errorInv.message);
   }
  
   function diferenciaMeses(desde, hasta) {
@@ -362,7 +362,7 @@ async function obtenerParque(periodo) {
       observacionBase = null;
     } else if (censoActualIncompleto && anterior) {
       // Usamos el anterior sólo para mostrar una referencia consistente; la
-      // confianza queda BAJA y por lo tanto V2.6 NO genera anomalías por equipo.
+      // confianza queda BAJA y por lo tanto V3.0 NO genera anomalías por equipo.
       censoSeleccionado = anterior;
       famSeleccionada = famAnterior;
       fuenteBase = 'ultimo_censo_previo_censo_actual_incompleto';
@@ -437,7 +437,7 @@ async function obtenerParque(periodo) {
 }
  
 // ============================================================
-// V2.6 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
+// V3.0 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
 // ============================================================
  
 function productoEsNafta(producto) {
@@ -566,7 +566,7 @@ async function persistirClasificaciones(updates) {
       .eq('id', fila.id);
  
     if (error) {
-      console.warn('[cost-intelligence V2.6] no pude persistir clasificación item', fila.id, error.message);
+      console.warn('[cost-intelligence V3.0] no pude persistir clasificación item', fila.id, error.message);
       continue;
     }
  
@@ -698,7 +698,7 @@ async function obtenerConsumoSemana(semana) {
   const parque = await obtenerParque(semana.slice(0, 7));
   const precioReferencia = calcularPrecioReferencia(listaCargas);
  
-  console.log(`[cost-intelligence V2.6] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
+  console.log(`[cost-intelligence V3.0] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
  
   const agrupado = {};
   const actualizacionesFamilia = [];
@@ -773,7 +773,7 @@ async function obtenerConsumoSemana(semana) {
         unidadId: carga.unidad_id || null,
       });
  
-      // V2.6: una carga histórica sin items igualmente puede ser vehículo si
+      // V3.0: una carga histórica sin items igualmente puede ser vehículo si
       // el encabezado dice explícitamente destino=unidad. No inferimos por el
       // mero hecho de tener unidad_id porque algunos equipos también viven en
       // el maestro de unidades.
@@ -857,7 +857,7 @@ async function obtenerConsumoSemana(semana) {
       });
  
       // ------------------------------------------------------
-      // V2.6: familia automática
+      // V3.0: familia automática
       // ------------------------------------------------------
       const parqueObjetivo = objetivoId ? parque[objetivoId] : null;
       const clasificacion = resolverFamiliaConsumo(item, carga, parqueObjetivo);
@@ -893,7 +893,7 @@ async function obtenerConsumoSemana(semana) {
   // sigue siendo válido porque ya se clasificó en memoria.
   const persistencia = await persistirClasificaciones(actualizacionesFamilia);
   if (persistencia.actualizados > 0) {
-    console.log(`[cost-intelligence V2.6] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
+    console.log(`[cost-intelligence V3.0] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
   }
  
   return Object.values(agrupado).map(fila => ({
@@ -938,7 +938,7 @@ async function resolverObjetivos(consumos) {
 // ============================================================
  
 async function generarSnapshotSemanal(semana) {
-  console.log(`[cost-intelligence V2.6] generando ${semana}`);
+  console.log(`[cost-intelligence V3.0] generando ${semana}`);
  
   const periodo = semana.slice(0, 7);
   const [parque, consumoRaw] = await Promise.all([
@@ -1078,7 +1078,7 @@ function construirBaseline(historico) {
   const litros = filas.map(x => numero(x.litros)).filter(x => x > 0);
   const costos = filas.map(x => numero(x.importe)).filter(x => x > 0);
  
-  // V2.6: para métricas por equipo sólo usamos snapshots cuyo denominador no
+  // V3.0: para métricas por equipo sólo usamos snapshots cuyo denominador no
   // esté marcado con confianza baja. Los snapshots antiguos sin metadata se
   // aceptan por compatibilidad hasta que se reconstruya el histórico.
   const filasParqueConfiable = filas.filter(x =>
@@ -1331,10 +1331,10 @@ async function calcularBaselinesSemana(semana, ventanas = VENTANA_SEMANAS) {
 }
  
 // ============================================================
-// ANOMALÍAS / EXPLICABILIDAD V2.6
+// ANOMALÍAS / EXPLICABILIDAD V3.0
 // ============================================================
 //
-// Principios V2.6:
+// Principios V3.0:
 // 1) Una familia real se evalúa por litros/equipo solamente cuando
 //    el parque es confiable.
 // 2) Si el parque cambia bruscamente o falta, NO convertimos ese
@@ -1504,7 +1504,7 @@ async function detectarAnomaliasSemana(semana) {
     const esFamiliaReal = FAMILIAS_NORMALIZABLES.includes(snapshot.familia);
     const muestrasComparables = esFamiliaReal ? numero(base.muestras_equipo) : numero(base.muestras);
  
-    // V2.6: la calidad del parque ACTUAL se evalúa antes que el aprendizaje.
+    // V3.0: la calidad del parque ACTUAL se evalúa antes que el aprendizaje.
     // Si el censo actual es incompleto o la fuente tiene confianza baja,
     // informamos calidad de datos aunque todavía falte historia.
     if (esFamiliaReal) {
@@ -1595,7 +1595,7 @@ async function detectarAnomaliasSemana(semana) {
         parqueObservacion: snapshot.parque_observacion,
       });
  
-      // V2.6: un problema de parque ya no se transforma en "consumo anormal".
+      // V3.0: un problema de parque ya no se transforma en "consumo anormal".
       // Lo separamos como calidad de datos.
       if (
         !calidadParque.confiable ||
@@ -1634,7 +1634,7 @@ async function detectarAnomaliasSemana(semana) {
     // Sólo excesos por ahora.
     if (desvioPct < umbral) continue;
  
-    // V2.6: si el TOTAL está prácticamente explicado por familias reales,
+    // V3.0: si el TOTAL está prácticamente explicado por familias reales,
     // no generamos una alerta genérica. El mix de maquinaria/producto manda.
     if (snapshot.familia === 'total') {
       const cobertura = coberturaPorObjetivo.get(snapshot.objetivo_id) || {
@@ -1761,7 +1761,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   }
  
   console.log('================================================');
-  console.log(`[cost-intelligence V2.6] procesando ${periodo}`);
+  console.log(`[cost-intelligence V3.0] procesando ${periodo}`);
  
   const semanas = semanasDelMes(periodo);
   const hoy = hoyCordoba();
@@ -1774,7 +1774,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   for (const semana of semanas) {
     if (semana > hoy) continue;
  
-    console.log(`[cost-intelligence V2.6] semana ${semana}`);
+    console.log(`[cost-intelligence V3.0] semana ${semana}`);
     const resultado = await analizarSemana(semana);
     resultados.push(resultado);
  
@@ -1785,7 +1785,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
  
   const resultadoFinal = {
     ok: true,
-    version: '2.6',
+    version: '3.0',
     periodo,
     granularidad: GRANULARIDAD,
     semanas_procesadas: resultados.length,
@@ -1796,7 +1796,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
     duracion_ms: Date.now() - inicio,
   };
  
-  console.log('[cost-intelligence V2.6] finalizado', {
+  console.log('[cost-intelligence V3.0] finalizado', {
     periodo,
     semanas: resultados.length,
     snapshots: totalSnapshots,
