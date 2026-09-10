@@ -274,17 +274,57 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
     if (anomRes.error) throw anomRes.error;
  
     const snapshots = snapRes.data || [];
-    const anomalias = anomRes.data || [];
+    const anomaliasTodas = anomRes.data || [];
+ 
+    // V2.4: las alertas superadas por el modelo se conservan para auditoría,
+    // pero NO forman parte de los KPIs, ranking ni "Dónde actuar hoy".
+    const estadosNoVigentes = new Set(['superada_modelo', 'descartada', 'cerrada']);
+    const anomalias = anomaliasTodas.filter(a => !estadosNoVigentes.has(a.estado));
+    const superadasModelo = anomaliasTodas.filter(a => a.estado === 'superada_modelo');
+ 
     const totales = snapshots.filter(x => x.familia === 'total');
+    const familiasOperativas = snapshots.filter(x =>
+      ['tractor','dos_tiempos','vehiculo','cortadora','fijo'].includes(x.familia)
+    );
  
     const costoControlado = totales.reduce((s,x) => s + ciNum(x.importe), 0);
     const litrosControlados = totales.reduce((s,x) => s + ciNum(x.litros), 0);
     const impactoDetectado = anomalias.reduce((s,x) => s + ciNum(x.impacto_estimado), 0);
     const abiertas = anomalias.filter(x => ['abierta','en_revision','pendiente'].includes(x.estado));
     const sinExplicar = abiertas.reduce((s,x) => s + ciNum(x.impacto_estimado), 0);
-    const ahorroValidado = anomalias.reduce((s,x) => s + ciNum(x.ahorro_validado), 0);
+    const ahorroValidado = anomaliasTodas.reduce((s,x) => s + ciNum(x.ahorro_validado), 0);
  
-    // Evolución semanal: sólo familia total, para no duplicar bidones/unidades.
+    // Calidad de parque visible directamente en snapshots.
+    // Un registro de familia operativa con consumo pero sin parque no se transforma
+    // en anomalía de consumo/equipo: se marca como incidencia de calidad de datos.
+    const calidadDatos = [];
+    for (const x of familiasOperativas) {
+      if (ciNum(x.litros) <= 0) continue;
+      if (ciNum(x.parque_familia) > 0) continue;
+      calidadDatos.push({
+        tipo: 'calidad_datos',
+        periodo: x.periodo,
+        objetivo_id: x.objetivo_id,
+        objetivo_nombre: x.objetivo_nombre,
+        familia: x.familia,
+        litros: ciNum(x.litros),
+        parque_familia: ciNum(x.parque_familia),
+        severidad: 'media',
+        titulo: 'Revisar parque informado',
+        motivo: 'Hay consumo clasificado en la familia pero no hay parque suficiente para calcular litros por equipo.',
+      });
+    }
+ 
+    // Evita duplicados de calidad por objetivo/semana/familia.
+    const mapaCalidad = new Map();
+    for (const x of calidadDatos) {
+      const k = `${x.periodo}|${x.objetivo_id || x.objetivo_nombre}|${x.familia}`;
+      mapaCalidad.set(k, x);
+    }
+    const calidadUnica = [...mapaCalidad.values()]
+      .sort((a,b) => b.periodo.localeCompare(a.periodo));
+ 
+    // Evolución semanal: sólo familia total, para no duplicar bidones/unidades/familias.
     const porSemana = {};
     for (const x of totales) {
       if (!porSemana[x.periodo]) porSemana[x.periodo] = { semana:x.periodo, litros:0, costo:0, objetivos:new Set() };
@@ -296,14 +336,14 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       .sort((a,b) => a.semana.localeCompare(b.semana))
       .map(x => ({ semana:x.semana, litros:Math.round(x.litros*100)/100, costo:Math.round(x.costo), objetivos:x.objetivos.size }));
  
-    // Ranking por objetivo.
+    // Ranking por objetivo: sólo anomalías vigentes.
     const porObjetivo = {};
     for (const x of totales) {
       const k = x.objetivo_id || x.objetivo_nombre || 'sin_objetivo';
       if (!porObjetivo[k]) porObjetivo[k] = {
         objetivo_id:x.objetivo_id || null,
         objetivo_nombre:x.objetivo_nombre || 'Sin objetivo',
-        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0,
+        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0, calidad_datos:0,
       };
       porObjetivo[k].litros += ciNum(x.litros);
       porObjetivo[k].costo += ciNum(x.importe);
@@ -314,11 +354,21 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       if (!porObjetivo[k]) porObjetivo[k] = {
         objetivo_id:a.objetivo_id || null,
         objetivo_nombre:a.objetivo_nombre || 'Sin objetivo',
-        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0,
+        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0, calidad_datos:0,
       };
       porObjetivo[k].alertas += 1;
       porObjetivo[k].impacto += ciNum(a.impacto_estimado);
     }
+    for (const q of calidadUnica) {
+      const k = q.objetivo_id || q.objetivo_nombre || 'sin_objetivo';
+      if (!porObjetivo[k]) porObjetivo[k] = {
+        objetivo_id:q.objetivo_id || null,
+        objetivo_nombre:q.objetivo_nombre || 'Sin objetivo',
+        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0, calidad_datos:0,
+      };
+      porObjetivo[k].calidad_datos += 1;
+    }
+ 
     const objetivos = Object.values(porObjetivo)
       .map(x => ({
         objetivo_id:x.objetivo_id,
@@ -328,15 +378,23 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         semanas:x.semanas.size,
         alertas:x.alertas,
         impacto:Math.round(x.impacto),
+        calidad_datos:x.calidad_datos,
       }))
-      .sort((a,b) => b.impacto - a.impacto || b.costo - a.costo);
+      .sort((a,b) => b.alertas - a.alertas || b.calidad_datos - a.calidad_datos || b.impacto - a.impacto || b.costo - a.costo);
  
     const severidades = { critica:0, alta:0, media:0 };
     anomalias.forEach(a => { if (severidades[a.severidad] != null) severidades[a.severidad]++; });
  
+    // V2.4: primero van anomalías operativas vigentes; luego problemas de calidad.
+    const dondeActuarHoy = [
+      ...anomalias.map(a => ({ ...a, tipo:'anomalia' })),
+      ...calidadUnica,
+    ].slice(0, 20);
+ 
     res.json({
       ok:true,
-      version:'dashboard-costos-1.0',
+      version:'dashboard-costos-2.4',
+      motor_version:'2.4',
       periodo,
       granularidad:'semanal',
       semanas,
@@ -349,11 +407,18 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         objetivos_controlados:new Set(totales.map(x=>x.objetivo_id).filter(Boolean)).size,
         alertas:anomalias.length,
         alertas_abiertas:abiertas.length,
+        calidad_datos:calidadUnica.length,
+        alertas_superadas_modelo:superadasModelo.length,
       },
       severidades,
       evolucion_semanal,
       objetivos,
-      donde_actuar_hoy:anomalias.slice(0,20),
+      donde_actuar_hoy:dondeActuarHoy,
+      calidad_datos:calidadUnica,
+      historico_modelo:{
+        superadas:superadasModelo.length,
+        detalle:superadasModelo.slice(0,20),
+      },
     });
   } catch (err) {
     console.error('[costos] resumen:', err);
