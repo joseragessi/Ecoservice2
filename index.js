@@ -1,322 +1,1443 @@
 require('dotenv').config();
+
 const cambios = require('./cambios');
 const compression = require('compression');
 const express  = require('express');
 const twilio   = require('twilio');
+
 const { procesarMensaje } = require('./conversacion');
-const { procesarComprobante, tieneSesionActiva: tieneSesionCombustible,
-        continuarConversacion } = require('./combustible');
-const { esPedidoDeOrden, procesarOrdenFoto } = require('./ordenes_bot');
-const { iniciarInsumos, tieneSesionActiva: tieneSesionInsumos,
-        continuarInsumos } = require('./insumos');
-const { iniciarStock, tieneSesionActiva: tieneSesionStock,
-        continuarStock, tienePedidoPendiente } = require('./stock');
-const { procesarFactura } = require('./facturas_bot');
-const { iniciarViajes, continuarViajes, tieneSesionViajes } = require('./viajes');
-const { iniciarEstaciones, continuarEstaciones, tieneSesionEstaciones } = require('./estaciones');
+
+const {
+  procesarComprobante,
+  tieneSesionActiva: tieneSesionCombustible,
+  continuarConversacion
+} = require('./combustible');
+
+const {
+  esPedidoDeOrden,
+  procesarOrdenFoto
+} = require('./ordenes_bot');
+
+const {
+  iniciarInsumos,
+  tieneSesionActiva: tieneSesionInsumos,
+  continuarInsumos
+} = require('./insumos');
+
+const {
+  iniciarStock,
+  tieneSesionActiva: tieneSesionStock,
+  continuarStock,
+  tienePedidoPendiente
+} = require('./stock');
+
+const {
+  procesarFactura
+} = require('./facturas_bot');
+
+const {
+  iniciarViajes,
+  continuarViajes,
+  tieneSesionViajes
+} = require('./viajes');
+
+const {
+  iniciarEstaciones,
+  continuarEstaciones,
+  tieneSesionEstaciones
+} = require('./estaciones');
+
 const panelApi = require('./panel_api');
-const { router: appApi } = require('./app_api');
+
+const {
+  router: appApi
+} = require('./app_api');
+
+
+// ============================================================
+// NUEVO — COST INTELLIGENCE
+// ============================================================
+
+const costIntelligenceApi =
+  require('./cost_intelligence_api');
+
+
 const control = require('./control');
-const { notificarCapataz } = require('./notificar');
+
+const {
+  notificarCapataz
+} = require('./notificar');
+
 const seg = require('./seguridad');
 
-const app  = express();
-// gzip en todo: /api/reparaciones pasa de 249 KB a ~40 KB, y el panel.js de
-// 663 KB a 175 KB. Es lo que más se nota con conexión de celular.
-app.use(compression());
-// Registro de cambios por módulo: cada escritura marca su módulo para que el
-// panel se entere sin recargar cada tanto. Va antes de las rutas.
-app.use(cambios.registrarCambios);
-app.use(express.urlencoded({ extended: false, limit: '25mb' }));
-app.use(express.json({ limit: '25mb' }));
-app.use(seg.headersSeguridad);
 
-// Panel de gestión (login + API + HTML), servido desde el mismo Express.
-app.use('/', appApi);     // PWA del taller y pañol (/app + /api/app/*)
-app.use('/', panelApi);
+// ============================================================
+// EXPRESS
+// ============================================================
+
+const app = express();
+
+
+// gzip en todo: /api/reparaciones pasa de 249 KB a ~40 KB,
+// y el panel.js de 663 KB a 175 KB.
+// Es lo que más se nota con conexión de celular.
+app.use(compression());
+
+
+// Registro de cambios por módulo:
+// cada escritura marca su módulo para que
+// el panel se entere sin recargar cada tanto.
+// Va antes de las rutas.
+app.use(
+  cambios.registrarCambios
+);
+
+
+app.use(
+  express.urlencoded({
+    extended: false,
+    limit: '25mb'
+  })
+);
+
+
+app.use(
+  express.json({
+    limit: '25mb'
+  })
+);
+
+
+app.use(
+  seg.headersSeguridad
+);
+
+
+// ============================================================
+// PANEL DE GESTIÓN
+// ============================================================
+
+// PWA del taller y pañol
+// /app + /api/app/*
+app.use(
+  '/',
+  appApi
+);
+
+
+// ============================================================
+// COST INTELLIGENCE
+//
+// NUEVO
+//
+// Endpoints:
+//
+// /api/cost-intelligence/health
+// /api/cost-intelligence/ejecutar
+// /api/cost-intelligence/snapshot
+// /api/cost-intelligence/baselines
+// /api/cost-intelligence/detectar-anomalias
+// /api/cost-intelligence/resumen
+// /api/cost-intelligence/snapshots
+// /api/cost-intelligence/anomalias
+//
+// ============================================================
+
+app.use(
+  '/api/cost-intelligence',
+  costIntelligenceApi
+);
+
+
+// Panel administrativo existente
+app.use(
+  '/',
+  panelApi
+);
+
+
+// ============================================================
+// TWILIO
+// ============================================================
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Número dedicado a facturas de proveedor (formato: whatsapp:+549...).
-const NUMERO_PROVEEDORES = process.env.TWILIO_NUMERO_PROVEEDORES;
 
-// Disparador de pedidos de insumos: el capataz arranca con "insumos" o "pedido".
-const RE_INSUMOS = /^(insumos|pedido)\b[\s:,\-]*/i;
-// Disparador de stock de maquinaria: el capataz arranca con "stock".
-const RE_STOCK = /^stock\b[\s:,\-]*/i;
-const RE_VIAJES = /^(viaje|viajes|bateas?|odometro|od[oó]metro)\b[\s:,\-]*/i;
+// Número dedicado a facturas de proveedor
+// formato: whatsapp:+549...
+const NUMERO_PROVEEDORES =
+  process.env.TWILIO_NUMERO_PROVEEDORES;
 
-// ¿El texto parece un LISTADO de stock (equipos + números) y no un saludo?
-// Se usa para no confundir un "hola" con la respuesta al censo de stock.
-const SALUDOS = /^(hola|holaa+|buenas|buen d[ií]a|buenos d[ií]as|buenas tardes|buenas noches|hey|ola|q onda|que onda|menu|men[uú]|gracias|ok|dale|listo|si|s[ií]|no|test|prueba)\b/i;
-const RE_EQUIPO = /motoguada|guadaña|motosierra|extensible|soplad|tractor|giro cero|plana|toyota|camioneta|cami[oó]n|atego|hidrogr[uú]a|hidro gr[uú]a|carro|remolque|m[aá]quina|maquina|unidad/i;
-function pareceListadoStock(texto) {
-  const t = (texto || '').trim();
-  if (!t || t.length < 3) return false;
-  // Un saludo/comando corto NUNCA es un listado
-  if (SALUDOS.test(t) && t.length < 25) return false;
-  // Parece listado si menciona un tipo de equipo, o si tiene números de máquina
-  // (patrón "N° 12", "nro 4", o varios números sueltos como "12, 15 y 21").
-  const mencionaEquipo = RE_EQUIPO.test(t);
-  const tieneNumeros = /n[°º]\s*\d+|nro\.?\s*\d+|\b\d+\b.*\b\d+\b/i.test(t);
-  return mencionaEquipo || tieneNumeros;
+
+// Disparador de pedidos de insumos:
+// el capataz arranca con
+// "insumos" o "pedido".
+const RE_INSUMOS =
+  /^(insumos|pedido)\b[\s:,\-]*/i;
+
+
+// Disparador de stock de maquinaria:
+// el capataz arranca con "stock".
+const RE_STOCK =
+  /^stock\b[\s:,\-]*/i;
+
+
+const RE_VIAJES =
+  /^(viaje|viajes|bateas?|odometro|od[oó]metro)\b[\s:,\-]*/i;
+
+
+// ============================================================
+// DETECCIÓN LISTADOS DE STOCK
+// ============================================================
+
+// ¿El texto parece un LISTADO de stock
+// (equipos + números) y no un saludo?
+
+const SALUDOS =
+  /^(hola|holaa+|buenas|buen d[ií]a|buenos d[ií]as|buenas tardes|buenas noches|hey|ola|q onda|que onda|menu|men[uú]|gracias|ok|dale|listo|si|s[ií]|no|test|prueba)\b/i;
+
+
+const RE_EQUIPO =
+  /motoguada|guadaña|motosierra|extensible|soplad|tractor|giro cero|plana|toyota|camioneta|cami[oó]n|atego|hidrogr[uú]a|hidro gr[uú]a|carro|remolque|m[aá]quina|maquina|unidad/i;
+
+
+function pareceListadoStock(
+  texto
+) {
+
+  const t =
+    (texto || '')
+      .trim();
+
+
+  if (
+    !t ||
+    t.length < 3
+  ) {
+
+    return false;
+  }
+
+
+  // Un saludo/comando corto
+  // NUNCA es un listado.
+  if (
+    SALUDOS.test(t) &&
+    t.length < 25
+  ) {
+
+    return false;
+  }
+
+
+  // Parece listado si menciona un tipo de equipo,
+  // o si tiene números de máquina.
+  const mencionaEquipo =
+    RE_EQUIPO.test(t);
+
+
+  const tieneNumeros =
+    /n[°º]\s*\d+|nro\.?\s*\d+|\b\d+\b.*\b\d+\b/i
+      .test(t);
+
+
+  return (
+    mencionaEquipo ||
+    tieneNumeros
+  );
 }
 
-// ── Webhook de Twilio WhatsApp ────────────────────────────────
-app.post('/webhook', async (req, res) => {
-  // Firma de Twilio: rechaza requests que no vengan realmente de Twilio
-  // (nadie puede simular mensajes de capataces posteando al webhook).
-  if (!seg.validarTwilio(req)) {
-    console.warn('[seguridad] webhook rechazado: firma de Twilio inválida');
-    return res.sendStatus(403);
-  }
-  const telefono   = req.body.From;
-  const paraNumero = req.body.To;
-  const mensaje    = req.body.Body || '';
-  const numMedia   = parseInt(req.body.NumMedia || '0', 10);
-  // Ubicación compartida desde WhatsApp (clip → Ubicación). Twilio la manda
-  // en estos campos, no en el Body.
-  const ubicacion  = (req.body.Latitude && req.body.Longitude)
-    ? { lat: req.body.Latitude, lng: req.body.Longitude, etiqueta: req.body.Label || req.body.Address || '' }
-    : null;
 
-  const esProveedores = NUMERO_PROVEEDORES && paraNumero === NUMERO_PROVEEDORES;
+// ============================================================
+// WEBHOOK TWILIO WHATSAPP
+// ============================================================
 
-  // Kill switch: si el PIN venció, el bot no responde nada (salvo a tu propio
-  // número, para no dejarte a ciegas — ese aviso lo maneja el job de abajo).
-  if (!(await control.estaOperativo())) {
-    console.warn('[control] bot bloqueado (PIN vencido) — mensaje ignorado de', telefono);
-    return res.sendStatus(200);   // 200 para que Twilio no reintente
-  }
+app.post(
+  '/webhook',
+  async (req, res) => {
 
-  console.log(`[IN] ${telefono} -> ${paraNumero} ${esProveedores ? '(proveedores)' : '(capataces)'}: ` +
-              `${numMedia > 0 ? `[${numMedia} archivo(s)]` : mensaje}`);
+    // Firma de Twilio:
+    // rechaza requests que no vengan
+    // realmente de Twilio.
+    if (
+      !seg.validarTwilio(req)
+    ) {
 
-  // Twilio espera el 200 como máximo 15 segundos. Interpretar un listado de
-  // 30 máquinas con la IA tarda más que eso, y al no recibir respuesta Twilio
-  // marcaba error y REINTENTABA el mismo mensaje: el listado se procesaba dos
-  // veces. Se contesta 200 ya, y el mensaje se responde por la API de Twilio
-  // cuando esté listo (messages.create no depende de este 200).
-  res.sendStatus(200);
+      console.warn(
+        '[seguridad] webhook rechazado: firma de Twilio inválida'
+      );
 
-  try {
-    let respuesta;
-
-    if (esProveedores) {
-      // ── Flujo FACTURAS DE PROVEEDOR ──
-      if (numMedia > 0) {
-        respuesta = await procesarFactura(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
-      } else {
-        respuesta = 'Hola 👋 Mandá la *factura* como foto o PDF y la registramos automáticamente.';
-      }
-    } else {
-      // ── Flujo CAPATACES (combustible / insumos / incidencias) ──
-      if (numMedia > 0) {
-        // Foto con "oc ..." de alguien de Compras: es una orden de compra
-        // (remito o presupuesto + a qué objetivo va). Si el remitente no es
-        // de compras, devuelve null y la foto sigue como comprobante de
-        // combustible, igual que siempre.
-        if (esPedidoDeOrden(mensaje)) {
-          respuesta = await procesarOrdenFoto(telefono, req.body.MediaUrl0, req.body.MediaContentType0, mensaje);
-        }
-        if (!respuesta) respuesta = await procesarComprobante(telefono, req.body.MediaUrl0, req.body.MediaContentType0);
-      } else if (await tieneSesionCombustible(telefono)) {
-        respuesta = await continuarConversacion(telefono, mensaje);
-      } else if (await tieneSesionInsumos(telefono)) {
-        respuesta = await continuarInsumos(telefono, mensaje);
-      } else if (await tieneSesionStock(telefono)) {
-        respuesta = await continuarStock(telefono, mensaje);
-        // El capataz escribió "menu"/"salir" estando en el flujo de stock:
-        // la sesión ya se borró, lo mandamos al menú de verdad.
-        if (respuesta && respuesta.__derivar === 'menu') {
-          respuesta = await procesarMensaje(telefono, mensaje);
-        }
-      } else if (await tieneSesionEstaciones(telefono)) {
-        respuesta = await continuarEstaciones(telefono, mensaje, ubicacion);
-        if (respuesta && respuesta.__derivar === 'menu') {
-          respuesta = await procesarMensaje(telefono, mensaje);
-        }
-      } else if (await tieneSesionViajes(telefono)) {
-        respuesta = await continuarViajes(telefono, mensaje);
-      } else if (RE_VIAJES.test(mensaje.trim())) {
-        const resto = mensaje.trim().replace(RE_VIAJES, '');
-        respuesta = await iniciarViajes(telefono, resto);
-      } else if (RE_INSUMOS.test(mensaje.trim())) {
-        // Arranca un pedido de insumos; le pasamos lo que escribió después de la palabra
-        const resto = mensaje.trim().replace(RE_INSUMOS, '');
-        respuesta = await iniciarInsumos(telefono, resto);
-      } else if (RE_STOCK.test(mensaje.trim())) {
-        // Arranca el envío de stock; le pasamos lo que escribió después de "stock"
-        const resto = mensaje.trim().replace(RE_STOCK, '');
-        respuesta = await iniciarStock(telefono, resto);
-      } else if (pareceListadoStock(mensaje.trim())
-                 && await tienePedidoPendiente(telefono)) {
-        // Le pedimos el stock y todavía no respondió. Solo tratamos el texto como
-        // listado si REALMENTE parece uno (menciona equipos o números de máquina).
-        // Un "hola" o cualquier saludo NO se toma como listado: va al menú, así el
-        // capataz no queda encerrado en el flujo de stock.
-        respuesta = await iniciarStock(telefono, mensaje.trim());
-      } else {
-        // Menú principal / flujo de incidencias (conversacion.js)
-        respuesta = await procesarMensaje(telefono, mensaje);
-        // Si el capataz eligió "insumos" o "stock" en el menú, arrancamos ese flujo
-        if (respuesta && respuesta.__derivar === 'insumos') {
-          respuesta = await iniciarInsumos(telefono, '');
-        } else if (respuesta && respuesta.__derivar === 'stock') {
-          respuesta = await iniciarStock(telefono, '');
-        } else if (respuesta && respuesta.__derivar === 'viajes') {
-          respuesta = await iniciarViajes(telefono, '');
-        } else if (respuesta && respuesta.__derivar === 'estaciones') {
-          // El capataz puede mandar la ubicación en el mismo mensaje que abre
-          // el flujo: si ya vino, se contesta directo sin pedírsela.
-          respuesta = await iniciarEstaciones(telefono, null);
-          if (ubicacion) respuesta = await continuarEstaciones(telefono, '', ubicacion);
-        }
-      }
+      return res.sendStatus(
+        403
+      );
     }
 
-    console.log(`[OUT] ${telefono}: ${(respuesta || '').slice(0, 80)}...`);
 
-    // WhatsApp corta en 4.096 caracteres. Un listado grande (UCC: 30 tipos
-    // con números) puede pasarse; se manda en partes, cortando en un salto
-    // de línea para no partir un renglón a la mitad.
-    for (const parte of partirMensaje(respuesta)) {
-      await twilioClient.messages.create({
-        from: paraNumero || process.env.TWILIO_WHATSAPP_NUMBER,
-        to:   telefono,
-        body: parte,
-      });
+    const telefono =
+      req.body.From;
+
+
+    const paraNumero =
+      req.body.To;
+
+
+    const mensaje =
+      req.body.Body || '';
+
+
+    const numMedia =
+      parseInt(
+        req.body.NumMedia || '0',
+        10
+      );
+
+
+    // Ubicación compartida desde WhatsApp.
+    const ubicacion =
+      (
+        req.body.Latitude &&
+        req.body.Longitude
+      )
+        ? {
+            lat:
+              req.body.Latitude,
+
+            lng:
+              req.body.Longitude,
+
+            etiqueta:
+              req.body.Label ||
+              req.body.Address ||
+              ''
+          }
+        : null;
+
+
+    const esProveedores =
+      NUMERO_PROVEEDORES &&
+      paraNumero ===
+        NUMERO_PROVEEDORES;
+
+
+    // Kill switch
+    if (
+      !(await control.estaOperativo())
+    ) {
+
+      console.warn(
+        '[control] bot bloqueado (PIN vencido) — mensaje ignorado de',
+        telefono
+      );
+
+
+      // 200 para que Twilio no reintente
+      return res.sendStatus(
+        200
+      );
     }
-  } catch (err) {
-    // El 200 ya se mandó: Twilio no reintenta. Queda el log.
-    console.error('Error en webhook:', err);
-  }
-});
 
-function partirMensaje(texto, max) {
-  const M = max || 3500;
-  const t = String(texto || '');
-  if (t.length <= M) return [t];
+
+    console.log(
+
+      `[IN] ${telefono} -> ${paraNumero} ` +
+
+      `${esProveedores
+        ? '(proveedores)'
+        : '(capataces)'}: ` +
+
+      `${numMedia > 0
+        ? `[${numMedia} archivo(s)]`
+        : mensaje}`
+
+    );
+
+
+    // Twilio espera 200 como máximo 15 segundos.
+    // Respondemos inmediatamente.
+    res.sendStatus(
+      200
+    );
+
+
+    try {
+
+      let respuesta;
+
+
+      // ======================================================
+      // FACTURAS PROVEEDOR
+      // ======================================================
+
+      if (
+        esProveedores
+      ) {
+
+        if (
+          numMedia > 0
+        ) {
+
+          respuesta =
+            await procesarFactura(
+
+              telefono,
+
+              req.body.MediaUrl0,
+
+              req.body.MediaContentType0
+
+            );
+
+        } else {
+
+          respuesta =
+            'Hola 👋 Mandá la *factura* como foto o PDF y la registramos automáticamente.';
+        }
+
+
+      } else {
+
+
+        // ====================================================
+        // CAPATACES
+        // ====================================================
+
+        if (
+          numMedia > 0
+        ) {
+
+
+          // Foto con "oc ..."
+          // de alguien de Compras.
+          if (
+            esPedidoDeOrden(
+              mensaje
+            )
+          ) {
+
+            respuesta =
+              await procesarOrdenFoto(
+
+                telefono,
+
+                req.body.MediaUrl0,
+
+                req.body.MediaContentType0,
+
+                mensaje
+
+              );
+          }
+
+
+          // Si no fue OC,
+          // procesa combustible.
+          if (
+            !respuesta
+          ) {
+
+            respuesta =
+              await procesarComprobante(
+
+                telefono,
+
+                req.body.MediaUrl0,
+
+                req.body.MediaContentType0
+
+              );
+          }
+
+
+        } else if (
+          await tieneSesionCombustible(
+            telefono
+          )
+        ) {
+
+
+          respuesta =
+            await continuarConversacion(
+
+              telefono,
+
+              mensaje
+
+            );
+
+
+        } else if (
+          await tieneSesionInsumos(
+            telefono
+          )
+        ) {
+
+
+          respuesta =
+            await continuarInsumos(
+
+              telefono,
+
+              mensaje
+
+            );
+
+
+        } else if (
+          await tieneSesionStock(
+            telefono
+          )
+        ) {
+
+
+          respuesta =
+            await continuarStock(
+
+              telefono,
+
+              mensaje
+
+            );
+
+
+          // El capataz escribió
+          // menu/salir estando en stock.
+          if (
+            respuesta &&
+            respuesta.__derivar ===
+              'menu'
+          ) {
+
+            respuesta =
+              await procesarMensaje(
+
+                telefono,
+
+                mensaje
+
+              );
+          }
+
+
+        } else if (
+          await tieneSesionEstaciones(
+            telefono
+          )
+        ) {
+
+
+          respuesta =
+            await continuarEstaciones(
+
+              telefono,
+
+              mensaje,
+
+              ubicacion
+
+            );
+
+
+          if (
+            respuesta &&
+            respuesta.__derivar ===
+              'menu'
+          ) {
+
+            respuesta =
+              await procesarMensaje(
+
+                telefono,
+
+                mensaje
+
+              );
+          }
+
+
+        } else if (
+          await tieneSesionViajes(
+            telefono
+          )
+        ) {
+
+
+          respuesta =
+            await continuarViajes(
+
+              telefono,
+
+              mensaje
+
+            );
+
+
+        } else if (
+          RE_VIAJES.test(
+            mensaje.trim()
+          )
+        ) {
+
+
+          const resto =
+            mensaje
+              .trim()
+              .replace(
+                RE_VIAJES,
+                ''
+              );
+
+
+          respuesta =
+            await iniciarViajes(
+
+              telefono,
+
+              resto
+
+            );
+
+
+        } else if (
+          RE_INSUMOS.test(
+            mensaje.trim()
+          )
+        ) {
+
+
+          const resto =
+            mensaje
+              .trim()
+              .replace(
+                RE_INSUMOS,
+                ''
+              );
+
+
+          respuesta =
+            await iniciarInsumos(
+
+              telefono,
+
+              resto
+
+            );
+
+
+        } else if (
+          RE_STOCK.test(
+            mensaje.trim()
+          )
+        ) {
+
+
+          const resto =
+            mensaje
+              .trim()
+              .replace(
+                RE_STOCK,
+                ''
+              );
+
+
+          respuesta =
+            await iniciarStock(
+
+              telefono,
+
+              resto
+
+            );
+
+
+        } else if (
+
+          pareceListadoStock(
+            mensaje.trim()
+          )
+
+          &&
+
+          await tienePedidoPendiente(
+            telefono
+          )
+
+        ) {
+
+
+          respuesta =
+            await iniciarStock(
+
+              telefono,
+
+              mensaje.trim()
+
+            );
+
+
+        } else {
+
+
+          // ==================================================
+          // MENÚ PRINCIPAL / INCIDENCIAS
+          // ==================================================
+
+          respuesta =
+            await procesarMensaje(
+
+              telefono,
+
+              mensaje
+
+            );
+
+
+          // Si eligió insumos
+          if (
+            respuesta &&
+            respuesta.__derivar ===
+              'insumos'
+          ) {
+
+
+            respuesta =
+              await iniciarInsumos(
+
+                telefono,
+
+                ''
+
+              );
+
+
+          // Si eligió stock
+          } else if (
+            respuesta &&
+            respuesta.__derivar ===
+              'stock'
+          ) {
+
+
+            respuesta =
+              await iniciarStock(
+
+                telefono,
+
+                ''
+
+              );
+
+
+          // Si eligió viajes
+          } else if (
+            respuesta &&
+            respuesta.__derivar ===
+              'viajes'
+          ) {
+
+
+            respuesta =
+              await iniciarViajes(
+
+                telefono,
+
+                ''
+
+              );
+
+
+          // Si eligió estaciones
+          } else if (
+            respuesta &&
+            respuesta.__derivar ===
+              'estaciones'
+          ) {
+
+
+            respuesta =
+              await iniciarEstaciones(
+
+                telefono,
+
+                null
+
+              );
+
+
+            if (
+              ubicacion
+            ) {
+
+              respuesta =
+                await continuarEstaciones(
+
+                  telefono,
+
+                  '',
+
+                  ubicacion
+
+                );
+            }
+          }
+        }
+      }
+
+
+      console.log(
+
+        `[OUT] ${telefono}: ` +
+
+        `${(respuesta || '')
+          .slice(
+            0,
+            80
+          )}...`
+
+      );
+
+
+      // WhatsApp corta en 4.096 caracteres.
+      for (
+        const parte of
+        partirMensaje(
+          respuesta
+        )
+      ) {
+
+
+        await twilioClient
+          .messages
+          .create({
+
+            from:
+              paraNumero ||
+              process.env
+                .TWILIO_WHATSAPP_NUMBER,
+
+            to:
+              telefono,
+
+            body:
+              parte
+
+          });
+      }
+
+
+    } catch (err) {
+
+      // El 200 ya se mandó:
+      // Twilio no reintenta.
+      console.error(
+        'Error en webhook:',
+        err
+      );
+
+    }
+  }
+);
+
+
+// ============================================================
+// PARTIR MENSAJE WHATSAPP
+// ============================================================
+
+function partirMensaje(
+  texto,
+  max
+) {
+
+  const M =
+    max || 3500;
+
+
+  const t =
+    String(
+      texto || ''
+    );
+
+
+  if (
+    t.length <= M
+  ) {
+
+    return [
+      t
+    ];
+  }
+
+
   const partes = [];
-  let resto = t;
-  while (resto.length > M) {
-    let corte = resto.lastIndexOf('\n', M);
-    if (corte < M * 0.5) corte = M;     // sin salto razonable: se corta seco
-    partes.push(resto.slice(0, corte).trimEnd());
-    resto = resto.slice(corte).trimStart();
+
+  let resto =
+    t;
+
+
+  while (
+    resto.length > M
+  ) {
+
+    let corte =
+      resto.lastIndexOf(
+        '\n',
+        M
+      );
+
+
+    if (
+      corte < M * 0.5
+    ) {
+
+      corte =
+        M;
+    }
+
+
+    partes.push(
+
+      resto
+        .slice(
+          0,
+          corte
+        )
+        .trimEnd()
+
+    );
+
+
+    resto =
+      resto
+        .slice(
+          corte
+        )
+        .trimStart();
   }
-  if (resto) partes.push(resto);
-  return partes.map((p, i) => partes.length > 1 ? `${p}\n_(${i + 1}/${partes.length})_` : p);
+
+
+  if (
+    resto
+  ) {
+
+    partes.push(
+      resto
+    );
+  }
+
+
+  return partes.map(
+
+    (p, i) =>
+
+      partes.length > 1
+
+        ? `${p}\n_(${i + 1}/${partes.length})_`
+
+        : p
+
+  );
 }
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`EcoService Bot corriendo en puerto ${PORT}`);
-});
+// ============================================================
+// HEALTH
+// ============================================================
 
-// ── Kill switch: chequeo al arrancar + aviso periódico por WhatsApp ──────────
-// Tu número (para el aviso de renovación). Formato: 549351... (sin whatsapp:)
-const ADMIN_TEL = process.env.SYSTEM_ADMIN_TEL;
+app.get(
+  '/health',
+  (req, res) => {
+
+    res.json({
+
+      status:
+        'ok',
+
+      timestamp:
+        new Date()
+          .toISOString()
+
+    });
+  }
+);
+
+
+// ============================================================
+// SERVIDOR
+// ============================================================
+
+const PORT =
+  process.env.PORT ||
+  3000;
+
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `EcoService Bot corriendo en puerto ${PORT}`
+    );
+
+    console.log(
+      '[cost-intelligence] módulo conectado'
+    );
+  }
+);
+
+
+// ============================================================
+// KILL SWITCH
+// ============================================================
+
+// Tu número para el aviso de renovación.
+// Formato:
+// 549351... sin whatsapp:
+const ADMIN_TEL =
+  process.env.SYSTEM_ADMIN_TEL;
+
 
 async function chequearControl() {
+
   try {
-    const st = await control.estado(true);
-    if (!st.activo) return;   // kill switch desactivado (sin SYSTEM_PIN)
-    if (st.bloqueado) {
-      console.warn(`[control] ⛔ SISTEMA BLOQUEADO — PIN vencido. Renová SYSTEM_PIN en Railway.`);
+
+    const st =
+      await control.estado(
+        true
+      );
+
+
+    if (
+      !st.activo
+    ) {
+
+      return;
+    }
+
+
+    if (
+      st.bloqueado
+    ) {
+
+      console.warn(
+        '[control] ⛔ SISTEMA BLOQUEADO — PIN vencido. Renová SYSTEM_PIN en Railway.'
+      );
+
     } else {
-      console.log(`[control] PIN vigente — faltan ${st.dias_restantes} día(s) para el vencimiento.`);
+
+      console.log(
+        `[control] PIN vigente — faltan ${st.dias_restantes} día(s) para el vencimiento.`
+      );
+
     }
-    // Aviso por WhatsApp cuando entra en la ventana de aviso (una vez por día)
-    if (ADMIN_TEL && await control.debeAvisar()) {
-      const ok = await notificarCapataz(ADMIN_TEL,
-        `⚠️ *EcoService — renovación de PIN*\n\n` +
-        `Faltan *${st.dias_restantes} día(s)* para que el sistema se bloquee.\n\n` +
-        `Renová el PIN cambiando la variable *SYSTEM_PIN* en Railway por un valor nuevo y redeployá. ` +
-        `Si no lo hacés, el bot y el panel dejan de funcionar.`);
-      if (ok) await control.marcarAvisoEnviado();
+
+
+    // Aviso por WhatsApp
+    // una vez por día.
+    if (
+
+      ADMIN_TEL
+
+      &&
+
+      await control.debeAvisar()
+
+    ) {
+
+
+      const ok =
+        await notificarCapataz(
+
+          ADMIN_TEL,
+
+          `⚠️ *EcoService — renovación de PIN*\n\n` +
+
+          `Faltan *${st.dias_restantes} día(s)* para que el sistema se bloquee.\n\n` +
+
+          `Renová el PIN cambiando la variable *SYSTEM_PIN* en Railway por un valor nuevo y redeployá. ` +
+
+          `Si no lo hacés, el bot y el panel dejan de funcionar.`
+
+        );
+
+
+      if (
+        ok
+      ) {
+
+        await control
+          .marcarAvisoEnviado();
+      }
     }
+
+
   } catch (e) {
-    console.error('[control] error en chequeo:', e.message || e);
+
+    console.error(
+      '[control] error en chequeo:',
+      e.message || e
+    );
+
   }
 }
 
-// ── Alerta 48hs del circuito de repuestos ────────────────────────────────
-// Pedidos que llevan más de 48hs HÁBILES (lun–vie) sin cambio de estado en
-// las etapas del Referente (pedido / en_cotizacion / cotizado) → un WhatsApp
-// resumen al Referente y a José. Se marca alerta_48_enviada para no repetir
-// hasta el próximo cambio de estado. Teléfonos en la env
-// ALERTA_REPUESTOS_TELEFONOS (coma-separados); sin ella solo loguea.
-function horasHabilesDesde(iso) {
-  let desde = new Date(iso).getTime();
-  const ahora = Date.now();
-  if (!(desde > 0) || desde >= ahora) return 0;
-  let horas = 0;
-  const paso = 60 * 60 * 1000;
-  for (let t = desde; t < ahora; t += paso) {
-    const dia = new Date(t).getUTCDay();          // aprox UTC: alcanza para un umbral de 48hs
-    if (dia !== 0 && dia !== 6) horas++;
+
+// ============================================================
+// ALERTA 48HS CIRCUITO REPUESTOS
+// ============================================================
+
+// Pedidos que llevan más de
+// 48hs HÁBILES sin cambio de estado.
+
+function horasHabilesDesde(
+  iso
+) {
+
+  let desde =
+    new Date(
+      iso
+    ).getTime();
+
+
+  const ahora =
+    Date.now();
+
+
+  if (
+    !(desde > 0) ||
+    desde >= ahora
+  ) {
+
+    return 0;
   }
+
+
+  let horas =
+    0;
+
+
+  const paso =
+    60 * 60 * 1000;
+
+
+  for (
+    let t = desde;
+    t < ahora;
+    t += paso
+  ) {
+
+
+    const dia =
+      new Date(t)
+        .getUTCDay();
+
+
+    if (
+      dia !== 0 &&
+      dia !== 6
+    ) {
+
+      horas++;
+    }
+  }
+
+
   return horas;
 }
+
+
 async function chequearRepuestos48() {
+
   try {
-    const supabase = require('./supabase');
-    const { data: pends } = await supabase.from('repuestos_taller')
-      .select('id, estado, estado_desde, created_at, alerta_48_enviada, items, incidencias(numero_unidad, tipo_equipo)')
-      .in('estado', ['pedido', 'en_cotizacion', 'cotizado']);
-    const vencidos = (pends || []).filter(p => {
-      const desde = p.estado_desde || p.created_at;
-      if (!desde || horasHabilesDesde(desde) < 48) return false;
-      // Ya avisada para ESTE estado (la alerta es posterior al último cambio)
-      return !(p.alerta_48_enviada && new Date(p.alerta_48_enviada) >= new Date(desde));
-    });
-    if (!vencidos.length) return;
-    const lineas = vencidos.slice(0, 8).map(p => {
-      const inc = p.incidencias || {};
-      const it = (p.items || [])[0] || {};
-      return `• ${it.descripcion || 'Repuesto'} — ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} · ${p.estado.replace('_', ' ')}`;
-    }).join('\n');
-    const texto = `⏰ *Repuestos sin movimiento (48hs hábiles)*\n${lineas}${vencidos.length > 8 ? `\n…y ${vencidos.length - 8} más` : ''}\n\nRevisá la cola en la app / panel.`;
-    const tels = String(process.env.ALERTA_REPUESTOS_TELEFONOS || '').split(',').map(t => t.trim()).filter(Boolean);
-    if (tels.length) {
-      const { notificarCapataz } = require('./notificar');
-      for (const t of tels) await notificarCapataz(t, texto);
+
+    const supabase =
+      require('./supabase');
+
+
+    const {
+      data: pends
+    } =
+      await supabase
+        .from(
+          'repuestos_taller'
+        )
+        .select(
+          'id, estado, estado_desde, created_at, alerta_48_enviada, items, incidencias(numero_unidad, tipo_equipo)'
+        )
+        .in(
+          'estado',
+          [
+            'pedido',
+            'en_cotizacion',
+            'cotizado'
+          ]
+        );
+
+
+    const vencidos =
+      (pends || [])
+        .filter(
+          p => {
+
+            const desde =
+              p.estado_desde ||
+              p.created_at;
+
+
+            if (
+
+              !desde
+
+              ||
+
+              horasHabilesDesde(
+                desde
+              ) < 48
+
+            ) {
+
+              return false;
+            }
+
+
+            return !(
+
+              p.alerta_48_enviada
+
+              &&
+
+              new Date(
+                p.alerta_48_enviada
+              ) >=
+              new Date(
+                desde
+              )
+
+            );
+          }
+        );
+
+
+    if (
+      !vencidos.length
+    ) {
+
+      return;
+    }
+
+
+    const lineas =
+      vencidos
+        .slice(
+          0,
+          8
+        )
+        .map(
+          p => {
+
+            const inc =
+              p.incidencias ||
+              {};
+
+
+            const it =
+              (p.items || [])[0] ||
+              {};
+
+
+            return (
+              `• ${it.descripcion || 'Repuesto'} — ` +
+              `${inc.tipo_equipo || ''} ` +
+              `${inc.numero_unidad || ''} · ` +
+              `${p.estado.replace('_', ' ')}`
+            );
+          }
+        )
+        .join(
+          '\n'
+        );
+
+
+    const texto =
+
+      `⏰ *Repuestos sin movimiento (48hs hábiles)*\n` +
+
+      `${lineas}` +
+
+      `${vencidos.length > 8
+        ? `\n…y ${vencidos.length - 8} más`
+        : ''}` +
+
+      `\n\nRevisá la cola en la app / panel.`;
+
+
+    const tels =
+      String(
+        process.env
+          .ALERTA_REPUESTOS_TELEFONOS ||
+        ''
+      )
+        .split(',')
+        .map(
+          t =>
+            t.trim()
+        )
+        .filter(
+          Boolean
+        );
+
+
+    if (
+      tels.length
+    ) {
+
+      const {
+        notificarCapataz
+      } =
+        require('./notificar');
+
+
+      for (
+        const t of tels
+      ) {
+
+        await notificarCapataz(
+          t,
+          texto
+        );
+      }
+
+
     } else {
-      console.log('[repuestos48] ' + vencidos.length + ' pedidos vencidos (sin ALERTA_REPUESTOS_TELEFONOS, solo log)');
+
+
+      console.log(
+        '[repuestos48] ' +
+        vencidos.length +
+        ' pedidos vencidos ' +
+        '(sin ALERTA_REPUESTOS_TELEFONOS, solo log)'
+      );
     }
-    const ahora = new Date().toISOString();
-    for (const p of vencidos) {
-      await supabase.from('repuestos_taller').update({ alerta_48_enviada: ahora }).eq('id', p.id);
+
+
+    const ahora =
+      new Date()
+        .toISOString();
+
+
+    for (
+      const p of vencidos
+    ) {
+
+      await supabase
+        .from(
+          'repuestos_taller'
+        )
+        .update({
+          alerta_48_enviada:
+            ahora
+        })
+        .eq(
+          'id',
+          p.id
+        );
     }
+
+
   } catch (e) {
-    console.error('[repuestos48] error:', e.message || e);
+
+    console.error(
+      '[repuestos48] error:',
+      e.message || e
+    );
   }
 }
-setTimeout(chequearRepuestos48, 90 * 1000);            // al arrancar (con margen)
-setInterval(chequearRepuestos48, 60 * 60 * 1000);      // cada hora
 
-// Recordatorio automático de stock: depósito cada 15 días, privado 1 vez al
-// mes, a las 8 de la mañana y solo en días hábiles. Usa la misma función
-// que el botón "Pedir stock" del panel.
-const { chequearRecordatoriosStock } = require('./stock_recordatorio');
-const { pedirStockObjetivos } = require('./panel_api');
+
+// Al arrancar
+setTimeout(
+  chequearRepuestos48,
+  90 * 1000
+);
+
+
+// Cada hora
+setInterval(
+  chequearRepuestos48,
+  60 * 60 * 1000
+);
+
+
+// ============================================================
+// RECORDATORIO AUTOMÁTICO STOCK
+// ============================================================
+
+// Depósito cada 15 días,
+// privado 1 vez al mes,
+// a las 8 de la mañana
+// y solo en días hábiles.
+
+const {
+  chequearRecordatoriosStock
+} =
+  require(
+    './stock_recordatorio'
+  );
+
+
+const {
+  pedirStockObjetivos
+} =
+  require(
+    './panel_api'
+  );
+
+
 function correrRecordatoriosStock() {
-  if (typeof pedirStockObjetivos !== 'function') {
-    console.error('[stock-auto] pedirStockObjetivos no está disponible');
+
+  if (
+    typeof pedirStockObjetivos !==
+    'function'
+  ) {
+
+    console.error(
+      '[stock-auto] pedirStockObjetivos no está disponible'
+    );
+
     return;
   }
-  chequearRecordatoriosStock(pedirStockObjetivos);
-}
-setTimeout(correrRecordatoriosStock, 3 * 60 * 1000);       // 3 min tras arrancar
-setInterval(correrRecordatoriosStock, 60 * 60 * 1000);     // cada hora
 
-chequearControl();                          // al arrancar
-setInterval(chequearControl, 6 * 60 * 60 * 1000);  // cada 6 horas
+
+  chequearRecordatoriosStock(
+    pedirStockObjetivos
+  );
+}
+
+
+// 3 minutos tras arrancar
+setTimeout(
+  correrRecordatoriosStock,
+  3 * 60 * 1000
+);
+
+
+// Cada hora
+setInterval(
+  correrRecordatoriosStock,
+  60 * 60 * 1000
+);
+
+
+// ============================================================
+// CONTROL
+// ============================================================
+
+chequearControl();
+
+
+// Cada 6 horas
+setInterval(
+  chequearControl,
+  6 * 60 * 60 * 1000
+);
