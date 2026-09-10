@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V3.0 · censo + combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · Cost Intelligence V4 + clasificación de equipos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2751,7 +2751,7 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['general','General'],['desvios','Desvíos'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
+const STOCK_TABS=[['general','General'],['desvios','Desvíos'],['clasificacion','Clasificación'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
 const STOCK_SUB={};   // las subvistas colgaban de Control, que se sacó
 function tabsStk(){
   return `<div class="toggle-imp" style="margin-bottom:16px">
@@ -2766,6 +2766,7 @@ function difStk(d){
 async function vStock(view){
   if(stockTab==='general')return vStockGeneral(view);
   if(stockTab==='desvios')return vStockDesvios(view);
+  if(stockTab==='clasificacion')return vStockClasificacion(view);
   if(stockTab==='panol')return vStockPanol(view);
   if(stockTab==='maquinas')return vMaquinas(view);
   // Control y sus subvistas se sacaron: si quedó guardado el tab viejo en
@@ -2777,6 +2778,116 @@ async function vStock(view){
   return vStockCenso(view);
 }
  
+/* ═══ Stock · Clasificación de equipos ═════════════════════════
+   Qué tiene motor y qué es de pañol. Lo que tiene motor entra a Combustible
+   y a los cálculos de consumo; lo que no, no ensucia nada. El sistema
+   sugiere y José confirma: la sugerencia nunca se auto-confirma, porque una
+   clasificación mal puesta se arrastra a todos los consumos. */
+let clsData=null, clsF={estado:'',familia:'',q:''};
+
+async function vStockClasificacion(view){
+  view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando equipos…</div>';
+  try{clsData=await api('/api/stock/clasificacion');}
+  catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
+  const d=clsData, R=d.resumen||{}, L=d.labels||{}, E=d.emojis||{};
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  let vis=(d.filas||[]).filter(f=>
+    (!clsF.estado||(clsF.estado==='confirmada'?f.origen==='confirmada':clsF.estado==='dudosa'?f.dudosa:f.origen==='sugerida'))
+    &&(!clsF.familia||f.familia_consumo===clsF.familia)
+    &&(!clsF.q||norm(f.tipo_equipo).includes(norm(clsF.q))||f.objetivos.some(o=>norm(o).includes(norm(clsF.q)))));
+  // Agrupado por familia, como pidió José: 2 tiempos, tractores, vehículos… y pañol.
+  const porFam={};
+  vis.forEach(f=>{(porFam[f.familia_consumo]=porFam[f.familia_consumo]||[]).push(f);});
+  const orden=(d.familias||[]);
+
+  const filaHTML=f=>{
+    const sel=(campo,ops,val)=>`<select onchange="clsSet('${escStk(f.tipo_equipo).replace(/'/g,"\\'")}','${campo}',this.value)"
+      style="padding:5px 8px;border:1px solid var(--linea-2);border-radius:7px;font-size:11.5px;font-family:inherit;background:var(--blanco)">
+      ${ops.map(([k,t])=>`<option value="${k}" ${val===k?'selected':''}>${t}</option>`).join('')}</select>`;
+    return `<tr${f.origen==='sugerida'?' style="background:#FFFDF7"':''}>
+      <td><b>${escStk(f.tipo_equipo)}</b>
+        <div class="sub" style="font-size:10.5px">${f.cantidad} equipo${f.cantidad===1?'':'s'} · ${f.n_objetivos} objetivo${f.n_objetivos===1?'':'s'}${f.objetivos.length?': '+escStk(f.objetivos.slice(0,3).join(', '))+(f.objetivos.length>3?'…':''):''}</div></td>
+      <td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" ${f.es_maquinaria?'checked':''}
+        onchange="clsSet('${escStk(f.tipo_equipo).replace(/'/g,"\\'")}','es_maquinaria',this.checked)" style="accent-color:var(--brote);transform:scale(1.2)"></label></td>
+      <td>${f.es_maquinaria?sel('familia_consumo',orden.filter(x=>x!=='panol').map(x=>[x,L[x]||x]),f.familia_consumo):'<span class="sub">—</span>'}</td>
+      <td>${f.es_maquinaria?sel('combustible_habitual',[['','—'],['gasoil','Gasoil'],['super','Súper'],['mixto','Los dos']],f.combustible_habitual||''):'<span class="sub">—</span>'}</td>
+      <td>${f.es_maquinaria?sel('modo_asignacion_combustible',[['individual','Individual'],['grupo','Por grupo']],f.modo_asignacion_combustible||'grupo'):'<span class="sub">—</span>'}</td>
+      <td>${f.origen==='confirmada'
+        ?`<span class="badge b-green">confirmado</span><div class="sub" style="font-size:10px">${escStk(f.confirmado_por||'')}</div>`
+        :f.dudosa?'<span class="badge b-amber">revisar</span>':'<span class="badge b-gray">sugerido</span>'}</td>
+      <td class="tr">${f.origen==='confirmada'?'':`<button class="mini-btn" style="border-color:var(--brote);color:var(--brote-2)" onclick="clsConfirmar('${escStk(f.tipo_equipo).replace(/'/g,"\\'")}')">✓ Confirmar</button>`}</td>
+    </tr>`;};
+
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Clasificación de equipos</div>
+    <div class="view-desc">Qué tiene motor y qué es de pañol. Lo que tiene motor entra a Combustible; lo demás no se cuenta en los consumos.</div></div>
+    <button class="btn" onclick="clsConfirmarTodo()">✓ Confirmar todo lo sugerido</button></div>
+  ${tabsStk()}
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="kpi"><div class="kpi-label">Tipos de equipo</div><div class="kpi-val">${R.tipos||0}</div><div class="kpi-sub">${R.equipos||0} equipos en total</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="clsF.estado=clsF.estado==='confirmada'?'':'confirmada';go('stock')"><div class="kpi-label">Confirmados</div><div class="kpi-val" style="color:var(--brote-2)">${R.confirmados||0}</div><div class="kpi-sub">revisados por una persona</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="clsF.estado=clsF.estado==='sugerida'?'':'sugerida';go('stock')"><div class="kpi-label">Sin confirmar</div><div class="kpi-val" style="color:${R.sugeridos?'var(--diesel)':'inherit'}">${R.sugeridos||0}</div><div class="kpi-sub">los clasificó el sistema</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="clsF.estado=clsF.estado==='dudosa'?'':'dudosa';go('stock')"><div class="kpi-label">A revisar</div><div class="kpi-val" style="color:${R.dudosos?'var(--rojo)':'inherit'}">${R.dudosos||0}</div><div class="kpi-sub">el sistema no supo qué eran</div></div>
+    <div class="kpi"><div class="kpi-label">Con motor</div><div class="kpi-val">${R.con_motor||0}</div><div class="kpi-sub">${R.panol||0} de pañol</div></div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+    <select class="busca" style="width:auto" onchange="clsF.familia=this.value;go('stock')"><option value="">Todas las familias</option>
+      ${orden.map(f=>`<option value="${f}" ${clsF.familia===f?'selected':''}>${(E[f]||'')} ${L[f]||f}</option>`).join('')}</select>
+    <input class="busca" placeholder="Buscar equipo u objetivo…" value="${escStk(clsF.q)}" style="width:220px"
+      oninput="clsF.q=this.value;clearTimeout(window._clsT);window._clsT=setTimeout(()=>{go('stock');setTimeout(()=>{const i=document.querySelector('input[placeholder^=\'Buscar equipo\']');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);},350)">
+    ${(clsF.estado||clsF.familia||clsF.q)?`<button class="btn ghost" style="padding:5px 11px;font-size:11.5px" onclick="clsF={estado:'',familia:'',q:''};go('stock')">✕ Limpiar</button>`:''}
+    <span class="sub">${vis.length} de ${(d.filas||[]).length} tipos</span>
+  </div>
+  ${orden.filter(f=>porFam[f]).map(f=>`
+    <div class="panel" style="margin-bottom:12px;padding:0;overflow:hidden${f==='panol'?';opacity:.85':''}">
+      <div style="padding:11px 16px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:14px">${E[f]||''} ${L[f]||f}</b>
+        <span class="badge ${f==='panol'?'b-gray':'b-green'}">${porFam[f].reduce((s,x)=>s+x.cantidad,0)} equipos · ${porFam[f].length} tipo${porFam[f].length===1?'':'s'}</span></div>
+      <table style="font-size:12.5px"><thead><tr><th>Equipo</th><th style="text-align:center">¿Motor?</th><th>Familia</th><th>Combustible</th><th>Asignación</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${porFam[f].map(filaHTML).join('')}</tbody></table>
+    </div>`).join('')||'<div class="panel"><div class="sub" style="padding:14px">Ningún equipo coincide con el filtro.</div></div>'}
+  <div class="panel" style="margin-top:14px;font-size:12px;color:var(--tinta-2);line-height:1.6">
+    <b>Cómo funciona.</b> El sistema sugiere una clasificación para cada tipo de equipo mirando el nombre. Las filas en amarillo son sugerencias sin confirmar: valen igual para el cálculo, pero conviene revisarlas. Las marcadas <b>a revisar</b> son las que el sistema no supo qué eran y por las dudas mandó a pañol.
+    <div style="margin-top:6px">Destildar <b>¿Motor?</b> manda el equipo a pañol: deja de aparecer en la app del capataz al cargar combustible y deja de contar en los consumos. La clasificación es <b>por tipo de equipo</b>, no por objetivo: una motoguadaña es una motoguadaña en todos lados.</div>
+  </div>`;
+}
+function clsSet(tipo,campo,valor){
+  const f=(clsData.filas||[]).find(x=>x.tipo_equipo===tipo);if(!f)return;
+  f[campo]=valor;
+  if(campo==='es_maquinaria'&&!valor){f.familia_consumo='panol';f.consume_combustible=false;}
+  if(campo==='es_maquinaria'&&valor&&f.familia_consumo==='panol'){f.familia_consumo='otro_motor';f.consume_combustible=true;}
+  clsGuardar(f);
+}
+async function clsGuardar(f){
+  try{
+    await api('/api/stock/clasificacion',{method:'POST',body:JSON.stringify({
+      tipo_equipo:f.tipo_equipo,es_maquinaria:f.es_maquinaria,consume_combustible:f.consume_combustible!==false,
+      familia_consumo:f.familia_consumo,combustible_habitual:f.combustible_habitual,
+      modo_asignacion_combustible:f.modo_asignacion_combustible})});
+    clsData=null;go('stock');
+  }catch(e){toast('No pude guardar: '+e.message,'error');}
+}
+function clsConfirmar(tipo){
+  const f=(clsData.filas||[]).find(x=>x.tipo_equipo===tipo);if(!f)return;
+  clsGuardar(f);
+}
+async function clsConfirmarTodo(){
+  const sug=(clsData.filas||[]).filter(f=>f.origen==='sugerida');
+  if(!sug.length){toast('No hay nada sin confirmar');return;}
+  const dud=sug.filter(f=>f.dudosa).length;
+  if(!await uiConfirm(`Se confirman ${sug.length} tipos con la clasificación que sugirió el sistema.`
+    +(dud?`<br><br><b>Ojo:</b> ${dud} de esos el sistema no supo qué eran y los mandó a pañol. Si alguno tiene motor, va a quedar fuera de los consumos. Conviene revisarlos primero (filtro "A revisar").`:''),
+    '¿Confirmar todo?',{ok:'Confirmar'}))return;
+  let n=0;
+  for(const f of sug){
+    try{await api('/api/stock/clasificacion',{method:'POST',body:JSON.stringify({
+      tipo_equipo:f.tipo_equipo,es_maquinaria:f.es_maquinaria,consume_combustible:f.consume_combustible!==false,
+      familia_consumo:f.familia_consumo,combustible_habitual:f.combustible_habitual,
+      modo_asignacion_combustible:f.modo_asignacion_combustible})});n++;}catch(e){}
+  }
+  toast(`${n} tipos confirmados`);clsData=null;go('stock');
+}
+
 /* ═══ Stock · Desvíos semanales ════════════════════════════════
    Compara la foto de esta semana contra la anterior, por objetivo, cruzada
    con el taller. Todo se calcula en el backend (stock_desvios.js); acá solo
