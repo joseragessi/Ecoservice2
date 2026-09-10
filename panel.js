@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.6 · parque trazable';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.8 · gestión de calidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -559,7 +559,7 @@ function go(v){
   programarAutoRefresh(v);
 }
  
-/* ===== Cost Intelligence · Dashboard gerencial V2.7 ===== */
+/* ===== Cost Intelligence · Dashboard gerencial V2.8 ===== */
 let ciPeriodo=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
 let ciData=null;
  
@@ -688,7 +688,8 @@ function ciRenderSenal(a){
       </div>
       <div class="ci-info-line"><span>↳</span><span>${ciEsc(a.motivo||a.parque_observacion||'No hay un parque suficientemente confiable para evaluar consumo por equipo.')}</span></div>
       ${parque>0&&a.litros_por_equipo!=null?`<div class="ci-info-line"><span>i</span><span>Referencia: ${ciN(a.litros_por_equipo,3)} L/equipo. No genera anomalía porque la confianza del parque es ${ciEsc(conf)}.</span></div>`:''}
-      ${a.objetivo_id?`<div class="ci-alert-actions"><button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button></div>`:''}
+      ${a.reaparecida?`<div class="ci-info-line"><span>↻</span><span>Este problema ya había sido resuelto, pero reapareció en una semana posterior y volvió automáticamente a pendientes.</span></div>`:''}
+      ${a.objetivo_id?`<div class="ci-alert-actions"><button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button><button class="ci-mini-btn" style="border-color:rgba(22,163,74,.28);color:var(--brote-2)" onclick="ciResolverCalidad('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}','${ciEsc(a.periodo)}')">✓ Resolver dato</button></div>`:''}
     </div>`;
   }
  
@@ -726,9 +727,11 @@ function renderCostos(){
   const d=ciData,k=d.kpis||{},sev=d.severidades||{},ev=d.evolucion_semanal||[],signals=d.donde_actuar_hoy||[],objs=d.objetivos||[];
   const historial=d.historico_modelo||{};
   const calidadHist=d.calidad_datos_historico||{};
+  const calidadGestion=d.calidad_gestion||{};
   const maxLit=Math.max(...ev.map(x=>Number(x.litros)||0),1);
   const abiertas=Number(k.alertas_abiertas||0), totalA=Number(k.alertas||0), calidad=Number(k.calidad_datos||0), superadas=Number(k.alertas_superadas_modelo||historial.superadas||0);
   const calidadOcurrencias=Number(k.calidad_datos_ocurrencias_periodo||calidadHist.ocurrencias||calidad), calidadResueltas=Number(k.calidad_datos_resueltas_periodo||calidadHist.resueltas||0);
+  const calidadResueltasGestion=Number(k.calidad_datos_resueltas_gestion||calidadHist.resueltas_gestion||0);
  
   // V2.4: la salud considera anomalías operativas y calidad de datos por separado.
   // Una incidencia de calidad NO se presenta como pérdida económica.
@@ -763,13 +766,18 @@ function renderCostos(){
     ?`<div class="ci-history"><div><b>${superadas} alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} por el modelo</b><div class="sub" style="font-size:11px;margin-top:3px">Se conserva${superadas===1?'':'n'} para auditoría y no afecta${superadas===1?'':'n'} los KPIs ni el impacto vigente.</div></div><span class="ci-tag ci-tag-ok">Auditoría preservada</span></div>`
     :`<div class="ci-history"><div><b>Sin alertas históricas superadas</b><div class="sub" style="font-size:11px;margin-top:3px">El historial del modelo está limpio para este período.</div></div></div>`;
  
+  const revisiones=(calidadGestion.historial||[]).filter(r=>r&&r.estado==='resuelta').slice(0,10);
+  const gestionHtml=revisiones.length
+    ?`<div style="display:grid;gap:8px;margin-top:10px">${revisiones.map(r=>`<div class="ci-history"><div><b>${ciEsc(r.objetivo_nombre||'Objetivo')} · ${ciEsc(ciEtiquetaFamilia(r.familia||'total'))}</b><div class="sub" style="font-size:11px;margin-top:3px">Resuelto por ${ciEsc(r.resuelto_por||r.responsable||'equipo')} · ${ciEsc(r.accion||'Dato revisado')}${r.observacion?` · ${ciEsc(r.observacion)}`:''}</div></div><button class="ci-mini-btn" onclick="ciReabrirCalidad('${ciEsc(r.objetivo_id)}','${ciEsc(r.familia)}')">Reabrir</button></div>`).join('')}</div>`
+    :`<div class="ci-history" style="margin-top:10px"><div><b>Sin incidencias de calidad resueltas manualmente</b><div class="sub" style="font-size:11px;margin-top:3px">Cuando cierres un problema de datos, quedará registrado acá.</div></div></div>`;
+ 
   view.innerHTML=`<div class="ci-wrap">
     <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle">Período analizado: ${ciPeriodoHumano(ciPeriodo)} · inteligencia semanal por objetivo y familia · sólo se calcula consumo por equipo cuando el parque es confiable</div></div>
       <div class="ci-actions"><input class="ci-month" type="month" value="${ciPeriodo}" onchange="ciPeriodo=this.value;vCostos(document.getElementById('view'))"><button class="btn ghost" onclick="vCostos(document.getElementById('view'))">Actualizar</button><button class="btn" onclick="ciRecalcular()">↻ Recalcular inteligencia</button></div></div>
     <div class="ci-kpis">
       <div class="ci-kpi"><div class="ci-kpi-label">Costo controlado</div><div class="ci-kpi-value">${ciMoney(k.costo_controlado)}</div><div class="ci-kpi-sub">${ciN(k.litros_controlados,1)} L · ${ciN(k.objetivos_controlados,0)} objetivos</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Desvíos operativos</div><div class="ci-kpi-value" style="color:${Number(k.desvios_detectados)>0?'var(--rojo)':'var(--brote-2)'}">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">${ciN(totalA,0)} alerta${totalA===1?'':'s'} vigente${totalA===1?'':'s'} · ${ciN(abiertas,0)} sin resolver</div></div>
-      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">${calidad===1?'problema vigente':'problemas vigentes'} · ${calidadOcurrencias} ocurrencias en el período · ${calidadResueltas} resueltas</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">${calidad===1?'problema vigente':'problemas vigentes'} · ${calidadResueltasGestion} resuelta${calidadResueltasGestion===1?'':'s'} por gestión · ${calidadOcurrencias} ocurrencias</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Ahorro validado</div><div class="ci-kpi-value" style="color:var(--brote-2)">${ciMoney(k.ahorro_validado)}</div><div class="ci-kpi-sub">impacto confirmado por el equipo</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Histórico del modelo</div><div class="ci-kpi-value">${ciN(superadas,0)}</div><div class="ci-kpi-sub">alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} conservada${superadas===1?'':'s'} para auditoría</div></div>
     </div>
@@ -785,9 +793,31 @@ function renderCostos(){
       <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Ranking por anomalías y problemas de datos vigentes; no suma incidencias históricas ya corregidas</div></div></div>
         <div style="overflow:auto"><table class="ci-table"><thead><tr><th>Objetivo</th><th>Litros</th><th>Costo</th><th>Alertas</th><th>Datos</th><th>Impacto</th></tr></thead><tbody>${ranking||'<tr><td colspan="6" class="ci-empty">Sin datos</td></tr>'}</tbody></table></div></div>
     </div>
-    <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Trazabilidad del modelo</div><div class="ci-card-sub">Las alertas que una versión posterior explica o supera quedan registradas sin contaminar los indicadores vigentes.</div></div></div>${historicoHtml}</div>
+    <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Trazabilidad y gestión</div><div class="ci-card-sub">Las alertas superadas y las incidencias de calidad resueltas quedan auditadas sin contaminar los indicadores vigentes.</div></div></div>${historicoHtml}${gestionHtml}</div>
   </div>`;
   const cc=document.getElementById('c-costos');if(cc){const pendientes=abiertas+calidad;cc.textContent=pendientes;cc.style.display=pendientes>0?'':'none';}
+}
+ 
+async function ciResolverCalidad(objetivoId,familia,periodo){
+  const senal=(ciData?.calidad_datos||[]).find(x=>String(x.objetivo_id)===String(objetivoId)&&String(x.familia)===String(familia));
+  const nombre=senal?.objetivo_nombre||'Objetivo';
+  const ok=await uiConfirm(`Vas a marcar como revisado el problema de datos de ${nombre} · ${ciEtiquetaFamilia(familia)}. Si vuelve a aparecer en una semana posterior, el sistema lo reabrirá automáticamente.`,{titulo:'Resolver incidencia de datos',ok:'Continuar'});
+  if(!ok)return;
+  const accion=await uiPrompt('¿Qué verificaste o corregiste?','','Acción realizada');if(accion===null)return;
+  if(!String(accion).trim()){toast('Indicá qué se verificó o corrigió','error');return;}
+  const observacion=await uiPrompt('Observación adicional (opcional)','','Observación');if(observacion===null)return;
+  try{
+    await api('/api/costos/calidad/resolver',{method:'POST',body:JSON.stringify({
+      objetivo_id:objetivoId,objetivo_nombre:nombre,familia,periodo,accion:String(accion).trim(),observacion:String(observacion||'').trim()||null,responsable:localStorage.getItem('eco_user')||null
+    })});
+    toast('Incidencia de datos resuelta');
+    await vCostos(document.getElementById('view'));
+  }catch(e){toast(e.message||'No pude resolver la incidencia','error');}
+}
+ 
+async function ciReabrirCalidad(objetivoId,familia){
+  const ok=await uiConfirm('La incidencia volverá a quedar disponible si el problema sigue presente en los datos actuales.',{titulo:'Reabrir incidencia',ok:'Reabrir'});if(!ok)return;
+  try{await api('/api/costos/calidad/reabrir',{method:'POST',body:JSON.stringify({objetivo_id:objetivoId,familia})});toast('Incidencia reabierta');await vCostos(document.getElementById('view'));}catch(e){toast(e.message||'No pude reabrir','error');}
 }
  
 async function ciRecalcular(){
