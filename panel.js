@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.8 · gestión de calidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · Cost Intelligence V3.0 · censo + combustible';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -796,6 +796,97 @@ function renderCostos(){
     <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Trazabilidad y gestión</div><div class="ci-card-sub">Las alertas superadas y las incidencias de calidad resueltas quedan auditadas sin contaminar los indicadores vigentes.</div></div></div>${historicoHtml}${gestionHtml}</div>
   </div>`;
   const cc=document.getElementById('c-costos');if(cc){const pendientes=abiertas+calidad;cc.textContent=pendientes;cc.style.display=pendientes>0?'':'none';}
+}
+ 
+ 
+/* ===== Cost Intelligence V3.0 · Censo + Combustible ===== */
+function ciEstadoLabel(e){return ({completo:'Completo',falta_parque:'Falta parque',falta_combustible:'Falta combustible',faltan_ambos:'Faltan ambos'})[e]||cap(e||'');}
+function ciEstadoColor(e){return e==='completo'?'var(--brote-2)':e==='faltan_ambos'?'var(--rojo)':'var(--diesel)';}
+function ciEstadoBg(e){return e==='completo'?'rgba(22,163,74,.07)':e==='faltan_ambos'?'rgba(220,38,38,.06)':'rgba(245,158,11,.07)';}
+ 
+function ciRenderFaltanteV3(x){
+  const fam=ciEtiquetaFamilia(x.familia);
+  const parque=Number(x.parque||0);
+  const litros=Number(x.litros||0);
+  const estado=x.estado;
+  const titulo=estado==='falta_parque'?'FALTA INFORMACIÓN DE MÁQUINAS':estado==='falta_combustible'?'FALTA INFORMACIÓN DE COMBUSTIBLE':'INFORMACIÓN INSUFICIENTE';
+  const quePaso=estado==='falta_parque'
+    ? `Hay ${ciN(litros,2)} L de combustible clasificado como ${fam.toLowerCase()}, pero el censo no informa equipos de esa familia.`
+    : estado==='falta_combustible'
+      ? `El censo informa ${ciN(parque,0)} equipo${parque===1?'':'s'} de ${fam.toLowerCase()}, pero no hay combustible declarado para esa familia en la semana analizada.`
+      : `No están disponibles a la vez el censo de máquinas y el combustible declarado para esta familia.`;
+  const accion=estado==='falta_parque'
+    ? 'Completar o corregir el censo/parque del objetivo.'
+    : estado==='falta_combustible'
+      ? 'Verificar que la carga de combustible haya sido declarada y asignada al objetivo/familia correcta.'
+      : 'Completar el censo y la declaración de combustible antes de analizar el consumo.';
+  return `<div class="ci-alert calidad">
+    <div class="ci-alert-top">
+      <div><div class="ci-alert-name">${ciEsc(x.objetivo_nombre)} · ${ciEsc(fam)}</div><div class="ci-alert-meta">${ciEsc(titulo)}</div></div>
+      <div class="ci-impact"><b style="color:${ciEstadoColor(estado)}">${ciEsc(ciEstadoLabel(estado))}</b><span>no se calcula desvío</span></div>
+    </div>
+    <div class="ci-metrics" style="grid-template-columns:repeat(3,1fr)">
+      <div class="ci-metric"><span>Máquinas censadas</span><b>${parque>0?ciN(parque,0):'Sin información'}</b></div>
+      <div class="ci-metric"><span>Combustible declarado</span><b>${litros>0?ciN(litros,2)+' L':'Sin información'}</b></div>
+      <div class="ci-metric"><span>Período censo</span><b>${x.censo_periodo?ciPeriodoHumano(x.censo_periodo):'Sin censo'}</b></div>
+    </div>
+    <div class="ci-info-line"><b>Qué pasó:</b>&nbsp;${ciEsc(quePaso)}</div>
+    <div class="ci-info-line" style="background:rgba(245,158,11,.07)"><b>Acción requerida:</b>&nbsp;${ciEsc(accion)}</div>
+    <div class="ci-info-line">El sistema no genera impacto económico hasta contar con censo + combustible.</div>
+  </div>`;
+}
+ 
+function ciRenderCompletoV3(x){
+  const fam=ciEtiquetaFamilia(x.familia);
+  return `<div class="ci-alert" style="border-left-color:var(--brote-2);background:rgba(22,163,74,.025)">
+    <div class="ci-alert-top"><div><div class="ci-alert-name">${ciEsc(x.objetivo_nombre)} · ${ciEsc(fam)}</div><div class="ci-alert-meta">Datos completos · apto para análisis</div></div><div class="ci-impact"><b style="color:var(--brote-2)">Completo</b><span>censo + combustible</span></div></div>
+    <div class="ci-metrics" style="grid-template-columns:repeat(3,1fr)">
+      <div class="ci-metric"><span>Máquinas censadas</span><b>${ciN(x.parque,0)}</b></div>
+      <div class="ci-metric"><span>Combustible declarado</span><b>${ciN(x.litros,2)} L</b></div>
+      <div class="ci-metric"><span>Consumo por equipo</span><b>${x.consumo_por_equipo==null?'—':ciN(x.consumo_por_equipo,3)+' L'}</b></div>
+    </div>
+  </div>`;
+}
+ 
+function renderCostos(){
+  const d=ciData||{}, k=d.kpis||{}, ev=d.evolucion_semanal||[];
+  const ei=d.estado_informacion||{}, er=ei.resumen||{}, rows=ei.objetivos||[], faltantes=ei.faltantes||[];
+  const completas=(ei.detalle||[]).filter(x=>x.estado==='completo');
+  const totalObj=Number(ei.total_objetivos||rows.length||0);
+  const problemas=Number(er.falta_parque||0)+Number(er.falta_combustible||0)+Number(er.faltan_ambos||0);
+  const maxL=Math.max(...ev.map(x=>Number(x.litros)||0),1);
+  const bars=ev.length?ev.map(x=>`<div class="ci-bar-wrap"><div class="ci-bar-val">${ciN(x.litros,0)} L</div><div class="ci-bar" style="height:${Math.max(5,(Number(x.litros)||0)/maxL*120)}px"></div><div class="ci-bar-lab">${ciFechaSemana(x.semana)}</div></div>`).join(''):'<div class="ci-empty">Sin consumo declarado para el período.</div>';
+  const statusCards=[
+    ['completo','Completo',Number(er.completo||0),'Con censo y combustible'],
+    ['falta_parque','Falta parque',Number(er.falta_parque||0),'Hay combustible, falta maquinaria'],
+    ['falta_combustible','Falta combustible',Number(er.falta_combustible||0),'Hay parque, falta declaración'],
+    ['faltan_ambos','Faltan ambos',Number(er.faltan_ambos||0),'Información insuficiente']
+  ].map(([e,l,n,sub])=>`<div class="ci-kpi" style="background:${ciEstadoBg(e)};box-shadow:none"><div class="ci-kpi-label" style="color:${ciEstadoColor(e)}">${l}</div><div class="ci-kpi-value" style="color:${ciEstadoColor(e)}">${n}</div><div class="ci-kpi-sub">${sub}</div></div>`).join('');
+  const actuar=(d.donde_actuar_hoy||[]).filter(x=>x.tipo==='faltante_informacion').slice(0,12).map(ciRenderFaltanteV3).join('')||'<div class="ci-empty"><b>Información completa.</b><br>No hay faltantes de censo o combustible en las familias evaluadas.</div>';
+  const ranking=rows.sort((a,b)=>{
+    const pr={faltan_ambos:0,falta_parque:1,falta_combustible:2,completo:3};
+    return (pr[a.estado]??9)-(pr[b.estado]??9)||String(a.objetivo_nombre||'').localeCompare(String(b.objetivo_nombre||''));
+  }).map(o=>`<tr><td><b>${ciEsc(o.objetivo_nombre)}</b><div class="sub">${(o.familias||[]).length} familias evaluadas</div></td><td><span class="ci-tag" style="background:${ciEstadoBg(o.estado)};color:${ciEstadoColor(o.estado)};border-color:transparent">${ciEsc(ciEstadoLabel(o.estado))}</span></td><td class="mono">${ciN(o.litros||0,1)} L</td><td>${o.censo_periodo?ciPeriodoHumano(o.censo_periodo):'<span class="sub">Sin censo</span>'}</td></tr>`).join('');
+  const detalleCompleto=completas.slice(0,8).map(ciRenderCompletoV3).join('');
+ 
+  const view=document.getElementById('view');
+  view.innerHTML=`<div class="ci-wrap">
+    <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle"><b>Regla V3.0:</b> primero cruza el censo de máquinas con el combustible declarado. Si falta alguno, se muestra como información faltante. Sólo con ambos datos completos se calculan consumos y posibles desvíos.</div></div>
+      <div class="ci-actions"><input class="ci-month" type="month" value="${ciPeriodo}" onchange="ciPeriodo=this.value;vCostos(document.getElementById('view'))"><button class="btn" onclick="vCostos(document.getElementById('view'))">Actualizar</button><button class="btn primary" onclick="ciRecalcular()">↻ Recalcular inteligencia</button></div></div>
+    <div class="ci-kpis">
+      <div class="ci-kpi"><div class="ci-kpi-label">Costo controlado</div><div class="ci-kpi-value">${ciMoney(k.costo_controlado)}</div><div class="ci-kpi-sub">${ciN(k.litros_controlados,1)} L · ${totalObj} objetivos</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Desvíos operativos</div><div class="ci-kpi-value" style="color:var(--brote-2)">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">Sólo familias con censo + combustible</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Información faltante</div><div class="ci-kpi-value" style="color:var(--diesel)">${faltantes.length}</div><div class="ci-kpi-sub">No genera pérdida económica</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Objetivos completos</div><div class="ci-kpi-value" style="color:var(--brote-2)">${Number(er.completo||0)}</div><div class="ci-kpi-sub">de ${totalObj} objetivos evaluados</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Histórico del modelo</div><div class="ci-kpi-value">${Number(k.alertas_superadas_modelo||0)}</div><div class="ci-kpi-sub">Alertas superadas conservadas</div></div>
+    </div>
+    <div class="ci-card" style="margin-bottom:14px"><div class="ci-card-head"><div><div class="ci-card-title">Estado de información por objetivo</div><div class="ci-card-sub">Antes de evaluar consumo, verificamos que exista censo de máquinas y combustible declarado.</div></div><div style="margin-left:auto" class="sub">Total de objetivos: ${totalObj}</div></div><div class="ci-kpis" style="grid-template-columns:repeat(4,1fr);margin:0">${statusCards}</div></div>
+    <div class="ci-grid"><div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Consumo semanal declarado</div><div class="ci-card-sub">Litros totales registrados; no implica desvío por sí solo.</div></div></div><div class="ci-chart">${bars}</div></div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Regla del sistema</div><div class="ci-card-sub">Lectura simple y estricta.</div></div></div><div style="display:grid;gap:9px"><div class="ci-info-line"><b style="color:var(--brote-2)">Completo:</b>&nbsp;censo + combustible → se analiza.</div><div class="ci-info-line"><b style="color:var(--diesel)">Falta parque:</b>&nbsp;hay combustible → completar máquinas.</div><div class="ci-info-line"><b style="color:var(--diesel)">Falta combustible:</b>&nbsp;hay máquinas → completar declaración.</div><div class="ci-info-line"><b style="color:var(--rojo)">Faltan ambos:</b>&nbsp;información insuficiente.</div></div></div></div>
+    <div class="ci-grid" style="grid-template-columns:minmax(0,1.35fr) minmax(360px,1fr)"><div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Dónde actuar hoy</div><div class="ci-card-sub">Sólo faltantes concretos de información. No se muestran como pérdidas.</div></div></div>${actuar}</div><div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Estado simple del cruce entre censo y combustible.</div></div></div><div style="overflow:auto"><table class="ci-table"><thead><tr><th>Objetivo</th><th>Estado</th><th>Litros</th><th>Censo</th></tr></thead><tbody>${ranking||'<tr><td colspan="4" class="ci-empty">Sin datos</td></tr>'}</tbody></table></div></div></div>
+    ${detalleCompleto?`<div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Familias con información completa</div><div class="ci-card-sub">Ejemplos donde el sistema sí puede calcular consumo por equipo.</div></div></div>${detalleCompleto}</div>`:''}
+  </div>`;
+  const cc=document.getElementById('c-costos');if(cc){cc.textContent=problemas;cc.style.display=problemas>0?'':'none';}
 }
  
 async function ciResolverCalidad(objetivoId,familia,periodo){
