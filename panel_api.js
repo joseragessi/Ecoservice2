@@ -2114,6 +2114,113 @@ router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'No pude hacer el backfill: ' + (err.message || '') }); }
 });
  
+// ── CLASIFICACIÓN DE EQUIPOS (Cost Intelligence V4) ───────────
+// Qué tiene motor y qué es de pañol, por tipo de equipo. Lo que tiene motor
+// entra a Combustible; lo que no, no ensucia ningún cálculo de consumo.
+// La sugerencia automática se muestra ya marcada; José confirma o corrige.
+const EQC = require('./equipos_clasificacion');
+
+router.get('/api/stock/clasificacion', auth, async (req, res) => {
+  try {
+    const [invRes, censosRes, objsRes] = await Promise.all([
+      supabase.from('stock_objetivo').select('*'),
+      supabase.from('censos_stock').select('objetivo_id, periodo, estado, censos_stock_items(tipo_equipo, cantidad)')
+        .eq('estado', 'respondido').order('periodo', { ascending: false }).limit(400),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true),
+    ]);
+    const objN = {}; (objsRes.data || []).forEach(o => { objN[o.id] = o.nombre; });
+    // Un tipo de equipo puede estar en varios objetivos escrito igual: se
+    // clasifica UNA vez por tipo, no por objetivo. Si estuviera por objetivo
+    // habría que confirmar la misma motoguadaña 50 veces.
+    const tipos = {};
+    const sumar = (tipo, objetivoId, cant, fuente) => {
+      const k = EQC.norm(tipo);
+      if (!k) return;
+      const e = tipos[k] || (tipos[k] = { clave: k, tipo_equipo: tipo, cantidad: 0, objetivos: new Set(), filas: [], fuentes: new Set() });
+      e.cantidad += Number(cant) || 0;
+      if (objetivoId) e.objetivos.add(objN[objetivoId] || objetivoId);
+      e.fuentes.add(fuente);
+    };
+    (invRes.data || []).forEach(f => { sumar(f.tipo_equipo, f.objetivo_id, f.cantidad, 'inventario'); const k = EQC.norm(f.tipo_equipo); if (tipos[k]) tipos[k].filas.push(f); });
+    // Del censo solo el más reciente de cada objetivo.
+    const visto = new Set();
+    (censosRes.data || []).forEach(c => {
+      if (visto.has(c.objetivo_id)) return;
+      visto.add(c.objetivo_id);
+      (c.censos_stock_items || []).forEach(i => sumar(i.tipo_equipo, c.objetivo_id, i.cantidad, 'censo'));
+    });
+
+    const filas = Object.values(tipos).map(e => {
+      // Si alguna fila del inventario ya está confirmada, esa manda.
+      const conf = e.filas.find(f => f.clasificacion_confirmada);
+      const cl = EQC.clasificacionEfectiva(conf || { tipo_equipo: e.tipo_equipo });
+      return {
+        clave: e.clave, tipo_equipo: e.tipo_equipo, cantidad: e.cantidad,
+        objetivos: [...e.objetivos].sort(), n_objetivos: e.objetivos.size,
+        fuentes: [...e.fuentes],
+        ...cl,
+        confirmado_por: conf ? conf.clasificado_por : null,
+        confirmado_at: conf ? conf.clasificado_at : null,
+        ids: e.filas.map(f => f.id),
+      };
+    }).sort((a, b) => b.cantidad - a.cantidad);
+
+    const resumen = filas.reduce((s, f) => {
+      s.tipos++;
+      s.equipos += f.cantidad;
+      if (f.origen === 'confirmada') s.confirmados++;
+      else { s.sugeridos++; if (f.dudosa) s.dudosos++; }
+      if (f.es_maquinaria) { s.con_motor += f.cantidad; } else { s.panol += f.cantidad; }
+      return s;
+    }, { tipos: 0, equipos: 0, confirmados: 0, sugeridos: 0, dudosos: 0, con_motor: 0, panol: 0 });
+    res.json({ filas, resumen, familias: EQC.FAMILIAS, labels: EQC.LABEL_FAMILIA_V4, emojis: EQC.EMOJI_FAMILIA });
+  } catch (err) {
+    console.error('stock clasificacion:', err);
+    res.status(500).json({ error: 'No pude armar la clasificación: ' + (err.message || '') });
+  }
+});
+
+// Confirmar o corregir la clasificación de un tipo de equipo. Se aplica a
+// TODAS las filas del inventario con ese mismo tipo; si el tipo solo existe
+// en censos y no en el inventario, se crea la fila para poder guardarlo.
+router.post('/api/stock/clasificacion', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const tipo = String(b.tipo_equipo || '').trim();
+    if (!tipo) return res.status(400).json({ error: 'Falta el tipo de equipo' });
+    const esMaq = b.es_maquinaria !== false;
+    const patch = {
+      es_maquinaria: esMaq,
+      // Si no es maquinaria, no consume: se fuerza para que no queden
+      // combinaciones imposibles guardadas.
+      consume_combustible: esMaq ? b.consume_combustible !== false : false,
+      familia_consumo: esMaq ? (b.familia_consumo || null) : 'panol',
+      combustible_habitual: esMaq ? (b.combustible_habitual || null) : null,
+      modo_asignacion_combustible: esMaq ? (b.modo_asignacion_combustible || null) : null,
+      clasificacion_confirmada: true,
+      clasificado_por: req.usuario || null,
+      clasificado_at: new Date().toISOString(),
+    };
+    const { data: filas } = await supabase.from('stock_objetivo').select('id, tipo_equipo');
+    const ids = (filas || []).filter(f => EQC.norm(f.tipo_equipo) === EQC.norm(tipo)).map(f => f.id);
+    if (ids.length) {
+      const { error } = await supabase.from('stock_objetivo').update(patch).in('id', ids);
+      if (error) throw error;
+    } else {
+      // El tipo existe solo en censos: se guarda una fila de clasificación
+      // sin objetivo, que es la que después se consulta por tipo.
+      const { error } = await supabase.from('stock_objetivo')
+        .insert({ tipo_equipo: tipo, cantidad: 0, origen: 'clasificacion', ...patch });
+      if (error) throw error;
+    }
+    console.log(`[clasificacion] ${tipo} → ${esMaq ? patch.familia_consumo : 'PAÑOL'} por ${req.usuario || '?'} (${ids.length || 1} filas)`);
+    res.json({ ok: true, filas: ids.length || 1 });
+  } catch (err) {
+    console.error('clasificacion guardar:', err);
+    res.status(500).json({ error: 'No pude guardar: ' + (err.message || '') });
+  }
+});
+
 // ── Editar una carga completa ─────────────────────────────────
 // Hasta ahora una carga solo se podía anular: si el bot leía mal un dato había
 // que anularla y cargarla de nuevo a mano. Acá se edita cabecera e ítems.
