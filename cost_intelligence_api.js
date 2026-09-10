@@ -1,7 +1,7 @@
 // ============================================================
 // COST INTELLIGENCE API
 // Ecoservice
-// V1.2
+// V1.3
 // ============================================================
 
 const express = require('express');
@@ -16,7 +16,6 @@ const router = express.Router();
 
 // ============================================================
 // AUTENTICACIÓN
-// Usa el mismo PANEL_SECRET que panel_api.js
 // ============================================================
 
 const SECRET = process.env.PANEL_SECRET;
@@ -145,14 +144,19 @@ async function auth(req, res, next) {
 // ============================================================
 
 function numero(v) {
+
   const n = Number(v);
+
   return Number.isFinite(n)
     ? n
     : 0;
 }
 
 
-function redondear(v, decimales = 2) {
+function redondear(
+  v,
+  decimales = 2
+) {
 
   const p =
     10 ** decimales;
@@ -178,7 +182,29 @@ function periodoValido(valor) {
 
 
 function fechaPeriodo(periodo) {
+
   return `${periodo}-01`;
+}
+
+
+// ============================================================
+// OBTENER SEMANAS DE UN MES
+// ============================================================
+
+function semanasPeriodo(periodo) {
+
+  if (
+    typeof costIntelligence
+      .semanasDelMes === 'function'
+  ) {
+
+    return costIntelligence
+      .semanasDelMes(periodo);
+  }
+
+  return [
+    `${periodo}-01`
+  ];
 }
 
 
@@ -192,8 +218,10 @@ router.get(
 
     res.json({
       ok: true,
-      modulo: 'Cost Intelligence',
-      version: '1.2.0',
+      modulo:
+        'Cost Intelligence',
+      version:
+        '1.3.0',
       timestamp:
         new Date().toISOString()
     });
@@ -318,7 +346,7 @@ router.post(
           ? Number(
               req.body.ventanas
             )
-          : 6;
+          : 8;
 
       const resultado =
         await costIntelligence
@@ -415,8 +443,10 @@ router.get(
           req.query?.periodo
         );
 
-      const fecha =
-        fechaPeriodo(periodo);
+      const semanas =
+        semanasPeriodo(
+          periodo
+        );
 
       const [
         snapshotsResult,
@@ -428,16 +458,20 @@ router.get(
             .from('cost_snapshots')
             .select('*')
             .eq(
+              'granularidad',
+              'semanal'
+            )
+            .in(
               'periodo',
-              fecha
+              semanas
             ),
 
           supabase
             .from('cost_anomalies')
             .select('*')
-            .eq(
+            .in(
               'periodo',
-              fecha
+              semanas
             )
             .order(
               'impacto_estimado',
@@ -545,6 +579,11 @@ router.get(
 
         periodo,
 
+        granularidad:
+          'semanal',
+
+        semanas,
+
         kpis: {
 
           costo_controlado:
@@ -578,7 +617,6 @@ router.get(
 
           alertas:
             anomalies.length
-
         },
 
         donde_actuar_hoy:
@@ -652,6 +690,17 @@ router.get(
           );
       }
 
+      if (
+        req.query.granularidad
+      ) {
+
+        query =
+          query.eq(
+            'granularidad',
+            req.query.granularidad
+          );
+      }
+
       const {
         data,
         error
@@ -666,7 +715,8 @@ router.get(
 
       return res.json({
         ok: true,
-        data: data || []
+        data:
+          data || []
       });
 
     } catch (error) {
@@ -733,6 +783,17 @@ router.get(
           );
       }
 
+      if (
+        req.query.granularidad
+      ) {
+
+        query =
+          query.eq(
+            'granularidad',
+            req.query.granularidad
+          );
+      }
+
       const {
         data,
         error
@@ -747,7 +808,8 @@ router.get(
 
       return res.json({
         ok: true,
-        data: data || []
+        data:
+          data || []
       });
 
     } catch (error) {
@@ -796,10 +858,20 @@ router.get(
         req.query.periodo
       ) {
 
+        const periodo =
+          periodoValido(
+            req.query.periodo
+          );
+
+        const semanas =
+          semanasPeriodo(
+            periodo
+          );
+
         query =
-          query.eq(
+          query.in(
             'periodo',
-            `${req.query.periodo}-01`
+            semanas
           );
       }
 
@@ -839,7 +911,8 @@ router.get(
 
       return res.json({
         ok: true,
-        data: data || []
+        data:
+          data || []
       });
 
     } catch (error) {
@@ -1044,7 +1117,8 @@ router.get(
 
       return res.json({
         ok: true,
-        modo: 'test',
+        modo:
+          'test',
         ...resultado
       });
 
@@ -1069,7 +1143,8 @@ router.get(
 
 
 // ============================================================
-// TEST TEMPORAL - VER ANOMALÍAS
+// TEST TEMPORAL - VER ANOMALÍAS DEL MES
+// CORREGIDO PARA SEMANAS
 // ============================================================
 
 router.get(
@@ -1098,8 +1173,10 @@ router.get(
           });
       }
 
-      const fecha =
-        `${periodo}-01`;
+      const semanas =
+        semanasPeriodo(
+          periodo
+        );
 
       const {
         data,
@@ -1108,9 +1185,15 @@ router.get(
         await supabase
           .from('cost_anomalies')
           .select('*')
-          .eq(
+          .in(
             'periodo',
-            fecha
+            semanas
+          )
+          .order(
+            'periodo',
+            {
+              ascending: true
+            }
           )
           .order(
             'impacto_estimado',
@@ -1124,15 +1207,29 @@ router.get(
       }
 
       return res.json({
+
         ok: true,
+
         periodo,
+
+        granularidad:
+          'semanal',
+
+        semanas,
+
         cantidad:
           (data || []).length,
+
         anomalias:
           data || []
       });
 
     } catch (error) {
+
+      console.error(
+        '[cost-intelligence-test-anomalias]',
+        error
+      );
 
       return res
         .status(500)
@@ -1148,13 +1245,7 @@ router.get(
 
 
 // ============================================================
-// NUEVO TEST TEMPORAL - TOP DESVÍOS
-//
-// No exige que superen 15%.
-// Sirve para validar el cerebro.
-//
-// URL:
-// /api/cost-intelligence/test-desvios/2026-09
+// TEST TEMPORAL - TOP DESVÍOS
 // ============================================================
 
 router.get(
@@ -1183,75 +1274,50 @@ router.get(
           });
       }
 
-      const fecha =
-        `${periodo}-01`;
+      const semanas =
+        semanasPeriodo(
+          periodo
+        );
 
-      const [
-        snapshotsRes,
-        baselinesRes
-      ] =
-        await Promise.all([
+      const {
+        data: snapshots,
+        error
+      } =
+        await supabase
+          .from('cost_snapshots')
+          .select('*')
+          .eq(
+            'granularidad',
+            'semanal'
+          )
+          .in(
+            'periodo',
+            semanas
+          )
+          .order(
+            'periodo',
+            {
+              ascending: true
+            }
+          );
 
-          supabase
-            .from('cost_snapshots')
-            .select('*')
-            .eq(
-              'periodo',
-              fecha
-            ),
-
-          supabase
-            .from('cost_baselines')
-            .select('*')
-            .eq(
-              'granularidad',
-              'mensual'
-            )
-        ]);
-
-      if (
-        snapshotsRes.error
-      ) {
-        throw snapshotsRes.error;
+      if (error) {
+        throw error;
       }
 
-      if (
-        baselinesRes.error
-      ) {
-        throw baselinesRes.error;
-      }
-
-      const snapshots =
-        snapshotsRes.data || [];
-
-      const baselines =
-        baselinesRes.data || [];
-
-      const mapaBaselines = {};
+      const resultados = [];
 
       for (
-        const b of baselines
-      ) {
-
-        mapaBaselines[
-          `${b.objetivo_id}::${b.familia}`
-        ] = b;
-      }
-
-      const filas = [];
-
-      for (
-        const s of snapshots
+        const snapshot of
+        snapshots || []
       ) {
 
         const nombre =
           String(
-            s.objetivo_nombre ||
+            snapshot.objetivo_nombre ||
             ''
           ).toLowerCase();
 
-        // Depósito no participa
-        // de comparación operativa.
         if (
           nombre.includes(
             'deposito'
@@ -1263,65 +1329,180 @@ router.get(
           continue;
         }
 
-        const baseline =
-          mapaBaselines[
-            `${s.objetivo_id}::${s.familia}`
-          ];
-
-        if (!baseline) {
-          continue;
-        }
-
         if (
-          numero(
-            baseline.muestras
-          ) < 1
+          snapshot.familia ===
+            'bidones' ||
+          snapshot.familia ===
+            'unidades'
         ) {
           continue;
         }
+
+        const historicoDesde =
+          costIntelligence
+            .inicioSemana(
+              new Date(
+                new Date(
+                  `${snapshot.periodo}T00:00:00Z`
+                ).getTime() -
+                8 *
+                7 *
+                24 *
+                60 *
+                60 *
+                1000
+              )
+                .toISOString()
+                .slice(
+                  0,
+                  10
+                )
+            );
+
+        const {
+          data: historico,
+          error:
+            historicoError
+        } =
+          await supabase
+            .from('cost_snapshots')
+            .select('*')
+            .eq(
+              'granularidad',
+              'semanal'
+            )
+            .eq(
+              'objetivo_id',
+              snapshot.objetivo_id
+            )
+            .eq(
+              'familia',
+              snapshot.familia
+            )
+            .gte(
+              'periodo',
+              historicoDesde
+            )
+            .lt(
+              'periodo',
+              snapshot.periodo
+            )
+            .order(
+              'periodo',
+              {
+                ascending: true
+              }
+            );
+
+        if (
+          historicoError
+        ) {
+          throw historicoError;
+        }
+
+        const filas =
+          historico || [];
+
+        if (
+          !filas.length
+        ) {
+          continue;
+        }
+
+        const usarPorEquipo =
+          snapshot
+            .litros_por_equipo != null &&
+          numero(
+            snapshot.parque_familia
+          ) > 0;
+
+        let serie;
+
+        let real;
 
         let metrica;
-        let real;
-        let esperado;
 
         if (
-          s.litros_por_equipo != null &&
-          baseline.consumo_por_equipo_base != null &&
-          numero(
-            s.parque_familia
-          ) > 0
+          usarPorEquipo
         ) {
+
+          serie =
+            filas
+              .map(
+                x =>
+                  numero(
+                    x.litros_por_equipo
+                  )
+              )
+              .filter(
+                x =>
+                  x > 0
+              );
+
+          real =
+            numero(
+              snapshot.litros_por_equipo
+            );
 
           metrica =
             'litros_por_equipo';
 
+        } else {
+
+          serie =
+            filas
+              .map(
+                x =>
+                  numero(
+                    x.litros
+                  )
+              )
+              .filter(
+                x =>
+                  x > 0
+              );
+
           real =
             numero(
-              s.litros_por_equipo
+              snapshot.litros
             );
-
-          esperado =
-            numero(
-              baseline
-                .consumo_por_equipo_base
-            );
-
-        } else {
 
           metrica =
             'litros';
-
-          real =
-            numero(
-              s.litros
-            );
-
-          esperado =
-            numero(
-              baseline
-                .consumo_base
-            );
         }
+
+        if (
+          !serie.length
+        ) {
+          continue;
+        }
+
+        const ordenada =
+          [...serie]
+            .sort(
+              (a, b) =>
+                a - b
+            );
+
+        const mitad =
+          Math.floor(
+            ordenada.length /
+            2
+          );
+
+        const esperado =
+          ordenada.length % 2
+            ? ordenada[
+                mitad
+              ]
+            : (
+                ordenada[
+                  mitad - 1
+                ] +
+                ordenada[
+                  mitad
+                ]
+              ) / 2;
 
         if (
           esperado <= 0
@@ -1329,12 +1510,11 @@ router.get(
           continue;
         }
 
-        const diferencia =
-          real -
-          esperado;
-
         const desvioPct =
-          diferencia /
+          (
+            real -
+            esperado
+          ) /
           esperado *
           100;
 
@@ -1348,7 +1528,7 @@ router.get(
           litrosEsperados =
             esperado *
             numero(
-              s.parque_familia
+              snapshot.parque_familia
             );
 
         } else {
@@ -1357,43 +1537,37 @@ router.get(
             esperado;
         }
 
-        const litrosDiferencia =
+        const diferenciaLitros =
           numero(
-            s.litros
+            snapshot.litros
           ) -
           litrosEsperados;
 
         const precioPromedio =
           numero(
-            s.litros
+            snapshot.litros
           ) > 0
             ? numero(
-                s.importe
+                snapshot.importe
               ) /
               numero(
-                s.litros
+                snapshot.litros
               )
             : 0;
 
-        const impactoEstimado =
-          litrosDiferencia *
-          precioPromedio;
+        resultados.push({
 
-        filas.push({
+          semana:
+            snapshot.periodo,
 
           objetivo:
-            s.objetivo_nombre,
-
-          objetivo_id:
-            s.objetivo_id,
+            snapshot.objetivo_nombre,
 
           familia:
-            s.familia,
+            snapshot.familia,
 
           muestras_historicas:
-            numero(
-              baseline.muestras
-            ),
+            serie.length,
 
           metrica,
 
@@ -1417,7 +1591,7 @@ router.get(
 
           litros_reales:
             redondear(
-              s.litros,
+              snapshot.litros,
               2
             ),
 
@@ -1429,14 +1603,14 @@ router.get(
 
           diferencia_litros:
             redondear(
-              litrosDiferencia,
+              diferenciaLitros,
               2
             ),
 
           importe_real:
             Math.round(
               numero(
-                s.importe
+                snapshot.importe
               )
             ),
 
@@ -1448,17 +1622,16 @@ router.get(
 
           impacto_estimado:
             Math.round(
-              impactoEstimado
-            ),
-
-          parque:
-            numero(
-              s.parque_familia
+              Math.max(
+                0,
+                diferenciaLitros
+              ) *
+              precioPromedio
             )
         });
       }
 
-      filas.sort(
+      resultados.sort(
         (a, b) =>
           b.desvio_pct -
           a.desvio_pct
@@ -1470,13 +1643,18 @@ router.get(
 
         periodo,
 
+        granularidad:
+          'semanal',
+
+        semanas,
+
         cantidad:
-          filas.length,
+          resultados.length,
 
         top_desvios:
-          filas.slice(
+          resultados.slice(
             0,
-            20
+            30
           )
       });
 
