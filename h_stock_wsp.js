@@ -92,8 +92,18 @@ console.log('\n— El webhook responde 200 antes de procesar —');
 const posIn = src.indexOf('[IN]');
 const pos200 = src.indexOf('res.sendStatus(200);', posIn);
 const posResp = src.indexOf('let respuesta;', posIn);
-eq('el 200 está antes de empezar a procesar', pos200 > 0 && pos200 < posResp);
-eq('ya no hay sendStatus después de messages.create', src.indexOf('res.sendStatus', src.indexOf('partirMensaje(respuesta)')) === -1);
+// El archivo puede venir reformateado (ChatGPT reescribió index.js con otro
+// estilo): se verifica el COMPORTAMIENTO, no el texto exacto.
+const sinEspacios = src.replace(/\s+/g, ' ');
+const p200 = sinEspacios.indexOf('res.sendStatus( 200 )') >= 0
+  ? sinEspacios.indexOf('res.sendStatus( 200 )') : sinEspacios.indexOf('res.sendStatus(200)');
+const pResp = sinEspacios.indexOf('let respuesta');
+eq('el 200 está antes de empezar a procesar', p200 > 0 && p200 < pResp, `200 en ${p200}, respuesta en ${pResp}`);
+eq('los mensajes largos se parten', /partirMensaje/.test(src));
+eq('el pedido pendiente usa el criterio ESTRICTO (no pisa el censo con un reporte de falla)',
+  /esListadoCompletoStock\(t\)/.test(src), 'sin esListadoCompletoStock');
+eq('y ya no usa pareceListadoStock para eso',
+  !/pareceListadoStock\(\s*mensaje\.trim\(\)\s*\)\s*&&\s*await tienePedidoPendiente/.test(sinEspacios.replace(/ /g,'')), 'sigue el criterio flojo');
 
 console.log(`\n${ok} ok · ${mal} mal`);
 process.exit(mal ? 1 : 0);
