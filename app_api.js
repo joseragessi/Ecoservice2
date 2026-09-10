@@ -79,6 +79,61 @@ function usuariosPanol() {
   return map;
 }
 
+// ¿Este usuario todavía no tiene contraseña? Se consulta ANTES de pedirla,
+// para mandarlo a crearla en vez de rebotarlo con "usuario o clave
+// incorrectos". El capataz recibe por WhatsApp el link y su usuario; la
+// contraseña la elige él la primera vez que entra (decisión 10-sep: no se
+// manda ninguna clave por WhatsApp, queda escrita en el chat para siempre).
+router.post('/api/app/primer-ingreso', async (req, res) => {
+  try {
+    const usuario = String((req.body || {}).usuario || '').trim();
+    if (!usuario) return res.status(400).json({ error: 'Falta el usuario' });
+    if (seg.loginBloqueado(req, usuario)) return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' });
+    const [mec, cap] = await Promise.all([
+      supabase.from('mecanicos').select('id, nombre, clave_hash, activo').ilike('usuario', usuario).maybeSingle(),
+      supabase.from('capataces').select('id, nombre, clave_hash, activo').ilike('usuario', usuario).maybeSingle(),
+    ]);
+    const u = (mec.data && mec.data.activo) ? mec.data : (cap.data && cap.data.activo) ? cap.data : null;
+    // No se dice si el usuario existe o no: eso sirve para adivinar usuarios.
+    // Solo se dice si HAY que crear clave, que es lo único que cambia la pantalla.
+    if (!u) return res.json({ existe: false, crear: false });
+    return res.json({ existe: true, crear: !u.clave_hash, nombre: u.clave_hash ? null : u.nombre });
+  } catch (err) {
+    console.error('primer ingreso:', err);
+    res.status(500).json({ error: 'Error verificando el usuario' });
+  }
+});
+
+// Crear la contraseña la primera vez. Solo funciona si el usuario NO tiene
+// una: no sirve para cambiar la de alguien que ya entró.
+router.post('/api/app/crear-clave', async (req, res) => {
+  try {
+    const usuario = String((req.body || {}).usuario || '').trim();
+    const clave = String((req.body || {}).clave || '');
+    if (!usuario || !clave) return res.status(400).json({ error: 'Faltan usuario y clave' });
+    if (clave.length < 4) return res.status(400).json({ error: 'La clave necesita al menos 4 caracteres' });
+    if (seg.loginBloqueado(req, usuario)) return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' });
+    for (const tabla of ['mecanicos', 'capataces']) {
+      const { data: u } = await supabase.from(tabla)
+        .select('id, clave_hash, activo').ilike('usuario', usuario).maybeSingle();
+      if (!u || !u.activo) continue;
+      if (u.clave_hash) {
+        seg.loginFallido(req, usuario);
+        return res.status(409).json({ error: 'Este usuario ya tiene contraseña. Si no la recordás, pedila a Logística.' });
+      }
+      const { error } = await supabase.from(tabla).update({ clave_hash: hashClave(clave) }).eq('id', u.id);
+      if (error) throw error;
+      console.log(`[app] ${usuario} creó su contraseña (${tabla})`);
+      return res.json({ ok: true });
+    }
+    seg.loginFallido(req, usuario);
+    res.status(404).json({ error: 'No encontré ese usuario. Revisá que esté bien escrito.' });
+  } catch (err) {
+    console.error('crear clave:', err);
+    res.status(500).json({ error: 'Error creando la contraseña' });
+  }
+});
+
 router.post('/api/app/login', async (req, res) => {
   try {
     const usuario = String((req.body || {}).usuario || '').trim();
