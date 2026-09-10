@@ -1425,6 +1425,147 @@ router.post('/api/app/supervisor/maquinaria/ingreso', authApp(ROLES_MOV), async 
 // unidad y cuántos a bidones — sin elegir objetivo.
 
 // Leer el remito (idéntico al del supervisor)
+// ── COST INTELLIGENCE V4 · destinos reales de combustible ──────
+// El capataz ya no elige "unidad o bidón": elige la MÁQUINA de su objetivo.
+// Para poder ofrecerle esa lista hace falta el censo del período; sin censo
+// no se puede saber a qué máquina fue el combustible, así que se bloquea la
+// carga y se le ofrece cargar el stock desde la misma app.
+
+const EQ = require('./equipos_clasificacion');
+
+// El período de censo vigente (mismo criterio que el resto del sistema).
+function periodoCensoActual() {
+  const hoy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Cordoba' }));
+  return `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Trae el censo del objetivo: el del período si existe, y el último
+// respondido como base para precargar la pantalla de stock.
+async function censoDeObjetivo(objetivoId) {
+  const periodo = periodoCensoActual();
+  const { data } = await supabase.from('censos_stock')
+    .select('id, periodo, estado, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+    .eq('objetivo_id', objetivoId).order('periodo', { ascending: false }).limit(12);
+  const lista = data || [];
+  const delPeriodo = lista.find(c => c.periodo === periodo && c.estado === 'respondido') || null;
+  const ultimo = lista.find(c => c.estado === 'respondido') || null;
+  return { periodo, actual: delPeriodo, ultimo, hay: !!delPeriodo };
+}
+
+// Qué máquinas puede elegir el capataz. Sale del censo del período, con la
+// clasificación del inventario oficial y las unidades de la flota.
+router.get('/api/app/capataz/combustible/destinos', authApp('capataz'), async (req, res) => {
+  try {
+    const objetivoId = req.app_user.objetivo_id || null;
+    if (!objetivoId) return res.json({ ok: false, motivo: 'sin_objetivo', destinos: [], grupos: [] });
+    const [censo, invRes, uniRes] = await Promise.all([
+      censoDeObjetivo(objetivoId),
+      supabase.from('stock_objetivo').select('*').eq('objetivo_id', objetivoId),
+      supabase.from('unidades').select('id, codigo, patente, marca_modelo, objetivo_id').eq('activo', true),
+    ]);
+    // Unidades del objetivo + la del capataz, si tiene una asignada.
+    const unidades = (uniRes.data || []).filter(u => u.objetivo_id === objetivoId
+      || (req.app_user.unidad_id && u.id === req.app_user.unidad_id));
+    const items = censo.hay ? (censo.actual.censos_stock_items || []) : [];
+    const destinos = EQ.armarDestinos(items, invRes.data || [], unidades, { producto: req.query.producto || null });
+    res.json({
+      ok: true,
+      objetivo: { id: objetivoId, nombre: req.app_user.objetivo_nombre || null },
+      censo: { periodo: censo.periodo, hay: censo.hay,
+        respondido_at: censo.actual ? censo.actual.respondido_at : null,
+        ultimo_periodo: censo.ultimo ? censo.ultimo.periodo : null },
+      destinos, grupos: EQ.agruparDestinos(destinos),
+    });
+  } catch (err) {
+    console.error('capataz destinos:', err);
+    res.status(500).json({ error: 'No pude cargar tus máquinas' });
+  }
+});
+
+// Lo que el capataz ve al entrar a "Stock de máquinas": lo que tiene cargado
+// este mes, o lo del último censo como base para confirmar.
+router.get('/api/app/capataz/stock', authApp('capataz'), async (req, res) => {
+  try {
+    const objetivoId = req.app_user.objetivo_id || null;
+    if (!objetivoId) return res.status(400).json({ error: 'No tenés objetivo asignado' });
+    const [censo, invRes] = await Promise.all([
+      censoDeObjetivo(objetivoId),
+      supabase.from('stock_objetivo').select('*').eq('objetivo_id', objetivoId),
+    ]);
+    const base = censo.actual || censo.ultimo;
+    const items = (base ? base.censos_stock_items || [] : []).map(i => ({
+      tipo_equipo: i.tipo_equipo, cantidad: Number(i.cantidad) || 0,
+      numeros: i.numeros || [], observacion: i.observacion || null,
+      clasificacion: EQ.clasificacionEfectiva(
+        (invRes.data || []).find(f => EQ.norm(f.tipo_equipo) === EQ.norm(i.tipo_equipo)) || { tipo_equipo: i.tipo_equipo }),
+    }));
+    res.json({
+      objetivo: { id: objetivoId, nombre: req.app_user.objetivo_nombre || null },
+      periodo: censo.periodo, confirmado: censo.hay,
+      base_periodo: base ? base.periodo : null,
+      es_del_periodo: !!(base && base.periodo === censo.periodo),
+      items, grupos: EQ.agruparDestinos(EQ.armarDestinos(items, invRes.data || [], [])),
+    });
+  } catch (err) {
+    console.error('capataz stock:', err);
+    res.status(500).json({ error: 'No pude cargar tus máquinas' });
+  }
+});
+
+// El capataz confirma o corrige su stock desde la app. Guarda el censo del
+// período y la foto semanal, igual que si lo hubiera respondido por WhatsApp.
+router.post('/api/app/capataz/stock', authApp('capataz'), async (req, res) => {
+  try {
+    const objetivoId = req.app_user.objetivo_id || null;
+    if (!objetivoId) return res.status(400).json({ error: 'No tenés objetivo asignado' });
+    const b = req.body || {};
+    const items = (Array.isArray(b.items) ? b.items : [])
+      .map(i => ({
+        tipo_equipo: String(i.tipo_equipo || '').trim(),
+        cantidad: Math.max(0, parseInt(i.cantidad) || 0),
+        numeros: Array.isArray(i.numeros) ? i.numeros.map(n => String(n).trim()).filter(Boolean) : [],
+        observacion: i.observacion ? String(i.observacion).trim() : null,
+      }))
+      .filter(i => i.tipo_equipo && i.cantidad > 0);
+    if (!items.length) return res.status(400).json({ error: 'Cargá al menos una máquina' });
+
+    const periodo = periodoCensoActual();
+    let censoId;
+    const { data: ya } = await supabase.from('censos_stock')
+      .select('id').eq('objetivo_id', objetivoId).eq('periodo', periodo).maybeSingle();
+    const ahora = new Date().toISOString();
+    if (ya) {
+      censoId = ya.id;
+      await supabase.from('censos_stock').update({ estado: 'respondido', respondido_at: ahora, capataz_id: req.app_user.cid || null }).eq('id', censoId);
+      await supabase.from('censos_stock_items').delete().eq('censo_id', censoId);
+    } else {
+      const { data: nuevo, error } = await supabase.from('censos_stock')
+        .insert({ objetivo_id: objetivoId, periodo, estado: 'respondido', respondido_at: ahora,
+          origen: 'app_capataz', capataz_id: req.app_user.cid || null })
+        .select('id').single();
+      if (error || !nuevo) throw (error || new Error('no se creó el censo'));
+      censoId = nuevo.id;
+    }
+    const { error: eI } = await supabase.from('censos_stock_items')
+      .insert(items.map(i => ({ censo_id: censoId, ...i })));
+    if (eI) throw eI;
+
+    // Foto semanal, para los desvíos.
+    try {
+      const { guardarFotoSemanal } = require('./stock');
+      await guardarFotoSemanal(objetivoId, censoId, items.map(i => ({ tipo: i.tipo_equipo, ...i })),
+        { id: req.app_user.cid, nombre: req.app_user.nombre }, 'app_capataz');
+    } catch (e) { console.error('[stock] foto desde app:', e.message); }
+
+    const total = items.reduce((s, i) => s + i.cantidad, 0);
+    console.log(`[stock app] ${req.app_user.nombre || '?'} · ${req.app_user.objetivo_nombre || objetivoId} · ${periodo} · ${items.length} tipos, ${total} equipos`);
+    res.json({ ok: true, periodo, tipos: items.length, equipos: total });
+  } catch (err) {
+    console.error('capataz stock guardar:', err);
+    res.status(500).json({ error: 'No pude guardar tus máquinas: ' + (err.message || '') });
+  }
+});
+
 router.post('/api/app/capataz/combustible/leer', authApp('capataz'), async (req, res) => {
   try {
     const { fileData, fileType } = req.body || {};
@@ -1447,6 +1588,9 @@ router.post('/api/app/capataz/combustible/leer', authApp('capataz'), async (req,
       // El capataz ve a dónde va (su objetivo y unidad), no los elige
       objetivo_nombre: req.app_user.objetivo_nombre || null,
       patente: req.app_user.patente || null,
+      // Productos tal como los leyó el OCR, para poder filtrar los destinos
+      // por combustible en la pantalla de reparto.
+      productos: (datos.items || []).map(i => ({ producto: i.producto, litros: Number(i.litros) || 0 })),
     });
   } catch (err) {
     console.error('capataz combustible leer:', err);
@@ -1462,6 +1606,17 @@ router.post('/api/app/capataz/combustible', authApp('capataz'), async (req, res)
     if (!repartos.length) return res.status(400).json({ error: 'No hay litros para cargar' });
 
     const objetivoId = req.app_user.objetivo_id || null;
+    // BLOQUEO V4: sin censo del período no se sabe qué máquinas hay, y sin
+    // eso el combustible no se puede imputar a nada. Se frena acá también,
+    // no solo en la pantalla: la app puede estar cacheada.
+    // BLOQUEO_STOCK_COMBUSTIBLE=off en Railway lo desactiva si hay que
+    // sacarlo de apuro sin desplegar.
+    if (objetivoId && String(process.env.BLOQUEO_STOCK_COMBUSTIBLE || 'on').toLowerCase() !== 'off') {
+      const censo = await censoDeObjetivo(objetivoId);
+      if (!censo.hay) {
+        return res.status(409).json({ error: 'Primero cargá tus máquinas del mes', sin_censo: true, periodo: censo.periodo });
+      }
+    }
     const objetivoNom = req.app_user.objetivo_nombre || null;
     const unidadId = req.app_user.unidad_id || null;
 
@@ -1501,17 +1656,33 @@ router.post('/api/app/capataz/combustible', authApp('capataz'), async (req, res)
       ' · fecha ' + fechaValida(d.fecha) + ' · objetivo ' + (objetivoId || 'NINGUNO') +
       ' · unidad ' + (unidadId || 'ninguna') + ' · ' + litrosTotal + ' lt');
 
-    const items = repartos.map(r => ({
-      carga_id: carga.id,
-      producto: r.tipo === 'super' ? 'SUPER' : 'GASOIL',
-      es_combustible: true,
-      litros: Number(r.litros),
-      destino: r.destino === 'bidon' ? 'bidon' : 'unidad',
-      // Los bidones del capataz caen a SU objetivo; la unidad al tanque
-      objetivo_id: r.destino === 'bidon' ? objetivoId : null,
-      unidad_id: r.destino === 'bidon' ? null : unidadId,
-      destino_detalle: r.destino === 'bidon' ? objetivoNom : null,
-    }));
+    // Cada reparto guarda la máquina REAL que declaró el capataz (V4) y, en
+    // paralelo, las columnas viejas (destino unidad/bidón) para que todo lo
+    // que ya lee combustible siga funcionando sin cambios.
+    const items = repartos.map(r => {
+      const esUnidad = r.destino_tipo === 'unidad' || (!r.destino_tipo && r.destino !== 'bidon');
+      return {
+        carga_id: carga.id,
+        producto: r.tipo === 'super' ? 'SUPER' : 'GASOIL',
+        es_combustible: true,
+        litros: Number(r.litros),
+        // Compatibilidad: 'unidad' si va al tanque de un vehículo, 'bidon' si
+        // va a máquinas del objetivo (que es como se cargaba antes).
+        destino: esUnidad ? 'unidad' : 'bidon',
+        objetivo_id: esUnidad ? null : objetivoId,
+        unidad_id: esUnidad ? (r.unidad_id || unidadId) : null,
+        destino_detalle: esUnidad ? null : (r.destino_nombre || objetivoNom),
+        // ── V4: el destino declarado ──
+        destino_tipo: r.destino_tipo || (esUnidad ? 'unidad' : 'grupo_maquinas'),
+        destino_codigo: r.destino_codigo || null,
+        destino_nombre: r.destino_nombre || null,
+        familia_consumo: r.familia || null,
+        asignacion_origen: 'capataz_app',
+        asignacion_estado: 'completa',
+        asignado_por: req.app_user.nombre || null,
+        asignado_at: new Date().toISOString(),
+      };
+    });
     await supabase.from('cargas_combustible_items').insert(items);
     res.json({ ok: true, id: carga.id });
   } catch (err) {
