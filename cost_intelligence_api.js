@@ -1257,5 +1257,79 @@ router.post(
 // ============================================================
 // EXPORT
 // ============================================================
+// ============================================================
+// TEST TEMPORAL DESDE NAVEGADOR
+//
+// Ejemplo:
+// /api/cost-intelligence/test/2026-09
+//
+// IMPORTANTE:
+// Esta ruta es solo para pruebas iniciales.
+// Después la eliminamos.
+// ============================================================
 
+router.get(
+  '/test/:periodo',
+  async (req, res) => {
+
+    try {
+
+      const periodo =
+        String(
+          req.params.periodo || ''
+        );
+
+
+      if (
+        !/^\d{4}-\d{2}$/.test(periodo)
+      ) {
+
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              'Periodo inválido. Usá formato YYYY-MM'
+          });
+      }
+
+
+      console.log(
+        `[cost-intelligence-test] ejecutando ${periodo}`
+      );
+
+
+      const resultado =
+        await costIntelligence
+          .ejecutarCostIntelligence(
+            periodo
+          );
+
+
+      return res.json({
+        ok: true,
+        modo: 'test',
+        ...resultado
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        '[cost-intelligence-test] error:',
+        error
+      );
+
+
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            error.message ||
+            'Error ejecutando Cost Intelligence'
+        });
+    }
+  }
+);
 module.exports = router;
