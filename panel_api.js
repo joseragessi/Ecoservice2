@@ -299,9 +299,23 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
     // por un censo actual probablemente incompleto, tampoco se permite interpretar
     // litros/equipo como desvío económico. El dashboard muestra la fuente, período y
     // confianza del denominador para que el usuario sepa exactamente de dónde salió.
-    const calidadDatos = [];
+    // V2.7: "Calidad de datos" representa problemas VIGENTES, no la suma
+    // de ocurrencias semanales históricas. Para cada objetivo + familia se toma
+    // únicamente el snapshot más reciente del período seleccionado.
+    // Así una incidencia que existió al inicio del mes pero luego se corrigió no
+    // sigue inflando el KPI ni el ranking gerencial.
+    const claveFamilia = x => `${x.objetivo_id || x.objetivo_nombre || 'sin_objetivo'}|${x.familia}`;
+    const ultimoSnapshotFamilia = new Map();
     for (const x of familiasOperativas) {
-      if (ciNum(x.litros) <= 0) continue;
+      const k = claveFamilia(x);
+      const previo = ultimoSnapshotFamilia.get(k);
+      if (!previo || String(x.periodo || '').localeCompare(String(previo.periodo || '')) > 0) {
+        ultimoSnapshotFamilia.set(k, x);
+      }
+    }
+ 
+    function señalCalidadDesdeSnapshot(x) {
+      if (!x || ciNum(x.litros) <= 0) return null;
  
       const parque = ciNum(x.parque_familia);
       const origen = String(x.parque_origen || '');
@@ -309,16 +323,17 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       const observacion = String(x.parque_observacion || '').trim();
  
       const sinParque = parque <= 0;
+      const censoIncompleto = origen.includes('incompleto');
       const parqueNoConfiable =
         confianza === 'baja' ||
-        origen.includes('incompleto') ||
+        censoIncompleto ||
         origen === 'sin_dato_familia';
  
-      if (!sinParque && !parqueNoConfiable) continue;
+      if (!sinParque && !parqueNoConfiable) return null;
  
-      const censoIncompleto = origen.includes('incompleto');
-      calidadDatos.push({
+      return {
         tipo: 'calidad_datos',
+        vigente: true,
         periodo: x.periodo,
         objetivo_id: x.objetivo_id,
         objetivo_nombre: x.objetivo_nombre,
@@ -335,22 +350,30 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         titulo: censoIncompleto
           ? 'Censo probablemente incompleto'
           : sinParque
-            ? 'Sin parque confiable para la familia'
-            : 'Revisar confiabilidad del parque',
+            ? 'Parque de la familia no informado'
+            : 'Parque de referencia con baja confianza',
         motivo: observacion || (sinParque
-          ? 'Hay consumo clasificado en la familia pero no existe un parque temporal confiable para calcular litros por equipo.'
-          : 'El parque utilizado es sólo una referencia y tiene confianza baja; no se usa para afirmar un desvío económico.'),
-      });
+          ? 'Hay consumo clasificado en esta familia, pero el censo consultado no informa un parque válido para calcular litros por equipo.'
+          : 'El parque disponible es sólo una referencia de baja confianza. Se muestra para trazabilidad, pero no se usa para afirmar un desvío económico.'),
+      };
     }
  
-    // Evita duplicados de calidad por objetivo/semana/familia.
-    const mapaCalidad = new Map();
-    for (const x of calidadDatos) {
-      const k = `${x.periodo}|${x.objetivo_id || x.objetivo_nombre}|${x.familia}`;
-      mapaCalidad.set(k, x);
-    }
-    const calidadUnica = [...mapaCalidad.values()]
-      .sort((a,b) => b.periodo.localeCompare(a.periodo));
+    const calidadUnica = [...ultimoSnapshotFamilia.values()]
+      .map(señalCalidadDesdeSnapshot)
+      .filter(Boolean)
+      .sort((a,b) => b.periodo.localeCompare(a.periodo) ||
+        String(a.objetivo_nombre || '').localeCompare(String(b.objetivo_nombre || '')));
+ 
+    // Auditoría: contamos las ocurrencias semanales de calidad por separado,
+    // sin mezclarlas con los problemas vigentes del KPI.
+    const calidadHistorica = familiasOperativas
+      .map(señalCalidadDesdeSnapshot)
+      .filter(Boolean);
+ 
+    const clavesVigentes = new Set(calidadUnica.map(claveFamilia));
+    const clavesHistoricas = new Set(calidadHistorica.map(claveFamilia));
+    const calidadResueltaEnPeriodo = [...clavesHistoricas]
+      .filter(k => !clavesVigentes.has(k)).length;
  
     // Evolución semanal: sólo familia total, para no duplicar bidones/unidades/familias.
     const porSemana = {};
@@ -421,7 +444,7 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
  
     res.json({
       ok:true,
-      version:'dashboard-costos-2.6',
+      version:'dashboard-costos-2.7',
       motor_version:'2.6',
       periodo,
       granularidad:'semanal',
@@ -436,6 +459,8 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         alertas:anomalias.length,
         alertas_abiertas:abiertas.length,
         calidad_datos:calidadUnica.length,
+        calidad_datos_ocurrencias_periodo:calidadHistorica.length,
+        calidad_datos_resueltas_periodo:calidadResueltaEnPeriodo,
         alertas_superadas_modelo:superadasModelo.length,
       },
       severidades,
@@ -443,6 +468,10 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       objetivos,
       donde_actuar_hoy:dondeActuarHoy,
       calidad_datos:calidadUnica,
+      calidad_datos_historico:{
+        ocurrencias:calidadHistorica.length,
+        resueltas:calidadResueltaEnPeriodo,
+      },
       historico_modelo:{
         superadas:superadasModelo.length,
         detalle:superadasModelo.slice(0,20),
