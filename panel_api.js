@@ -2132,16 +2132,24 @@ router.get('/api/stock/clasificacion', auth, async (req, res) => {
     // Un tipo de equipo puede estar en varios objetivos escrito igual: se
     // clasifica UNA vez por tipo, no por objetivo. Si estuviera por objetivo
     // habría que confirmar la misma motoguadaña 50 veces.
+    // Se agrupa por TIPO CANÓNICO, con la marca separada: "Motoguadaña",
+    // "motoguadañas echo" y "motoguadañ Sthil 291" son el mismo tipo con
+    // distinta marca. Antes eran tres filas y el consumo quedaba partido.
     const tipos = {};
-    const sumar = (tipo, objetivoId, cant, fuente) => {
-      const k = EQC.norm(tipo);
+    const sumar = (tipoOriginal, objetivoId, cant, fuente) => {
+      const sep = EQC.separarMarca(tipoOriginal);
+      const k = EQC.norm(sep.tipo);
       if (!k) return;
-      const e = tipos[k] || (tipos[k] = { clave: k, tipo_equipo: tipo, cantidad: 0, objetivos: new Set(), filas: [], fuentes: new Set() });
+      const e = tipos[k] || (tipos[k] = { clave: k, tipo_equipo: sep.tipo, cantidad: 0,
+        objetivos: new Set(), filas: [], fuentes: new Set(), marcas: {}, variantes: new Set() });
       e.cantidad += Number(cant) || 0;
       if (objetivoId) e.objetivos.add(objN[objetivoId] || objetivoId);
       e.fuentes.add(fuente);
+      if (sep.marca) e.marcas[sep.marca] = (e.marcas[sep.marca] || 0) + (Number(cant) || 0);
+      if (EQC.norm(tipoOriginal) !== k) e.variantes.add(tipoOriginal);
     };
-    (invRes.data || []).forEach(f => { sumar(f.tipo_equipo, f.objetivo_id, f.cantidad, 'inventario'); const k = EQC.norm(f.tipo_equipo); if (tipos[k]) tipos[k].filas.push(f); });
+    (invRes.data || []).forEach(f => { sumar(f.tipo_equipo, f.objetivo_id, f.cantidad, 'inventario');
+      const k = EQC.norm(EQC.separarMarca(f.tipo_equipo).tipo); if (tipos[k]) tipos[k].filas.push(f); });
     // Del censo solo el más reciente de cada objetivo.
     const visto = new Set();
     (censosRes.data || []).forEach(c => {
@@ -2158,6 +2166,10 @@ router.get('/api/stock/clasificacion', auth, async (req, res) => {
         clave: e.clave, tipo_equipo: e.tipo_equipo, cantidad: e.cantidad,
         objetivos: [...e.objetivos].sort(), n_objetivos: e.objetivos.size,
         fuentes: [...e.fuentes],
+        // Marcas con su cantidad, y los nombres tal como los escribió el
+        // capataz: sirve para ver qué se agrupó bajo este tipo.
+        marcas: Object.entries(e.marcas).sort((a, b) => b[1] - a[1]).map(([m, c]) => ({ marca: m, cantidad: c })),
+        variantes: [...e.variantes].sort(),
         ...cl,
         confirmado_por: conf ? conf.clasificado_por : null,
         confirmado_at: conf ? conf.clasificado_at : null,
@@ -2201,8 +2213,11 @@ router.post('/api/stock/clasificacion', auth, async (req, res) => {
       clasificado_por: req.usuario || null,
       clasificado_at: new Date().toISOString(),
     };
+    // Se aplica a todas las variantes del mismo tipo: confirmar
+    // "Motoguadaña" alcanza para "motoguadañas echo" y "motoguadañ Sthil 291".
     const { data: filas } = await supabase.from('stock_objetivo').select('id, tipo_equipo');
-    const ids = (filas || []).filter(f => EQC.norm(f.tipo_equipo) === EQC.norm(tipo)).map(f => f.id);
+    const kTipo = EQC.norm(EQC.separarMarca(tipo).tipo);
+    const ids = (filas || []).filter(f => EQC.norm(EQC.separarMarca(f.tipo_equipo).tipo) === kTipo).map(f => f.id);
     if (ids.length) {
       const { error } = await supabase.from('stock_objetivo').update(patch).in('id', ids);
       if (error) throw error;
