@@ -262,7 +262,7 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
  
     const [snapRes, anomRes] = await Promise.all([
       supabase.from('cost_snapshots')
-        .select('id,periodo,objetivo_id,objetivo_nombre,familia,litros,importe,parque_total,parque_motor,parque_familia,litros_por_equipo,cantidad_cargas')
+        .select('id,periodo,objetivo_id,objetivo_nombre,familia,litros,importe,parque_total,parque_motor,parque_familia,litros_por_equipo,cantidad_cargas,parque_origen,parque_periodo,parque_confianza,parque_censo_id,parque_observacion')
         .eq('granularidad', 'semanal')
         .in('periodo', semanas),
       supabase.from('cost_anomalies')
@@ -294,13 +294,29 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
     const sinExplicar = abiertas.reduce((s,x) => s + ciNum(x.impacto_estimado), 0);
     const ahorroValidado = anomaliasTodas.reduce((s,x) => s + ciNum(x.ahorro_validado), 0);
  
-    // Calidad de parque visible directamente en snapshots.
-    // Un registro de familia operativa con consumo pero sin parque no se transforma
-    // en anomalía de consumo/equipo: se marca como incidencia de calidad de datos.
+    // V2.6: calidad del parque no significa solamente "parque = 0".
+    // Si el motor pudo recuperar un parque anterior, pero lo marcó con confianza baja
+    // por un censo actual probablemente incompleto, tampoco se permite interpretar
+    // litros/equipo como desvío económico. El dashboard muestra la fuente, período y
+    // confianza del denominador para que el usuario sepa exactamente de dónde salió.
     const calidadDatos = [];
     for (const x of familiasOperativas) {
       if (ciNum(x.litros) <= 0) continue;
-      if (ciNum(x.parque_familia) > 0) continue;
+ 
+      const parque = ciNum(x.parque_familia);
+      const origen = String(x.parque_origen || '');
+      const confianza = String(x.parque_confianza || '').toLowerCase();
+      const observacion = String(x.parque_observacion || '').trim();
+ 
+      const sinParque = parque <= 0;
+      const parqueNoConfiable =
+        confianza === 'baja' ||
+        origen.includes('incompleto') ||
+        origen === 'sin_dato_familia';
+ 
+      if (!sinParque && !parqueNoConfiable) continue;
+ 
+      const censoIncompleto = origen.includes('incompleto');
       calidadDatos.push({
         tipo: 'calidad_datos',
         periodo: x.periodo,
@@ -308,10 +324,22 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         objetivo_nombre: x.objetivo_nombre,
         familia: x.familia,
         litros: ciNum(x.litros),
-        parque_familia: ciNum(x.parque_familia),
+        parque_familia: parque,
+        litros_por_equipo: x.litros_por_equipo == null ? null : ciNum(x.litros_por_equipo),
+        parque_origen: x.parque_origen || null,
+        parque_periodo: x.parque_periodo || null,
+        parque_confianza: x.parque_confianza || (sinParque ? 'baja' : null),
+        parque_censo_id: x.parque_censo_id || null,
+        parque_observacion: x.parque_observacion || null,
         severidad: 'media',
-        titulo: 'Revisar parque informado',
-        motivo: 'Hay consumo clasificado en la familia pero no hay parque suficiente para calcular litros por equipo.',
+        titulo: censoIncompleto
+          ? 'Censo probablemente incompleto'
+          : sinParque
+            ? 'Sin parque confiable para la familia'
+            : 'Revisar confiabilidad del parque',
+        motivo: observacion || (sinParque
+          ? 'Hay consumo clasificado en la familia pero no existe un parque temporal confiable para calcular litros por equipo.'
+          : 'El parque utilizado es sólo una referencia y tiene confianza baja; no se usa para afirmar un desvío económico.'),
       });
     }
  
@@ -393,8 +421,8 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
  
     res.json({
       ok:true,
-      version:'dashboard-costos-2.4',
-      motor_version:'2.4',
+      version:'dashboard-costos-2.6',
+      motor_version:'2.6',
       periodo,
       granularidad:'semanal',
       semanas,
