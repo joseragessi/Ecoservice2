@@ -559,7 +559,7 @@ function go(v){
   programarAutoRefresh(v);
 }
  
-/* ===== Cost Intelligence · Dashboard gerencial V2.6 ===== */
+/* ===== Cost Intelligence · Dashboard gerencial V2.7 ===== */
 let ciPeriodo=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
 let ciData=null;
  
@@ -571,6 +571,14 @@ function ciFechaSemana(s){
   const p=String(s).split('-');if(p.length!==3)return s;
   return `${p[2]}/${p[1]}`;
 }
+function ciPeriodoHumano(s){
+  if(!s)return '—';
+  const p=String(s).split('-');
+  if(p.length<2)return String(s);
+  const meses=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const m=Number(p[1]);
+  return `${meses[m-1]||p[1]} ${p[0]}`;
+}
 function ciEtiquetaEstado(e){return ({abierta:'Abierta',en_revision:'En revisión',justificada:'Justificada',validada:'Validada',descartada:'Descartada',cerrada:'Cerrada',superada_modelo:'Superada por modelo'})[e]||cap(e||'abierta');}
 function ciEtiquetaFamilia(f){return ({total:'Total',tractor:'Tractor',dos_tiempos:'Dos tiempos',vehiculo:'Vehículo',cortadora:'Cortadora',fijo:'Equipo fijo',bidones:'Bidones'})[f]||cap(f||'total');}
 function ciColorSev(s){return s==='critica'?'var(--rojo)':s==='alta'?'var(--diesel)':'var(--azul)';}
@@ -578,10 +586,10 @@ function ciColorConf(s){return s==='alta'?'var(--brote-2)':s==='media'?'var(--di
 function ciEtiquetaParqueOrigen(o){return ({
   censo_periodo:'Censo del período',
   ultimo_censo_previo:'Último censo previo',
-  ultimo_censo_previo_censo_actual_incompleto:'Último censo previo',
+  ultimo_censo_previo_censo_actual_incompleto:'Último censo confiable',
   unidad_observada:'Unidad observada',
   unidades_observadas:'Unidades observadas',
-  sin_dato_familia:'Sin dato de parque'
+  sin_dato_familia:'Parque no informado'
 })[o]||cap(String(o||'sin dato').replaceAll('_',' '));}
  
 function ciInstalarEstilos(){
@@ -658,25 +666,28 @@ function ciRenderSenal(a){
     const origen=ciEtiquetaParqueOrigen(a.parque_origen);
     const conf=(a.parque_confianza||'baja').toLowerCase();
     const parque=Number(a.parque_familia)||0;
-    const periodoParque=a.parque_periodo||'—';
+    const periodoParque=a.parque_periodo||null;
+    const parqueLabel=parque>0?'Parque de referencia':'Parque de la familia';
+    const parqueValor=parque>0?`${ciN(parque,0)} equipo${parque===1?'':'s'}`:'No informado';
+    const censoTxt=periodoParque?`Censo consultado: ${ciPeriodoHumano(periodoParque)}`:'Sin censo temporal confiable';
     return `<div class="ci-alert calidad">
       <div class="ci-alert-top">
-        <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(fam)} · Calidad de datos</div></div>
-        <div class="ci-impact"><b style="color:var(--diesel)">Revisar</b><span>sin impacto económico</span></div>
+        <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(fam)} · Calidad de datos vigente</div></div>
+        <div class="ci-impact"><b style="color:var(--diesel)">Revisar dato</b><span>sin impacto económico</span></div>
       </div>
       <div class="ci-metrics">
-        <div class="ci-metric"><span>Consumo</span><b>${ciN(a.litros,2)} L</b></div>
-        <div class="ci-metric"><span>${parque>0?'Parque de referencia':'Parque disponible'}</span><b>${parque>0?ciN(parque,0):'Sin dato'}</b></div>
-        <div class="ci-metric"><span>Fuente del parque</span><b>${ciEsc(origen)}</b></div>
+        <div class="ci-metric"><span>Consumo registrado</span><b>${ciN(a.litros,2)} L</b></div>
+        <div class="ci-metric"><span>${ciEsc(parqueLabel)}</span><b>${ciEsc(parqueValor)}</b></div>
+        <div class="ci-metric"><span>Fuente</span><b>${ciEsc(origen)}</b></div>
         <div class="ci-metric"><span>Confianza</span><b style="color:${ciColorConf(conf)}">${ciEsc(cap(conf))}</b></div>
       </div>
       <div class="ci-tags">
         <span class="ci-tag ci-tag-warn">⚠ ${ciEsc(a.titulo||'Revisar parque')}</span>
-        <span class="ci-tag">Parque: ${ciEsc(periodoParque)}</span>
-        ${a.parque_censo_id?`<span class="ci-tag">Censo ${ciEsc(String(a.parque_censo_id).slice(0,8))}</span>`:''}
+        <span class="ci-tag">${ciEsc(censoTxt)}</span>
+        ${a.parque_censo_id?`<span class="ci-tag">ID censo ${ciEsc(String(a.parque_censo_id).slice(0,8))}</span>`:''}
       </div>
       <div class="ci-info-line"><span>↳</span><span>${ciEsc(a.motivo||a.parque_observacion||'No hay un parque suficientemente confiable para evaluar consumo por equipo.')}</span></div>
-      ${parque>0&&a.litros_por_equipo!=null?`<div class="ci-info-line"><span>i</span><span>Referencia matemática: ${ciN(a.litros_por_equipo,3)} L/equipo, pero no se usa para generar una anomalía porque la confianza del parque es ${ciEsc(conf)}.</span></div>`:''}
+      ${parque>0&&a.litros_por_equipo!=null?`<div class="ci-info-line"><span>i</span><span>Referencia: ${ciN(a.litros_por_equipo,3)} L/equipo. No genera anomalía porque la confianza del parque es ${ciEsc(conf)}.</span></div>`:''}
       ${a.objetivo_id?`<div class="ci-alert-actions"><button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button></div>`:''}
     </div>`;
   }
@@ -714,8 +725,10 @@ function renderCostos(){
   const view=document.getElementById('view');if(!view||!ciData)return;
   const d=ciData,k=d.kpis||{},sev=d.severidades||{},ev=d.evolucion_semanal||[],signals=d.donde_actuar_hoy||[],objs=d.objetivos||[];
   const historial=d.historico_modelo||{};
+  const calidadHist=d.calidad_datos_historico||{};
   const maxLit=Math.max(...ev.map(x=>Number(x.litros)||0),1);
   const abiertas=Number(k.alertas_abiertas||0), totalA=Number(k.alertas||0), calidad=Number(k.calidad_datos||0), superadas=Number(k.alertas_superadas_modelo||historial.superadas||0);
+  const calidadOcurrencias=Number(k.calidad_datos_ocurrencias_periodo||calidadHist.ocurrencias||calidad), calidadResueltas=Number(k.calidad_datos_resueltas_periodo||calidadHist.resueltas||0);
  
   // V2.4: la salud considera anomalías operativas y calidad de datos por separado.
   // Una incidencia de calidad NO se presenta como pérdida económica.
@@ -751,12 +764,12 @@ function renderCostos(){
     :`<div class="ci-history"><div><b>Sin alertas históricas superadas</b><div class="sub" style="font-size:11px;margin-top:3px">El historial del modelo está limpio para este período.</div></div></div>`;
  
   view.innerHTML=`<div class="ci-wrap">
-    <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle">Inteligencia semanal por objetivo y familia · consumo por equipo cuando el parque es confiable · calidad de datos separada del desvío económico</div></div>
+    <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle">Período analizado: ${ciPeriodoHumano(ciPeriodo)} · inteligencia semanal por objetivo y familia · sólo se calcula consumo por equipo cuando el parque es confiable</div></div>
       <div class="ci-actions"><input class="ci-month" type="month" value="${ciPeriodo}" onchange="ciPeriodo=this.value;vCostos(document.getElementById('view'))"><button class="btn ghost" onclick="vCostos(document.getElementById('view'))">Actualizar</button><button class="btn" onclick="ciRecalcular()">↻ Recalcular inteligencia</button></div></div>
     <div class="ci-kpis">
       <div class="ci-kpi"><div class="ci-kpi-label">Costo controlado</div><div class="ci-kpi-value">${ciMoney(k.costo_controlado)}</div><div class="ci-kpi-sub">${ciN(k.litros_controlados,1)} L · ${ciN(k.objetivos_controlados,0)} objetivos</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Desvíos operativos</div><div class="ci-kpi-value" style="color:${Number(k.desvios_detectados)>0?'var(--rojo)':'var(--brote-2)'}">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">${ciN(totalA,0)} alerta${totalA===1?'':'s'} vigente${totalA===1?'':'s'} · ${ciN(abiertas,0)} sin resolver</div></div>
-      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">parque faltante, antiguo o de baja confianza; nunca se trata como pérdida</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">${calidad===1?'problema vigente':'problemas vigentes'} · ${calidadOcurrencias} ocurrencias en el período · ${calidadResueltas} resueltas</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Ahorro validado</div><div class="ci-kpi-value" style="color:var(--brote-2)">${ciMoney(k.ahorro_validado)}</div><div class="ci-kpi-sub">impacto confirmado por el equipo</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Histórico del modelo</div><div class="ci-kpi-value">${ciN(superadas,0)}</div><div class="ci-kpi-sub">alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} conservada${superadas===1?'':'s'} para auditoría</div></div>
     </div>
@@ -768,8 +781,8 @@ function renderCostos(){
       </div>
     </div>
     <div class="ci-grid" style="grid-template-columns:minmax(0,1.35fr) minmax(360px,1fr)">
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Dónde actuar hoy</div><div class="ci-card-sub">Primero anomalías operativas vigentes; luego incidencias de calidad. Una incidencia de datos nunca se muestra como ahorro potencial.</div></div></div>${senalesHtml}</div>
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Ranking por anomalías vigentes, calidad de datos, impacto y costo</div></div></div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Dónde actuar hoy</div><div class="ci-card-sub">Muestra sólo problemas vigentes: primero anomalías operativas y luego calidad de datos. Los problemas ya corregidos quedan fuera de esta lista.</div></div></div>${senalesHtml}</div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Ranking por anomalías y problemas de datos vigentes; no suma incidencias históricas ya corregidas</div></div></div>
         <div style="overflow:auto"><table class="ci-table"><thead><tr><th>Objetivo</th><th>Litros</th><th>Costo</th><th>Alertas</th><th>Datos</th><th>Impacto</th></tr></thead><tbody>${ranking||'<tr><td colspan="6" class="ci-empty">Sin datos</td></tr>'}</tbody></table></div></div>
     </div>
     <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Trazabilidad del modelo</div><div class="ci-card-sub">Las alertas que una versión posterior explica o supera quedan registradas sin contaminar los indicadores vigentes.</div></div></div>${historicoHtml}</div>
