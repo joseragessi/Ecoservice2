@@ -13,9 +13,10 @@ const { notificarCapataz, notificarCapatazTemplate, notificarConFallback, mensaj
 const { hashClave } = require('./app_api');
 const control = require('./control');
 const seg = require('./seguridad');
-
+const costIntelligence = require('./cost_intelligence');
+ 
 const router = express.Router();
-
+ 
 // ── Auth: token firmado con HMAC (sin dependencias externas) ──
 // SECRET de los tokens: SIEMPRE desde la env var. Si falta, se genera uno
 // aleatorio por arranque (los tokens caducan en cada redeploy, molesto pero
@@ -23,7 +24,7 @@ const router = express.Router();
 const SECRET = process.env.PANEL_SECRET ||
   (console.warn('[seguridad] PANEL_SECRET no seteada: usando secret aleatorio (las sesiones caen en cada redeploy)'),
    crypto.randomBytes(32).toString('hex'));
-
+ 
 /** PANEL_USERS = "jose:clave123,owen:clave456" (fallback de emergencia: admin total) */
 function usuarios() {
   const raw = process.env.PANEL_USERS || '';
@@ -34,17 +35,18 @@ function usuarios() {
   });
   return map;
 }
-
+ 
 // ── Permisos por módulo ───────────────────────────────────────
 // Cada usuario del panel tiene una lista de módulos habilitados. El admin ve
 // todo. Los usuarios de PANEL_USERS (env) son admin siempre — así José nunca
 // puede quedar afuera aunque la tabla se rompa.
-const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','compras','reparaciones','stock','movimientos','maestros'];
+const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','costos','compras','reparaciones','stock','movimientos','maestros'];
 function moduloDeRuta(p) {
   if (p.startsWith('/api/dashboard'))     return 'dashboard';
   if (p.startsWith('/api/facturas'))      return 'facturas';
   if (p.startsWith('/api/insumos'))       return 'insumos';
   if (p.startsWith('/api/combustible'))   return 'combustible';
+  if (p.startsWith('/api/costos'))        return 'costos';
   if (p.startsWith('/api/viajes'))        return 'bateas';
   if (p.startsWith('/api/compras'))       return 'compras';
   if (p.startsWith('/api/reparaciones') || p.startsWith('/api/services')) return 'reparaciones';
@@ -53,13 +55,13 @@ function moduloDeRuta(p) {
       p.startsWith('/api/objetivos') || p.startsWith('/api/usuarios')) return 'maestros';
   return null;   // rutas generales: alcanza con estar logueado
 }
-
+ 
 function firmar(payload) {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig  = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
   return `${body}.${sig}`;
 }
-
+ 
 function verificar(token) {
   if (!token) return null;
   const [body, sig] = token.split('.');
@@ -72,7 +74,7 @@ function verificar(token) {
     return payload;
   } catch { return null; }
 }
-
+ 
 async function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
@@ -95,7 +97,7 @@ async function auth(req, res, next) {
   req.esAdmin = esAdmin;
   next();
 }
-
+ 
 // Estado del kill switch (público, sin auth): el panel lo consulta para mostrar
 // la pantalla de bloqueo o el aviso de vencimiento próximo.
 router.get('/api/control/estado', async (req, res) => {
@@ -106,7 +108,7 @@ router.get('/api/control/estado', async (req, res) => {
     res.json({ activo: false, bloqueado: false });   // fail-open
   }
 });
-
+ 
 // ── Login ─────────────────────────────────────────────────────
 router.post('/api/login', async (req, res) => {
   // Kill switch: con el PIN vencido no se puede ni entrar (vos ves la pantalla
@@ -121,7 +123,7 @@ router.post('/api/login', async (req, res) => {
     return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos y probá de nuevo.' });
   }
   const exp = Date.now() + 12 * 60 * 60 * 1000;   // 12h
-
+ 
   // 1) Usuarios de la tabla (dados de alta desde Maestros → Usuarios)
   try {
     const { data: u } = await supabase.from('usuarios_panel')
@@ -133,7 +135,7 @@ router.post('/api/login', async (req, res) => {
       return res.json({ token, usuario: u.usuario, nombre: u.nombre, admin: !!u.admin, modulos: u.admin ? MODULOS_PANEL : mods });
     }
   } catch (e) { /* tabla puede no existir aún: cae al fallback */ }
-
+ 
   // 2) Fallback: PANEL_USERS (env) = admin total. Nunca depende de la DB.
   const users = usuarios();
   if (users[usuario] === clave) {
@@ -144,7 +146,7 @@ router.post('/api/login', async (req, res) => {
   seg.loginFallido(req, usuario);
   res.status(401).json({ error: 'Usuario o clave incorrectos' });
 });
-
+ 
 // ── Usuarios del panel (solo admin) ───────────────────────────
 function hashClavePanel(clave) {
   const salt = crypto.randomBytes(8).toString('hex');
@@ -199,7 +201,7 @@ router.post('/api/usuarios', auth, soloAdmin, async (req, res) => {
     res.status(500).json({ error: err.message && err.message.includes('duplicate') ? 'Ya existe un usuario con ese nombre' : 'Error guardando usuario' });
   }
 });
-
+ 
 // ── Credenciales de app para CAPATACES ────────────────────────
 // Lista de capataces con su estado de acceso a la app
 router.get('/api/capataces-login', auth, soloAdmin, async (req, res) => {
@@ -235,7 +237,184 @@ router.post('/api/capataces-login', auth, soloAdmin, async (req, res) => {
     res.status(500).json({ error: err.message && err.message.includes('duplicate') ? 'Ese usuario ya está en uso' : 'Error guardando credenciales' });
   }
 });
-
+ 
+// ── Cost Intelligence ──────────────────────────────────────────
+// Dashboard gerencial semanal de consumo y desvíos.
+// Se publica bajo /api/costos para que pase por los permisos del panel.
+function ciPeriodoValido(v) {
+  const s = String(v || '');
+  return /^\d{4}-\d{2}$/.test(s) ? s : costIntelligence.periodoActualCba();
+}
+function ciSemanas(periodo) {
+  return typeof costIntelligence.semanasDelMes === 'function'
+    ? costIntelligence.semanasDelMes(periodo)
+    : [`${periodo}-01`];
+}
+function ciNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+ 
+router.get('/api/costos/resumen', auth, async (req, res) => {
+  try {
+    const periodo = ciPeriodoValido(req.query.periodo);
+    const semanas = ciSemanas(periodo);
+ 
+    const [snapRes, anomRes] = await Promise.all([
+      supabase.from('cost_snapshots')
+        .select('id,periodo,objetivo_id,objetivo_nombre,familia,litros,importe,parque_total,parque_motor,parque_familia,litros_por_equipo,cantidad_cargas')
+        .eq('granularidad', 'semanal')
+        .in('periodo', semanas),
+      supabase.from('cost_anomalies')
+        .select('*')
+        .in('periodo', semanas)
+        .order('impacto_estimado', { ascending: false }),
+    ]);
+    if (snapRes.error) throw snapRes.error;
+    if (anomRes.error) throw anomRes.error;
+ 
+    const snapshots = snapRes.data || [];
+    const anomalias = anomRes.data || [];
+    const totales = snapshots.filter(x => x.familia === 'total');
+ 
+    const costoControlado = totales.reduce((s,x) => s + ciNum(x.importe), 0);
+    const litrosControlados = totales.reduce((s,x) => s + ciNum(x.litros), 0);
+    const impactoDetectado = anomalias.reduce((s,x) => s + ciNum(x.impacto_estimado), 0);
+    const abiertas = anomalias.filter(x => ['abierta','en_revision','pendiente'].includes(x.estado));
+    const sinExplicar = abiertas.reduce((s,x) => s + ciNum(x.impacto_estimado), 0);
+    const ahorroValidado = anomalias.reduce((s,x) => s + ciNum(x.ahorro_validado), 0);
+ 
+    // Evolución semanal: sólo familia total, para no duplicar bidones/unidades.
+    const porSemana = {};
+    for (const x of totales) {
+      if (!porSemana[x.periodo]) porSemana[x.periodo] = { semana:x.periodo, litros:0, costo:0, objetivos:new Set() };
+      porSemana[x.periodo].litros += ciNum(x.litros);
+      porSemana[x.periodo].costo += ciNum(x.importe);
+      if (x.objetivo_id) porSemana[x.periodo].objetivos.add(x.objetivo_id);
+    }
+    const evolucion_semanal = Object.values(porSemana)
+      .sort((a,b) => a.semana.localeCompare(b.semana))
+      .map(x => ({ semana:x.semana, litros:Math.round(x.litros*100)/100, costo:Math.round(x.costo), objetivos:x.objetivos.size }));
+ 
+    // Ranking por objetivo.
+    const porObjetivo = {};
+    for (const x of totales) {
+      const k = x.objetivo_id || x.objetivo_nombre || 'sin_objetivo';
+      if (!porObjetivo[k]) porObjetivo[k] = {
+        objetivo_id:x.objetivo_id || null,
+        objetivo_nombre:x.objetivo_nombre || 'Sin objetivo',
+        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0,
+      };
+      porObjetivo[k].litros += ciNum(x.litros);
+      porObjetivo[k].costo += ciNum(x.importe);
+      porObjetivo[k].semanas.add(x.periodo);
+    }
+    for (const a of anomalias) {
+      const k = a.objetivo_id || a.objetivo_nombre || 'sin_objetivo';
+      if (!porObjetivo[k]) porObjetivo[k] = {
+        objetivo_id:a.objetivo_id || null,
+        objetivo_nombre:a.objetivo_nombre || 'Sin objetivo',
+        litros:0, costo:0, semanas:new Set(), alertas:0, impacto:0,
+      };
+      porObjetivo[k].alertas += 1;
+      porObjetivo[k].impacto += ciNum(a.impacto_estimado);
+    }
+    const objetivos = Object.values(porObjetivo)
+      .map(x => ({
+        objetivo_id:x.objetivo_id,
+        objetivo_nombre:x.objetivo_nombre,
+        litros:Math.round(x.litros*100)/100,
+        costo:Math.round(x.costo),
+        semanas:x.semanas.size,
+        alertas:x.alertas,
+        impacto:Math.round(x.impacto),
+      }))
+      .sort((a,b) => b.impacto - a.impacto || b.costo - a.costo);
+ 
+    const severidades = { critica:0, alta:0, media:0 };
+    anomalias.forEach(a => { if (severidades[a.severidad] != null) severidades[a.severidad]++; });
+ 
+    res.json({
+      ok:true,
+      version:'dashboard-costos-1.0',
+      periodo,
+      granularidad:'semanal',
+      semanas,
+      kpis:{
+        costo_controlado:Math.round(costoControlado),
+        litros_controlados:Math.round(litrosControlados*100)/100,
+        desvios_detectados:Math.round(impactoDetectado),
+        desvios_sin_explicar:Math.round(sinExplicar),
+        ahorro_validado:Math.round(ahorroValidado),
+        objetivos_controlados:new Set(totales.map(x=>x.objetivo_id).filter(Boolean)).size,
+        alertas:anomalias.length,
+        alertas_abiertas:abiertas.length,
+      },
+      severidades,
+      evolucion_semanal,
+      objetivos,
+      donde_actuar_hoy:anomalias.slice(0,20),
+    });
+  } catch (err) {
+    console.error('[costos] resumen:', err);
+    res.status(500).json({ error: err.message || 'Error cargando Cost Intelligence' });
+  }
+});
+ 
+router.post('/api/costos/ejecutar', auth, async (req, res) => {
+  try {
+    const periodo = ciPeriodoValido((req.body || {}).periodo);
+    const resultado = await costIntelligence.ejecutarCostIntelligence(periodo);
+    cambios.tocar?.('costos');
+    res.json({ ok:true, ...resultado });
+  } catch (err) {
+    console.error('[costos] ejecutar:', err);
+    res.status(500).json({ error: err.message || 'Error ejecutando Cost Intelligence' });
+  }
+});
+ 
+router.post('/api/costos/anomalias/:id/revisar', auth, async (req, res) => {
+  try {
+    const d = req.body || {};
+    const estados = ['abierta','en_revision','justificada','validada','descartada','cerrada'];
+    const cambiosAnomalia = { revisado_at:new Date().toISOString() };
+    if (d.estado && estados.includes(d.estado)) cambiosAnomalia.estado = d.estado;
+    if (d.causa !== undefined) cambiosAnomalia.causa = d.causa || null;
+    if (d.observacion !== undefined) cambiosAnomalia.observacion = d.observacion || null;
+    if (d.responsable !== undefined) cambiosAnomalia.responsable = d.responsable || null;
+    if (d.validada !== undefined) cambiosAnomalia.validada = !!d.validada;
+    if (d.ahorro_validado !== undefined) cambiosAnomalia.ahorro_validado = Math.max(0, ciNum(d.ahorro_validado));
+ 
+    const { data, error } = await supabase.from('cost_anomalies')
+      .update(cambiosAnomalia).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    cambios.tocar?.('costos');
+    res.json({ ok:true, anomalia:data });
+  } catch (err) {
+    console.error('[costos] revisar:', err);
+    res.status(500).json({ error:err.message || 'Error actualizando anomalía' });
+  }
+});
+ 
+router.get('/api/costos/historico/:objetivoId', auth, async (req, res) => {
+  try {
+    const objetivoId = String(req.params.objetivoId || '');
+    const familia = String(req.query.familia || 'total');
+    const { data, error } = await supabase.from('cost_snapshots')
+      .select('periodo,objetivo_id,objetivo_nombre,familia,litros,importe,cantidad_cargas,parque_familia,litros_por_equipo')
+      .eq('granularidad','semanal')
+      .eq('objetivo_id',objetivoId)
+      .eq('familia',familia)
+      .order('periodo',{ascending:false})
+      .limit(12);
+    if (error) throw error;
+    res.json({ ok:true, objetivo_id:objetivoId, familia, historico:(data||[]).reverse() });
+  } catch (err) {
+    console.error('[costos] historico:', err);
+    res.status(500).json({ error:err.message || 'Error cargando histórico' });
+  }
+});
+ 
 // ── Dashboard ─────────────────────────────────────────────────
 router.get('/api/dashboard', auth, async (req, res) => {
   try {
@@ -245,7 +424,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       const d = new Date(a, m - 2, 1);
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     })();
-
+ 
     const [fact, ins, carg, reps, censos, objs, invFact, repu, viaj] = await Promise.all([
       supabase.from('facturas_proveedor').select('estado, total'),
       supabase.from('pedidos_insumos').select('estado, created_at, objetivos(nombre), capataces(nombre), pedidos_insumos_items(item)'),
@@ -257,7 +436,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       supabase.from('repuestos_taller').select('id, estado, nota_precio, estado_desde, created_at'),
       supabase.from('viajes_bateas').select('fecha, total_bateas, chofer_id, unidad_id').neq('estado', 'anulado'),
     ]);
-
+ 
     const facturas = fact.data || [], insumos = ins.data || [], cargas = carg.data || [];
     const incid = reps.data || [], cens = censos.data || [];
     // Las facturas de compras guardan los totales dentro del JSON `data`
@@ -265,7 +444,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
     const cuenta = (a, c, v) => a.filter(x => x[c] === v).length;
     const suma = (a, c) => a.reduce((s, x) => s + (Number(x[c]) || 0), 0);
     const mesDe = iso => String(iso || '').slice(0, 7);
-
+ 
     // ── Compras: gasto del mes vs el anterior
     const mesFac = f => {
       const s = String(f.fecha_factura || '').trim();
@@ -278,7 +457,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       - (f.notas_credito || []).reduce((s, n) => s + (Number(n.total_sin_iva) || 0) + (Number(n.total_iva) || 0), 0);
     const gastoMes = compras.filter(f => mesFac(f) === periodo).reduce((s, f) => s + totalFac(f), 0);
     const gastoAnt = compras.filter(f => mesFac(f) === mesAnterior).reduce((s, f) => s + totalFac(f), 0);
-
+ 
     // ── Pendiente de pago (Estado de cuenta): facturas sin marcar pagada
     const sinPagar = compras.filter(f => !f.pagada);
     const pendPago = {
@@ -286,7 +465,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       facturas: sinPagar.length,
       proveedores: new Set(sinPagar.map(f => f.proveedor || 'Sin nombre')).size,
     };
-
+ 
     // ── Evolución del gasto: últimos 6 meses (incluye el actual)
     const meses6 = [];
     { const [a, m] = periodo.split('-').map(Number);
@@ -297,7 +476,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
     const evolucion = meses6.map(mes => ({
       mes, total: compras.filter(f => mesFac(f) === mes).reduce((s, f) => s + totalFac(f), 0),
     }));
-
+ 
     // ── Gasto por objetivo del mes: reparte el total de cada factura según su
     // imputación (por ítem o total), proporcional al monto de los ítems, así la
     // suma de objetivos = gasto del mes. Sin imputación → "Sin asignar".
@@ -323,10 +502,10 @@ router.get('/api/dashboard', auth, async (req, res) => {
     const objetivosGasto = Object.entries(porObj).map(([nombre, total]) => ({ nombre, total }))
       .sort((a, b) => b.total - a.total);
     const sinAsignar = porObj['Sin asignar'] || 0;
-
+ 
     // ── Combustible del mes
     const cargasMes = cargas.filter(c => mesDe(c.fecha) === periodo);
-
+ 
     // ── Taller
     const activas = incid.filter(i => i.estado !== 'finalizado');
     const criticas = activas.filter(i => i.prioridad === 'critico' || i.prioridad === 'alta');
@@ -344,7 +523,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       .sort((a, b) => b.valor - a.valor);
     // La más vieja sin resolver: la que más urge
     const masVieja = activas.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0] || null;
-
+ 
     // ── Semáforo por prioridad + máquinas paradas ahora
     const porPrio = { critico: 0, alta: 0, media: 0, baja: 0 };
     activas.forEach(i => { if (porPrio[i.prioridad] != null) porPrio[i.prioridad]++; });
@@ -360,17 +539,17 @@ router.get('/api/dashboard', auth, async (req, res) => {
         dias: Math.floor((Date.now() - new Date(i.created_at)) / 86400000),
       }))
       .sort((a, b) => b.dias - a.dias);
-
+ 
     // ── Stock: censo del período
     const censoResp = cuenta(cens, 'estado', 'respondido');
     const censoPend = cens.length - censoResp;
-
+ 
     // ── Insumos pendientes (para la lista de acción)
     const insPend = insumos.filter(p => p.estado === 'pendiente' || p.estado === 'en_compra');
-
+ 
     // ═══ DESVÍOS ═══════════════════════════════════════════════
     // Un número solo no dice nada: lo que sirve es contra qué se compara.
-
+ 
     // El mes en curso está incompleto. Comparar sus 14 días contra un mes
     // entero SIEMPRE da caída y no significa nada. Se compara a IGUAL DÍA
     // y se proyecta el cierre con el ritmo de lo que va del mes.
@@ -390,7 +569,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
     // Promedio de los meses cerrados con movimiento (hasta 3)
     const cerrados = evolucion.slice(0, -1).filter(e => e.total > 0).slice(-3);
     const promedio3 = cerrados.length ? cerrados.reduce((a, e) => a + e.total, 0) / cerrados.length : null;
-
+ 
     // Objetivos: lo que importa no es quién gastó más, sino quién se salió de
     // SU propio promedio. Un objetivo grande siempre encabeza la lista; uno
     // que duplicó lo suyo es el que hay que mirar.
@@ -427,7 +606,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       return { nombre: o.nombre, total: o.total, proyectado: proy, promedio: prom,
                veces: prom ? proy / prom : null, meses_historia: hist.length };
     }).sort((a, b) => (b.veces || 0) - (a.veces || 0));
-
+ 
     // ── Taller: envejecimiento. No alcanza con "13 activas": importa cuántas
     // llevan demasiado tiempo abiertas.
     const diasDesde = iso => Math.floor((Date.now() - new Date(iso)) / 86400000);
@@ -449,7 +628,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
         objetivo: i.objetivos ? i.objetivos.nombre : '',
         dias: diasDesde(i.created_at),
       })).sort((a, b) => b.dias - a.dias);
-
+ 
     // ── Plata frenada en el circuito de repuestos
     const repuestos = repu.data || [];
     const esperandoAprob = repuestos.filter(r => r.estado === 'cotizado');
@@ -460,7 +639,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       demorados: repuestos.filter(r => ['pedido', 'en_cotizacion', 'cotizado'].includes(r.estado)
         && diasDesde(r.estado_desde || r.created_at) > 3).length,
     };
-
+ 
     // ── Bateas: ritmo del mes contra el anterior a igual día ────
     const viajes = viaj.data || [];
     const diaDeFecha = f => Number(String(f || '').slice(8, 10)) || 99;
@@ -479,7 +658,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       var_pct: batAntIgual.bateas ? ((batMes.bateas - batAntIgual.bateas) * 100 / batAntIgual.bateas) : null,
       proyectado: diaHoy > 0 ? Math.round(batMes.bateas * (diasDelMes / diaHoy)) : batMes.bateas,
     };
-
+ 
     // ── Combustible: litros del mes contra el anterior a igual día ──
     const litrosDe = (mes, hastaDia) => cargas
       .filter(c => mesDe(c.fecha) === mes && (!hastaDia || diaDeFecha(c.fecha) <= hastaDia))
@@ -492,7 +671,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       proyectado: diaHoy > 0 ? litMes * (diasDelMes / diaHoy) : litMes,
       sin_facturar: cuenta(cargas, 'estado', 'sin_facturar'),
     };
-
+ 
     // ── Tiempo de máquina frenada: lo que cuesta de verdad una rotura ──
     // Se mide sobre las incidencias con equipo_parado: cuánto estuvo la
     // máquina sin poder trabajar. Las abiertas cuentan hasta hoy.
@@ -507,7 +686,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       dias_acumulados_abiertas: diasAbiertas,
       parada_mas_vieja: paradas.length ? paradas[0].dias : 0,
     };
-
+ 
     // ── Alertas: lo que hay que mirar hoy. Solo entra lo que tiene una
     // acción concreta detrás, ordenado por urgencia.
     const alertas = [];
@@ -532,7 +711,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
       texto: `${insPend.length} pedido(s) de insumos pendientes`, detalle: '' });
     const ordenNivel = { alto: 0, medio: 1, bajo: 2 };
     alertas.sort((a, b) => ordenNivel[a.nivel] - ordenNivel[b.nivel]);
-
+ 
     res.json({
       periodo,
       dia_del_mes: diaHoy,
@@ -612,7 +791,7 @@ router.get('/api/dashboard', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando el dashboard' });
   }
 });
-
+ 
 // ── Facturas de proveedor ─────────────────────────────────────
 router.get('/api/facturas', auth, async (req, res) => {
   try {
@@ -629,7 +808,7 @@ router.get('/api/facturas', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando facturas' });
   }
 });
-
+ 
 router.post('/api/facturas/:id', auth, async (req, res) => {
   try {
     const patch = {};
@@ -645,7 +824,7 @@ router.post('/api/facturas/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error actualizando la factura' });
   }
 });
-
+ 
 // ── Pedidos de insumos ────────────────────────────────────────
 router.get('/api/insumos', auth, async (req, res) => {
   try {
@@ -662,7 +841,7 @@ router.get('/api/insumos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando insumos' });
   }
 });
-
+ 
 // Marcar un insumo como COMPRADO en todos los pedidos pendientes que lo piden.
 // La agrupación es por nombre normalizado (sin mayúsculas/acentos): "Guantes"
 // y "guantes " son el mismo ítem. body: { item, comprado:true|false }
@@ -687,7 +866,7 @@ router.post('/api/insumos/comprar', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude marcar el ítem: ' + (err.message || '') + (String(err.message||'').includes('comprado') ? ' — ¿corriste el SQL que agrega la columna comprado?' : '') });
   }
 });
-
+ 
 router.post('/api/insumos/:id', auth, async (req, res) => {
   try {
     // Si el panel manda items, registra la ENTREGA: cada item queda marcado
@@ -720,7 +899,7 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
         }
       }
     }
-
+ 
     const patch = {};
     if (req.body.estado !== undefined) patch.estado = req.body.estado;
     if (req.body.estado === 'entregado') {
@@ -731,7 +910,7 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
       .from('pedidos_insumos').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), objetivos(nombre), pedidos_insumos_items(*)').single();
     if (error) throw error;
-
+ 
     // Aviso al capataz cuando el pedido se entrega
     let notificado = false;
     if (req.body.estado === 'entregado' && data.capataces && data.capataces.telefono) {
@@ -776,7 +955,7 @@ router.post('/api/insumos/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error actualizando el pedido' });
   }
 });
-
+ 
 // ── Combustible ───────────────────────────────────────────────
 router.get('/api/combustible', auth, async (req, res) => {
   try {
@@ -806,7 +985,7 @@ router.get('/api/combustible', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando combustible' });
   }
 });
-
+ 
 // Anular una carga (ej. remito cargado dos veces). No se borra: queda como
 // "anulada" para auditoría y deja de contar en listados y análisis.
 router.post('/api/combustible/:id/anular', auth, async (req, res) => {
@@ -821,7 +1000,7 @@ router.post('/api/combustible/:id/anular', auth, async (req, res) => {
     res.status(500).json({ error: 'Error anulando la carga' });
   }
 });
-
+ 
 // Restaurar una carga anulada por error: vuelve a su estado natural
 // (facturada si tiene número de factura, si no sin_facturar)
 router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
@@ -838,7 +1017,7 @@ router.post('/api/combustible/:id/restaurar', auth, async (req, res) => {
     res.status(500).json({ error: 'Error restaurando la carga' });
   }
 });
-
+ 
 // ── Reporte de combustible por objetivo (PDF, una hoja por objetivo) ──
 // Por cada objetivo elegido: litros del período (tanque y bidones), por
 // unidad, por tipo de combustible, las cargas ítem por ítem, y las máquinas
@@ -851,7 +1030,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
       : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
     const pedidos = String(req.query.objetivos || '').split('|').map(s => s.trim()).filter(Boolean);
     if (!pedidos.length) return res.status(400).json({ error: 'Elegí al menos un objetivo' });
-
+ 
     const [a, m] = mes.split('-').map(Number);
     const desde = `${mes}-01`;
     const hasta = m === 12 ? `${a + 1}-01-01` : `${a}-${String(m + 1).padStart(2, '0')}-01`;
@@ -860,7 +1039,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
     const ultimoDia = esMesEnCurso ? hoyCba.getDate() : new Date(Date.UTC(a, m, 0)).getUTCDate();
     let diasHabiles = 0;
     for (let d2 = 1; d2 <= ultimoDia; d2++) { const dow = new Date(Date.UTC(a, m - 1, d2)).getUTCDay(); if (dow !== 0 && dow !== 6) diasHabiles++; }
-
+ 
     const [cargas, aliasObj, censos, objsMaestro] = await Promise.all([
       supabase.from('cargas_combustible')
         .select('*, cargas_combustible_items(*), proveedores(nombre), unidades(patente, codigo), objetivos(nombre), capataces(nombre)')
@@ -871,18 +1050,18 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
       supabase.from('objetivos').select('id, nombre, grupo_stock'),
     ]);
     if (cargas.error) throw cargas.error;
-
+ 
     const mapaAlias = {};
     ((aliasObj && aliasObj.data) || []).forEach(x => { if (x.objetivos) mapaAlias[x.alias] = x.objetivos.nombre; });
     const resolver = nom => { if (!nom) return null; return mapaAlias[normObjetivo(nom)] || nom; };
     const norm = s => normObjetivo(s || '');
-
+ 
     // Censo más reciente por objetivo (vienen ordenados por período desc).
     const censoPorId = {};
     (censos.data || []).forEach(c => { if (!censoPorId[c.objetivo_id]) censoPorId[c.objetivo_id] = c; });
     const idPorNombre = {}, grupoPorNombre = {};
     (objsMaestro.data || []).forEach(o => { idPorNombre[norm(o.nombre)] = o.id; grupoPorNombre[norm(o.nombre)] = o.grupo_stock || null; });
-
+ 
     const hojas = pedidos.map(objetivo => {
       const objN = norm(resolver(objetivo));
       const H = { objetivo, mes, dias_habiles: diasHabiles, ultimo_dia: ultimoDia, mes_en_curso: esMesEnCurso,
@@ -890,7 +1069,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
         importe: 0, cargas_con_importe: 0, cargas_sin_importe: 0,
         por_unidad: {}, por_tipo: {}, detalle: [] };
       const cargasTocadas = new Set();
-
+ 
       (cargas.data || []).forEach(c => {
         const objC = c.objetivos ? c.objetivos.nombre : null;
         const its = c.cargas_combustible_items || [];
@@ -929,7 +1108,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
       H.litros_bidon = Math.round(H.litros_bidon * 100) / 100;
       H.importe = Math.round(H.importe);
       H.detalle.sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)));
-
+ 
       // Máquinas del censo.
       const oid = idPorNombre[objN];
       const censo = oid ? censoPorId[oid] : null;
@@ -959,7 +1138,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
       }
       return H;
     });
-
+ 
     res.json({ mes, dias_habiles: diasHabiles, ultimo_dia: ultimoDia, mes_en_curso: esMesEnCurso, hojas,
       emitido: new Date().toISOString(), por: req.usuario || null });
   } catch (err) {
@@ -967,7 +1146,7 @@ router.get('/api/combustible/reporte-objetivos', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude armar el reporte' });
   }
 });
-
+ 
 // Listas para los desplegables del modal de edición. Van juntas en una sola
 // llamada: son tres tablas chicas y el modal las necesita a las tres antes de
 // poder dibujarse, así que pedirlas por separado solo agrega latencia.
@@ -989,7 +1168,7 @@ router.get('/api/combustible/listas', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando las listas' });
   }
 });
-
+ 
 // ── Número de orden como lo escribe el proveedor ──────────────
 // El proveedor copia el número a mano en la factura: "OC-2026-0041",
 // "O/C 2026-41", "OC 41", "Orden 0041". Todas tienen que encontrar la misma
@@ -1007,7 +1186,7 @@ function normalizarNumeroOC(texto, anio) {
   if (m) return `OC-${a}-${String(Number(m[1])).padStart(4, '0')}`;
   return null;
 }
-
+ 
 // Devuelve { encontrada, candidatas, motivo } para el panel.
 async function buscarOrdenParaFactura(parsed) {
   const out = { leida: parsed.orden_compra_leida || null, encontrada: null, candidatas: [], motivo: '' };
@@ -1054,7 +1233,7 @@ async function buscarOrdenParaFactura(parsed) {
   }
   return out;
 }
-
+ 
 // ═══════════════════════════════════════════════════════════════
 // ÓRDENES DE COMPRA
 // La orden es la decisión de quien compra escrita ANTES de que llegue la
@@ -1062,7 +1241,7 @@ async function buscarOrdenParaFactura(parsed) {
 // Administración carga la factura, la encuentra y hereda la imputación.
 // La lógica pura está en ordenes.js; acá solo lo que toca la base.
 // ═══════════════════════════════════════════════════════════════
-
+ 
 router.get('/api/compras/ordenes', auth, async (req, res) => {
   try {
     let q = supabaseCompras.from('ordenes_compra').select('*').order('created_at', { ascending: false }).limit(500);
@@ -1076,7 +1255,7 @@ router.get('/api/compras/ordenes', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar las órdenes (¿corriste el SQL de ordenes_compra?)' });
   }
 });
-
+ 
 // Proveedores conocidos: los que ya facturaron alguna vez, más los de órdenes
 // anteriores. Para que Owen elija de una lista en vez de tipear, y para que
 // el CUIT que leyó el OCR encuentre el nombre con que ya está cargado.
@@ -1102,7 +1281,7 @@ router.get('/api/compras/ordenes/proveedores', auth, async (req, res) => {
     res.json([...m.values()].filter(p => p.nombre).sort((a, b) => b.veces - a.veces));
   } catch (err) { res.status(500).json({ error: 'No pude listar proveedores' }); }
 });
-
+ 
 // Candidatas para una factura que se está cargando: órdenes abiertas del
 // mismo proveedor (por CUIT primero, nombre después). Va ANTES de /:id para
 // que "candidatas" no se lea como un id.
@@ -1128,7 +1307,7 @@ router.get('/api/compras/ordenes/candidatas', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude buscar órdenes' });
   }
 });
-
+ 
 // Financiero: cotizado / facturado / pagado por objetivo, para un mes.
 // Cotizado sale de las órdenes (abiertas + facturadas del mes), facturado y
 // pagado de las facturas. Va antes de /:id por la misma razón.
@@ -1185,7 +1364,7 @@ router.get('/api/compras/ordenes/financiero', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude armar el financiero' });
   }
 });
-
+ 
 router.get('/api/compras/ordenes/:id', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
@@ -1193,7 +1372,7 @@ router.get('/api/compras/ordenes/:id', auth, async (req, res) => {
     res.json(aplanar(data));
   } catch (err) { res.status(500).json({ error: 'No pude cargar la orden' }); }
 });
-
+ 
 // Alta manual (formulario del panel). Sirve para lo que no viene de ningún
 // pedido ni entró por foto, y para corregir.
 router.post('/api/compras/ordenes', auth, async (req, res) => {
@@ -1226,7 +1405,7 @@ router.post('/api/compras/ordenes', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude crear la orden' });
   }
 });
-
+ 
 router.put('/api/compras/ordenes/:id', auth, async (req, res) => {
   try {
     const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
@@ -1255,7 +1434,7 @@ router.put('/api/compras/ordenes/:id', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude editar la orden' });
   }
 });
-
+ 
 // Agregar un presupuesto. Con uno la orden pasa el tramo "presupuesto"; con
 // dos o más y aprobación, el de comparativos.
 router.post('/api/compras/ordenes/:id/cotizacion', auth, async (req, res) => {
@@ -1280,7 +1459,7 @@ router.post('/api/compras/ordenes/:id/cotizacion', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude agregar el presupuesto' });
   }
 });
-
+ 
 // Aprobar una orden de comparativos (José). Queda registrado quién.
 router.post('/api/compras/ordenes/:id/aprobar', auth, async (req, res) => {
   try {
@@ -1299,7 +1478,7 @@ router.post('/api/compras/ordenes/:id/aprobar', auth, async (req, res) => {
     res.json({ ok: true, orden: aplanar(row) });
   } catch (err) { res.status(500).json({ error: 'No pude aprobar' }); }
 });
-
+ 
 router.post('/api/compras/ordenes/:id/anular', auth, async (req, res) => {
   try {
     const { data: prev } = await supabaseCompras.from('ordenes_compra').select('*').eq('id', req.params.id).single();
@@ -1312,7 +1491,7 @@ router.post('/api/compras/ordenes/:id/anular', auth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: 'No pude anular' }); }
 });
-
+ 
 // Emparejar los ítems de una factura (recién extraídos) con una orden.
 // Devuelve el match, la imputación que heredaría y la diferencia de precio.
 // No guarda nada: es lo que el panel muestra para que quien carga confirme.
@@ -1333,7 +1512,7 @@ router.post('/api/compras/ordenes/:id/emparejar', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude emparejar' });
   }
 });
-
+ 
 // ═══════════════════════════════════════════════════════════════
 // DESVÍOS SEMANALES DE STOCK
 // Compara la foto de una semana contra la anterior, por objetivo, cruzada
@@ -1344,7 +1523,7 @@ router.post('/api/compras/ordenes/:id/emparejar', auth, async (req, res) => {
 // La lógica pura está en stock_desvios.js.
 // ═══════════════════════════════════════════════════════════════
 const DSV = require('./stock_desvios');
-
+ 
 async function fotosTodas() {
   // El nombre del objetivo se junta acá, no en la consulta: stock_fotos no
   // tiene la relación declarada en Supabase y el embed fallaba con "Could
@@ -1360,7 +1539,7 @@ async function fotosTodas() {
   (oRes.data || []).forEach(o => { obj[o.id] = o; });
   return (fRes.data || []).map(f => ({ ...f, objetivo: obj[f.objetivo_id] ? obj[f.objetivo_id].nombre : null, grupo: obj[f.objetivo_id] ? obj[f.objetivo_id].grupo_stock : null }));
 }
-
+ 
 // Semanas que tienen fotos, para el selector.
 router.get('/api/stock/desvios/semanas', auth, async (req, res) => {
   try {
@@ -1372,7 +1551,7 @@ router.get('/api/stock/desvios/semanas', auth, async (req, res) => {
     res.json({ semanas, actual });
   } catch (err) { res.status(500).json({ error: 'No pude listar las semanas (¿corriste el SQL de stock_fotos?)' }); }
 });
-
+ 
 // El desvío de una semana. Filtros por query: objetivo, grupo, tipo (de
 // desvío), equipo (tipo de máquina), repetidos=1, q (número/texto).
 router.get('/api/stock/desvios', auth, async (req, res) => {
@@ -1389,10 +1568,10 @@ router.get('/api/stock/desvios', auth, async (req, res) => {
     const incs = incRes.data || [];
     const cierres = {};
     (cierresRes.data || []).forEach(c => { cierres[c.clave] = c; });
-
+ 
     const porObj = {};
     fotos.forEach(f => (porObj[f.objetivo_id] = porObj[f.objetivo_id] || []).push(f));
-
+ 
     const filas = objs.map(o => {
       const fs = (porObj[o.id] || []).slice().sort((a, b) => String(b.semana).localeCompare(String(a.semana)));
       const actual = fs.find(f => f.semana === semana) || null;
@@ -1430,7 +1609,7 @@ router.get('/api/stock/desvios', auth, async (req, res) => {
       const estado = !anterior ? 'primera_foto' : (abiertos.length ? 'con_faltantes' : (cmp.nuevos.length || cmp.taller.length || movidas.length || (cmp.renumeradas || []).length ? 'con_cambios' : 'sin_cambios'));
       return { ...base, estado, ...cmp, resumen: { ...cmp.resumen, faltantes_abiertos: abiertos.reduce((s, f) => s + (f.cantidad || 1), 0), repiten: abiertos.filter(f => f.semanas >= 2).length, movidas: movidas.length } };
     });
-
+ 
     // Filtros.
     const q = String(req.query.q || '').trim();
     const qn = DSV.normNum(q), ql = DSV.norm(q);
@@ -1444,7 +1623,7 @@ router.get('/api/stock/desvios', auth, async (req, res) => {
     if (req.query.equipo) { const e = DSV.norm(req.query.equipo); vis = vis.filter(f => [...f.faltantes, ...f.taller, ...f.nuevos].some(x => DSV.norm(x.tipo).includes(e))); }
     if (req.query.repetidos === '1') vis = vis.filter(f => f.faltantes.some(x => !x.cerrado && x.semanas >= 2));
     if (q) vis = vis.filter(f => DSV.norm(f.objetivo).includes(ql) || [...f.faltantes, ...f.taller, ...f.nuevos].some(x => (qn && DSV.normNum(x.numero) === qn) || DSV.norm(x.tipo).includes(ql)));
-
+ 
     const tot = filas.reduce((s, f) => {
       if (f.resumen) { s.faltantes += f.resumen.faltantes_abiertos; s.repiten += f.resumen.repiten; s.taller += f.taller.length; s.nuevos += f.resumen.nuevos; s.movidas += f.resumen.movidas || 0; if (f.resumen.faltantes_abiertos) s.objs_con_faltantes++; }
       if (f.estado === 'sin_respuesta') s.sin_respuesta++;
@@ -1460,7 +1639,7 @@ router.get('/api/stock/desvios', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude calcular los desvíos: ' + (err.message || '') });
   }
 });
-
+ 
 // Trazabilidad de una máquina por número: todas las fotos donde apareció
 // (en cualquier objetivo) y sus reparaciones.
 router.get('/api/stock/maquina/:numero/historial', auth, async (req, res) => {
@@ -1481,7 +1660,7 @@ router.get('/api/stock/maquina/:numero/historial', auth, async (req, res) => {
     res.json({ numero, apariciones, reparaciones, objetivos, cambio_de_objetivo: objetivos.length > 1 });
   } catch (err) { res.status(500).json({ error: 'No pude armar el historial' }); }
 });
-
+ 
 // Cerrar un faltante con motivo (o reabrirlo).
 router.post('/api/stock/desvios/cerrar', auth, async (req, res) => {
   try {
@@ -1502,7 +1681,7 @@ router.post('/api/stock/desvios/cerrar', auth, async (req, res) => {
     res.json({ ok: true, clave });
   } catch (err) { res.status(500).json({ error: 'No pude cerrar: ' + (err.message || '') }); }
 });
-
+ 
 // Todas las fotos de un objetivo (para ver la evolución semana a semana).
 router.get('/api/stock/fotos/:objetivo_id', auth, async (req, res) => {
   try {
@@ -1511,7 +1690,7 @@ router.get('/api/stock/fotos/:objetivo_id', auth, async (req, res) => {
     res.json(data || []);
   } catch (err) { res.status(500).json({ error: 'No pude cargar las fotos' }); }
 });
-
+ 
 // Backfill: convierte los censos mensuales existentes en fotos, para tener
 // contra qué comparar desde la primera semana. Idempotente.
 router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
@@ -1535,7 +1714,7 @@ router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
     res.json({ ok: true, fotos: n, censos: (censos || []).length });
   } catch (err) { res.status(500).json({ error: 'No pude hacer el backfill: ' + (err.message || '') }); }
 });
-
+ 
 // ── Editar una carga completa ─────────────────────────────────
 // Hasta ahora una carga solo se podía anular: si el bot leía mal un dato había
 // que anularla y cargarla de nuevo a mano. Acá se edita cabecera e ítems.
@@ -1544,7 +1723,7 @@ router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
 // por uno. Es más simple de sostener y evita el estado intermedio donde la
 // carga tiene ítems viejos y nuevos mezclados si algo falla a mitad de camino.
 // El costo es que se pierden los id de los ítems, que no los usa nadie.
-
+ 
 // Números que llegan del formulario: pueden venir en formato argentino
 // ("2.465,0000") o ya como número. Cadena vacía es "borrar el dato", no cero.
 function numCampo(v) {
@@ -1555,17 +1734,17 @@ function numCampo(v) {
   const n = Number(crudo.replace(/\./g, '').replace(',', '.'));
   return isFinite(n) ? n : null;
 }
-
+ 
 router.put('/api/combustible/:id', auth, async (req, res) => {
   try {
     const b = req.body || {};
     const { data: actual, error: e0 } = await supabase.from('cargas_combustible')
       .select('id, estado').eq('id', req.params.id).single();
     if (e0 || !actual) return res.status(404).json({ error: 'No encontré la carga' });
-
+ 
     const ESTADOS = ['sin_facturar', 'facturada', 'anulada'];
     const estado = ESTADOS.includes(b.estado) ? b.estado : actual.estado;
-
+ 
     const items = Array.isArray(b.items) ? b.items : null;
     if (!items || !items.length) {
       return res.status(400).json({ error: 'La carga tiene que tener al menos un producto' });
@@ -1584,18 +1763,18 @@ router.put('/api/combustible/:id', auth, async (req, res) => {
         return res.status(400).json({ error: `Destino inválido en "${it.producto}"` });
       }
     }
-
+ 
     const kmAnt = numCampo(b.km_anterior);
     const kmAct = numCampo(b.km_actual);
     if (kmAnt != null && kmAct != null && kmAct < kmAnt) {
       return res.status(400).json({ error: 'El km actual no puede ser menor al anterior' });
     }
-
+ 
     const litros = items.reduce((s, i) => s + (numCampo(i.litros) || 0), 0);
     const dests  = items.map(i => i.destino);
     const destino = dests.every(d => d === 'unidad') ? 'unidad'
                   : dests.every(d => d === 'bidon')  ? 'bidon' : 'mixto';
-
+ 
     const patch = {
       fecha:          b.fecha || undefined,
       estado,
@@ -1621,17 +1800,17 @@ router.put('/api/combustible/:id', auth, async (req, res) => {
       editado_at:     new Date().toISOString(),
     };
     if (patch.fecha === undefined) delete patch.fecha;
-
+ 
     const { error: e1 } = await supabase.from('cargas_combustible')
       .update(patch).eq('id', req.params.id);
     if (e1) throw e1;
-
+ 
     // Supabase no siempre rechaza la promesa: el error viene en r.error y un
     // borrado fallido dejaría los ítems viejos conviviendo con los nuevos.
     const del = await supabase.from('cargas_combustible_items')
       .delete().eq('carga_id', req.params.id);
     if (del.error) throw del.error;
-
+ 
     const filas = items.map(it => ({
       carga_id:        req.params.id,
       producto:        String(it.producto).trim(),
@@ -1647,7 +1826,7 @@ router.put('/api/combustible/:id', auth, async (req, res) => {
     }));
     const ins = await supabase.from('cargas_combustible_items').insert(filas);
     if (ins.error) throw ins.error;
-
+ 
     console.log(`[combustible] carga ${req.params.id} editada por ${req.usuario} (${filas.length} ítems, ${litros} lt)`);
     res.json({ ok: true, id: req.params.id, litros_total: litros });
   } catch (err) {
@@ -1655,7 +1834,7 @@ router.put('/api/combustible/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando la carga: ' + (err.message || 'error') });
   }
 });
-
+ 
 // ── Viajes / bateas (roll off) ────────────────────────────────
 router.get('/api/viajes', auth, async (req, res) => {
   try {
@@ -1672,7 +1851,7 @@ router.get('/api/viajes', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando viajes (¿existe la tabla viajes_bateas?)' });
   }
 });
-
+ 
 router.get('/api/viajes/indicadores', auth, async (req, res) => {
   try {
     const desde = req.query.desde || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
@@ -1682,17 +1861,17 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       .gte('fecha', desde).lte('fecha', hasta).order('fecha', { ascending: false });
     if (error) throw error;
     const viajes = data || [];
-
+ 
     const kmTotal = viajes.reduce((s, v) => s + (Number(v.km) || 0), 0);
     const bateasTotal = viajes.reduce((s, v) => s + (Number(v.total_bateas) || 0), 0);
     const puntosTotal = viajes.reduce((s, v) => s + (Number(v.puntos_bajada) || 0), 0);
     const jornadas = viajes.length;
     const M3_POR_BATEA = 14;
-
+ 
     // Días con actividad (fechas distintas) para el promedio de bateas por día
     const diasConViajes = new Set(viajes.map(v => v.fecha)).size;
     const jornadasMant = viajes.filter(v => v.mantenimiento).length;
-
+ 
     // Por chofer (jornadas = filas de ese chofer; prom = bateas ÷ jornadas)
     const porChofer = {};
     viajes.forEach(v => {
@@ -1702,7 +1881,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       if (v.mantenimiento) o.mant++;
       o.puntos += Number(v.puntos_bajada) || 0; o.jornadas++;
     });
-
+ 
     // Por camión / unidad (mismo cálculo, agrupado por patente)
     const porUnidad = {};
     viajes.forEach(v => {
@@ -1711,7 +1890,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       o.bateas += Number(v.total_bateas) || 0; o.jornadas++;
       if (v.mantenimiento) o.mant++;
     });
-
+ 
     // Bateas por objetivo. La clave es el objetivo_id cuando la parada
     // matcheó; si no, el nombre NORMALIZADO — así "ucc" y "Ucc" caen en la
     // misma fila aunque todavía no estén corregidas.
@@ -1722,7 +1901,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       const o = porObjetivo[k] || (porObjetivo[k] = { nombre, bateas: 0, sin_objetivo: !p.objetivo_id });
       o.bateas += Number(p.bateas) || 0;
     }));
-
+ 
     // Paradas que no matchearon ningún objetivo: van al panel de pendientes
     // para asignarlas a mano (y de paso aprender el alias).
     const sinObjetivo = [];
@@ -1738,9 +1917,9 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
       });
     }));
     sinObjetivo.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
-
+ 
     const prom = (bat, jor) => jor ? Math.round((bat / jor) * 10) / 10 : 0;
-
+ 
     res.json({
       periodo: { desde, hasta },
       kpis: {
@@ -1774,7 +1953,7 @@ router.get('/api/viajes/indicadores', auth, async (req, res) => {
     res.status(500).json({ error: 'Error calculando indicadores' });
   }
 });
-
+ 
 // Normaliza un nombre de objetivo para comparar y para guardar alias.
 // Tiene que dar EXACTAMENTE lo mismo que normObjetivo() en viajes.js.
 function normObjetivo(s) {
@@ -1783,7 +1962,7 @@ function normObjetivo(s) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, '');
 }
-
+ 
 // ── Corregir el objetivo de una parada de bateas ──────────────
 // El chofer escribe libre por WhatsApp; acá se reasigna contra la lista real.
 // Con recordar=true el texto queda como alias y la próxima matchea solo.
@@ -1805,10 +1984,10 @@ router.post('/api/viajes', auth, async (req, res) => {
       }))
       .filter(p => p.objetivo_nombre && p.bateas > 0);
     if (!paradas.length) return res.status(422).json({ error: 'Cargá al menos una parada con bateas' });
-
+ 
     const total = paradas.reduce((a, p) => a + p.bateas, 0);
     const { data: uni } = await supabase.from('unidades').select('patente').eq('id', b.unidad_id).maybeSingle();
-
+ 
     const fila = {
       chofer_id: b.chofer_id || null,
       unidad_id: b.unidad_id,
@@ -1820,7 +1999,7 @@ router.post('/api/viajes', auth, async (req, res) => {
     };
     // OJO: viajes_bateas NO tiene `capataz_id` — solo `chofer_id`. El
     // select del dashboard la nombra pero la columna no existe.
-
+ 
     if (b.id) {
       const { error } = await supabase.from('viajes_bateas').update(fila).eq('id', b.id);
       if (error) throw error;
@@ -1836,7 +2015,7 @@ router.post('/api/viajes', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el viaje: ' + (err.message || '') });
   }
 });
-
+ 
 // Choferes y camiones para el alta manual
 router.get('/api/viajes/opciones', auth, async (req, res) => {
   try {
@@ -1850,32 +2029,32 @@ router.get('/api/viajes/opciones', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude traer las opciones' });
   }
 });
-
+ 
 router.post('/api/viajes/:id/parada', auth, async (req, res) => {
   try {
     const { idx, objetivo_id, recordar } = req.body || {};
     const i = Number(idx);
     if (!Number.isInteger(i) || i < 0) return res.status(422).json({ error: 'Índice de parada inválido' });
     if (!objetivo_id) return res.status(422).json({ error: 'Falta el objetivo' });
-
+ 
     const { data: obj, error: eObj } = await supabase
       .from('objetivos').select('id, nombre').eq('id', objetivo_id).maybeSingle();
     if (eObj) throw eObj;
     if (!obj) return res.status(422).json({ error: 'Ese objetivo no existe' });
-
+ 
     const { data: viaje, error: eV } = await supabase
       .from('viajes_bateas').select('id, paradas').eq('id', req.params.id).maybeSingle();
     if (eV) throw eV;
     if (!viaje) return res.status(404).json({ error: 'No encontré esa jornada' });
-
+ 
     const paradas = Array.isArray(viaje.paradas) ? viaje.paradas.slice() : [];
     if (!paradas[i]) return res.status(422).json({ error: 'Esa parada ya no existe' });
-
+ 
     const previa = paradas[i];
     // El texto que escribió el chofer: si es la primera corrección lo tomamos
     // del nombre guardado, porque texto_original recién existe desde hoy.
     const textoOriginal = previa.texto_original || previa.objetivo_nombre || '';
-
+ 
     paradas[i] = Object.assign({}, previa, {
       objetivo_id: obj.id,
       objetivo_nombre: obj.nombre,
@@ -1884,11 +2063,11 @@ router.post('/api/viajes/:id/parada', auth, async (req, res) => {
       corregido_por: req.usuario || null,
       corregido_at: new Date().toISOString(),
     });
-
+ 
     const { error: eU } = await supabase
       .from('viajes_bateas').update({ paradas }).eq('id', viaje.id);
     if (eU) throw eU;
-
+ 
     // Aprender el alias. Si falla (tabla sin crear, alias ya tomado por otro
     // objetivo) la corrección de la parada NO se pierde: se avisa y listo.
     let alias = null, alias_error = null;
@@ -1903,7 +2082,7 @@ router.post('/api/viajes/:id/parada', auth, async (req, res) => {
         }, { onConflict: 'alias' });
       if (eA) alias_error = eA.message; else alias = aliasNorm;
     }
-
+ 
     console.log(`[bateas] parada corregida · viaje ${viaje.id} #${i} · "${textoOriginal}" → ${obj.nombre}` +
       (alias ? ` · alias "${alias}"` : ''));
     res.json({ ok: true, objetivo: obj, alias, alias_error });
@@ -1912,7 +2091,7 @@ router.post('/api/viajes/:id/parada', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude corregir la parada' });
   }
 });
-
+ 
 // ── Alias de objetivos ────────────────────────────────────────
 // Van bajo /api/viajes a propósito: moduloDeRuta() mandaría /api/objetivos*
 // al permiso 'maestros', y esto lo maneja quien usa Bateas.
@@ -1927,18 +2106,18 @@ router.post('/api/objetivos/alias', auth, async (req, res) => {
     const texto = String(b.texto || '').trim();
     if (!texto) return res.status(422).json({ error: 'Falta el texto a unificar' });
     if (!b.objetivo_id) return res.status(422).json({ error: 'Elegí a qué objetivo corresponde' });
-
+ 
     const { data: obj, error: eO } = await supabase.from('objetivos')
       .select('id, nombre').eq('id', b.objetivo_id).maybeSingle();
     if (eO) throw eO;
     if (!obj) return res.status(422).json({ error: 'Ese objetivo no existe' });
-
+ 
     const aliasNorm = normObjetivo(texto);
     if (!aliasNorm) return res.status(422).json({ error: 'El texto no tiene letras ni números' });
     if (aliasNorm === normObjetivo(obj.nombre)) {
       return res.status(422).json({ error: 'Ese texto ya coincide con el nombre del objetivo' });
     }
-
+ 
     const { error } = await supabase.from('objetivos_alias').upsert({
       alias: aliasNorm,
       alias_original: texto,
@@ -1955,7 +2134,7 @@ router.post('/api/objetivos/alias', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el alias' });
   }
 });
-
+ 
 // Los alias más el normalizador, para que el panel pueda unificar nombres del
 // lado del cliente sin volver a consultar por cada uno.
 router.get('/api/objetivos/alias', auth, async (req, res) => {
@@ -1976,7 +2155,7 @@ router.get('/api/objetivos/alias', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar los alias' });
   }
 });
-
+ 
 router.get('/api/viajes/alias', auth, async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -1988,7 +2167,7 @@ router.get('/api/viajes/alias', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar los alias (¿corriste objetivos_alias.sql?)' });
   }
 });
-
+ 
 router.delete('/api/viajes/alias/:id', auth, async (req, res) => {
   try {
     const { error } = await supabase.from('objetivos_alias').delete().eq('id', req.params.id);
@@ -1998,7 +2177,7 @@ router.delete('/api/viajes/alias/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude borrar el alias' });
   }
 });
-
+ 
 router.post('/api/viajes/:id/anular', auth, async (req, res) => {
   try {
     const { error } = await supabase.from('viajes_bateas').delete().eq('id', req.params.id);
@@ -2008,7 +2187,7 @@ router.post('/api/viajes/:id/anular', auth, async (req, res) => {
     res.status(500).json({ error: 'Error eliminando el viaje' });
   }
 });
-
+ 
 // Marcar/desmarcar que ese día el camión estuvo en mantenimiento. Se carga a
 // mano desde el panel: el bot no lo pregunta. Sirve para distinguir una
 // jornada floja de una que se fue en el taller.
@@ -2031,7 +2210,7 @@ router.patch('/api/viajes/:id/mantenimiento', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude marcar el mantenimiento' });
   }
 });
-
+ 
 // ── Objetivos (para los selectores de imputación) ─────────────
 router.get('/api/objetivos', auth, async (req, res) => {
   try {
@@ -2044,7 +2223,7 @@ router.get('/api/objetivos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando objetivos' });
   }
 });
-
+ 
 // ── Reparaciones (incidencias del taller) ─────────────────────
 router.get('/api/reparaciones', auth, async (req, res) => {
   try {
@@ -2062,14 +2241,14 @@ router.get('/api/reparaciones', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando reparaciones' });
   }
 });
-
+ 
 // ── Preventivo (rodados) ──────────────────────────────────────
 // Mantenimiento programado por tiempo. Solo rodados: la unidad del maestro
 // tiene `tipo_rodado` y cada tipo un intervalo en días (preventivo_config).
 //
 // DESDE EL 21-ago cada UNIDAD puede tener su propia frecuencia y esa MANDA
 // sobre la del tipo; la del tipo queda como valor por defecto.
-
+ 
 /* Suma días SALTEANDO sábados y domingos: "cada 40 días hábiles" son 8
    semanas de trabajo, no 40 corridos (que serían menos de 6 semanas). */
 function sumarHabiles(desde, n) {
@@ -2104,7 +2283,7 @@ function proximoPreventivo(ultimo, intervalo, habiles) {
 // incidencia preventiva finalizada, lo que sea más nuevo.
 const ROD_LABEL = { camioneta: 'Camioneta', tractor: 'Tractor', desmalezadora: 'Desmalezadora', mini_tractor: 'Mini tractor', giro_cero: 'Giro cero' };
 const normUni = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-
+ 
 // Las planillas guardan la fecha como texto (dd/mm/aaaa la mayoría). Si no se
 // puede leer, se usa la fecha de carga del registro.
 function fechaDeService(d, createdAt) {
@@ -2118,7 +2297,7 @@ function fechaDeService(d, createdAt) {
   if (t) { const f2 = new Date(t); if (!isNaN(f2)) return f2; }
   return createdAt ? new Date(createdAt) : null;
 }
-
+ 
 router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
   try {
     const [cfgR, uniR, servR, prevR, abiertasR] = await Promise.all([
@@ -2135,7 +2314,7 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
     ]);
     const cfg = {};
     (cfgR.data || []).forEach(c => { cfg[c.tipo] = c; });
-
+ 
     // Última fecha conocida por clave (código de unidad o patente, normalizados)
     const ult = {};
     const marcar = (clave, f) => {
@@ -2149,7 +2328,7 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
       marcar(s.data && s.data.patente, f);
     });
     (prevR.data || []).forEach(i => marcar(i.numero_unidad, new Date(i.fecha_finalizado)));
-
+ 
     const hoy = Date.now();
     const rodados = (uniR.data || []).map(u => {
       const c = cfg[u.tipo_rodado] || null;
@@ -2159,7 +2338,7 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
       const habiles = propio ? u.prev_habiles !== false : false;   // el del tipo sigue siendo en corridos
       const f = ult[normUni(u.codigo)] || ult[normUni(u.patente)] || null;
       const dias = f ? Math.floor((hoy - f.getTime()) / 86400000) : null;
-
+ 
       // Próximo vencimiento: último service + intervalo. Si se reprogramó
       // (y no hubo un service posterior a la reprogramación), manda esa fecha.
       let proximo = (f && intervalo) ? new Date(f.getTime() + intervalo * 86400000) : null;
@@ -2178,7 +2357,7 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
         if (px && (!proximo || !reprogramado)) proximo = px;
       }
       const restan = proximo ? Math.ceil((proximo.getTime() - hoy) / 86400000) : null;
-
+ 
       let estado = 'sin_config';
       if (intervalo) {
         if (restan == null) estado = 'sin_service';
@@ -2215,14 +2394,14 @@ router.get('/api/reparaciones/preventivo', auth, async (req, res) => {
           mecanico: p.mecanicos ? p.mecanicos.nombre : null };
       });
     } catch (e) { /* si la tabla todavía no existe, el resto sigue andando */ }
-
+ 
     res.json({ config: cfgR.data || [], rodados, en_curso: abiertasR.data || [], planes });
   } catch (err) {
     console.error('preventivo:', err);
     res.status(500).json({ error: 'Error cargando el preventivo' });
   }
 });
-
+ 
 // Guardar los intervalos por tipo
 // Alta / edición del plan de CUALQUIER máquina. Se identifica por equipo +
 // número, igual que las incidencias, así no depende de la tabla unidades.
@@ -2238,12 +2417,12 @@ router.post('/api/reparaciones/preventivo/plan-maquina', auth, async (req, res) 
     if (!equipo) return res.status(422).json({ error: 'Falta el equipo' });
     const dias = Number(b.intervalo_dias);
     if (!(dias > 0)) return res.status(422).json({ error: 'La frecuencia tiene que ser mayor a cero' });
-
+ 
     const habiles = b.habiles !== false;
     const desde = b.desde || null;
     const ultimo = b.ultimo || null;
     const px = proximoPreventivo(ultimo || desde, dias, habiles);
-
+ 
     const fila = {
       equipo, unidad: String(b.unidad || '').trim() || null,
       // equipo_norm y unidad_norm son COLUMNAS reales: el índice único va
@@ -2268,7 +2447,7 @@ router.post('/api/reparaciones/preventivo/plan-maquina', auth, async (req, res) 
     res.status(500).json({ error: 'No pude guardar el plan: ' + (err.message || '') });
   }
 });
-
+ 
 // Marcar el service hecho: corre el próximo vencimiento
 router.post('/api/reparaciones/preventivo/plan-maquina/:id/realizado', auth, async (req, res) => {
   try {
@@ -2287,7 +2466,7 @@ router.post('/api/reparaciones/preventivo/plan-maquina/:id/realizado', auth, asy
     res.status(500).json({ error: 'No pude actualizar el plan' });
   }
 });
-
+ 
 router.delete('/api/reparaciones/preventivo/plan-maquina/:id', auth, async (req, res) => {
   try {
     const { error } = await supabase.from('preventivo_planes').delete().eq('id', req.params.id);
@@ -2297,7 +2476,7 @@ router.delete('/api/reparaciones/preventivo/plan-maquina/:id', auth, async (req,
     res.status(500).json({ error: 'No pude borrar el plan' });
   }
 });
-
+ 
 // Alta / edición del plan de preventivo de UNA unidad. La frecuencia se
 // carga en días y puede contarse en hábiles (sin fines de semana).
 router.post('/api/reparaciones/preventivo/plan', auth, async (req, res) => {
@@ -2306,7 +2485,7 @@ router.post('/api/reparaciones/preventivo/plan', auth, async (req, res) => {
     if (!b.unidad_id) return res.status(422).json({ error: 'Falta la unidad' });
     const dias = b.intervalo_dias == null || b.intervalo_dias === '' ? null : Number(b.intervalo_dias);
     if (dias != null && !(dias > 0)) return res.status(422).json({ error: 'La frecuencia tiene que ser mayor a cero' });
-
+ 
     const patch = {
       prev_intervalo_dias: dias,
       prev_habiles: b.habiles !== false,
@@ -2324,7 +2503,7 @@ router.post('/api/reparaciones/preventivo/plan', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el plan: ' + (err.message || '') });
   }
 });
-
+ 
 // Generar la ORDEN de trabajo del preventivo. José elige el mecánico ANTES
 // de crearla, así no aparece una incidencia sin dueño en el Resumen.
 router.post('/api/reparaciones/preventivo/generar', auth, async (req, res) => {
@@ -2332,18 +2511,18 @@ router.post('/api/reparaciones/preventivo/generar', auth, async (req, res) => {
     const b = req.body || {};
     if (!b.unidad_id) return res.status(422).json({ error: 'Falta la unidad' });
     if (!b.mecanico_id) return res.status(422).json({ error: 'Elegí el mecánico que lo va a hacer' });
-
+ 
     const { data: u, error: e0 } = await supabase.from('unidades')
       .select('*').eq('id', b.unidad_id).maybeSingle();
     if (e0 || !u) return res.status(404).json({ error: 'Unidad inexistente' });
-
+ 
     const vence = b.vence || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' });
     // No generar dos veces la orden del mismo vencimiento
     const { data: yaHay } = await supabase.from('incidencias')
       .select('id').eq('preventivo_unidad_id', b.unidad_id).eq('preventivo_vence', vence)
       .neq('estado', 'finalizado').maybeSingle();
     if (yaHay) return res.status(409).json({ error: 'Ese preventivo ya tiene una orden abierta' });
-
+ 
     const equipo = ROD_LABEL[u.tipo_rodado] || u.tipo_rodado || 'Equipo';
     const { data, error } = await supabase.from('incidencias').insert({
       tipo_equipo: equipo,
@@ -2366,7 +2545,7 @@ router.post('/api/reparaciones/preventivo/generar', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude generar la orden: ' + (err.message || '') });
   }
 });
-
+ 
 router.post('/api/reparaciones/preventivo/config', auth, async (req, res) => {
   try {
     const tipos = Array.isArray((req.body || {}).tipos) ? req.body.tipos : [];
@@ -2382,7 +2561,7 @@ router.post('/api/reparaciones/preventivo/config', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar los intervalos' });
   }
 });
-
+ 
 // Dar de alta la incidencia preventiva de un rodado desde el panel
 router.post('/api/reparaciones/preventivo/alta', auth, async (req, res) => {
   try {
@@ -2407,7 +2586,7 @@ router.post('/api/reparaciones/preventivo/alta', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
   }
 });
-
+ 
 // Marcar el preventivo como realizado hoy, sin pasar por una incidencia.
 // Se registra como una planilla mínima en services_unidades (aparece en el
 // historial de Services) y se limpia cualquier reprogramación pendiente.
@@ -2443,7 +2622,7 @@ router.post('/api/reparaciones/preventivo/realizado', auth, async (req, res) => 
     res.status(500).json({ error: 'No pude registrar el service: ' + (err.message || 'error') });
   }
 });
-
+ 
 // Reprogramar: correr el vencimiento N días desde hoy. Queda anotado cuándo
 // se pospuso; un service posterior lo pisa automáticamente.
 router.post('/api/reparaciones/preventivo/reprogramar', auth, async (req, res) => {
@@ -2463,7 +2642,7 @@ router.post('/api/reparaciones/preventivo/reprogramar', auth, async (req, res) =
     res.status(500).json({ error: 'No pude reprogramar: ' + (err.message || 'error') });
   }
 });
-
+ 
 // Alta manual de incidencia desde el panel (correctivo o preventivo),
 // espejo del alta de la app pero con mecánico y prioridad a elección.
 router.post('/api/reparaciones/nueva', auth, async (req, res) => {
@@ -2494,7 +2673,7 @@ router.post('/api/reparaciones/nueva', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude crear la incidencia: ' + (err.message || 'error') });
   }
 });
-
+ 
 // ── Repuestos de taller (lo que hay que comprar para reparar) ─
 // El pedido nace en la reparación (mecánico desde la app o vos desde el
 // panel) y se gestiona en Compras → Repuestos.
@@ -2565,7 +2744,7 @@ router.post('/api/reparaciones/:id/repuestos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando el pedido (¿existe la tabla repuestos_taller?)' });
   }
 });
-
+ 
 // Sugerencia IA de repuestos (misma lógica que en la app del mecánico)
 router.post('/api/reparaciones/:id/repuestos/sugerir', auth, async (req, res) => {
   try {
@@ -2576,7 +2755,7 @@ router.post('/api/reparaciones/:id/repuestos/sugerir', auth, async (req, res) =>
     res.status(500).json({ error: 'No pude armar la sugerencia. Cargalo a mano.' });
   }
 });
-
+ 
 router.get('/api/compras/repuestos', auth, async (req, res) => {
   try {
     const { data, error } = await supabase.from('repuestos_taller')
@@ -2589,7 +2768,7 @@ router.get('/api/compras/repuestos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando repuestos (¿existe la tabla repuestos_taller?)' });
   }
 });
-
+ 
 // ── Circuito de repuestos: acciones del REFERENTE desde el PANEL ─────────
 // El Referente gestiona desde el panel (decisión 7-ago): tomar, marcar pieza
 // en el proveedor y cargar la nota de pedido. Cualquier usuario del panel con
@@ -2638,7 +2817,7 @@ router.post('/api/compras/repuestos/:id/referente', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude aplicar la acción' });
   }
 });
-
+ 
 // Eliminar un pedido del circuito (se confundieron, duplicado, etc.).
 // Los entregados no se borran: son historial del taller.
 router.delete('/api/compras/repuestos/:id', auth, async (req, res) => {
@@ -2654,7 +2833,7 @@ router.delete('/api/compras/repuestos/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude eliminar el pedido' });
   }
 });
-
+ 
 // ── Circuito de repuestos: APROBACIÓN (José) ─────────────────────────────
 // Aprobar la nota de pedido: cotizado → a_comprar. Protegido con el mismo PIN
 // de súper admin que Performance (env PERFORMANCE_PIN): los mecánicos también
@@ -2676,7 +2855,7 @@ router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
       .update({ estado: 'a_comprar', estado_desde: ahora, aprobado_at: ahora, aprobado_por: req.usuario || 'panel' })
       .eq('id', req.params.id).select('*, incidencias(id, numero_unidad, tipo_equipo, tipo_falla, objetivos(nombre))').single();
     if (error) throw error;
-
+ 
     // La aprobación ES la orden de compra: ya hay proveedor, precio, ítems y
     // la imputación de la reparación. Se genera sola para que nadie la
     // cargue dos veces. Best-effort: si la tabla de órdenes no existe todavía
@@ -2699,7 +2878,7 @@ router.post('/api/compras/repuestos/:id/aprobar', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude aprobar' });
   }
 });
-
+ 
 // Observar: devuelve el pedido al Referente con un comentario (→ en_cotizacion).
 router.post('/api/compras/repuestos/:id/observar', auth, async (req, res) => {
   try {
@@ -2718,7 +2897,7 @@ router.post('/api/compras/repuestos/:id/observar', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude devolver el pedido' });
   }
 });
-
+ 
 // Foto del pedido o adjunto de la nota, para el panel (URL firmada 1 hora)
 router.get('/api/compras/repuestos/:id/archivo', auth, async (req, res) => {
   try {
@@ -2733,7 +2912,7 @@ router.get('/api/compras/repuestos/:id/archivo', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude generar el enlace' });
   }
 });
-
+ 
 // Marcar UN ítem como comprado / pendiente (compra parcial). El pedido pasa a
 // "comprado" recién cuando todos los ítems están tildados; si falta alguno,
 // sigue pendiente en "a_comprar".
@@ -2759,7 +2938,7 @@ router.post('/api/compras/repuestos/:id/item', auth, async (req, res) => {
     res.status(500).json({ error: 'Error actualizando el ítem' });
   }
 });
-
+ 
 router.post('/api/compras/repuestos/:id/estado', auth, async (req, res) => {
   try {
     const estado = String((req.body || {}).estado || '');
@@ -2809,7 +2988,7 @@ router.post('/api/compras/repuestos/:id/estado', auth, async (req, res) => {
     res.status(500).json({ error: 'Error actualizando el pedido' });
   }
 });
-
+ 
 // Agregar una observación desde el panel (queda en el mismo hilo que las del
 // mecánico y viaja en el próximo aviso de estado al capataz)
 router.post('/api/reparaciones/:id/comentario', auth, async (req, res) => {
@@ -2826,7 +3005,7 @@ router.post('/api/reparaciones/:id/comentario', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando la observación' });
   }
 });
-
+ 
 // Planillas de service cargadas desde la app del mecánico (foto + IA)
 router.get('/api/services', auth, async (req, res) => {
   try {
@@ -2840,7 +3019,7 @@ router.get('/api/services', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando services' });
   }
 });
-
+ 
 // Cambiar a qué mecánico se le atribuye un service. Las planillas llegan en
 // papel y muchas veces las carga uno solo para todo el taller, así que desde
 // el panel se corrige a quién le corresponde el punto.
@@ -2852,7 +3031,7 @@ router.patch('/api/services/:id/mecanico', auth, async (req, res) => {
       .eq('id', req.params.id).maybeSingle();
     if (eS) throw eS;
     if (!sv) return res.status(404).json({ error: 'No encontr\u00e9 ese service' });
-
+ 
     let fila = { mecanico_id: null, mecanico_nombre: null };
     if (id) {
       const { data: m } = await supabase.from('mecanicos')
@@ -2863,7 +3042,7 @@ router.patch('/api/services/:id/mecanico', auth, async (req, res) => {
     const { error } = await supabase.from('services_unidades')
       .update(fila).eq('id', sv.id);
     if (error) throw error;
-
+ 
     const d = sv.data || {};
     console.log(`[services] ${sv.id} (${d.unidad || d.patente || 's/unidad'}) reasignado: ` +
       `${sv.mecanico_nombre || '\u2014'} \u2192 ${fila.mecanico_nombre || '(sin asignar)'} \u00b7 por ${req.usuario || '?'}`);
@@ -2873,7 +3052,7 @@ router.patch('/api/services/:id/mecanico', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cambiar el mec\u00e1nico' });
   }
 });
-
+ 
 // Borrar una planilla de service. Se cargan por foto + IA desde la app, así
 // que una mal leída o repetida tenía que quedar para siempre. Queda el log
 // con quién la borró y de qué unidad era.
@@ -2884,11 +3063,11 @@ router.delete('/api/services/:id', auth, async (req, res) => {
       .eq('id', req.params.id).maybeSingle();
     if (eS) throw eS;
     if (!sv) return res.status(404).json({ error: 'No encontré ese service' });
-
+ 
     const { error: eD } = await supabase
       .from('services_unidades').delete().eq('id', sv.id);
     if (eD) throw eD;
-
+ 
     const d = sv.data || {};
     console.log(`[services] planilla ${sv.id} borrada · ${d.unidad || d.patente || 's/unidad'} · ` +
       `${d.fecha_service || 's/fecha'} · cargada por ${sv.mecanico_nombre || d.mecanico || '?'} · por ${req.usuario || '?'}`);
@@ -2898,7 +3077,7 @@ router.delete('/api/services/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude borrar el service' });
   }
 });
-
+ 
 // PIN de súper admin para la vista Performance (ranking del bono). Los
 // mecánicos SÍ entran al panel, así que ocultar el botón no alcanza: la vista
 // exige además este PIN, que vive en la env PERFORMANCE_PIN de Railway (fuera
@@ -2909,29 +3088,29 @@ router.delete('/api/services/:id', auth, async (req, res) => {
 // mecánico dijo que hizo y los repuestos, y estima HORAS de mano de obra.
 // 1 punto ≈ 1 hora. Sin temperature ni prefill (familia 5 los rechaza).
 const PUNTOS_MIN = 1, PUNTOS_MAX = 12;
-
+ 
 async function analizarPuntaje(id) {
   const { data: inc, error } = await supabase.from('incidencias')
     .select('id, tipo_equipo, numero_unidad, tipo_falla, descripcion, prioridad, equipo_parado, tipo_mant, created_at, fecha_finalizado, comentarios_incidencias(mecanico_nombre,texto), repuestos_taller(items,estado), equipos(nombre)')
     .eq('id', id).maybeSingle();
   if (error) throw error;
   if (!inc) throw new Error('no encontré la incidencia');
-
+ 
   const coms = (inc.comentarios_incidencias || [])
     .map(c => `- ${c.mecanico_nombre || '?'}: ${c.texto}`).join('\n') || '(sin comentarios del taller)';
   const reps = (inc.repuestos_taller || [])
     .map(r => (Array.isArray(r.items) ? r.items : []).map(i => i.descripcion || i.nombre || '').filter(Boolean).join(', '))
     .filter(Boolean).join(' · ') || '(sin repuestos registrados)';
-
+ 
   const prompt = `Sos el jefe de un taller de maquinaria de espacios verdes en Córdoba,
 Argentina. Trabajan con motoguadañas, motosierras, extensibles (pértigas),
 sopladoras (todas motor 2 tiempos), cortadoras y planas, giro cero y mini
 tractores, y vehículos (camionetas, camiones, hidrogrúas, tractores).
-
+ 
 Tenés que estimar cuántas HORAS DE MANO DE OBRA de mecánico llevó esta
 reparación. No cuentes días de espera de repuestos ni la máquina parada en el
 taller: solo el tiempo con las manos en el fierro.
-
+ 
 REPARACIÓN
 - Equipo: ${inc.tipo_equipo || (inc.equipos ? inc.equipos.nombre : '?')} N° ${inc.numero_unidad || '?'}
 - Prioridad asignada: ${inc.prioridad || 'sin definir'}${inc.equipo_parado ? ' · LA MÁQUINA ESTABA PARADA (no podía trabajar)' : ''}
@@ -2940,7 +3119,7 @@ REPARACIÓN
 - Descripción del capataz: ${inc.descripcion || '(sin descripción)'}
 - Qué hizo el taller: ${coms}
 - Repuestos pedidos: ${reps}
-
+ 
 CÓMO ESTIMAR
 - Guía de referencia: en 2 tiempos chicas, una bujía, una piola o una tanza es
   15-30 min; una carburación o un embrague, 1-2 h; un pistón o motor completo,
@@ -2954,10 +3133,10 @@ CÓMO ESTIMAR
   contrarreloj: podés sumar hasta un 30% por eso, no más.
 - Si no hay casi información, estimá lo típico para ese equipo y esa falla y
   poné confianza "baja".
-
+ 
 Devolvé SOLO un objeto JSON, sin texto antes ni después y sin markdown:
 {"horas": number, "confianza":"alta"|"media"|"baja", "motivo":"una frase corta en criollo explicando de dónde sale la estimación"}`;
-
+ 
   // Primero el modelo rápido (3-6s en vez de 10-20s). Solo si no sirve se
   // reintenta con el grande: en un lote de 40 la diferencia son minutos.
   const pedir = async modelo => {
@@ -2982,7 +3161,7 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después y sin markdown:
     if (parsed && parsed.horas != null) break;
   }
   if (!parsed || parsed.horas == null) throw new Error(ultimo ? ultimo.message : 'la IA no devolvió una estimación legible');
-
+ 
   const horas = Number(parsed.horas) || 0;
   const puntos = Math.min(PUNTOS_MAX, Math.max(PUNTOS_MIN, Math.round(horas)));
   const patch = {
@@ -2997,7 +3176,7 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después y sin markdown:
   console.log(`[puntaje] ${inc.tipo_equipo || '?'} ${inc.numero_unidad || ''} → ${horas}h = ${puntos} pts (${patch.puntos_ia_confianza})`);
   return patch;
 }
-
+ 
 // Analizar una sola (botón del ranking)
 router.post('/api/reparaciones/:id/puntaje', auth, async (req, res) => {
   try { res.json(await analizarPuntaje(req.params.id)); }
@@ -3006,7 +3185,7 @@ router.post('/api/reparaciones/:id/puntaje', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude analizar: ' + (err.message || err) });
   }
 });
-
+ 
 // Corrección a mano: si José carga un valor, ese manda sobre el de la IA.
 router.post('/api/reparaciones/:id/puntaje-manual', auth, async (req, res) => {
   try {
@@ -3021,7 +3200,7 @@ router.post('/api/reparaciones/:id/puntaje-manual', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el puntaje' });
   }
 });
-
+ 
 // Recalcular el mes: analiza las finalizadas que todavía no tienen puntaje.
 // De a una y con tope, para no dispararle 70 llamadas juntas a la API.
 router.post('/api/reparaciones/puntaje-lote', auth, async (req, res) => {
@@ -3035,7 +3214,7 @@ router.post('/api/reparaciones/puntaje-lote', auth, async (req, res) => {
     if (!forzar) q = q.is('puntos_ia', null);
     const { data, error } = await q;
     if (error) throw error;
-
+ 
     // De a 5 en paralelo: 40 incidencias pasan de ~5 min a menos de 1.
     // Más concurrencia que esto empieza a comerse el rate limit de la API.
     const CONCURRENCIA = 5;
@@ -3056,7 +3235,7 @@ router.post('/api/reparaciones/puntaje-lote', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude recalcular: ' + (err.message || err) });
   }
 });
-
+ 
 // Análisis IA de un rebote: ¿la vuelta es atribuible al arreglo anterior?
 // Devuelve una SUGERENCIA con motivo — la decisión final la toma el usuario
 // con el botón "No atribuir". Sin temperature: los modelos de la familia 5
@@ -3065,7 +3244,7 @@ router.post('/api/reparaciones/rebote-analisis', auth, async (req, res) => {
   try {
     const { base_id, vuelta_id } = req.body || {};
     if (!base_id || !vuelta_id) return res.status(422).json({ error: 'Faltan las incidencias' });
-
+ 
     const traer = async id => {
       const { data, error } = await supabase.from('incidencias')
         .select('id, tipo_equipo, numero_unidad, tipo_falla, descripcion, created_at, fecha_finalizado, equipo_parado, comentarios_incidencias(mecanico_nombre,texto,created_at), repuestos_taller(items,estado), mecanicos(nombre)')
@@ -3075,7 +3254,7 @@ router.post('/api/reparaciones/rebote-analisis', auth, async (req, res) => {
     };
     const [base, vuelta] = await Promise.all([traer(base_id), traer(vuelta_id)]);
     if (!base || !vuelta) return res.status(404).json({ error: 'No encontré alguna de las incidencias' });
-
+ 
     const arm = (inc, rol) => {
       const coms = (inc.comentarios_incidencias || [])
         .map(c => `- ${c.mecanico_nombre || '?'}: ${c.texto}`).join('\n') || '(sin comentarios)';
@@ -3090,26 +3269,26 @@ router.post('/api/reparaciones/rebote-analisis', auth, async (req, res) => {
 - Repuestos pedidos: ${reps}
 - Mecánico: ${inc.mecanicos ? inc.mecanicos.nombre : 'sin asignar'}`;
     };
-
+ 
     const dias = Math.round((new Date(vuelta.created_at) - new Date(base.fecha_finalizado)) / 86400000);
     const prompt = `Sos el jefe de un taller de maquinaria de espacios verdes (motoguadañas,
 motosierras, extensibles, sopladoras, tractores). Una máquina volvió al taller
 ${dias} día(s) después de una reparación y hay que decidir si la vuelta es
 ATRIBUIBLE al arreglo anterior (misma causa, arreglo que no duró) o si es un
 problema NUEVO/independiente (otra pieza, rotura de uso, mal uso en obra).
-
+ 
 ${arm(base, 'REPARACIÓN ANTERIOR (finalizada)')}
-
+ 
 ${arm(vuelta, 'VUELTA AL TALLER (nueva incidencia)')}
-
+ 
 Criterio técnico: pensá si lo que se hizo y los repuestos de la primera
 reparación tienen relación causal con lo que presenta la vuelta. Un carburador
 regulado que vuelve porque no arranca puede ser lo mismo; un trinquete
 cambiado que vuelve con el pistón fundido es otra cosa.
-
+ 
 Devolvé SOLO un objeto JSON, sin texto antes ni después:
 {"atribuible":"si"|"no"|"dudoso","confianza":"alta"|"media"|"baja","motivo":"una o dos frases en criollo, concretas"}`;
-
+ 
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
@@ -3135,7 +3314,7 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después:
       if (a >= 0 && b > a) { try { parsed = JSON.parse(crudo.slice(a, b + 1)); } catch (e2) { /* nada */ } }
     }
     if (!parsed || !parsed.atribuible) throw new Error('la IA no devolvió un dictamen legible');
-
+ 
     console.log(`[perf] análisis rebote ${base_id}→${vuelta_id}: ${parsed.atribuible} (${parsed.confianza || '?'})`);
     res.json({ atribuible: parsed.atribuible, confianza: parsed.confianza || 'media', motivo: parsed.motivo || '' });
   } catch (err) {
@@ -3143,7 +3322,7 @@ Devolvé SOLO un objeto JSON, sin texto antes ni después:
     res.status(500).json({ error: 'No pude analizar: ' + (err.message || err) });
   }
 });
-
+ 
 // Marcar/desmarcar la incidencia de una vuelta como "no atribuible" al
 // arreglo anterior (volvió por otra falla). Afecta solo la calidad del bono.
 router.post('/api/reparaciones/:id/rebote', auth, async (req, res) => {
@@ -3165,7 +3344,7 @@ router.post('/api/reparaciones/:id/rebote', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar (¿corriste rebotes_descarte.sql?)' });
   }
 });
-
+ 
 router.post('/api/reparaciones/performance-pin', auth, async (req, res) => {
   const envPin = String(process.env.PERFORMANCE_PIN || '').trim();
   if (!envPin) return res.json({ ok: true, sin_pin: true });
@@ -3180,7 +3359,7 @@ router.post('/api/reparaciones/performance-pin', auth, async (req, res) => {
   seg.loginFallido(req, quien);
   res.status(401).json({ error: 'PIN incorrecto' });
 });
-
+ 
 // Avanzar estado / reasignar mecánico
 const FECHA_ESTADO = {
   diagnostico:         'fecha_diagnostico',
@@ -3198,7 +3377,7 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     }
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
     if (['correctivo', 'preventivo'].includes(req.body.tipo_mant)) patch.tipo_mant = req.body.tipo_mant;
-
+ 
     // Ninguna reparación se cierra sin mecánico (decisión 04-sep). Se mira el
     // mecánico que quedaría DESPUÉS del cambio: si en el mismo pedido viene la
     // asignación y el cierre, vale; si viene el cierre solo y la incidencia
@@ -3213,12 +3392,12 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
         return res.status(422).json({ error: 'No se puede finalizar sin mecánico asignado. Asignalo primero y después cerrala.', sin_mecanico: true });
       }
     }
-
+ 
     const { data, error } = await supabase
       .from('incidencias').update(patch).eq('id', req.params.id)
       .select('*, capataces(nombre,telefono), equipos(nombre), mecanicos(nombre)').single();
     if (error) throw error;
-
+ 
     // Al FINALIZAR se dispara el análisis de puntaje en segundo plano: recién
     // ahí están los comentarios y repuestos que le dan sustancia. No se espera
     // la respuesta para no demorar el panel; si falla, queda el log y el botón
@@ -3227,7 +3406,7 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
       analizarPuntaje(req.params.id).catch(e =>
         console.error('[puntaje] falló el automático de', req.params.id, e.message || e));
     }
-
+ 
     // Aviso al capataz en cada avance de estado (diagnóstico, esperando
     // repuestos, en reparación, finalizado), con la última nota del mecánico
     let notificado = false;
@@ -3261,7 +3440,7 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error actualizando la reparación' });
   }
 });
-
+ 
 // ── Mecánicos (para reasignar) ────────────────────────────────
 router.get('/api/mecanicos', auth, async (req, res) => {
   try {
@@ -3276,7 +3455,7 @@ router.get('/api/mecanicos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando mecánicos' });
   }
 });
-
+ 
 // ── MAESTROS · ABM de mecánicos, objetivos y capataces ────────
 // Lista blanca de campos editables por tabla (protege columnas críticas)
 // Listas para los desplegables de imputación de Compras.
@@ -3300,7 +3479,7 @@ router.get('/api/compras/listas', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando las listas de imputación' });
   }
 });
-
+ 
 // Consolidado de combustible por objetivo (submódulo de Compras).
 // Toma los listados/remitos del proveedor y reparte el gasto por objetivo.
 //
@@ -3315,11 +3494,11 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
   try {
     const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     const normN = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
-
+ 
     const { data: rems, error: e1 } = await supabaseCompras
       .from('remitos_combustible').select('*').order('created_at', { ascending: false });
     if (e1) throw e1;
-
+ 
     // Selección: ?ids=uuid,uuid | ?ids=todos | sin parámetro = el más reciente
     const idsParam = String(req.query.ids || '').trim();
     let sel = rems || [];
@@ -3329,7 +3508,7 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
     } else if (!idsParam && sel.length > 1) {
       sel = [sel[0]];
     }
-
+ 
     // Maestros para resolver el objetivo
     const [uni, cap] = await Promise.all([
       supabase.from('unidades').select('patente, codigo, responsable, objetivos(nombre)'),
@@ -3337,7 +3516,7 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
     ]);
     if (uni.error) throw uni.error;
     if (cap.error) throw cap.error;
-
+ 
     const porPatente = {}, porResponsable = {}, porCapataz = {};
     (uni.data || []).forEach(u => {
       const obj = u.objetivos ? u.objetivos.nombre : null;
@@ -3347,7 +3526,7 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
     (cap.data || []).forEach(c => {
       if (c.nombre && c.objetivos) porCapataz[normN(c.nombre)] = c.objetivos.nombre;
     });
-
+ 
     // Resolver cada fila
     const resolver = (patente, chofer) => {
       const p = normP(patente);
@@ -3358,18 +3537,18 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
       if (c && porCapataz[c])     return { objetivo: porCapataz[c],     via: 'chofer (capataz)' };
       return { objetivo: null, via: null };
     };
-
+ 
     const objetivos = {};    // nombre → { litros, monto, cargas, unidades:Set, choferes:Set }
     const sinAsignar = {};   // patente|chofer → { patente, chofer, litros, monto, cargas, fechas }
     let totalMonto = 0, totalLitros = 0, totalFilas = 0;
-
+ 
     sel.forEach(r => {
       const filas = (r.data && r.data.filas) || [];
       filas.forEach(f => {
         const litros = Number(f.litros) || 0;
         const monto  = Number(f.total)  || 0;
         totalMonto += monto; totalLitros += litros; totalFilas++;
-
+ 
         const { objetivo, via } = resolver(f.patente, f.chofer);
         if (objetivo) {
           if (!objetivos[objetivo]) objetivos[objetivo] =
@@ -3402,25 +3581,25 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
         }
       });
     });
-
+ 
     const pct = m => totalMonto ? (m * 100 / totalMonto) : 0;
     const listaObj = Object.values(objetivos).map(o => ({
       nombre: o.nombre, litros: o.litros, monto: o.monto, cargas: o.cargas,
       pct: pct(o.monto),
       unidades: [...o.unidades], choferes: [...o.choferes], vias: [...o.vias],
     })).sort((a, b) => b.monto - a.monto);
-
+ 
     const listaSin = Object.values(sinAsignar).map(s => ({
       ...s, productos: [...s.productos], choferes: [...s.choferes],
       pct: pct(s.monto), fechas: s.fechas.sort(),
     })).sort((a, b) => b.monto - a.monto);
-
+ 
     const montoSin = listaSin.reduce((s, x) => s + x.monto, 0);
-
+ 
     // Objetivos disponibles para asignar desde el desplegable inline
     const { data: objsDisp } = await supabase
       .from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
-
+ 
     res.json({
       remitos: sel.map(r => ({ id: r.id, proveedor: r.proveedor,
         periodo_desde: r.periodo_desde, periodo_hasta: r.periodo_hasta,
@@ -3442,7 +3621,7 @@ router.get('/api/compras/combustible/consolidado', auth, async (req, res) => {
     res.status(500).json({ error: 'Error consolidando el combustible' });
   }
 });
-
+ 
 // Asignar un objetivo a una patente. Se persiste en el MAESTRO de unidades
 // (no en una tabla aparte), así vale para todos los remitos futuros y además
 // el bot de combustible reconoce la unidad. Una sola fuente de verdad.
@@ -3452,13 +3631,13 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
     if (!patente) return res.status(400).json({ error: 'Falta la patente' });
     const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     const p = normP(patente);
-
+ 
     // ¿Ya existe la unidad? (comparando patentes normalizadas)
     const { data: todas, error: e0 } = await supabase
       .from('unidades').select('id, patente, responsable');
     if (e0) throw e0;
     const existente = (todas || []).find(u => normP(u.patente) === p);
-
+ 
     if (existente) {
       const patch = { objetivo_id: objetivo_id || null };
       // Si la unidad no tenía responsable y el remito trae chofer, lo completamos
@@ -3468,7 +3647,7 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
       console.log(`[combustible] unidad ${existente.patente} asignada a objetivo ${objetivo_id || 'ninguno'}`);
       return res.json({ ok: true, creada: false });
     }
-
+ 
     // No existe: se crea, porque si aparece en el remito es una unidad que carga
     const { error } = await supabase.from('unidades').insert({
       patente: String(patente).trim(),
@@ -3484,7 +3663,7 @@ router.post('/api/compras/combustible/asignar', auth, async (req, res) => {
     res.status(500).json({ error: 'Error asignando el objetivo' });
   }
 });
-
+ 
 const CAMPOS_MAESTRO = {
   mecanicos: ['nombre', 'habilidades', 'activo', 'usuario', 'rol_app', 'objetivos_cargo'],
   objetivos: ['nombre', 'ubicacion', 'tipo', 'activo', 'codigo_flexxus', 'grupo_stock'],
@@ -3492,7 +3671,7 @@ const CAMPOS_MAESTRO = {
   centros_costo: ['nombre', 'activo', 'codigo_flexxus'],
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo', 'tarjeta_combustible'],
 };
-
+ 
 function filtrarCampos(tipo, body) {
   const permitidos = CAMPOS_MAESTRO[tipo] || [];
   const out = {};
@@ -3504,7 +3683,7 @@ function filtrarCampos(tipo, body) {
   if (tipo === 'capataces' && out.usuario) out.usuario = String(out.usuario).trim().toLowerCase();
   return out;
 }
-
+ 
 // Listar (incluye inactivos, para poder reactivar)
 router.get('/api/maestros/:tipo', auth, async (req, res) => {
   const tipo = req.params.tipo;
@@ -3529,7 +3708,7 @@ router.get('/api/maestros/:tipo', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando ' + tipo });
   }
 });
-
+ 
 // Crear
 router.post('/api/maestros/:tipo', auth, async (req, res) => {
   const tipo = req.params.tipo;
@@ -3551,7 +3730,7 @@ router.post('/api/maestros/:tipo', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude crear: ' + (err.message || 'error') });
   }
 });
-
+ 
 // Editar / activar-desactivar
 router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
   const tipo = req.params.tipo;
@@ -3567,7 +3746,7 @@ router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude actualizar: ' + (err.message || 'error') });
   }
 });
-
+ 
 // ── COMPRAS (segunda base de datos) ───────────────────────────
 // Las tablas guardan pocos campos duros + un jsonb `data` con el resto.
 // Aplanamos el data para que el front lo consuma directo.
@@ -3584,7 +3763,7 @@ function aplanar(row) {
   }
   return out;
 }
-
+ 
 // ── Flexxus ERP ───────────────────────────────────────────────
 // "Probar conexión": login + lista de códigos (depósitos, multiplazos,
 // percepciones) para configurar las variables en Railway.
@@ -3596,7 +3775,7 @@ router.get('/api/flexxus/estado', auth, async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
-
+ 
 // Imputar una factura de Compras en Flexxus (manual, desde el detalle)
 // ── Clase contable por proveedor (deriva la cuenta en Flexxus) ──────
 // Lista las clases disponibles en Flexxus (para el selector)
@@ -3650,7 +3829,7 @@ router.post('/api/compras/proveedores-clase', auth, async (req, res) => {
       : 'Error guardando la clase: ' + det });
   }
 });
-
+ 
 // NÚCLEO de la imputación (extraído del POST para poder correrlo también en
 // segundo plano desde /flexxus-encolar). Devuelve { status, body } con el mismo
 // shape que siempre respondió el endpoint — el panel no nota la diferencia.
@@ -3751,14 +3930,14 @@ async function procesarImputacion(id, letraIn, permitirAlta, force, usuario) {
     return { status: 500, body: { error: err.message || 'Error imputando en Flexxus' } };
   }
 }
-
+ 
 // Endpoint clásico (sincrónico): sigue existiendo tal cual para no romper nada.
 router.post('/api/compras/facturas/:id/flexxus', auth, async (req, res) => {
   const b = req.body || {};
   const r = await procesarImputacion(req.params.id, b.letra, b.permitir_alta, b.force, req.usuario);
   res.status(r.status).json(r.body);
 });
-
+ 
 // ── MOTOR DE IMPUTACIÓN EN SEGUNDO PLANO (10-ago) ────────────────────────────
 // El POST + la apropiación + la verificación son de Flexxus y tardan lo que
 // tardan. Lo que SÍ se puede hacer es no hacer esperar al usuario: este endpoint
@@ -3836,7 +4015,7 @@ router.get('/api/compras/facturas/:id/flexxus-estado', auth, async (req, res) =>
     res.status(500).json({ error: err.message || 'Error consultando el estado' });
   }
 });
-
+ 
 // Ficha técnica cruda del proveedor en Flexxus (para descubrir el campo de la
 // clase de comprobante comparando un proveedor bien configurado vs uno libre)
 router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
@@ -3849,7 +4028,7 @@ router.get('/api/compras/proveedor-ficha', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'Error trayendo la ficha' });
   }
 });
-
+ 
 // DESTINO CONTABLE de una factura: a qué cuenta va (o fue) en Flexxus.
 // Antes de imputar sale de la ficha del proveedor (clase de comprobante +
 // rubro); después de imputar se RELEEN las cuentas reales del asiento, que es
@@ -3900,7 +4079,7 @@ router.get('/api/compras/facturas/:id/destino-contable', auth, async (req, res) 
     res.json({ ...out, error: err.message || 'No pude leer el destino contable' });
   }
 });
-
+ 
 // Rubros de bienes de uso (subcuentas 121… del plan, tal como salen en Flexxus)
 router.get('/api/compras/rubros-bienes-uso', auth, async (req, res) => {
   try {
@@ -3908,7 +4087,7 @@ router.get('/api/compras/rubros-bienes-uso', auth, async (req, res) => {
     res.json(await listarRubrosBienesUso());
   } catch (err) { res.json([]); }
 });
-
+ 
 // Colocar la clase de comprobante en la ficha del proveedor (solo si está
 // libre/en blanco = Bienes de cambio 0). Es la palanca de la cuenta contable.
 router.post('/api/compras/proveedor-clase-comprobante', auth, async (req, res) => {
@@ -3923,7 +4102,7 @@ router.post('/api/compras/proveedor-clase-comprobante', auth, async (req, res) =
     res.status(500).json({ error: err.message || 'Error colocando la clase de comprobante' });
   }
 });
-
+ 
 router.get('/api/compras/facturas', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
@@ -3935,7 +4114,7 @@ router.get('/api/compras/facturas', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando facturas de compras' });
   }
 });
-
+ 
 // ── Reporte financiero contable (para Soledad) ────────────────
 // Agrega las facturas del mes: totales (neto/IVA/total), IVA crédito fiscal,
 // pagado vs pendiente, estado en Flexxus, y desgloses por clase contable
@@ -3950,21 +4129,21 @@ router.get('/api/compras/reporte-financiero', auth, async (req, res) => {
     if (e1) throw e1;
     const mapaClase = {};
     (clasesProv || []).forEach(p => { mapaClase[p.cuit] = p; });
-
+ 
     const fs = (filas || []).map(aplanar).filter(f => {
       if (!mes) return true;
       const ff = String(f.fecha_factura || f.createdAt || '').slice(0, 7);
       return ff === mes;
     });
-
+ 
     const otrosDe = f => (f.otros_conceptos || []).filter(o => !o.exento).reduce((s, o) => s + (Number(o.monto) || 0), 0);
     const totalDe = f => (Number(f.total_sin_iva) || 0) + (Number(f.total_iva) || 0) + otrosDe(f);
-
+ 
     const kpis = { cantidad: fs.length, neto: 0, iva: 0, otros: 0, total: 0,
       pagado: 0, pendiente: 0, iva_credito_a: 0,
       imputadas_flexxus: 0, sin_imputar: 0, cc_ok: 0, cc_pendiente: 0 };
     const porClase = {}, porObjetivo = {}, porProveedor = {};
-
+ 
     for (const f of fs) {
       const neto = Number(f.total_sin_iva) || 0, iva = Number(f.total_iva) || 0;
       const otros = otrosDe(f), total = totalDe(f);
@@ -3977,14 +4156,14 @@ router.get('/api/compras/reporte-financiero', auth, async (req, res) => {
         const cc = flx.centro_costo || {};
         if (cc.ok) kpis.cc_ok++; else kpis.cc_pendiente++;
       } else kpis.sin_imputar++;
-
+ 
       // Por clase contable (cuenta destino en Flexxus)
       const cuitN = String(f.cuit || '').replace(/\D/g, '');
       const cl = mapaClase[cuitN];
       const kCl = cl ? (cl.codigo_clase + ' · ' + (cl.clase_descripcion || '')) : 'Sin clase asignada';
       porClase[kCl] = porClase[kCl] || { neto: 0, iva: 0, total: 0, cant: 0 };
       porClase[kCl].neto += neto; porClase[kCl].iva += iva; porClase[kCl].total += total; porClase[kCl].cant++;
-
+ 
       // Por objetivo (centro de costo): total o por ítem según cómo se asignó
       if (f.assignmentMode === 'per-item' && f.assignments && Object.keys(f.assignments).length) {
         const items = f.items || [];
@@ -4000,13 +4179,13 @@ router.get('/api/compras/reporte-financiero', auth, async (req, res) => {
         porObjetivo[obj] = porObjetivo[obj] || { total: 0, cant: 0 };
         porObjetivo[obj].total += total; porObjetivo[obj].cant++;
       }
-
+ 
       // Por proveedor
       const kP = f.proveedor || cuitN || '—';
       porProveedor[kP] = porProveedor[kP] || { total: 0, cant: 0, cuit: cuitN, clase: cl ? cl.codigo_clase : null };
       porProveedor[kP].total += total; porProveedor[kP].cant++;
     }
-
+ 
     const aLista = (o, extra) => Object.entries(o)
       .map(([k, v]) => ({ nombre: k, ...v }))
       .sort((a, b) => b.total - a.total);
@@ -4018,7 +4197,7 @@ router.get('/api/compras/reporte-financiero', auth, async (req, res) => {
     res.status(500).json({ error: 'Error armando el reporte financiero' });
   }
 });
-
+ 
 router.get('/api/compras/remitos', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
@@ -4030,7 +4209,7 @@ router.get('/api/compras/remitos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando remitos de combustible' });
   }
 });
-
+ 
 // Modelo para EXTRACCIÓN de documentos (OCR estructurado, no razonamiento):
 // Haiku es notablemente más rápido que Sonnet y con la misma precisión en esta
 // tarea. Se puede forzar otro con ANTHROPIC_MODEL_EXTRACT.
@@ -4042,7 +4221,7 @@ const MODEL_FACTURAS = process.env.ANTHROPIC_MODEL_FACTURAS || 'claude-sonnet-4-
 // 3-6s en vez de 12-22s. Si la lectura sale vacía o incompleta, el endpoint
 // reintenta solo con MODEL_FACTURAS (sonnet), así no se pierde precisión.
 const MODEL_FACTURAS_RAPIDO = process.env.ANTHROPIC_MODEL_FACTURAS_RAPIDO || 'claude-haiku-4-5-20251001';
-
+ 
 // Extraer datos de una factura con IA (proxy a Claude, key server-side)
 // Pasa el JSON compacto del extractor (claves cortas, ítems como arrays) al
 // formato de siempre. Si el modelo responde en el formato largo, lo deja pasar
@@ -4080,7 +4259,7 @@ function expandirFactura(d) {
     otros_conceptos: Array.isArray(d.o) ? d.o.map(otro) : [],
   };
 }
-
+ 
 // Plan de cuentas completo para sub-seleccionar la cuenta en CUALQUIER clase
 // de comprobante (Bienes de uso ya usa /rubros-bienes-uso con el prefijo 121;
 // Servicios/Otros/Locaciones/Nacionalizaciones necesitan el resto del plan).
@@ -4112,7 +4291,7 @@ router.get('/api/compras/plan-cuentas', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude leer el plan de cuentas' });
   }
 });
-
+ 
 // TODOS los centros de costo de Flexxus (el GET plano suele traer solo los
 // activos: por eso LA DESEADA, PROVINCIA y otros aparecen "sin número").
 // Cruza contra la tabla centros_costo del panel y dice qué falta de cada lado.
@@ -4155,7 +4334,7 @@ router.get('/api/compras/centroscosto-flexxus', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude leer los centros de costo' });
   }
 });
-
+ 
 // Escribe en la tabla del panel los códigos que faltan (match exacto por
 // nombre normalizado). No pisa códigos ya cargados salvo forzar=true.
 router.post('/api/compras/centroscosto-sincronizar', auth, async (req, res) => {
@@ -4183,7 +4362,7 @@ router.post('/api/compras/centroscosto-sincronizar', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude sincronizar' });
   }
 });
-
+ 
 // Diagnóstico de la API de IA: prueba la key REAL que usa el server (la de
 // Railway) con una llamada mínima y muestra sus últimos caracteres, para poder
 // compararla con la del console de Anthropic cuando el saldo "está pero no anda"
@@ -4219,7 +4398,7 @@ router.get('/api/compras/diag-ia', auth, async (req, res) => {
   console.log('[diag-ia]', JSON.stringify(out));
   res.json(out);
 });
-
+ 
 router.post('/api/compras/extract', auth, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -4233,7 +4412,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       : (fileData ? [{ data: fileData, type: fileType }] : []);
     if (!paginas.length) return res.status(400).json({ error: 'Falta el archivo' });
     if (paginas.length > 6) return res.status(422).json({ error: 'Máximo 6 páginas por factura' });
-
+ 
     const aParte = (pg) => {
       const esImg = pg.type && String(pg.type).startsWith('image/');
       return esImg
@@ -4314,7 +4493,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       }
       return null;
     }
-
+ 
     // Un intento contra un modelo. PREFILL '{': el modelo arranca obligado
     // dentro del JSON, así no puede contestar en prosa ("No puedo leer…"),
     // que era la causa real de "No se pudo extraer" (respuestas de ~125 tokens).
@@ -4375,7 +4554,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     // ¿La lectura sirve? Sin proveedor y sin números no hay nada que guardar.
     const sirve = (p) => !!(p && (p.proveedor || p.cuit) &&
       (p.numero_factura || Number(p.total_sin_iva) > 0 || (p.items || []).length));
-
+ 
     let parsed = await intentoExtraccion(MODEL_FACTURAS_RAPIDO);
     if (!sirve(parsed)) {
       console.log('[factura] primer intento insuficiente → reintento con ' + MODEL_FACTURAS);
@@ -4427,7 +4606,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
     res.status(500).json({ error: 'Error extrayendo la factura' });
   }
 });
-
+ 
 // Guardar una factura (con su asignación) en la base de compras
 // Clave de duplicado: mismo proveedor (por CUIT si hay, si no por nombre) y
 // mismo número de factura. Es la regla real: un proveedor no emite dos veces
@@ -4437,7 +4616,7 @@ function claveFactura(inv) {
   const prov = String(inv.cuit || inv.proveedor || '').replace(/[\s-]/g, '').toUpperCase();
   return num && prov ? `${prov}|${num}` : null;
 }
-
+ 
 // Chequeo previo: ¿ya existe esta factura? Se llama antes de guardar.
 router.post('/api/compras/duplicado', auth, async (req, res) => {
   try {
@@ -4458,13 +4637,13 @@ router.post('/api/compras/duplicado', auth, async (req, res) => {
     res.status(500).json({ error: 'Error verificando duplicados' });
   }
 });
-
+ 
 // ── Comprobantes (PDF/imagen de la factura) ───────────────────
 // Se guardan en Supabase Storage, no en la fila: el listado de Compras trae
 // las 210 facturas de una, y meter los PDF adentro lo volvería inusable.
 // En la fila queda solo la ruta; el archivo se pide aparte al abrir la ficha.
 const BUCKET = 'comprobantes';
-
+ 
 // Sube el comprobante y devuelve la ruta. Se llama al guardar la factura.
 async function subirComprobante(fileData, fileType, nombre) {
   if (!fileData) return null;
@@ -4485,7 +4664,7 @@ async function subirComprobante(fileData, fileType, nombre) {
     return null;   // que falle el archivo no debe impedir guardar la factura
   }
 }
-
+ 
 // URL firmada temporal para ver el comprobante (el bucket es privado)
 router.get('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
   try {
@@ -4505,7 +4684,7 @@ router.get('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
     res.status(500).json({ error: 'Error abriendo el comprobante' });
   }
 });
-
+ 
 // Adjuntar (o reemplazar) el comprobante de una factura ya cargada
 router.post('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
   try {
@@ -4515,10 +4694,10 @@ router.post('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
       .from('facturas').select('*').eq('id', req.params.id).single();
     if (e0 || !row) return res.status(404).json({ error: 'Factura inexistente' });
     const inv = aplanar(row);
-
+ 
     const comp = await subirComprobante(fileData, fileType, fileName);
     if (!comp) return res.status(500).json({ error: 'No se pudo subir el archivo' });
-
+ 
     // Si ya tenía uno, borrar el viejo para no dejar basura
     if (inv.comprobante && inv.comprobante.ruta) {
       await supabaseCompras.storage.from(BUCKET).remove([inv.comprobante.ruta]).catch(() => {});
@@ -4534,7 +4713,7 @@ router.post('/api/compras/factura/:id/comprobante', auth, async (req, res) => {
     res.status(500).json({ error: 'Error adjuntando el comprobante' });
   }
 });
-
+ 
 router.post('/api/compras/factura', auth, async (req, res) => {
   try {
     const inv = req.body || {};
@@ -4554,13 +4733,13 @@ router.post('/api/compras/factura', auth, async (req, res) => {
       }
       if (extra.length) datos.comprobante_paginas = extra;
     }
-
+ 
     const { data, error } = await supabaseCompras
       .from('facturas').insert({ numero_factura: datos.numero_factura || null, data: datos })
       .select().single();
     if (error) throw error;
     const factura = aplanar(data);
-
+ 
     // Si la factura vino con orden, la orden se cierra: una OC = una factura
     // (decisión 02-sep). Queda registrado qué factura la cerró y cuánto se
     // apartó de lo cotizado. Best-effort: la factura ya está guardada.
@@ -4590,7 +4769,7 @@ router.post('/api/compras/factura', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando la factura' });
   }
 });
-
+ 
 // Editar una factura ya cargada (corregir montos, proveedor, imputación...)
 router.put('/api/compras/factura/:id', auth, async (req, res) => {
   try {
@@ -4614,7 +4793,7 @@ router.put('/api/compras/factura/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error editando la factura' });
   }
 });
-
+ 
 // ANULAR en Flexxus el comprobante de una factura ya imputada. No borra nada
 // del panel: devuelve si Flexxus la anuló (verificado releyendo el asiento) o
 // el detalle de por qué no pudo, y el panel decide qué hacer.
@@ -4638,7 +4817,7 @@ router.post('/api/compras/facturas/:id/flexxus-anular', auth, async (req, res) =
     res.status(500).json({ error: err.message || 'No pude anular el comprobante en Flexxus' });
   }
 });
-
+ 
 router.delete('/api/compras/factura/:id', auth, async (req, res) => {
   try {
     // Borrar también el comprobante del bucket, para no dejar archivos huérfanos
@@ -4668,7 +4847,7 @@ router.delete('/api/compras/factura/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error borrando la factura' });
   }
 });
-
+ 
 // Nota de crédito: descuenta sobre una factura ya cargada. Se guarda DENTRO de
 // la factura (array `notas_credito`), así el neto siempre se calcula contra su
 // factura y no queda un documento suelto que haya que cruzar después.
@@ -4678,12 +4857,12 @@ router.post('/api/compras/factura/:id/nota-credito', auth, async (req, res) => {
     const neto = Number(nc.total_sin_iva) || 0;
     const iva  = Number(nc.total_iva) || 0;
     if (neto <= 0 && iva <= 0) return res.status(400).json({ error: 'La nota de crédito tiene que tener un monto' });
-
+ 
     const { data: prev, error: e0 } = await supabaseCompras
       .from('facturas').select('*').eq('id', req.params.id).single();
     if (e0 || !prev) return res.status(404).json({ error: 'Factura inexistente' });
     const inv = aplanar(prev);
-
+ 
     const notas = Array.isArray(inv.notas_credito) ? inv.notas_credito.slice() : [];
     // No se puede acreditar más que el total de la factura
     const totalFactura = (Number(inv.total_sin_iva) || 0) + (Number(inv.total_iva) || 0);
@@ -4693,7 +4872,7 @@ router.post('/api/compras/factura/:id/nota-credito', auth, async (req, res) => {
       return res.status(400).json({
         error: `La nota supera el saldo de la factura. Total ${totalFactura.toFixed(2)}, ya acreditado ${yaAcreditado.toFixed(2)}.` });
     }
-
+ 
     notas.push({
       id: crypto.randomBytes(6).toString('hex'),
       fecha: nc.fecha || new Date().toISOString().slice(0, 10),
@@ -4705,7 +4884,7 @@ router.post('/api/compras/factura/:id/nota-credito', auth, async (req, res) => {
     });
     const nuevo = { ...inv, notas_credito: notas };
     delete nuevo.id; delete nuevo.created_at;
-
+ 
     const { data, error } = await supabaseCompras
       .from('facturas').update({ data: nuevo }).eq('id', req.params.id).select().single();
     if (error) throw error;
@@ -4715,7 +4894,7 @@ router.post('/api/compras/factura/:id/nota-credito', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando la nota de crédito' });
   }
 });
-
+ 
 router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, res) => {
   try {
     const { data: prev, error: e0 } = await supabaseCompras
@@ -4734,7 +4913,7 @@ router.delete('/api/compras/factura/:id/nota-credito/:ncid', auth, async (req, r
     res.status(500).json({ error: 'Error borrando la nota de crédito' });
   }
 });
-
+ 
 // ── COMBUSTIBLE · Conciliación con listados del proveedor ──────
 // El proveedor (Ferreyra, SERVISUD...) emite un listado consolidado del período.
 // Reintentar SOLO la apropiación de centro de costo de una factura ya
@@ -4763,7 +4942,7 @@ router.post('/api/compras/facturas/:id/flexxus-centrocosto', auth, async (req, r
     res.status(500).json({ error: err.message || 'No pude apropiar el centro de costo' });
   }
 });
-
+ 
 // PASO DE REVISIÓN del centro de costo ANTES de imputar. Una vez imputada la
 // factura ya no se puede editar, así que acá se muestra exactamente el reparto
 // que se va a mandar, con el código de cada objetivo CONTRASTADO contra la
@@ -4807,7 +4986,7 @@ router.get('/api/compras/facturas/:id/centrocosto-preview', auth, async (req, re
     res.status(500).json({ error: err.message || 'No pude armar la vista previa del centro de costo' });
   }
 });
-
+ 
 // TODO EL PREVIO DE UNA (10-ago): el panel hacía 4 viajes EN SERIE antes de
 // imputar — flexxus-preview → proveedor-ficha → rubros-bienes-uso →
 // centrocosto-preview — y cada uno vuelve a hablar con Flexxus. Acá se resuelven
@@ -4824,7 +5003,7 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
     const letra = String(req.query.letra || f.letra || 'A').toUpperCase();
     const flx = require('./flexxus');
     const cuitP = String(f.cuit || '').replace(/\D/g, '');
-
+ 
     // Todo junto: nada de esto depende de lo otro. Cada parte se cronometra
     // (partes_ms en la respuesta) para ver de una dónde se va el tiempo.
     const partes_ms = {};
@@ -4839,10 +5018,10 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
       supabase.from('centros_costo').select('nombre, codigo_flexxus').then(r => r.data || []).catch(() => []),
       medir('centros', flx.listarCentrosCostoTodos().then(r => r.centros).catch(() => null)),
     ]);
-
+ 
     // Preview (mismo shape que /flexxus-preview, para que el panel no cambie)
     const preview = (prev && prev.__error) ? null : { ...prev, clase_asignada: claseAsig, cuit_norm: cuitP || null };
-
+ 
     // Centro de costo: mismo cálculo que /centrocosto-preview
     const r = flx.repartoCentroCosto(f, objs);
     const total = Number(f.total_sin_iva) || 0;
@@ -4856,13 +5035,13 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
         existe: ccFlx ? !!enFlx : null,
       };
     });
-
+ 
     // Plan de cuentas: solo las cuentas de movimiento (mismas reglas que /plan-cuentas)
     const cuentas = (plan && plan.cuentas) || [];
     const conMarca = cuentas.some(c => c.imputable !== null);
     const hojas = conMarca ? cuentas.filter(c => c.imputable)
       : cuentas.filter(c => !cuentas.some(o => o.codigo !== c.codigo && o.codigo.startsWith(c.codigo)));
-
+ 
     res.json({
       letra,
       preview,
@@ -4887,7 +5066,7 @@ router.get('/api/compras/facturas/:id/flexxus-previo', auth, async (req, res) =>
     res.status(500).json({ error: err.message || 'No pude preparar la imputación' });
   }
 });
-
+ 
 // Verificación previa: a qué proveedor de Flexxus iría la factura y con qué
 // número, SIN imputar nada. El panel la muestra antes de confirmar.
 router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) => {
@@ -4911,11 +5090,11 @@ router.get('/api/compras/facturas/:id/flexxus-preview', auth, async (req, res) =
     res.status(500).json({ error: err.message || 'No pude verificar contra Flexxus' });
   }
 });
-
+ 
 // Se extrae con IA, se guarda en remitos_combustible (base compras) y el
 // análisis lo cruza contra cargas_combustible (base bot): match por
 // numero_remito, fallback patente+fecha — como prevé el ciclo de vida del módulo.
-
+ 
 router.post('/api/combustible/remito/extract', auth, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -5019,7 +5198,7 @@ router.post('/api/combustible/remito/extract', auth, async (req, res) => {
     res.status(500).json({ error: 'Error extrayendo el listado' });
   }
 });
-
+ 
 router.post('/api/combustible/remito', auth, async (req, res) => {
   try {
     const r = req.body || {};
@@ -5039,7 +5218,7 @@ router.post('/api/combustible/remito', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando el listado' });
   }
 });
-
+ 
 router.get('/api/combustible/remito/:id', auth, async (req, res) => {
   try {
     const { data, error } = await supabaseCompras
@@ -5051,7 +5230,7 @@ router.get('/api/combustible/remito/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error trayendo el listado' });
   }
 });
-
+ 
 router.delete('/api/combustible/remito/:id', auth, async (req, res) => {
   try {
     const { error } = await supabaseCompras
@@ -5063,17 +5242,17 @@ router.delete('/api/combustible/remito/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error eliminando el listado' });
   }
 });
-
+ 
 router.get('/api/combustible/analisis', auth, async (req, res) => {
   try {
     const normN = s => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
     const normP = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-
+ 
     // 1) Listados del proveedor (base compras)
     const { data: rems, error: e1 } = await supabaseCompras
       .from('remitos_combustible').select('*').order('created_at', { ascending: false });
     if (e1) throw e1;
-
+ 
     // Selección de listados: ?ids=uuid,uuid → esos | ?ids=todos → todos |
     // sin parámetro → solo el más reciente (default para no mezclar períodos).
     const idsParam = String(req.query.ids || '').trim();
@@ -5084,13 +5263,13 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     } else if (!idsParam && remsSel.length > 1) {
       remsSel = [remsSel[0]]; // vienen ordenados por created_at desc
     }
-
+ 
     const filas = [];
     remsSel.forEach(r => {
       const fs = (r.data && r.data.filas) || [];
       fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id }));
     });
-
+ 
     // 2) Cargas de los capataces (base bot), acotadas al rango de los listados
     let q = supabase.from('cargas_combustible')
       .select('*, cargas_combustible_items(*), unidades(patente,codigo,marca), capataces(nombre), proveedores(nombre), objetivos(nombre)')
@@ -5099,7 +5278,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     if (fechas.length) q = q.gte('fecha', fechas[0]).lte('fecha', fechas[fechas.length - 1]);
     const { data: cargas, error: e2 } = await q;
     if (e2) throw e2;
-
+ 
     // 3) Agrupar filas del listado por remito (un remito puede tener 2 productos)
     const grupos = {};
     filas.forEach(f => {
@@ -5110,7 +5289,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       grupos[k].total  += Number(f.total)  || 0;
       if (f.producto) grupos[k].productos.push(f.producto);
     });
-
+ 
     // 4) Indexar cargas por remito y por patente+fecha
     const byNum = {}, byPatFecha = {};
     (cargas || []).forEach(c => {
@@ -5118,7 +5297,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       const p = normP((c.unidades && c.unidades.patente) || c.patente_raw);
       if (p && c.fecha) byPatFecha[p + '|' + c.fecha] = c;
     });
-
+ 
     // 5) Matchear
     const sinTicket = [], desvios = [], matcheadas = [];
     const cargasUsadas = new Set();
@@ -5134,7 +5313,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       if (Math.abs(dif) > 1) desvios.push(fila); else matcheadas.push(fila);
     });
     const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado');
-
+ 
     // 6) Resumen por unidad (patente)
     const porUnidad = {};
     const uniDe = p => { const k = normP(p) || 'SINPAT';
@@ -5151,7 +5330,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
         litros_ticket: Math.round(u.litros_ticket * 100) / 100,
         dif: Math.round((u.litros_prov - u.litros_ticket) * 100) / 100 }))
       .sort((a, b) => b.litros_prov - a.litros_prov);
-
+ 
     const litrosProv   = unidades.reduce((s, u) => s + u.litros_prov, 0);
     const litrosTicket = unidades.reduce((s, u) => s + u.litros_ticket, 0);
     res.json({
@@ -5184,11 +5363,11 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     res.status(500).json({ error: 'Error armando el análisis' });
   }
 });
-
+ 
 // ── STOCK de maquinaria · censos por objetivo ──────────────────
 // El panel pide el stock por WhatsApp (notificarCapataz) y los capataces
 // responden por el bot (stock.js). Acá se listan los censos y se piden/reenvían.
-
+ 
 function periodoStockActual() {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
 }
@@ -5202,7 +5381,7 @@ function mesLindo(periodo) {
 // últimas 24hs), así que Meta exige un Content Template en vez de texto libre.
 // Configurable por env var para no tener que tocar código si se recrea el template.
 const TEMPLATE_STOCK = process.env.TWILIO_TEMPLATE_STOCK || 'HXc8e60dbab0ff3c5080d1e120d5eeca03';
-
+ 
 function mensajeStock(periodo, nombre) {
   const nom = (nombre || '').trim().split(' ')[0] || null;
   const saludo = nom ? `👋 Hola *${nom}*!\n\n` : '👋 Hola!\n\n';
@@ -5213,7 +5392,7 @@ function mensajeStock(periodo, nombre) {
          `Ejemplo:\n_3 motoguadañas N° 12, 15 y 21, 1 tractor N° 4, 2 hidrolavadoras_\n\n` +
          `¡Gracias! 🙌\n_EcoService · Logística_`;
 }
-
+ 
 router.get('/api/stock', auth, async (req, res) => {
   try {
     const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
@@ -5243,14 +5422,14 @@ router.get('/api/stock', auth, async (req, res) => {
         sin_capataz: cs.length === 0,
         estado: estadoPorObj[o.id] || null };
     }).sort((a, b) => a.nombre.localeCompare(b.nombre));
-
+ 
     res.json({ periodo, periodos, censos: censos || [], candidatos });
   } catch (err) {
     console.error('stock listar:', err);
     res.status(500).json({ error: 'Error cargando el stock' });
   }
 });
-
+ 
 // Pide el stock por WhatsApp. Sin objetivo_id: a todos los objetivos operativos
 // activos que aún no respondieron el período (crea el censo pendiente si no existe,
 // o reenvía si ya estaba pendiente). Con objetivo_id: solo a ese.
@@ -5260,7 +5439,7 @@ router.get('/api/stock', auth, async (req, res) => {
 async function pedirStockObjetivos(body) {
   {
     const periodo = String(body.periodo || '').trim() || periodoStockActual();
-
+ 
     let qObjs = supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true);
     if (Array.isArray(body.objetivo_ids) && body.objetivo_ids.length) {
       qObjs = qObjs.in('id', body.objetivo_ids);   // selección explícita del panel
@@ -5274,19 +5453,19 @@ async function pedirStockObjetivos(body) {
     }
     const { data: objs, error: e1 } = await qObjs;
     if (e1) throw e1;
-
+ 
     const { data: caps, error: e2 } = await supabase
       .from('capataces').select('id, nombre, telefono, objetivo_id').eq('activo', true);
     if (e2) throw e2;
-
+ 
     const { data: existentes, error: e3 } = await supabase
       .from('censos_stock').select('id, objetivo_id, estado').eq('periodo', periodo);
     if (e3) throw e3;
     const porObj = {};
     (existentes || []).forEach(c => { porObj[c.objetivo_id] = c; });
-
+ 
     let enviados = 0, sinCapataz = 0, yaRespondidos = 0, fallidos = 0, repedidos = 0, conListado = 0;
-
+ 
     // `forzar` vuelve a pedir aunque el objetivo ya haya respondido este
     // período. Sirve cuando el censo llegó mal (el capataz mandó un pedido de
     // reparación en vez del listado) o cuando se quiere un control extra.
@@ -5310,7 +5489,7 @@ async function pedirStockObjetivos(body) {
         if (eR) { console.error('stock repedir:', eR.message); fallidos++; continue; }
         repedidos++;
       }
-
+ 
       if (!censo) {
         const { error } = await supabase.from('censos_stock')
           .insert({ periodo, objetivo_id: o.id, estado: 'pendiente', origen: 'manual' });
@@ -5353,7 +5532,7 @@ async function pedirStockObjetivos(body) {
     return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos, repedidos, con_listado: conListado };
   }
 }
-
+ 
 router.post('/api/stock/pedir', auth, async (req, res) => {
   try {
     res.json(await pedirStockObjetivos(req.body || {}));
@@ -5362,21 +5541,21 @@ router.post('/api/stock/pedir', auth, async (req, res) => {
     res.status(500).json({ error: 'Error pidiendo el stock' });
   }
 });
-
+ 
 router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
   try {
     const { data: censo, error: e1 } = await supabase
       .from('censos_stock').select('id, periodo, objetivo_id, estado').eq('id', req.params.id).single();
     if (e1 || !censo) throw (e1 || new Error('Censo inexistente'));
     if (censo.estado === 'respondido') return res.json({ enviados: 0, ya_respondido: true });
-
+ 
     const { data: caps, error: e2 } = await supabase
       .from('capataces').select('nombre, telefono')
       .eq('activo', true).eq('objetivo_id', censo.objetivo_id);
     if (e2) throw e2;
     const conTel = (caps || []).filter(c => c.telefono);
     if (!conTel.length) return res.json({ enviados: 0, sin_capataz: true });
-
+ 
     let enviados = 0;
     for (const c of conTel) { if (await notificarCapatazTemplate(c.telefono, TEMPLATE_STOCK)) enviados++; }
     await supabase.from('censos_stock')
@@ -5387,12 +5566,12 @@ router.post('/api/stock/reenviar/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error reenviando el pedido' });
   }
 });
-
+ 
 // ── STOCK · Inventario oficial y consolidado ──────────────────
 // El inventario (stock_objetivo) es lo que la empresa DICE que tiene.
 // Se siembra con el primer censo (stock.js) y después se edita a mano acá.
 // El desvío = censo del período − inventario oficial.
-
+ 
 // Trae el último censo respondido por objetivo (para comparar), del período pedido.
 async function censoPorObjetivo(periodo) {
   const { data, error } = await supabase
@@ -5409,7 +5588,7 @@ async function censoPorObjetivo(periodo) {
   });
   return mapa;
 }
-
+ 
 router.get('/api/stock/inventario', auth, async (req, res) => {
   try {
     const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
@@ -5417,7 +5596,7 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
       .from('stock_objetivo').select('*, objetivos(nombre)').order('id');
     if (e1) throw e1;
     const censo = await censoPorObjetivo(periodo);
-
+ 
     const filas = (inv || []).map(r => {
       // Si el objetivo respondió el censo y NO mencionó este tipo, informó 0
       // (no "sin dato"). Solo es null si el objetivo no censó en el período.
@@ -5432,7 +5611,7 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
         dif: cen != null ? cen - r.cantidad : null,
       };
     });
-
+ 
     // Huérfanos: tipos que el capataz informó pero que NO tienen línea en el
     // inventario oficial (equipo nuevo, o el objetivo ya tenía otras líneas y la
     // semilla no corre). Se muestran con oficial 0 y botón para incorporarlos.
@@ -5456,14 +5635,14 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
       });
     });
     filas.sort((a, b) => a.objetivo.localeCompare(b.objetivo) || a.tipo_equipo.localeCompare(b.tipo_equipo));
-
+ 
     // Objetivos operativos que todavía no tienen inventario (nunca censaron)
     const { data: objs, error: e2 } = await supabase
       .from('objetivos').select('id').eq('activo', true).eq('tipo', 'operativo');
     if (e2) throw e2;
     const conInv = new Set((inv || []).map(r => r.objetivo_id));
     const sinInventario = (objs || []).filter(o => !conInv.has(o.id)).length;
-
+ 
     const objetivosConDesvio = new Set(filas.filter(f => f.dif != null && f.dif !== 0).map(f => f.objetivo_id));
     const objetivosComparados = new Set(filas.filter(f => f.dif != null).map(f => f.objetivo_id));
     res.json({
@@ -5480,7 +5659,7 @@ router.get('/api/stock/inventario', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando el inventario' });
   }
 });
-
+ 
 // Siembra el inventario desde los censos respondidos del período: crea las
 // líneas que falten. NO pisa las existentes (idempotente). Cubre los objetivos
 // que censaron antes de que existiera el inventario y los tipos nuevos.
@@ -5496,7 +5675,7 @@ router.post('/api/stock/inventario/sembrar', auth, async (req, res) => {
       .from('stock_objetivo').select('objetivo_id, tipo_equipo');
     if (e2) throw e2;
     const yaHay = new Set((inv || []).map(r => r.objetivo_id + '|' + r.tipo_equipo));
-
+ 
     const nuevas = [];
     (censos || []).forEach(c => {
       (c.censos_stock_items || []).forEach(i => {
@@ -5521,7 +5700,7 @@ router.post('/api/stock/inventario/sembrar', auth, async (req, res) => {
     res.status(500).json({ error: 'Error sembrando el inventario' });
   }
 });
-
+ 
 // Editar / crear / borrar una línea del inventario oficial (a mano, desde el panel).
 router.post('/api/stock/inventario/:id?', auth, async (req, res) => {
   try {
@@ -5551,7 +5730,7 @@ router.post('/api/stock/inventario/:id?', auth, async (req, res) => {
     res.status(500).json({ error: 'Error guardando la línea del inventario' });
   }
 });
-
+ 
 router.delete('/api/stock/inventario/:id', auth, async (req, res) => {
   try {
     const { error } = await supabase.from('stock_objetivo').delete().eq('id', req.params.id);
@@ -5562,7 +5741,7 @@ router.delete('/api/stock/inventario/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error borrando la línea' });
   }
 });
-
+ 
 // Consolidado: toda la maquinaria de EcoService sumada por tipo.
 router.get('/api/stock/consolidado', auth, async (req, res) => {
   try {
@@ -5571,7 +5750,7 @@ router.get('/api/stock/consolidado', auth, async (req, res) => {
       .from('stock_objetivo').select('objetivo_id, tipo_equipo, cantidad');
     if (e1) throw e1;
     const censo = await censoPorObjetivo(periodo);
-
+ 
     const porTipo = {};
     const de = t => { if (!porTipo[t]) porTipo[t] = { tipo_equipo: t, oficial: 0, informado: 0, objetivos: new Set() };
       return porTipo[t]; };
@@ -5592,7 +5771,7 @@ router.get('/api/stock/consolidado', auth, async (req, res) => {
     res.status(500).json({ error: 'Error armando el consolidado' });
   }
 });
-
+ 
 // Histórico de un objetivo: qué informó en cada período.
 router.get('/api/stock/historico/:objetivo_id', auth, async (req, res) => {
   try {
@@ -5613,7 +5792,7 @@ router.get('/api/stock/historico/:objetivo_id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando el histórico' });
   }
 });
-
+ 
 // Resumen por objetivo: una fila por objetivo operativo con sus totales y desvío.
 router.get('/api/stock/objetivos', auth, async (req, res) => {
   try {
@@ -5629,7 +5808,7 @@ router.get('/api/stock/objetivos', auth, async (req, res) => {
       .select('objetivo_id, estado, respondido_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad)')
       .eq('periodo', periodo);
     if (e3) throw e3;
-
+ 
     const invPorObj = {};
     (inv || []).forEach(r => {
       invPorObj[r.objetivo_id] = invPorObj[r.objetivo_id] || { total: 0, tipos: {} };
@@ -5638,7 +5817,7 @@ router.get('/api/stock/objetivos', auth, async (req, res) => {
     });
     const cenPorObj = {};
     (censos || []).forEach(c => { cenPorObj[c.objetivo_id] = c; });
-
+ 
     const filas = (objs || []).map(o => {
       const i = invPorObj[o.id] || { total: 0, tipos: {} };
       const c = cenPorObj[o.id];
@@ -5670,13 +5849,13 @@ router.get('/api/stock/objetivos', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando los objetivos' });
   }
 });
-
+ 
 // Ficha completa de un objetivo: inventario + censo del período + histórico.
 router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
   try {
     const periodo = String(req.query.periodo || '').trim() || periodoStockActual();
     const objetivoId = req.params.id;
-
+ 
     const { data: obj, error: e0 } = await supabase
       .from('objetivos').select('id, nombre').eq('id', objetivoId).single();
     if (e0) throw e0;
@@ -5694,7 +5873,7 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
       .eq('objetivo_id', objetivoId).eq('estado', 'respondido')
       .order('periodo', { ascending: false });
     if (e3) throw e3;
-
+ 
     const respondio = censo && censo.estado === 'respondido';
     const tiposCenso = {};
     const numsCenso  = {};
@@ -5713,7 +5892,7 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
         cantidad: i.cantidad || 0, numeros: i.numeros || [], observacion: i.observacion || null,
       }]);
     });
-
+ 
     // Filas comparadas: todo lo que está en inventario + lo que informó y no está
     const filas = (inv || []).map(r => ({
       id: r.id, tipo_equipo: r.tipo_equipo, cantidad: r.cantidad,
@@ -5732,7 +5911,7 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
         censo_detalle: detCenso[t] || [], dif: c, huerfano: true });
     });
     filas.sort((a, b) => a.tipo_equipo.localeCompare(b.tipo_equipo));
-
+ 
     res.json({
       objetivo: obj, periodo, filas,
       censo: censo ? { estado: censo.estado, respondido_at: censo.respondido_at,
@@ -5749,7 +5928,7 @@ router.get('/api/stock/objetivo/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Error cargando la ficha del objetivo' });
   }
 });
-
+ 
 // ══ MOVIMIENTOS DE MAQUINARIA (trazabilidad) ═════════════════
 // Los supervisores marcan egreso/ingreso desde la PWA; acá se lee todo junto:
 // dónde está cada máquina, qué salió y no llegó, el historial de cada una y el
@@ -5774,14 +5953,14 @@ router.get('/api/movimientos', auth, async (req, res) => {
     const rotulo = u => [u.codigo, u.patente].filter(Boolean).join(' · ') || ('Unidad ' + u.id);
     const porUnidad = new Map(unidades.map(u => [u.id, u]));
     const dias_de = iso => iso ? Math.ceil((Date.now() - new Date(iso).getTime()) / 864e5) : null;
-
+ 
     // Historial por unidad (el más nuevo primero)
     const hist = new Map();
     for (const m of movs) {
       if (!hist.has(m.unidad_id)) hist.set(m.unidad_id, []);
       hist.get(m.unidad_id).push(m);
     }
-
+ 
     const flota = unidades.map(u => {
       const h = hist.get(u.id) || [];
       const m = h[0] || null;
@@ -5801,11 +5980,11 @@ router.get('/api/movimientos', auth, async (req, res) => {
         movimientos: h.length,
       };
     });
-
+ 
     // Lo accionable: salió y nadie marcó la llegada
     const sin_recibir = flota.filter(f => f.situacion === 'en_transito')
       .sort((a, b) => (b.dias || 0) - (a.dias || 0));
-
+ 
     // Cruce por objetivo (ventana de ?dias): qué entró, qué salió y cuántas
     // de las que llegaron venían con falla — el dato que nadie carga aparte.
     const recientes = movs.filter(m => (m.llegada_at || m.salida_at) >= desde);
@@ -5820,7 +5999,7 @@ router.get('/api/movimientos', auth, async (req, res) => {
       if (m.origen_tipo === 'taller' || m.origen_objetivo_id) fila(lugar(m.origen_tipo, m.origen_objetivo_id)).salieron++;
     }
     for (const f of flota) if (f.situacion === 'ubicada' && f.donde) fila(f.donde).hoy++;
-
+ 
     res.json({
       dias,
       resumen: {
@@ -5850,7 +6029,7 @@ router.get('/api/movimientos', auth, async (req, res) => {
       : (err.message || 'Error cargando movimientos') });
   }
 });
-
+ 
 // Historial completo de UNA máquina (la ficha con la línea de tiempo)
 router.get('/api/movimientos/unidad/:id', auth, async (req, res) => {
   try {
@@ -5888,7 +6067,7 @@ router.get('/api/movimientos/unidad/:id', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'Error cargando el historial' });
   }
 });
-
+ 
 // Marcar la llegada desde el PANEL (para cuando el supervisor no la marcó)
 router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
   try {
@@ -5910,7 +6089,7 @@ router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
     res.status(500).json({ error: err.message || 'No pude marcar la llegada' });
   }
 });
-
+ 
 // Cargar/editar a mano el stock de un objetivo desde el panel, sin esperar la
 // respuesta del capataz por WhatsApp. Reemplaza los ítems del censo del
 // período y lo marca respondido.
@@ -5922,7 +6101,7 @@ router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
   try {
     const entrada = Array.isArray(req.body && req.body.items) ? req.body.items : null;
     if (!entrada) return res.status(422).json({ error: 'Faltan los equipos' });
-
+ 
     const items = [];
     for (const i of entrada) {
       const tipo = String((i && i.tipo) || '').trim();
@@ -5937,26 +6116,26 @@ router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
       items.push({ tipo_equipo: tipo, cantidad, numeros, observacion: (i.observacion || '').trim() || null });
     }
     if (!items.length) return res.status(422).json({ error: 'Cargá al menos un equipo' });
-
+ 
     const { data: censo, error: eC } = await supabase
       .from('censos_stock').select('id, periodo, objetivo_id, objetivos(nombre)')
       .eq('id', req.params.id).maybeSingle();
     if (eC) throw eC;
     if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
-
+ 
     const { error: eD } = await supabase
       .from('censos_stock_items').delete().eq('censo_id', censo.id);
     if (eD) throw eD;
-
+ 
     const { error: eI } = await supabase.from('censos_stock_items')
       .insert(items.map(i => Object.assign({ censo_id: censo.id }, i)));
     if (eI) throw eI;
-
+ 
     const { error: eU } = await supabase.from('censos_stock')
       .update({ estado: 'respondido', respondido_at: new Date().toISOString() })
       .eq('id', censo.id);
     if (eU) throw eU;
-
+ 
     const total = items.reduce((s2, i) => s2 + i.cantidad, 0);
     // Foto semanal, igual que cuando responde el capataz por el bot.
     await require('./stock').guardarFotoSemanal(censo.objetivo_id, censo.id, items, { nombre: req.usuario || 'panel' }, 'panel');
@@ -5968,7 +6147,7 @@ router.post('/api/stock/censo/:id/items', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el stock' });
   }
 });
-
+ 
 // ── Padrón de máquinas ────────────────────────────────────────
 // Una fila por máquina física. La llave es codigo_interno, normalizado en
 // codigo_norm para poder cruzarlo con incidencias.numero_unidad, que es
@@ -5977,7 +6156,7 @@ function normCodigo(v) {
   return String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, '');
 }
-
+ 
 // Fechas de la planilla: 1/03/2024, 30/9/2025, 2024-03-01, oct-21.
 // Devuelve YYYY-MM-DD o null. Nunca inventa: si no la entiende, null.
 function fechaPlanilla(v) {
@@ -6006,12 +6185,12 @@ function fechaPlanilla(v) {
   }
   return null;
 }
-
+ 
 const CAMPOS_MAQUINA = ['codigo_interno', 'tipo_equipo', 'maquina', 'marca', 'modelo',
   'alimentacion', 'numero_serie', 'fecha_compra', 'precio_compra', 'proveedor',
   'objetivo_id', 'objetivo_texto', 'estado', 'rectificaciones', 'fecha_rectificacion',
   'motivo_baja', 'fecha_baja', 'notas'];
-
+ 
 function limpiarMaquina(body) {
   const out = {};
   for (const k of CAMPOS_MAQUINA) {
@@ -6028,7 +6207,7 @@ function limpiarMaquina(body) {
   if (out.fecha_baja || (out.motivo_baja && out.estado !== 'activa')) out.estado = out.estado === 'activa' ? 'baja' : (out.estado || 'baja');
   return out;
 }
-
+ 
 // Listado del padrón, con la vida útil ya calculada por la vista.
 router.get('/api/maquinas', auth, async (req, res) => {
   try {
@@ -6037,7 +6216,7 @@ router.get('/api/maquinas', auth, async (req, res) => {
     if (req.query.estado) q = q.eq('estado', req.query.estado);
     const { data, error } = await q;
     if (error) throw error;
-
+ 
     // Objetivos para el selector y para mostrar el nombre.
     const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre');
     res.json({ maquinas: data || [], objetivos: objs || [] });
@@ -6046,7 +6225,7 @@ router.get('/api/maquinas', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar el padrón (¿corriste maquinas.sql?)' });
   }
 });
-
+ 
 // Ficha: la máquina + TODAS sus reparaciones, cruzadas por número interno.
 // Esto es lo que hoy no existe: stock y taller no se hablaban.
 router.get('/api/maquinas/:id', auth, async (req, res) => {
@@ -6054,21 +6233,21 @@ router.get('/api/maquinas/:id', auth, async (req, res) => {
     const { data: maq, error } = await supabase.from('maquinas_vida').select('*').eq('id', req.params.id).maybeSingle();
     if (error) throw error;
     if (!maq) return res.status(404).json({ error: 'No encontré esa máquina' });
-
+ 
     // numero_unidad es texto libre: se compara normalizado, no por igualdad.
     const { data: incs } = await supabase.from('incidencias')
       .select('id, numero_unidad, tipo_equipo, tipo_falla, descripcion, prioridad, estado, created_at, fecha_finalizado, puntos_ia, puntos_ia_horas, mecanicos(nombre), repuestos_taller(items,nota_precio,estado)')
       .order('created_at', { ascending: false }).limit(500);
     const suyas = (incs || []).filter(i => normCodigo(i.numero_unidad) === maq.codigo_norm
       && (!maq.tipo_equipo || !i.tipo_equipo || normCodigo(i.tipo_equipo) === normCodigo(maq.tipo_equipo)));
-
+ 
     // Plata: solo lo que tiene precio cargado en la nota de pedido.
     let gastoRepuestos = 0, conPrecio = 0;
     suyas.forEach(i => (i.repuestos_taller || []).forEach(r => {
       if (r.nota_precio != null) { gastoRepuestos += Number(r.nota_precio) || 0; conPrecio++; }
     }));
     const horas = suyas.reduce((a, i) => a + (Number(i.puntos_ia_horas) || 0), 0);
-
+ 
     res.json({ maquina: maq, reparaciones: suyas,
       resumen: { total: suyas.length, gasto_repuestos: gastoRepuestos, repuestos_con_precio: conPrecio,
                  horas_taller: Math.round(horas * 10) / 10 } });
@@ -6077,7 +6256,7 @@ router.get('/api/maquinas/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar la ficha' });
   }
 });
-
+ 
 router.post('/api/maquinas', auth, async (req, res) => {
   try {
     const fila = limpiarMaquina(req.body || {});
@@ -6094,7 +6273,7 @@ router.post('/api/maquinas', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude dar de alta la máquina' });
   }
 });
-
+ 
 router.patch('/api/maquinas/:id', auth, async (req, res) => {
   try {
     const fila = limpiarMaquina(req.body || {});
@@ -6107,7 +6286,7 @@ router.patch('/api/maquinas/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar los cambios' });
   }
 });
-
+ 
 router.delete('/api/maquinas/:id', auth, async (req, res) => {
   try {
     const { error } = await supabase.from('maquinas').delete().eq('id', req.params.id);
@@ -6117,7 +6296,7 @@ router.delete('/api/maquinas/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude borrar la máquina' });
   }
 });
-
+ 
 // Importar la planilla pegada desde Excel (TSV o CSV con ;).
 // Modo previsualizar: no escribe nada, devuelve lo que haría.
 router.post('/api/maquinas/importar', auth, async (req, res) => {
@@ -6127,7 +6306,7 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
     const tipoDefault = String((req.body && req.body.tipo_equipo) || '').trim() || null;
     const lineas = texto.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (!lineas.length) return res.status(422).json({ error: 'No pegaste nada' });
-
+ 
     const partir = l => l.includes('\t') ? l.split('\t') : l.split(';');
     // Cabecera: se busca por nombre, no por posición — el orden de columnas
     // de la planilla puede cambiar.
@@ -6142,7 +6321,7 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
           iMot = col('motivo de baja', 'motivo baja'), iFBaja = col('fecha baja'),
           iEst = col('estado'), iTipo = col('tipo', 'tipo equipo');
     if (iNum < 0) return res.status(422).json({ error: 'No encontré la columna del número interno (N° INT). Pegá también la fila de títulos.' });
-
+ 
     const { data: objs } = await supabase.from('objetivos').select('id, nombre').eq('activo', true);
     const buscarObj = txt => {
       const n = normCodigo(txt); if (!n) return null;
@@ -6151,7 +6330,7 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
       const parcial = (objs || []).filter(o => normCodigo(o.nombre).includes(n) || n.includes(normCodigo(o.nombre)));
       return parcial.length === 1 ? parcial[0].id : null;   // ambiguo → texto libre
     };
-
+ 
     const filas = [], errores = [];
     for (let i = 1; i < lineas.length; i++) {
       const c = partir(lineas[i]);
@@ -6183,22 +6362,22 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
       filas.push(fila);
     }
     if (!filas.length) return res.status(422).json({ error: 'No encontré filas con número interno' });
-
+ 
     // Repetidos dentro de lo pegado
     const vistos = new Set(), dupes = [];
     filas.forEach(f => { if (vistos.has(f.codigo_norm)) dupes.push(f.codigo_interno); vistos.add(f.codigo_norm); });
-
+ 
     const { data: existentes } = await supabase.from('maquinas').select('codigo_norm');
     const yaEstan = new Set((existentes || []).map(m => m.codigo_norm));
     const nuevas = filas.filter(f => !yaEstan.has(f.codigo_norm));
     const repetidas = filas.filter(f => yaEstan.has(f.codigo_norm));
-
+ 
     if (previsualizar) {
       return res.json({ previsualizacion: true, leidas: filas.length, nuevas: nuevas.length,
         ya_estaban: repetidas.length, duplicadas_en_lo_pegado: dupes, errores,
         muestra: nuevas.slice(0, 5) });
     }
-
+ 
     let insertadas = 0;
     for (let i = 0; i < nuevas.length; i += 100) {
       const tanda = nuevas.slice(i, i + 100).filter((f, ix, arr) => arr.findIndex(x => x.codigo_norm === f.codigo_norm) === ix);
@@ -6213,7 +6392,7 @@ router.post('/api/maquinas/importar', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude importar: ' + (err.message || err) });
   }
 });
-
+ 
 // ── Pañol ─────────────────────────────────────────────────────
 // Lo que se guarda en el pañol y lo que sale a cada objetivo. El alta y la
 // corrección se hacen desde el panel; las salidas y devoluciones las
@@ -6236,7 +6415,7 @@ router.get('/api/panol', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar el pañol (¿corriste panol.sql?)' });
   }
 });
-
+ 
 // Alta y edición de un ítem del pañol
 router.post('/api/panol/items', auth, async (req, res) => {
   try {
@@ -6266,7 +6445,7 @@ router.post('/api/panol/items', auth, async (req, res) => {
     // desaparece del pañol sin rastro.
     const malItem = validarItemPanol(fila, (req.body || {}).confirmar_consumible === true);
     if (malItem) return res.status(422).json(malItem);
-
+ 
     if (b.id) {
       const { error } = await supabase.from('panol_items').update(fila).eq('id', b.id);
       if (error) throw error;
@@ -6280,7 +6459,7 @@ router.post('/api/panol/items', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar el ítem' });
   }
 });
-
+ 
 // Borrar un ítem del pañol. Si tiene movimientos NO se borra: se archiva
 // (activo=false), así no se pierde el historial de a dónde fue cada cosa.
 router.delete('/api/panol/items/:id', auth, async (req, res) => {
@@ -6305,7 +6484,7 @@ router.delete('/api/panol/items/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude borrar el ítem' });
   }
 });
-
+ 
 // Historial de movimientos de un ítem
 router.get('/api/panol/items/:id/movimientos', auth, async (req, res) => {
   try {
@@ -6318,7 +6497,7 @@ router.get('/api/panol/items/:id/movimientos', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude traer el historial' });
   }
 });
-
+ 
 // Devolución desde el panel (por si el pañolero no la registró)
 router.post('/api/panol/movimientos/:id/devolver', auth, async (req, res) => {
   try {
@@ -6333,7 +6512,7 @@ router.post('/api/panol/movimientos/:id/devolver', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude registrar la devolución' });
   }
 });
-
+ 
 // ── Pañol · reposición (el 80/20) ─────────────────────────────
 // Unas pocas cosas se llevan casi todo el movimiento (bolsas, tanza,
 // carreteles, tapas). El ABC las separa solo, con los movimientos reales:
@@ -6348,7 +6527,7 @@ router.get('/api/panol/reposicion', auth, async (req, res) => {
     if (cons.error) throw cons.error;
     const dispPorId = {};
     (disp.data || []).forEach(d => { dispPorId[d.id] = d; });
-
+ 
     const filas = (cons.data || []).map(c => ({ ...c, ...(dispPorId[c.id] || {}) }));
     // ABC por consumo acumulado
     const conConsumo = filas.filter(f => Number(f.consumo_90d) > 0)
@@ -6362,7 +6541,7 @@ router.get('/api/panol/reposicion', auth, async (req, res) => {
       f.pct_acum = Math.round(pct * 1000) / 10;
     });
     filas.filter(f => !f.clase).forEach(f => { f.clase = 'sin movimiento'; });
-
+ 
     // Sugerencia de punto de pedido: consumo de un mes + medio mes de
     // colchón, redondeado para arriba. Es una propuesta, se edita a mano.
     filas.forEach(f => {
@@ -6389,7 +6568,7 @@ router.get('/api/panol/reposicion', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude calcular la reposición (¿corriste panol_reposicion.sql?)' });
   }
 });
-
+ 
 // ── Reporte mensual para gerencia ─────────────────────────────
 // Todo lo que necesita el informe en UNA llamada: reparaciones del mes,
 // criticidad, tiempos de resolución, reingresos y estado del pañol.
@@ -6415,7 +6594,7 @@ function familiaEquipo(tipo) {
   for (const [re, nombre] of FAMILIAS_EQUIPO) if (re.test(t)) return nombre;
   return 'Otros';
 }
-
+ 
 router.get('/api/reportes/mensual', auth, async (req, res) => {
   try {
     const mes = /^\d{4}-\d{2}$/.test(String(req.query.mes || '')) ? req.query.mes
@@ -6436,11 +6615,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       const dow = new Date(Date.UTC(a, m - 1, d2)).getUTCDay();
       if (dow !== 0 && dow !== 6) diasHabiles++;
     }
-
+ 
     // Para reingresos se miran también los 60 días previos: una máquina
     // que volvió este mes pudo haberse reparado el mes pasado.
     const desdePrevio = new Date(Date.UTC(a, m - 3, 1)).toISOString();
-
+ 
     // Para el promedio mensual por camión se necesita el histórico entero,
     // no solo el mes: el promedio de un mes contra sí mismo no dice nada.
     // 12 meses atrás desde el primer día del mes que se está mirando
@@ -6501,7 +6680,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     ]);
     if (inc.error) throw inc.error;
     const filas = inc.data || [];
-
+ 
     const dias = (ini, fin) => {
       if (!ini || !fin) return null;
       const d = (new Date(fin) - new Date(ini)) / 86400000;
@@ -6518,7 +6697,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     const orden = tiempos.slice().sort((x, y) => x - y);
     const mediana = orden.length ? (orden.length % 2 ? orden[(orden.length - 1) / 2]
       : (orden[orden.length / 2 - 1] + orden[orden.length / 2]) / 2) : 0;
-
+ 
     // Por criticidad, de más a menos
     const ORDEN_PRIO = ['critico', 'alta', 'media', 'baja'];
     const porPrioridad = ORDEN_PRIO.map(p => {
@@ -6532,7 +6711,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         dias_prom: t.length ? Math.round((t.reduce((s, x) => s + x, 0) / t.length) * 10) / 10 : null,
       };
     }).filter(x => x.cantidad);
-
+ 
     // Tipos de falla, de más frecuente a menos, con su tiempo
     const porFalla = {};
     reparaciones.forEach(r => {
@@ -6547,7 +6726,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       falla: f.falla, cantidad: f.cantidad, criticas: f.criticas,
       dias_prom: f.tiempos.length ? Math.round((f.tiempos.reduce((s, x) => s + x, 0) / f.tiempos.length) * 10) / 10 : null,
     })).sort((x, y) => y.criticas - x.criticas || y.cantidad - x.cantidad);
-
+ 
     // REINGRESOS: misma unidad que vuelve dentro de los 30 días de una
     // finalización anterior. Es el indicador de calidad de la reparación.
     const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -6570,14 +6749,14 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         });
       }
     });
-
+ 
     const cuenta = (arr, f) => {
       const m2 = {};
       arr.forEach(r => { const k = f(r) || '—'; m2[k] = (m2[k] || 0) + 1; });
       return Object.entries(m2).map(([k, v]) => ({ nombre: k, cantidad: v }))
         .sort((x, y) => y.cantidad - x.cantidad);
     };
-
+ 
     // ── BATEAS ────────────────────────────────────────────────
     // OJO: viajes_bateas NO tiene m3_total ni objetivo_id. Los m³ se
     // calculan con la constante de siempre y los objetivos viven en el
@@ -6594,7 +6773,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
       return Object.entries(m2).map(([k, v]) => ({ nombre: k, cantidad: v }))
         .sort((x, y) => y.cantidad - x.cantidad);
     };
-
+ 
     // Por camión: las del mes, el promedio mensual histórico y el
     // mantenimiento de ese mismo camión (las reparaciones se cruzan por
     // patente normalizada contra numero_unidad, que es texto libre).
@@ -6607,7 +6786,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     const normPat = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const uni = {};
     (unidades.data || []).forEach(u => { uni[u.id] = u; });
-
+ 
     const porCamion = {};
     bat.forEach(v => {
       const k = v.unidad_id || 'sin-unidad';
@@ -6631,7 +6810,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         if (ch) c.choferes[ch] = (c.choferes[ch] || 0) + nb;
       }
     });
-
+ 
     // Mantenimiento de cada camión: incidencias del mes cuya numero_unidad
     // coincide con la patente (o con el código de la unidad)
     const camiones = Object.values(porCamion).map(c => {
@@ -6660,7 +6839,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
         mant_abiertas: repa.filter(r => r.estado !== 'finalizado').length,
       };
     }).sort((x, y) => y.bateas_mes - x.bateas_mes);
-
+ 
     const totalBateasMes = delMes.reduce((a, v) => a + (Number(v.total_bateas) || 0), 0);
     // Evolución de los últimos 6 meses, para el gráfico
     const evoMeses = {};
@@ -6670,7 +6849,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     });
     const evolucion = Object.entries(evoMeses).sort((a2, b2) => a2[0].localeCompare(b2[0]))
       .slice(-6).map(([k, v]) => ({ nombre: k, cantidad: v }));
-
+ 
     const items = panolItems.data || [];
     const movs = panolMovs.data || [];
     res.json({
@@ -6859,7 +7038,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           const k = resolver(objC) || 'Sin objetivo';
           if (porObj[k]) porObj[k].cargas++;
         });
-
+ 
         // Máquinas censadas por objetivo, para poder ver litros por máquina
         // Un objetivo puede tener varios censos; vienen ordenados por período
         // descendente, así que el primero que aparece es el más reciente.
@@ -6893,7 +7072,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           porNombre[o.nombre] = maqPorObjId[o.id] || null;
           grupoDe[o.nombre] = o.grupo_stock || null;
         });
-
+ 
         const lista = Object.values(porObj).map(o => {
           const maq = porNombre[o.objetivo] || null;
           // El denominador son las máquinas CON MOTOR, no todo lo censado.
@@ -6942,7 +7121,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             jornadas_equiv: Math.round(o.litros / 6),
           };
         }).sort((a2, b2) => b2.litros - a2.litros);
-
+ 
         // Utilización: qué parte de su capacidad usó cada objetivo.
         lista.forEach(o => {
           o.utilizacion = o.capacidad ? Math.round(o.litros * 100 / o.capacidad) : null;
@@ -6976,7 +7155,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             : o.uso_maquinas >= 15 ? 'normal'
             : 'poco uso';                            // máquinas censadas que casi no se usan
         });
-
+ 
         return {
           total: Math.round(total),
           objetivos: lista,
@@ -6990,7 +7169,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           mes_en_curso: esMesEnCurso,
         };
       })(),
-
+ 
       // ── Carga por mecánico ────────────────────────────────────────
       // Horas de mano de obra que estimó la IA, sumadas por mecánico. NO son
       // horas trabajadas: no hay fichaje, y en agosto de 2026 estas horas
@@ -7020,7 +7199,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           horas_por_dia: o.dias.size ? Math.round((o.horas / o.dias.size) * 10) / 10 : 0,
         })).sort((x, y) => y.horas - x.horas);
       })(),
-
+ 
       // ── Bateas del mes ────────────────────────────────────────────
       // Promedio por jornada (es la medida de rendimiento: un camión hace
       // varias bateas por salida) y a qué objetivos fueron.
@@ -7047,7 +7226,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
             .sort((x, y) => y.bateas - x.bateas),
         };
       })(),
-
+ 
       // ── Evolución de los últimos 12 meses ─────────────────────────
       // Reparaciones y bateas mes a mes, para ver la tendencia al pie del
       // informe. Las reparaciones salen de `prev` (que trae 60 días) solo
@@ -7093,7 +7272,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
           reparaciones: repPorMes[mm] || 0,
         }));
       })(),
-
+ 
       panol: {
         items: items.length,
         unidades: items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0),
@@ -7118,7 +7297,7 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude armar el reporte: ' + (err.message || '') });
   }
 });
-
+ 
 // ── Stock · General ───────────────────────────────────────────
 // La pregunta "¿cuántas motoguadañas tenemos y dónde?" contestada en una
 // sola llamada: el último censo respondido de CADA objetivo (sea del mes
@@ -7129,11 +7308,11 @@ router.get('/api/reportes/mensual', auth, async (req, res) => {
    máquina que sigue en su objetivo. No se guarda en ningún lado: se deriva
    de la incidencia, así que cuando el mecánico la finaliza vuelve a contarse
    como disponible sola, sin ningún paso manual que se pueda olvidar.
-
+ 
    El match es por OBJETIVO + NÚMERO, nunca por número solo: el 237 existe en
    Cosquin y también en Circunvalación, y cruzando solo por número una
    reparación de un objetivo descontaría stock del otro.
-
+ 
    Cuando el número no alcanza para identificar la unidad —máquinas censadas
    sin número, "sn", números repetidos dentro del mismo objetivo— la
    reparación igual se descuenta del total del tipo, pero sin señalar cuál es.
@@ -7147,7 +7326,7 @@ function numVago(v) {
   const n = normNum(v);
   return !n || n === 'SN' || n === 'SIN' || n === 'SINNUMERO' || n === '0' || /^[-–—]+$/.test(n);
 }
-
+ 
 function cruzarTaller(filas, incidencias) {
   // Reparaciones abiertas agrupadas por objetivo.
   const porObj = new Map();
@@ -7156,35 +7335,35 @@ function cruzarTaller(filas, incidencias) {
     if (!porObj.has(i.objetivo_id)) porObj.set(i.objetivo_id, []);
     porObj.get(i.objetivo_id).push(i);
   });
-
+ 
   const usadas = new Set();   // incidencias ya asignadas a una fila
-
+ 
   filas.forEach(f => {
     f.en_taller = 0;
     f.numeros_taller = [];
     f.taller_detalle = [];
     f.numeros_ambiguos = [];
     const abiertas = porObj.get(f.objetivo_id) || [];
-
+ 
     // Un número que aparece dos veces en el mismo ítem no permite decir cuál
     // de las dos máquinas entró al taller.
     const cuenta = {};
     (f.numeros || []).forEach(n => { if (!numVago(n)) cuenta[normNum(n)] = (cuenta[normNum(n)] || 0) + 1; });
     f.numeros_ambiguos = (f.numeros || []).filter(n => numVago(n) || cuenta[normNum(n)] > 1);
-
+ 
     // disponibles se calcula SIEMPRE, también sin reparaciones abiertas: con
     // el return antes de esta línea, todo objetivo sin nada en el taller
     // —la mayoría— mostraba "undefined disponibles".
     f.disponibles = Number(f.cantidad) || 0;
     if (!abiertas.length || !f.tipo) return;
-
+ 
     const famFila = familiaConsumo(f.tipo);
-
+ 
     const yaMarcados = new Set();   // números ya contados en esta fila
     abiertas.forEach(inc => {
       if (usadas.has(inc.id)) return;
       const nInc = normNum(inc.numero_unidad);
-
+ 
       // (a) Match por número, dentro del mismo objetivo y sin ambigüedad.
       if (nInc && cuenta[nInc] === 1) {
         usadas.add(inc.id);
@@ -7200,7 +7379,7 @@ function cruzarTaller(filas, incidencias) {
           falla: inc.tipo_falla || null, desde: inc.created_at, parado: !!inc.equipo_parado });
         return;
       }
-
+ 
       // (b) El número no identifica una unidad: o no vino, o está repetido en
       // el censo (el 218 de Cosquin figura dos veces). Se descuenta del total
       // del tipo igual —es lo que pidió José— pero sin señalar cuál es, y
@@ -7217,10 +7396,10 @@ function cruzarTaller(filas, incidencias) {
           sin_identificar: true });
       }
     });
-
+ 
     f.disponibles = Math.max(0, (Number(f.cantidad) || 0) - f.en_taller);
   });
-
+ 
   // Reparaciones abiertas que no se pudieron colgar de ningún ítem del censo:
   // el equipo no está censado, o el objetivo no tiene censo. Se devuelven
   // aparte en vez de descartarse, porque son justamente las que avisan que al
@@ -7228,7 +7407,7 @@ function cruzarTaller(filas, incidencias) {
   const sinUbicar = (incidencias || []).filter(i => !usadas.has(i.id));
   return { filas, sin_ubicar: sinUbicar };
 }
-
+ 
 router.get('/api/stock/general', auth, async (req, res) => {
   try {
     const [objs, censos, faltantes, incid] = await Promise.all([
@@ -7251,17 +7430,17 @@ router.get('/api/stock/general', auth, async (req, res) => {
         .neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
     ]);
     if (objs.error) throw objs.error;
-
+ 
     /* Índice del padrón por número normalizado. Se guarda por tipo+número y
        también por número solo: el tipo del censo ("Motoguadaña") y el del
        padrón no siempre se escriben igual, así que el número solo sirve de
        respaldo cuando no hay ambigüedad. */
     if (censos.error) throw censos.error;
-
+ 
     // Último censo respondido por objetivo (vienen ordenados desc)
     const ultimo = {};
     (censos.data || []).forEach(c => { if (!ultimo[c.objetivo_id]) ultimo[c.objetivo_id] = c; });
-
+ 
     const filas = [];
     (objs.data || []).forEach(o => {
       const c = ultimo[o.id];
@@ -7305,7 +7484,7 @@ router.get('/api/stock/general', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
   }
 });
-
+ 
 // Cargar el stock de un objetivo que todavía NO tiene censo. Crea el
 // censo del período y le mete los ítems de una: es el camino para dar de
 // alta el stock de un objetivo nuevo desde el panel, sin esperar a que el
@@ -7316,7 +7495,7 @@ router.post('/api/stock/censos', auth, async (req, res) => {
     if (!b.objetivo_id) return res.status(422).json({ error: 'Falta el objetivo' });
     const periodo = /^\d{4}-\d{2}$/.test(String(b.periodo || '')) ? b.periodo
       : new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
-
+ 
     const items = (Array.isArray(b.items) ? b.items : [])
       .map(i => ({
         tipo_equipo: String(i.tipo || '').trim(),
@@ -7326,12 +7505,12 @@ router.post('/api/stock/censos', auth, async (req, res) => {
       }))
       .filter(i => i.tipo_equipo && i.cantidad > 0);
     if (!items.length) return res.status(422).json({ error: 'Cargá al menos un equipo' });
-
+ 
     // Si ya existe un censo de ese objetivo y período se reusa, para no
     // duplicar cuando el capataz respondió mientras tanto.
     const { data: existe } = await supabase.from('censos_stock')
       .select('id').eq('objetivo_id', b.objetivo_id).eq('periodo', periodo).maybeSingle();
-
+ 
     let censoId = existe ? existe.id : null;
     if (!censoId) {
       const { data: nuevo, error: e1 } = await supabase.from('censos_stock').insert({
@@ -7346,7 +7525,7 @@ router.post('/api/stock/censos', auth, async (req, res) => {
       }).eq('id', censoId);
       await supabase.from('censos_stock_items').delete().eq('censo_id', censoId);
     }
-
+ 
     const { error: e2 } = await supabase.from('censos_stock_items')
       .insert(items.map(i => ({ ...i, censo_id: censoId })));
     if (e2) throw e2;
@@ -7358,7 +7537,7 @@ router.post('/api/stock/censos', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude cargar el stock: ' + (err.message || '') });
   }
 });
-
+ 
 // Cerrar una incidencia SIN que el equipo haya pasado por el taller.
 // Mismo cierre que hace el mecánico desde la app, pero desde el panel: el
 // caso típico es que el capataz reportó y la máquina nunca bajó.
@@ -7374,25 +7553,25 @@ router.post('/api/reparaciones/:id/ingreso-taller', auth, async (req, res) => {
     if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
     if (inc.fecha_ingreso_taller) return res.status(409).json({ error: 'Ya tenía el ingreso registrado' });
     if (inc.estado === 'finalizado') return res.status(409).json({ error: 'Esta reparación ya está cerrada' });
-
+ 
     const ahora = new Date().toISOString();
     const quien = (req.body || {}).por || req.usuario || 'panel';
     const patch = { fecha_ingreso_taller: ahora, ingreso_por: quien };
     // Si seguía en 'pendiente', el ingreso la mueve a diagnóstico: ya está
     // en manos del taller. Si el mecánico la avanzó antes, se respeta.
     if (inc.estado === 'pendiente') { patch.estado = 'diagnostico'; patch.fecha_diagnostico = ahora; }
-
+ 
     const { data, error } = await supabase.from('incidencias').update(patch)
       .eq('id', req.params.id).select('*, mecanicos(nombre), objetivos(nombre), capataces(nombre)').single();
     if (error) throw error;
-
+ 
     const espera = Math.max(0, Math.round((new Date(ahora) - new Date(inc.created_at)) / 86400000));
     await supabase.from('comentarios_incidencias').insert({
       incidencia_id: inc.id,
       mecanico_nombre: quien,
       texto: `[Ingresó al taller] Recibida por ${quien}${espera ? ` · esperó ${espera} día${espera === 1 ? '' : 's'} desde el reporte` : ' · el mismo día del reporte'}`,
     }).then(() => {}, () => {});   // el comentario es informativo, no bloquea
-
+ 
     console.log(`[taller] ingreso ${inc.tipo_equipo || ''} ${inc.numero_unidad || ''} · esperó ${espera} d`);
     res.json({ ok: true, incidencia: data, espera_dias: espera });
   } catch (err) {
@@ -7400,20 +7579,20 @@ router.post('/api/reparaciones/:id/ingreso-taller', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude registrar el ingreso: ' + (err.message || '') });
   }
 });
-
+ 
 router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) => {
   try {
     const b = req.body || {};
     const motivo = MOTIVOS_SIN_REPARAR_PANEL.includes(b.motivo) ? b.motivo : 'no_ingreso';
     const nota = String(b.nota || '').trim();
     if (nota.length < 5) return res.status(422).json({ error: 'Escribí la nota para el capataz' });
-
+ 
     const { data: inc, error: e0 } = await supabase.from('incidencias')
       .select('*, equipos(nombre,tipo), capataces(nombre,telefono), mecanicos(nombre)')
       .eq('id', req.params.id).single();
     if (e0 || !inc) return res.status(404).json({ error: 'Incidencia inexistente' });
     if (inc.estado === 'finalizado') return res.status(422).json({ error: 'Esa incidencia ya está cerrada' });
-
+ 
     const quien = req.usuario || 'panel';
     const { data, error } = await supabase.from('incidencias').update({
       estado: 'finalizado',
@@ -7425,7 +7604,7 @@ router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) =
       equipo_parado: false,
     }).eq('id', req.params.id).select().single();
     if (error) throw error;
-
+ 
     try {
       await supabase.from('comentarios_incidencias').insert({
         incidencia_id: req.params.id,
@@ -7433,7 +7612,7 @@ router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) =
         texto: `[Cerrada sin reparar · ${motivo.replace(/_/g, ' ')}] ${nota}`,
       });
     } catch (e) { /* el comentario es un extra */ }
-
+ 
     let notificado = false;
     if (inc.capataces && inc.capataces.telefono) {
       const msg = mensajeCierreSinReparar(motivo, {
@@ -7452,7 +7631,7 @@ router.post('/api/reparaciones/:id/cerrar-sin-reparar', auth, async (req, res) =
     res.status(500).json({ error: 'No pude cerrar la incidencia' });
   }
 });
-
+ 
 // Editar los ítems de un censo desde el panel. Reemplaza TODO el listado
 // del censo (mismo mecanismo que usa el bot al guardar): administración es
 // la única que puede corregir o dar de baja — el capataz solo informa.
@@ -7470,12 +7649,12 @@ router.put('/api/stock/censos/:id/items', auth, async (req, res) => {
       }))
       .filter(i => i.tipo_equipo && i.cantidad > 0);
     if (!limpios.length) return res.status(422).json({ error: 'El censo no puede quedar vacío: dejá al menos un equipo' });
-
+ 
     const { data: censo, error: e1 } = await supabase.from('censos_stock')
       .select('id, objetivo_id').eq('id', req.params.id).maybeSingle();
     if (e1) throw e1;
     if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
-
+ 
     const { error: e2 } = await supabase.from('censos_stock_items').delete().eq('censo_id', censo.id);
     if (e2) throw e2;
     const { error: e3 } = await supabase.from('censos_stock_items')
@@ -7488,7 +7667,7 @@ router.put('/api/stock/censos/:id/items', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude guardar los cambios' });
   }
 });
-
+ 
 // Marcar un faltante como resuelto (apareció, se trasladó, se dio de baja…)
 router.post('/api/stock/faltantes/:id/resolver', auth, async (req, res) => {
   try {
@@ -7502,7 +7681,7 @@ router.post('/api/stock/faltantes/:id/resolver', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude marcarlo como resuelto' });
   }
 });
-
+ 
 // Borrar la respuesta de un censo (los equipos informados) y dejarlo
 // pendiente otra vez. Pensado para limpiar pruebas sin tocar la base.
 // No elimina la fila del censo: si se borrara, el objetivo desaparecería
@@ -7515,16 +7694,16 @@ router.delete('/api/stock/censo/:id', auth, async (req, res) => {
       .eq('id', req.params.id).maybeSingle();
     if (eC) throw eC;
     if (!censo) return res.status(404).json({ error: 'No encontré ese censo' });
-
+ 
     const { error: eI } = await supabase
       .from('censos_stock_items').delete().eq('censo_id', censo.id);
     if (eI) throw eI;
-
+ 
     const { error: eU } = await supabase.from('censos_stock')
       .update({ estado: 'pendiente', respondido_at: null })
       .eq('id', censo.id);
     if (eU) throw eU;
-
+ 
     console.log(`[stock] respuesta borrada · censo ${censo.id} · ` +
       `${censo.objetivos ? censo.objetivos.nombre : censo.objetivo_id} · ${censo.periodo} · por ${req.usuario || '?'}`);
     res.json({ ok: true });
@@ -7533,7 +7712,7 @@ router.delete('/api/stock/censo/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'No pude borrar la respuesta' });
   }
 });
-
+ 
 // ── Servir el panel (HTML + JS extraído en Fase 3) ────────────
 // AUTO-ACTUALIZACIÓN (10-ago): el navegador cacheaba panel.js y había que
 // hacer Ctrl+Shift+R en cada máquina después de cada subida. Dos piezas:
@@ -7572,24 +7751,24 @@ router.get('/api/compras/flexxus-token-estado', auth, (req, res) => {
   const { estadoToken } = require('./flexxus');
   res.json(estadoToken());
 });
-
+ 
 // Latido de cambios: qué módulos se tocaron desde que arrancó el server.
 // No consulta la base — son contadores en memoria (ver cambios.js). El panel
 // lo pide cada 25 s y solo recarga la vista si el número de SU módulo cambió.
 router.get('/api/cambios', auth, (req, res) => {
   res.json(cambios.estado());
 });
-
+ 
 router.get('/api/panel-version', (req, res) => {
   res.json({ version: PANEL_VERSION });
 });
-
+ 
 // Al arrancar, calentar las cachés pesadas de Flexxus (plan de cuentas y
 // centros de costo) en segundo plano: así el primer "Imputar" después de un
 // redeploy no paga los sondeos. Best-effort: si Flexxus no responde, no pasa nada.
 setTimeout(() => {
   try { require('./flexxus').precalentarFlexxus().catch(() => {}); } catch (e) { /* ignorar */ }
 }, 1000).unref?.();
-
+ 
 module.exports = router;
 module.exports.pedirStockObjetivos = pedirStockObjetivos;
