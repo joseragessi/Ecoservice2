@@ -92,17 +92,11 @@ let ok=0,mal=0;const eq=(n,c,d)=>{if(c){ok++;console.log('✓ '+n);}else{mal++;c
   r=await call(crear,{usuario:'lgodoy',clave:'taller2026'});
   eq('y se guarda en mecanicos', r.code===200 && updates[0].tabla==='mecanicos', JSON.stringify(updates));
 
-  console.log('\n— El mensaje del bot —');
-  const { mensajeApp }=require('./conversacion.js');
-  let m=mensajeApp({nombre:'Eduardo',usuario:'eislas'});
-  eq('trae el link de la app', /https?:\/\/\S+\/app/.test(m), m.slice(0,120));
-  eq('trae el usuario', /eislas/.test(m));
-  eq('NO trae ninguna contraseña', !/clave:\s*\S|contrase[ñn]a:\s*\S/i.test(m.replace(/crees tu contraseña/i,'')), m);
-  eq('avisa que la crea él', /cre(es|ar)/i.test(m));
-  m=mensajeApp({nombre:'Nuevo',usuario:null});
-  eq('sin usuario cargado, manda a Logística', /Log[íi]stica/i.test(m) && !/https?:/.test(m.split('Log')[1]||''), m);
-  m=mensajeApp({});
-  eq('sin datos no explota', typeof m==='string' && m.length>0);
+  console.log('\n— El bot quedó como estaba (10-sep: se revirtió el cambio) —');
+  const conv=require('fs').readFileSync(__dirname+'/conversacion.js','utf8');
+  eq('el menú sigue ofreciendo cargar combustible por WhatsApp', /Cargar combustible/.test(conv));
+  eq('y sigue ofreciendo informar stock', /Informar stock de maquinaria/.test(conv));
+  eq('el primer ingreso NO depende del bot: funciona con el link solo', typeof crear==='function');
 
   console.log(`\n${ok} ok · ${mal} mal`);process.exit(mal?1:0);
 })().catch(e=>{console.error('✗ explotó:',e);process.exit(1);});
