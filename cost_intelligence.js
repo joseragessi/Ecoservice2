@@ -1,32 +1,20 @@
 // ============================================================
-// COST INTELLIGENCE V2.1
+// COST INTELLIGENCE V2.2
 // ECOSERVICE
 //
-// CEREBRO SEMANAL DE INTELIGENCIA DE COSTOS
-//
-// REGLA PRINCIPAL V2.1:
+// Inteligencia semanal de costos.
 //
 // TOTAL
-//   → compara litros semanales contra historia
-//   → NO divide por parque
+//   -> litros semanales
 //
-// BIDONES
-//   → se registra
-//   → NO genera alerta por ahora
+// FAMILIAS REALES
+//   -> litros/equipo cuando parque es confiable
 //
-// UNIDADES
-//   → se registra
-//   → NO genera alerta por ahora
-//
-// FAMILIAS IDENTIFICADAS:
-//   dos_tiempos
-//   tractor
-//   cortadora
-//   vehiculo
-//   fijo
-//
-//   → pueden comparar litros/equipo
-//   → solamente si el parque es confiable
+// IMPACTO ECONÓMICO
+//   -> valida precio actual
+//   -> compara contra historial
+//   -> si el precio actual es anormal,
+//      usa precio histórico robusto
 //
 // ============================================================
 
@@ -39,51 +27,43 @@ const {
 
 
 // ============================================================
-// CONFIGURACIÓN
+// CONFIG
 // ============================================================
 
-const GRANULARIDAD = 'semanal';
+const GRANULARIDAD =
+  'semanal';
+
+const VENTANA_SEMANAS =
+  8;
+
+const MIN_MUESTRAS_ANOMALIA =
+  5;
+
+const UMBRAL_MINIMO_PCT =
+  15;
+
+const MULTIPLICADOR_DISPERSION =
+  2;
+
+const CAMBIO_MAX_PARQUE_PCT =
+  50;
 
 
-// Semanas utilizadas para construir baseline
-const VENTANA_SEMANAS = 8;
-
-
-// Historial mínimo para una alerta real
-const MIN_MUESTRAS_ANOMALIA = 5;
-
-
-// Umbral mínimo de desviación
-const UMBRAL_MINIMO_PCT = 15;
-
-
-// Multiplicador de dispersión histórica
-const MULTIPLICADOR_DISPERSION = 2;
-
-
-// Cambio máximo tolerado de parque.
+// El precio actual puede variar hasta ±35%
+// respecto de la referencia histórica.
 //
-// Ejemplo:
-//
-// histórico = 10 máquinas
-// actual    = 3 máquinas
-//
-// cambio = -70%
-//
-// En ese caso NO confiamos en litros/equipo.
-const CAMBIO_MAX_PARQUE_PCT = 50;
+// Si excede eso,
+// usamos precio histórico.
+const DESVIO_PRECIO_MAX_PCT =
+  35;
 
 
-// Familias que se guardan pero,
-// por ahora, NO generan alertas.
 const FAMILIAS_NO_ALERTABLES = [
   'bidones',
   'unidades',
 ];
 
 
-// Familias donde sí podemos normalizar
-// por cantidad de equipos.
 const FAMILIAS_NORMALIZABLES = [
   'dos_tiempos',
   'tractor',
@@ -93,19 +73,19 @@ const FAMILIAS_NORMALIZABLES = [
 ];
 
 
-// Centros no operativos.
 const OBJETIVOS_NO_OPERATIVOS = [
   'deposito',
 ];
 
 
 // ============================================================
-// UTILIDADES
+// NÚMEROS
 // ============================================================
 
 function numero(v) {
 
-  const n = Number(v);
+  const n =
+    Number(v);
 
   return Number.isFinite(n)
     ? n
@@ -137,18 +117,27 @@ function promedio(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(Number.isFinite);
+      .filter(
+        Number.isFinite
+      );
 
 
-  if (!arr.length) {
+  if (
+    !arr.length
+  ) {
+
     return 0;
   }
 
 
   return (
     arr.reduce(
-      (suma, valor) =>
-        suma + valor,
+      (
+        suma,
+        valor
+      ) =>
+        suma +
+        valor,
       0
     ) /
     arr.length
@@ -163,21 +152,30 @@ function mediana(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(Number.isFinite)
+      .filter(
+        Number.isFinite
+      )
       .sort(
-        (a, b) =>
+        (
+          a,
+          b
+        ) =>
           a - b
       );
 
 
-  if (!arr.length) {
+  if (
+    !arr.length
+  ) {
+
     return 0;
   }
 
 
   const mitad =
     Math.floor(
-      arr.length / 2
+      arr.length /
+      2
     );
 
 
@@ -209,11 +207,14 @@ function desviacionEstandar(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(Number.isFinite);
+      .filter(
+        Number.isFinite
+      );
 
 
   if (
-    arr.length < 2
+    arr.length <
+    2
   ) {
 
     return 0;
@@ -221,17 +222,24 @@ function desviacionEstandar(
 
 
   const media =
-    promedio(arr);
+    promedio(
+      arr
+    );
 
 
   const varianza =
     arr.reduce(
-      (suma, valor) =>
+      (
+        suma,
+        valor
+      ) =>
+
         suma +
         Math.pow(
           valor - media,
           2
         ),
+
       0
     ) /
     arr.length;
@@ -250,7 +258,9 @@ function normalizarTexto(
   return String(
     texto || ''
   )
-    .normalize('NFD')
+    .normalize(
+      'NFD'
+    )
     .replace(
       /[\u0300-\u036f]/g,
       ''
@@ -265,7 +275,7 @@ function normalizarTexto(
 
 
 // ============================================================
-// FECHA CÓRDOBA
+// FECHAS
 // ============================================================
 
 function hoyCordoba() {
@@ -290,10 +300,6 @@ function periodoActualCba() {
     );
 }
 
-
-// ============================================================
-// FECHAS UTC
-// ============================================================
 
 function fechaUTC(
   texto
@@ -345,7 +351,9 @@ function primerDiaPeriodo(
   periodo
 ) {
 
-  return `${periodo}-01`;
+  return (
+    `${periodo}-01`
+  );
 }
 
 
@@ -366,7 +374,9 @@ function limiteSuperiorMes(
     mes === 12
   ) {
 
-    return `${anio + 1}-01-01`;
+    return (
+      `${anio + 1}-01-01`
+    );
   }
 
 
@@ -467,7 +477,8 @@ function semanasDelMes(
 
 
   while (
-    semana < finMes
+    semana <
+    finMes
   ) {
 
     resultado.push(
@@ -558,10 +569,6 @@ function factorSemanaTranscurrida(
     hoyCordoba();
 
 
-  const inicio =
-    semana;
-
-
   const fin =
     semanaSiguiente(
       semana
@@ -569,7 +576,7 @@ function factorSemanaTranscurrida(
 
 
   if (
-    inicio > hoy
+    semana > hoy
   ) {
 
     return 0;
@@ -586,7 +593,7 @@ function factorSemanaTranscurrida(
 
   const totalHabiles =
     diasHabilesEntre(
-      inicio,
+      semana,
       fin
     );
 
@@ -600,7 +607,7 @@ function factorSemanaTranscurrida(
 
   const transcurridos =
     diasHabilesEntre(
-      inicio,
+      semana,
       manana
     );
 
@@ -642,11 +649,14 @@ function esObjetivoNoOperativo(
     OBJETIVOS_NO_OPERATIVOS
       .some(
         palabra =>
+
           normalizado ===
             palabra ||
+
           normalizado.includes(
             `${palabra} `
           ) ||
+
           normalizado.includes(
             ` ${palabra}`
           )
@@ -670,7 +680,10 @@ async function cargarMapaObjetivos() {
       );
 
 
-  if (error) {
+  if (
+    error
+  ) {
+
     throw error;
   }
 
@@ -760,7 +773,10 @@ async function obtenerParque(
       );
 
 
-  if (error) {
+  if (
+    error
+  ) {
+
     throw error;
   }
 
@@ -885,7 +901,7 @@ async function obtenerParque(
 
 
 // ============================================================
-// PRECIOS
+// PRECIOS DE CARGAS
 // ============================================================
 
 function obtenerCandidatosPrecio(
@@ -911,7 +927,8 @@ function obtenerCandidatosPrecio(
 
 
     for (
-      const item of items
+      const item of
+      items
     ) {
 
       if (
@@ -992,11 +1009,11 @@ function obtenerCandidatosPrecio(
 
 
   return candidatos.filter(
-    valor =>
+    precio =>
       Number.isFinite(
-        valor
+        precio
       ) &&
-      valor > 0
+      precio > 0
   );
 }
 
@@ -1019,14 +1036,14 @@ function calcularPrecioReferencia(
   }
 
 
-  const medianaInicial =
+  const inicial =
     mediana(
       candidatos
     );
 
 
   if (
-    medianaInicial <= 0
+    inicial <= 0
   ) {
 
     return 0;
@@ -1036,24 +1053,20 @@ function calcularPrecioReferencia(
   const filtrados =
     candidatos.filter(
       precio =>
+
         precio >=
-          medianaInicial * 0.5 &&
+          inicial * 0.5 &&
+
         precio <=
-          medianaInicial * 2
+          inicial * 2
     );
 
 
-  if (
-    !filtrados.length
-  ) {
-
-    return medianaInicial;
-  }
-
-
-  return mediana(
-    filtrados
-  );
+  return filtrados.length
+    ? mediana(
+        filtrados
+      )
+    : inicial;
 }
 
 
@@ -1081,6 +1094,7 @@ function precioEsRazonable(
   return (
     precio >=
       referencia * 0.5 &&
+
     precio <=
       referencia * 2
   );
@@ -1168,14 +1182,12 @@ function calcularImporteItem({
       )
     ) {
 
-      const proporcion =
-        litrosItem /
-        litrosCombustibleCarga;
-
-
       return (
         totalCarga *
-        proporcion
+        (
+          litrosItem /
+          litrosCombustibleCarga
+        )
       );
     }
   }
@@ -1203,10 +1215,6 @@ function calcularImporteItem({
 async function obtenerConsumoSemana(
   semana
 ) {
-
-  const desde =
-    semana;
-
 
   const hasta =
     semanaSiguiente(
@@ -1253,7 +1261,7 @@ async function obtenerConsumoSemana(
       `)
       .gte(
         'fecha',
-        desde
+        semana
       )
       .lt(
         'fecha',
@@ -1268,7 +1276,10 @@ async function obtenerConsumoSemana(
       );
 
 
-  if (error) {
+  if (
+    error
+  ) {
+
     throw error;
   }
 
@@ -1293,14 +1304,6 @@ async function obtenerConsumoSemana(
     calcularPrecioReferencia(
       listaCargas
     );
-
-
-  console.log(
-    `[cost-intelligence V2.1] ${semana} precio ref: $${redondear(
-      precioReferencia,
-      2
-    )}/L`
-  );
 
 
   const agrupado = {};
@@ -1391,11 +1394,9 @@ async function obtenerConsumoSemana(
 
       agrupado[
         k
-      ]
-        .cargas
-        .add(
-          cargaId
-        );
+      ].cargas.add(
+        cargaId
+      );
     }
   }
 
@@ -1446,7 +1447,7 @@ async function obtenerConsumoSemana(
 
 
     // ========================================================
-    // CARGA SIN ITEMS
+    // SIN ITEMS
     // ========================================================
 
     if (
@@ -1541,10 +1542,10 @@ async function obtenerConsumoSemana(
       itemsCombustible
         .reduce(
           (
-            suma,
+            total,
             item
           ) =>
-            suma +
+            total +
             numero(
               item.litros
             ),
@@ -1608,10 +1609,6 @@ async function obtenerConsumoSemana(
         'bidon';
 
 
-      // ======================================================
-      // OBJETIVO
-      // ======================================================
-
       let objetivoId =
         item.objetivo_id ||
         objetivoCargaId ||
@@ -1645,7 +1642,7 @@ async function obtenerConsumoSemana(
         item.destino_detalle
       ) {
 
-        const nombreRaw =
+        const raw =
           String(
             item.destino_detalle
           ).trim();
@@ -1655,7 +1652,7 @@ async function obtenerConsumoSemana(
           mapaObjetivos
             .porNombre[
               normalizarTexto(
-                nombreRaw
+                raw
               )
             ];
 
@@ -1673,7 +1670,7 @@ async function obtenerConsumoSemana(
         } else {
 
           objetivoNombre =
-            nombreRaw;
+            raw;
         }
       }
 
@@ -1697,10 +1694,7 @@ async function obtenerConsumoSemana(
       }
 
 
-      // ======================================================
       // TOTAL
-      // ======================================================
-
       sumar({
 
         objetivoId,
@@ -1719,10 +1713,7 @@ async function obtenerConsumoSemana(
       });
 
 
-      // ======================================================
-      // BIDONES / UNIDADES
-      // ======================================================
-
+      // BIDÓN / UNIDAD
       sumar({
 
         objetivoId,
@@ -1743,16 +1734,12 @@ async function obtenerConsumoSemana(
       });
 
 
-      // ======================================================
       // FAMILIA REAL
-      // ======================================================
-
       const familiaDeclarada =
         String(
           item.familia_consumo ||
           ''
-        )
-          .trim();
+        ).trim();
 
 
       if (
@@ -1784,32 +1771,30 @@ async function obtenerConsumoSemana(
   }
 
 
-  return (
-    Object
-      .values(
-        agrupado
-      )
-      .map(
-        fila => ({
+  return Object
+    .values(
+      agrupado
+    )
+    .map(
+      fila => ({
 
-          ...fila,
+        ...fila,
 
-          litros:
-            redondear(
-              fila.litros,
-              2
-            ),
+        litros:
+          redondear(
+            fila.litros,
+            2
+          ),
 
-          importe:
-            Math.round(
-              fila.importe
-            ),
+        importe:
+          Math.round(
+            fila.importe
+          ),
 
-          cantidad_cargas:
-            fila.cargas.size,
-        })
-      )
-  );
+        cantidad_cargas:
+          fila.cargas.size,
+      })
+    );
 }
 
 
@@ -1890,17 +1875,12 @@ async function resolverObjetivos(
 
 
 // ============================================================
-// SNAPSHOT SEMANAL
+// SNAPSHOT
 // ============================================================
 
 async function generarSnapshotSemanal(
   semana
 ) {
-
-  console.log(
-    `[cost-intelligence V2.1] generando ${semana}`
-  );
-
 
   const periodo =
     semana.slice(
@@ -1960,19 +1940,8 @@ async function generarSnapshotSemanal(
       };
 
 
-    // ========================================================
-    // V2.1
-    //
-    // SOLO familias reales usan parque_familia.
-    //
-    // total    = 0
-    // bidones  = 0
-    // unidades = 0
-    //
-    // Esto evita falsos positivos como COUNTRY CAÑUELAS.
-    // ========================================================
-
-    let parqueFamilia = 0;
+    let parqueFamilia =
+      0;
 
 
     if (
@@ -1993,19 +1962,19 @@ async function generarSnapshotSemanal(
 
     const litrosPorEquipo =
       parqueFamilia > 0
-        ? (
-            consumo.litros /
-            parqueFamilia
-          )
+
+        ? consumo.litros /
+          parqueFamilia
+
         : null;
 
 
     const costoPorEquipo =
       parqueFamilia > 0
-        ? (
-            consumo.importe /
-            parqueFamilia
-          )
+
+        ? consumo.importe /
+          parqueFamilia
+
         : null;
 
 
@@ -2037,8 +2006,6 @@ async function generarSnapshotSemanal(
           consumo.importe
         ),
 
-      // Seguimos guardando parque total
-      // como contexto.
       parque_total:
         numero(
           p.total
@@ -2082,13 +2049,9 @@ async function generarSnapshotSemanal(
   }
 
 
-  // ==========================================================
-  // BORRAR SNAPSHOT DE ESA SEMANA
-  // ==========================================================
-
   const {
     error:
-      errorDelete
+      deleteError
   } =
     await supabase
       .from(
@@ -2106,10 +2069,10 @@ async function generarSnapshotSemanal(
 
 
   if (
-    errorDelete
+    deleteError
   ) {
 
-    throw errorDelete;
+    throw deleteError;
   }
 
 
@@ -2181,7 +2144,8 @@ async function generarSnapshotsSemanalesMes(
     hoyCordoba();
 
 
-  let total = 0;
+  let total =
+    0;
 
   const detalle = [];
 
@@ -2299,6 +2263,253 @@ async function obtenerHistorico(
 
 
   return data || [];
+}
+
+
+// ============================================================
+// PRECIO DESDE SNAPSHOT
+// ============================================================
+
+function precioSnapshot(
+  snapshot
+) {
+
+  const litros =
+    numero(
+      snapshot.litros
+    );
+
+
+  const importe =
+    numero(
+      snapshot.importe
+    );
+
+
+  if (
+    litros <= 0 ||
+    importe <= 0
+  ) {
+
+    return 0;
+  }
+
+
+  return (
+    importe /
+    litros
+  );
+}
+
+
+// ============================================================
+// PRECIO HISTÓRICO ROBUSTO
+// ============================================================
+
+function calcularPrecioHistorico(
+  historico
+) {
+
+  const precios =
+    (historico || [])
+      .map(
+        precioSnapshot
+      )
+      .filter(
+        precio =>
+          precio > 0 &&
+          Number.isFinite(
+            precio
+          )
+      );
+
+
+  if (
+    !precios.length
+  ) {
+
+    return {
+
+      precio:
+        0,
+
+      muestras:
+        0,
+    };
+  }
+
+
+  const inicial =
+    mediana(
+      precios
+    );
+
+
+  const filtrados =
+    precios.filter(
+      precio =>
+
+        precio >=
+          inicial * 0.5 &&
+
+        precio <=
+          inicial * 2
+    );
+
+
+  const serie =
+    filtrados.length
+      ? filtrados
+      : precios;
+
+
+  return {
+
+    precio:
+      mediana(
+        serie
+      ),
+
+    muestras:
+      serie.length,
+  };
+}
+
+
+// ============================================================
+// SELECCIONAR PRECIO PARA IMPACTO
+// ============================================================
+
+function seleccionarPrecioImpacto({
+  snapshot,
+  historico,
+}) {
+
+  const actual =
+    precioSnapshot(
+      snapshot
+    );
+
+
+  const historicoPrecio =
+    calcularPrecioHistorico(
+      historico
+    );
+
+
+  const referencia =
+    numero(
+      historicoPrecio.precio
+    );
+
+
+  // No hay referencia histórica.
+  if (
+    referencia <= 0
+  ) {
+
+    return {
+
+      precio:
+        actual,
+
+      origen:
+        actual > 0
+          ? 'precio_actual'
+          : 'sin_precio',
+
+      precio_actual:
+        actual,
+
+      precio_historico:
+        0,
+
+      desvio_precio_pct:
+        null,
+    };
+  }
+
+
+  // No hay precio actual.
+  if (
+    actual <= 0
+  ) {
+
+    return {
+
+      precio:
+        referencia,
+
+      origen:
+        'referencia_historica',
+
+      precio_actual:
+        0,
+
+      precio_historico:
+        referencia,
+
+      desvio_precio_pct:
+        null,
+    };
+  }
+
+
+  const desvioPct =
+    (
+      (
+        actual -
+        referencia
+      ) /
+      referencia
+    ) *
+    100;
+
+
+  if (
+    Math.abs(
+      desvioPct
+    ) >
+    DESVIO_PRECIO_MAX_PCT
+  ) {
+
+    return {
+
+      precio:
+        referencia,
+
+      origen:
+        'referencia_historica',
+
+      precio_actual:
+        actual,
+
+      precio_historico:
+        referencia,
+
+      desvio_precio_pct:
+        desvioPct,
+    };
+  }
+
+
+  return {
+
+    precio:
+      actual,
+
+    origen:
+      'precio_actual',
+
+    precio_actual:
+      actual,
+
+    precio_historico:
+      referencia,
+
+    desvio_precio_pct:
+      desvioPct,
+  };
 }
 
 
@@ -2428,17 +2639,12 @@ function construirBaseline(
       : 0;
 
 
-  // ==========================================================
-  // DISPERSIÓN
-  //
-  // Solamente usamos litros/equipo
-  // cuando realmente hay suficientes datos.
-  // ==========================================================
-
   const seriePrincipal =
     litrosEquipo.length >=
       MIN_MUESTRAS_ANOMALIA
+
       ? litrosEquipo
+
       : litros;
 
 
@@ -2450,13 +2656,13 @@ function construirBaseline(
 
   const dispersionPct =
     media > 0
-      ? (
-          desviacionEstandar(
-            seriePrincipal
-          ) /
-          media *
-          100
-        )
+
+      ? desviacionEstandar(
+          seriePrincipal
+        ) /
+        media *
+        100
+
       : 0;
 
 
@@ -2490,7 +2696,7 @@ function construirBaseline(
 
 
 // ============================================================
-// CALIDAD DE PARQUE
+// PARQUE
 // ============================================================
 
 function evaluarCalidadParque({
@@ -2595,8 +2801,10 @@ function calcularConfianza({
   ) {
 
     return {
+
       nivel:
         'insuficiente',
+
       score:
         0,
     };
@@ -2608,8 +2816,10 @@ function calcularConfianza({
   ) {
 
     return {
+
       nivel:
         'baja',
+
       score:
         25,
     };
@@ -2621,8 +2831,10 @@ function calcularConfianza({
   ) {
 
     return {
+
       nivel:
         'baja',
+
       score:
         35,
     };
@@ -2635,8 +2847,10 @@ function calcularConfianza({
   ) {
 
     return {
+
       nivel:
         'alta',
+
       score:
         90,
     };
@@ -2649,8 +2863,10 @@ function calcularConfianza({
   ) {
 
     return {
+
       nivel:
         'alta',
+
       score:
         80,
     };
@@ -2658,8 +2874,10 @@ function calcularConfianza({
 
 
   return {
+
     nivel:
       'media',
+
     score:
       60,
   };
@@ -2667,29 +2885,27 @@ function calcularConfianza({
 
 
 // ============================================================
-// UMBRAL DINÁMICO
+// UMBRAL
 // ============================================================
 
 function calcularUmbral(
   dispersionPct
 ) {
 
-  const dinamico =
+  return Math.max(
+
+    UMBRAL_MINIMO_PCT,
+
     numero(
       dispersionPct
     ) *
-    MULTIPLICADOR_DISPERSION;
-
-
-  return Math.max(
-    UMBRAL_MINIMO_PCT,
-    dinamico
+    MULTIPLICADOR_DISPERSION
   );
 }
 
 
 // ============================================================
-// BASELINES SEMANA
+// BASELINES
 // ============================================================
 
 async function calcularBaselinesSemana(
@@ -2843,7 +3059,7 @@ async function calcularBaselinesSemana(
   const {
     data,
     error:
-      errorUpsert
+      upsertError
   } =
     await supabase
       .from(
@@ -2860,10 +3076,10 @@ async function calcularBaselinesSemana(
 
 
   if (
-    errorUpsert
+    upsertError
   ) {
 
-    throw errorUpsert;
+    throw upsertError;
   }
 
 
@@ -2880,7 +3096,7 @@ async function calcularBaselinesSemana(
 
 
 // ============================================================
-// LIMPIAR ANOMALÍAS
+// LIMPIAR ALERTAS AUTOMÁTICAS
 // ============================================================
 
 async function limpiarAnomaliasSemana(
@@ -2972,10 +3188,6 @@ async function detectarAnomaliasSemana(
     snapshots || []
   ) {
 
-    // ========================================================
-    // OBJETIVOS NO OPERATIVOS
-    // ========================================================
-
     if (
       esObjetivoNoOperativo(
         snapshot.objetivo_nombre
@@ -2985,13 +3197,6 @@ async function detectarAnomaliasSemana(
       continue;
     }
 
-
-    // ========================================================
-    // BIDONES / UNIDADES
-    //
-    // Se usan para análisis pero
-    // todavía no generan alerta.
-    // ========================================================
 
     if (
       FAMILIAS_NO_ALERTABLES
@@ -3050,17 +3255,6 @@ async function detectarAnomaliasSemana(
     }
 
 
-    // ========================================================
-    // DECIDIR MÉTRICA
-    //
-    // TOTAL:
-    // siempre litros.
-    //
-    // FAMILIA:
-    // litros/equipo solamente
-    // si el parque es confiable.
-    // ========================================================
-
     let metrica =
       'litros';
 
@@ -3077,7 +3271,8 @@ async function detectarAnomaliasSemana(
       );
 
 
-    let calidadParque = null;
+    let calidadDato =
+      'correcta';
 
 
     const esFamiliaReal =
@@ -3091,7 +3286,7 @@ async function detectarAnomaliasSemana(
       esFamiliaReal
     ) {
 
-      calidadParque =
+      const calidadParque =
         evaluarCalidadParque({
 
           parqueActual:
@@ -3128,13 +3323,15 @@ async function detectarAnomaliasSemana(
             base
               .consumo_por_equipo_base
           );
+
+      } else {
+
+        calidadDato =
+          calidadParque.motivo ||
+          'Parque no confiable';
       }
     }
 
-
-    // ========================================================
-    // SEMANA ACTUAL INCOMPLETA
-    // ========================================================
 
     const esperado =
       esperadoSemana *
@@ -3168,7 +3365,6 @@ async function detectarAnomaliasSemana(
       );
 
 
-    // Solo exceso.
     if (
       desvioPct <
       umbral
@@ -3177,10 +3373,6 @@ async function detectarAnomaliasSemana(
       continue;
     }
 
-
-    // ========================================================
-    // LITROS ESPERADOS
-    // ========================================================
 
     let litrosEsperados;
 
@@ -3215,32 +3407,23 @@ async function detectarAnomaliasSemana(
 
 
     // ========================================================
-    // PRECIO
+    // V2.2 - PRECIO INTELIGENTE
     // ========================================================
 
-    const precioPromedio =
-      numero(
-        snapshot.litros
-      ) > 0 &&
-      numero(
-        snapshot.importe
-      ) > 0
+    const precio =
+      seleccionarPrecioImpacto({
 
-        ? (
-            numero(
-              snapshot.importe
-            ) /
-            numero(
-              snapshot.litros
-            )
-          )
+        snapshot,
 
-        : 0;
+        historico,
+      });
 
 
     const impacto =
       litrosExceso *
-      precioPromedio;
+      numero(
+        precio.precio
+      );
 
 
     // ========================================================
@@ -3267,9 +3450,20 @@ async function detectarAnomaliasSemana(
     }
 
 
-    // ========================================================
-    // GUARDAR ANOMALÍA
-    // ========================================================
+    if (
+      precio.origen ===
+      'referencia_historica'
+    ) {
+
+      calidadDato =
+        calidadDato ===
+        'correcta'
+
+          ? 'Precio actual atípico'
+
+          : `${calidadDato}; precio actual atípico`;
+    }
+
 
     anomalias.push({
 
@@ -3328,6 +3522,39 @@ async function detectarAnomaliasSemana(
           )
         ),
 
+      precio_utilizado:
+        redondear(
+          precio.precio,
+          2
+        ),
+
+      precio_origen:
+        precio.origen,
+
+      confianza_nivel:
+        confianza.nivel,
+
+      confianza_score:
+        confianza.score,
+
+      muestras_historicas:
+        base.muestras,
+
+      dispersion_pct:
+        redondear(
+          base.dispersion_pct,
+          2
+        ),
+
+      umbral_pct:
+        redondear(
+          umbral,
+          2
+        ),
+
+      calidad_dato:
+        calidadDato,
+
       severidad,
 
       estado:
@@ -3353,7 +3580,7 @@ async function detectarAnomaliasSemana(
   const {
     data,
     error:
-      errorInsert
+      insertError
   } =
     await supabase
       .from(
@@ -3373,10 +3600,10 @@ async function detectarAnomaliasSemana(
 
 
   if (
-    errorInsert
+    insertError
   ) {
 
-    throw errorInsert;
+    throw insertError;
   }
 
 
@@ -3433,7 +3660,7 @@ async function analizarSemana(
 
 
 // ============================================================
-// EJECUTAR MES COMPLETO
+// EJECUTAR MES
 // ============================================================
 
 async function ejecutarCostIntelligence(
@@ -3457,16 +3684,6 @@ async function ejecutarCostIntelligence(
   }
 
 
-  console.log(
-    '================================================'
-  );
-
-
-  console.log(
-    `[cost-intelligence V2.1] procesando ${periodo}`
-  );
-
-
   const semanas =
     semanasDelMes(
       periodo
@@ -3480,9 +3697,14 @@ async function ejecutarCostIntelligence(
   const resultados = [];
 
 
-  let totalSnapshots = 0;
-  let totalBaselines = 0;
-  let totalAnomalias = 0;
+  let totalSnapshots =
+    0;
+
+  let totalBaselines =
+    0;
+
+  let totalAnomalias =
+    0;
 
 
   for (
@@ -3496,11 +3718,6 @@ async function ejecutarCostIntelligence(
 
       continue;
     }
-
-
-    console.log(
-      `[cost-intelligence V2.1] semana ${semana}`
-    );
 
 
     const resultado =
@@ -3539,13 +3756,13 @@ async function ejecutarCostIntelligence(
   }
 
 
-  const resultadoFinal = {
+  return {
 
     ok:
       true,
 
     version:
-      '2.1',
+      '2.2',
 
     periodo,
 
@@ -3586,35 +3803,11 @@ async function ejecutarCostIntelligence(
       Date.now() -
       inicio,
   };
-
-
-  console.log(
-    '[cost-intelligence V2.1] finalizado',
-    {
-      periodo,
-      semanas:
-        resultados.length,
-      snapshots:
-        totalSnapshots,
-      baselines:
-        totalBaselines,
-      anomalias:
-        totalAnomalias,
-    }
-  );
-
-
-  console.log(
-    '================================================'
-  );
-
-
-  return resultadoFinal;
 }
 
 
 // ============================================================
-// COMPATIBILIDAD CON API
+// COMPATIBILIDAD API
 // ============================================================
 
 async function generarSnapshotMensual(
@@ -3631,7 +3824,6 @@ async function generarSnapshotMensual(
 async function calcularBaselines(
   periodo =
     periodoActualCba(),
-
   ventanas =
     VENTANA_SEMANAS
 ) {
@@ -3646,7 +3838,8 @@ async function calcularBaselines(
     hoyCordoba();
 
 
-  let total = 0;
+  let total =
+    0;
 
   const detalle = [];
 
@@ -3714,7 +3907,8 @@ async function detectarAnomalias(
     hoyCordoba();
 
 
-  let total = 0;
+  let total =
+    0;
 
   const detalle = [];
 
@@ -3765,10 +3959,6 @@ async function detectarAnomalias(
   };
 }
 
-
-// ============================================================
-// OBTENER CONSUMO
-// ============================================================
 
 async function obtenerConsumo(
   periodo
@@ -3871,4 +4061,8 @@ module.exports = {
   calcularUmbral,
 
   evaluarCalidadParque,
+
+  calcularPrecioHistorico,
+
+  seleccionarPrecioImpacto,
 };
