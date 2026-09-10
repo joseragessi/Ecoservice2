@@ -260,7 +260,7 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
     const periodo = ciPeriodoValido(req.query.periodo);
     const semanas = ciSemanas(periodo);
  
-    const [snapRes, anomRes] = await Promise.all([
+    const [snapRes, anomRes, qualityReviewRes] = await Promise.all([
       supabase.from('cost_snapshots')
         .select('id,periodo,objetivo_id,objetivo_nombre,familia,litros,importe,parque_total,parque_motor,parque_familia,litros_por_equipo,cantidad_cargas,parque_origen,parque_periodo,parque_confianza,parque_censo_id,parque_observacion')
         .eq('granularidad', 'semanal')
@@ -269,12 +269,18 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         .select('*')
         .in('periodo', semanas)
         .order('impacto_estimado', { ascending: false }),
+      supabase.from('cost_quality_reviews')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(500),
     ]);
     if (snapRes.error) throw snapRes.error;
     if (anomRes.error) throw anomRes.error;
+    if (qualityReviewRes.error) throw qualityReviewRes.error;
  
     const snapshots = snapRes.data || [];
     const anomaliasTodas = anomRes.data || [];
+    const qualityReviews = qualityReviewRes.data || [];
  
     // V2.4: las alertas superadas por el modelo se conservan para auditoría,
     // pero NO forman parte de los KPIs, ranking ni "Dónde actuar hoy".
@@ -358,11 +364,44 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       };
     }
  
-    const calidadUnica = [...ultimoSnapshotFamilia.values()]
+    const calidadDetectadaUnica = [...ultimoSnapshotFamilia.values()]
       .map(señalCalidadDesdeSnapshot)
       .filter(Boolean)
       .sort((a,b) => b.periodo.localeCompare(a.periodo) ||
         String(a.objetivo_nombre || '').localeCompare(String(b.objetivo_nombre || '')));
+ 
+    // V2.8: una incidencia de calidad puede ser resuelta desde el panel.
+    // La resolución vale hasta la semana que el usuario revisó. Si el mismo
+    // objetivo + familia vuelve a presentar un problema en una semana posterior,
+    // reaparece automáticamente: nunca ocultamos un problema nuevo con una
+    // resolución vieja.
+    const reviewPorClave = new Map();
+    for (const r of qualityReviews) {
+      if (!r.objetivo_id || !r.familia) continue;
+      reviewPorClave.set(`${r.objetivo_id}|${r.familia}`, r);
+    }
+ 
+    function reviewResuelveSeñal(q) {
+      const r = reviewPorClave.get(claveFamilia(q));
+      if (!r || r.estado !== 'resuelta') return false;
+      const hasta = String(r.periodo_senal || '').slice(0,10);
+      const señal = String(q.periodo || '').slice(0,10);
+      return !!hasta && !!señal && señal <= hasta;
+    }
+ 
+    const calidadResueltaGestion = calidadDetectadaUnica
+      .filter(reviewResuelveSeñal);
+ 
+    const calidadUnica = calidadDetectadaUnica
+      .filter(q => !reviewResuelveSeñal(q))
+      .map(q => {
+        const r = reviewPorClave.get(claveFamilia(q));
+        return {
+          ...q,
+          reaparecida: !!(r && r.estado === 'resuelta'),
+          ultima_revision: r || null,
+        };
+      });
  
     // Auditoría: contamos las ocurrencias semanales de calidad por separado,
     // sin mezclarlas con los problemas vigentes del KPI.
@@ -370,10 +409,15 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       .map(señalCalidadDesdeSnapshot)
       .filter(Boolean);
  
-    const clavesVigentes = new Set(calidadUnica.map(claveFamilia));
+    const clavesDetectadasActuales = new Set(calidadDetectadaUnica.map(claveFamilia));
     const clavesHistoricas = new Set(calidadHistorica.map(claveFamilia));
-    const calidadResueltaEnPeriodo = [...clavesHistoricas]
-      .filter(k => !clavesVigentes.has(k)).length;
+    // Resuelta automáticamente = existió en una semana del período pero ya no está
+    // presente en el snapshot más reciente de esa familia. Las resoluciones humanas
+    // se cuentan aparte para no duplicarlas.
+    const calidadResueltaAutomaticaEnPeriodo = [...clavesHistoricas]
+      .filter(k => !clavesDetectadasActuales.has(k)).length;
+    const calidadResueltaEnPeriodo =
+      calidadResueltaAutomaticaEnPeriodo + calidadResueltaGestion.length;
  
     // Evolución semanal: sólo familia total, para no duplicar bidones/unidades/familias.
     const porSemana = {};
@@ -444,7 +488,7 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
  
     res.json({
       ok:true,
-      version:'dashboard-costos-2.7',
+      version:'dashboard-costos-2.8',
       motor_version:'2.6',
       periodo,
       granularidad:'semanal',
@@ -461,6 +505,8 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
         calidad_datos:calidadUnica.length,
         calidad_datos_ocurrencias_periodo:calidadHistorica.length,
         calidad_datos_resueltas_periodo:calidadResueltaEnPeriodo,
+        calidad_datos_resueltas_gestion:calidadResueltaGestion.length,
+        calidad_datos_resueltas_automaticas:calidadResueltaAutomaticaEnPeriodo,
         alertas_superadas_modelo:superadasModelo.length,
       },
       severidades,
@@ -471,6 +517,12 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       calidad_datos_historico:{
         ocurrencias:calidadHistorica.length,
         resueltas:calidadResueltaEnPeriodo,
+        resueltas_gestion:calidadResueltaGestion.length,
+        resueltas_automaticas:calidadResueltaAutomaticaEnPeriodo,
+      },
+      calidad_gestion:{
+        resueltas: qualityReviews.filter(r => r.estado === 'resuelta').length,
+        historial: qualityReviews.slice(0, 30),
       },
       historico_modelo:{
         superadas:superadasModelo.length,
@@ -492,6 +544,83 @@ router.post('/api/costos/ejecutar', auth, async (req, res) => {
   } catch (err) {
     console.error('[costos] ejecutar:', err);
     res.status(500).json({ error: err.message || 'Error ejecutando Cost Intelligence' });
+  }
+});
+ 
+// V2.8 · Gestión de incidencias de calidad de datos.
+// La incidencia nace de los snapshots (no se duplica en otra tabla); aquí sólo
+// guardamos la decisión humana. Si reaparece en una semana posterior, vuelve
+// automáticamente a la lista vigente.
+router.post('/api/costos/calidad/resolver', auth, async (req, res) => {
+  try {
+    const d = req.body || {};
+    const objetivoId = String(d.objetivo_id || '').trim();
+    const familia = String(d.familia || '').trim();
+    const periodoSenal = String(d.periodo || '').slice(0,10);
+    const accion = String(d.accion || '').trim();
+    const observacion = d.observacion == null ? null : String(d.observacion).trim() || null;
+ 
+    if (!objetivoId || !familia || !/^\d{4}-\d{2}-\d{2}$/.test(periodoSenal)) {
+      return res.status(400).json({ error:'Faltan objetivo, familia o semana de la incidencia' });
+    }
+    if (!accion) {
+      return res.status(400).json({ error:'Indicá qué se verificó o corrigió' });
+    }
+ 
+    const fila = {
+      objetivo_id: objetivoId,
+      objetivo_nombre: d.objetivo_nombre || null,
+      familia,
+      estado: 'resuelta',
+      periodo_senal: periodoSenal,
+      accion,
+      observacion,
+      responsable: d.responsable || req.usuario || null,
+      resuelto_por: req.usuario || null,
+      resuelto_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+ 
+    const { data, error } = await supabase.from('cost_quality_reviews')
+      .upsert(fila, { onConflict:'objetivo_id,familia' })
+      .select()
+      .single();
+    if (error) throw error;
+ 
+    cambios.tocar?.('costos');
+    res.json({ ok:true, revision:data });
+  } catch (err) {
+    console.error('[costos] calidad resolver:', err);
+    res.status(500).json({ error:err.message || 'Error resolviendo incidencia de calidad' });
+  }
+});
+ 
+router.post('/api/costos/calidad/reabrir', auth, async (req, res) => {
+  try {
+    const d = req.body || {};
+    const objetivoId = String(d.objetivo_id || '').trim();
+    const familia = String(d.familia || '').trim();
+    if (!objetivoId || !familia) {
+      return res.status(400).json({ error:'Faltan objetivo o familia' });
+    }
+ 
+    const { data, error } = await supabase.from('cost_quality_reviews')
+      .update({
+        estado:'reabierta',
+        reabierto_at:new Date().toISOString(),
+        updated_at:new Date().toISOString(),
+      })
+      .eq('objetivo_id', objetivoId)
+      .eq('familia', familia)
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+ 
+    cambios.tocar?.('costos');
+    res.json({ ok:true, revision:data || null });
+  } catch (err) {
+    console.error('[costos] calidad reabrir:', err);
+    res.status(500).json({ error:err.message || 'Error reabriendo incidencia de calidad' });
   }
 });
  
