@@ -1,18 +1,32 @@
 // ============================================================
-// COST INTELLIGENCE V1.1
-// Ecoservice
+// COST INTELLIGENCE V2.0
+// ECOSERVICE
 //
-// Motor de inteligencia de costos.
+// CEREBRO SEMANAL DE INTELIGENCIA DE COSTOS
 //
-// V1.1:
-// - Corrige cálculo económico de combustible.
-// - Usa subtotal / precio_unit / total / precio promedio.
-// - Usa objetivo_id del ITEM cuando existe.
-// - Resuelve correctamente nombres e IDs de objetivos.
-// - No genera anomalías operativas para DEPÓSITO.
-// - Ajusta mes actual por días hábiles transcurridos.
-// - Limpia anomalías automáticas abiertas al recalcular.
-// - Mantiene snapshots de depósito para control económico.
+// Objetivo:
+// OBJETIVO
+//   ↓
+// SEMANA
+//   ↓
+// CONSUMO
+//   ↓
+// PARQUE
+//   ↓
+// NORMALIZACIÓN
+//   ↓
+// BASELINE 8 SEMANAS
+//   ↓
+// DESVÍO
+//   ↓
+// CONFIANZA
+//   ↓
+// IMPACTO ECONÓMICO
+//
+// Compatible con:
+// ejecutarCostIntelligence('2026-09')
+//
+// Eso genera y analiza todas las semanas de septiembre.
 // ============================================================
 
 const supabase = require('./supabase');
@@ -27,32 +41,59 @@ const {
 // CONFIGURACIÓN
 // ============================================================
 
-// Cantidad de meses históricos máximos
-// utilizados para calcular el baseline.
-const VENTANA_BASELINE_DEFAULT = 6;
+const GRANULARIDAD = 'semanal';
 
 
-// Cantidad mínima de muestras históricas
-// para generar una anomalía.
-const MIN_MUESTRAS_ANOMALIA = 3;
+// Cantidad máxima de semanas usadas
+// para construir la línea base.
+const VENTANA_SEMANAS = 8;
 
 
-// Desvío mínimo para generar alerta.
-const UMBRAL_DESVIO_PCT = 15;
+// Necesitamos al menos 5 semanas
+// para crear una anomalía real.
+const MIN_MUESTRAS_ANOMALIA = 5;
 
 
-// Objetivos que queremos contabilizar,
-// pero NO comparar como operación.
+// Umbral mínimo absoluto.
+const UMBRAL_MINIMO_PCT = 15;
+
+
+// Si la serie es muy variable,
+// exigimos un desvío superior.
 //
-// Depósito puede recibir / redistribuir combustible
-// y no necesariamente representa consumo productivo.
+// Ej:
+// dispersión histórica 12%
+//
+// umbral dinámico:
+//
+// 12 × 2 = 24%
+const MULTIPLICADOR_DISPERSION = 2;
+
+
+// Familias que NO usamos para generar alertas.
+//
+// Se mantienen en snapshots para análisis,
+// pero evitamos duplicar:
+//
+// TOTAL = 100L
+// BIDONES = 100L
+//
+// No queremos dos alertas iguales.
+const FAMILIAS_NO_ALERTABLES = [
+  'bidones',
+  'unidades',
+];
+
+
+// Centros que queremos contabilizar
+// pero NO tratar como objetivos operativos.
 const OBJETIVOS_NO_OPERATIVOS = [
   'deposito',
 ];
 
 
 // ============================================================
-// UTILIDADES NUMÉRICAS
+// UTILIDADES
 // ============================================================
 
 function numero(v) {
@@ -66,7 +107,7 @@ function numero(v) {
 
 
 function redondear(
-  v,
+  valor,
   decimales = 2
 ) {
 
@@ -75,7 +116,7 @@ function redondear(
 
   return Math.round(
     (
-      numero(v) +
+      numero(valor) +
       Number.EPSILON
     ) * p
   ) / p;
@@ -89,9 +130,7 @@ function promedio(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(
-        Number.isFinite
-      );
+      .filter(Number.isFinite);
 
 
   if (!arr.length) {
@@ -101,8 +140,8 @@ function promedio(
 
   return (
     arr.reduce(
-      (s, x) =>
-        s + x,
+      (suma, valor) =>
+        suma + valor,
       0
     ) /
     arr.length
@@ -117,9 +156,7 @@ function mediana(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(
-        Number.isFinite
-      )
+      .filter(Number.isFinite)
       .sort(
         (a, b) =>
           a - b
@@ -165,9 +202,7 @@ function desviacionEstandar(
   const arr =
     (valores || [])
       .map(Number)
-      .filter(
-        Number.isFinite
-      );
+      .filter(Number.isFinite);
 
 
   if (
@@ -178,18 +213,23 @@ function desviacionEstandar(
   }
 
 
-  const prom =
+  const media =
     promedio(arr);
 
 
   const varianza =
     arr.reduce(
-      (s, x) =>
-        s +
-        Math.pow(
-          x - prom,
-          2
-        ),
+      (suma, valor) => {
+
+        return (
+          suma +
+          Math.pow(
+            valor - media,
+            2
+          )
+        );
+
+      },
       0
     ) /
     arr.length;
@@ -201,16 +241,12 @@ function desviacionEstandar(
 }
 
 
-// ============================================================
-// UTILIDADES TEXTO
-// ============================================================
-
 function normalizarTexto(
-  s
+  texto
 ) {
 
   return String(
-    s || ''
+    texto || ''
   )
     .normalize('NFD')
     .replace(
@@ -226,39 +262,8 @@ function normalizarTexto(
 }
 
 
-function esObjetivoNoOperativo(
-  nombre
-) {
-
-  const n =
-    normalizarTexto(
-      nombre
-    );
-
-
-  if (!n) {
-    return false;
-  }
-
-
-  return (
-    OBJETIVOS_NO_OPERATIVOS
-      .some(
-        palabra =>
-          n === palabra ||
-          n.includes(
-            `${palabra} `
-          ) ||
-          n.includes(
-            ` ${palabra}`
-          )
-      )
-  );
-}
-
-
 // ============================================================
-// FECHAS
+// FECHA LOCAL CÓRDOBA
 // ============================================================
 
 function hoyCordoba() {
@@ -284,48 +289,59 @@ function periodoActualCba() {
 }
 
 
+// ============================================================
+// UTILIDADES FECHA UTC
+// ============================================================
+
+function fechaUTC(
+  texto
+) {
+
+  return new Date(
+    `${texto}T00:00:00Z`
+  );
+}
+
+
+function fechaISO(
+  fecha
+) {
+
+  return fecha
+    .toISOString()
+    .slice(
+      0,
+      10
+    );
+}
+
+
+function sumarDias(
+  fechaTexto,
+  cantidad
+) {
+
+  const d =
+    fechaUTC(
+      fechaTexto
+    );
+
+
+  d.setUTCDate(
+    d.getUTCDate() +
+    cantidad
+  );
+
+
+  return fechaISO(d);
+}
+
+
 function primerDiaPeriodo(
   periodo
 ) {
 
   return `${periodo}-01`;
-}
-
-
-function periodoAnterior(
-  periodo,
-  cantidad = 1
-) {
-
-  const [
-    anio,
-    mes
-  ] =
-    periodo
-      .split('-')
-      .map(Number);
-
-
-  const d =
-    new Date(
-      Date.UTC(
-        anio,
-        mes - 1 - cantidad,
-        1
-      )
-    );
-
-
-  return (
-    d.getUTCFullYear() +
-    '-' +
-    String(
-      d.getUTCMonth() + 1
-    ).padStart(
-      2,
-      '0'
-    )
-  );
 }
 
 
@@ -363,6 +379,130 @@ function limiteSuperiorMes(
 
 
 // ============================================================
+// SEMANAS
+// ============================================================
+
+// Devuelve lunes de la semana
+// correspondiente a una fecha.
+function inicioSemana(
+  fechaTexto
+) {
+
+  const fecha =
+    fechaUTC(
+      fechaTexto
+    );
+
+
+  const dia =
+    fecha.getUTCDay();
+
+
+  // JS:
+// domingo = 0
+// lunes   = 1
+//
+// Queremos lunes = inicio.
+  const diferencia =
+    dia === 0
+      ? -6
+      : 1 - dia;
+
+
+  fecha.setUTCDate(
+    fecha.getUTCDate() +
+    diferencia
+  );
+
+
+  return fechaISO(
+    fecha
+  );
+}
+
+
+// Devuelve lunes siguiente.
+function semanaSiguiente(
+  semana
+) {
+
+  return sumarDias(
+    semana,
+    7
+  );
+}
+
+
+// Devuelve semana anterior.
+function semanaAnterior(
+  semana,
+  cantidad = 1
+) {
+
+  return sumarDias(
+    semana,
+    -7 * cantidad
+  );
+}
+
+
+// Todas las semanas que tocan un mes.
+//
+// Ejemplo:
+//
+// septiembre puede producir:
+//
+// 2026-08-31
+// 2026-09-07
+// 2026-09-14
+// 2026-09-21
+// 2026-09-28
+function semanasDelMes(
+  periodo
+) {
+
+  const inicioMes =
+    primerDiaPeriodo(
+      periodo
+    );
+
+
+  const finMes =
+    limiteSuperiorMes(
+      periodo
+    );
+
+
+  let semana =
+    inicioSemana(
+      inicioMes
+    );
+
+
+  const resultado = [];
+
+
+  while (
+    semana < finMes
+  ) {
+
+    resultado.push(
+      semana
+    );
+
+
+    semana =
+      semanaSiguiente(
+        semana
+      );
+  }
+
+
+  return resultado;
+}
+
+
+// ============================================================
 // DÍAS HÁBILES
 // ============================================================
 
@@ -381,54 +521,44 @@ function esDiaHabil(
 }
 
 
-function diasHabilesMes(
-  periodo
+function diasHabilesEntre(
+  desdeTexto,
+  hastaExclusivoTexto
 ) {
 
-  const [
-    anio,
-    mes
-  ] =
-    periodo
-      .split('-')
-      .map(Number);
+  let fecha =
+    fechaUTC(
+      desdeTexto
+    );
 
 
-  const ultimoDia =
-    new Date(
-      Date.UTC(
-        anio,
-        mes,
-        0
-      )
-    ).getUTCDate();
+  const hasta =
+    fechaUTC(
+      hastaExclusivoTexto
+    );
 
 
   let cantidad = 0;
 
 
-  for (
-    let dia = 1;
-    dia <= ultimoDia;
-    dia++
+  while (
+    fecha < hasta
   ) {
 
-    const fecha =
-      new Date(
-        Date.UTC(
-          anio,
-          mes - 1,
-          dia
-        )
-      );
-
-
     if (
-      esDiaHabil(fecha)
+      esDiaHabil(
+        fecha
+      )
     ) {
 
       cantidad++;
     }
+
+
+    fecha.setUTCDate(
+      fecha.getUTCDate() +
+      1
+    );
   }
 
 
@@ -436,122 +566,138 @@ function diasHabilesMes(
 }
 
 
-function diasHabilesTranscurridos(
-  periodo
+// ============================================================
+// FACTOR DE SEMANA TRANSCURRIDA
+//
+// Semana cerrada:
+// 100%
+//
+// Semana actual:
+// porcentaje de días hábiles transcurridos.
+//
+// Ej:
+//
+// miércoles:
+//
+// 3 / 5 = 60%
+// ============================================================
+
+function factorSemanaTranscurrida(
+  semana
 ) {
-
-  const actual =
-    periodoActualCba();
-
-
-  // Mes cerrado:
-  // todos sus días hábiles cuentan.
-  if (
-    periodo !== actual
-  ) {
-
-    return diasHabilesMes(
-      periodo
-    );
-  }
-
 
   const hoy =
     hoyCordoba();
 
 
-  const [
-    anio,
-    mes,
-    diaActual
-  ] =
-    hoy
-      .split('-')
-      .map(Number);
+  const inicio =
+    semana;
 
 
-  let cantidad = 0;
+  const fin =
+    semanaSiguiente(
+      semana
+    );
 
 
-  for (
-    let dia = 1;
-    dia <= diaActual;
-    dia++
+  // Semana futura.
+  if (
+    inicio > hoy
   ) {
 
-    const fecha =
-      new Date(
-        Date.UTC(
-          anio,
-          mes - 1,
-          dia
-        )
-      );
-
-
-    if (
-      esDiaHabil(fecha)
-    ) {
-
-      cantidad++;
-    }
+    return 0;
   }
 
 
-  return cantidad;
-}
-
-
-function factorPeriodoTranscurrido(
-  periodo
-) {
-
+  // Semana terminada.
   if (
-    periodo !==
-    periodoActualCba()
+    fin <= hoy
   ) {
 
     return 1;
   }
 
 
-  const total =
-    diasHabilesMes(
-      periodo
+  const totalHabiles =
+    diasHabilesEntre(
+      inicio,
+      fin
+    );
+
+
+  const manana =
+    sumarDias(
+      hoy,
+      1
     );
 
 
   const transcurridos =
-    diasHabilesTranscurridos(
-      periodo
+    diasHabilesEntre(
+      inicio,
+      manana
     );
 
 
   if (
-    total <= 0
+    totalHabiles <= 0
   ) {
 
     return 1;
   }
-
-
-  const factor =
-    transcurridos /
-    total;
 
 
   return Math.max(
     0.01,
     Math.min(
       1,
-      factor
+      transcurridos /
+      totalHabiles
     )
   );
 }
 
 
 // ============================================================
-// OBJETIVOS
+// OBJETIVO NO OPERATIVO
+// ============================================================
+
+function esObjetivoNoOperativo(
+  nombre
+) {
+
+  const normalizado =
+    normalizarTexto(
+      nombre
+    );
+
+
+  return (
+    OBJETIVOS_NO_OPERATIVOS
+      .some(
+        palabra => {
+
+          return (
+            normalizado ===
+              palabra ||
+
+            normalizado.includes(
+              `${palabra} `
+            ) ||
+
+            normalizado.includes(
+              ` ${palabra}`
+            )
+          );
+
+        }
+      )
+  );
+}
+
+
+// ============================================================
+// MAPA OBJETIVOS
 // ============================================================
 
 async function cargarMapaObjetivos() {
@@ -574,13 +720,17 @@ async function cargarMapaObjetivos() {
   }
 
 
+  const lista =
+    data || [];
+
+
   const porId = {};
   const porNombre = {};
 
 
   for (
     const objetivo of
-    data || []
+    lista
   ) {
 
     porId[
@@ -599,21 +749,18 @@ async function cargarMapaObjetivos() {
 
 
   return {
-    lista:
-      data || [],
-
+    lista,
     porId,
-
     porNombre,
   };
 }
 
 
 // ============================================================
-// PARQUE POR OBJETIVO
+// PARQUE
 //
-// Utiliza el último censo respondido existente
-// hasta el período solicitado.
+// Usa último censo disponible
+// hasta el mes de esa semana.
 // ============================================================
 
 async function obtenerParque(
@@ -626,7 +773,7 @@ async function obtenerParque(
 
   const {
     data: censos,
-    error: errorCensos
+    error
   } =
     await supabase
       .from(
@@ -661,11 +808,8 @@ async function obtenerParque(
       );
 
 
-  if (
-    errorCensos
-  ) {
-
-    throw errorCensos;
+  if (error) {
+    throw error;
   }
 
 
@@ -685,9 +829,6 @@ async function obtenerParque(
     }
 
 
-    // Como vienen ordenados DESC,
-    // el primero de cada objetivo
-    // es el más reciente.
     if (
       !ultimoCenso[
         censo.objetivo_id
@@ -702,7 +843,7 @@ async function obtenerParque(
   }
 
 
-  const salida = {};
+  const resultado = {};
 
 
   for (
@@ -728,7 +869,7 @@ async function obtenerParque(
           );
 
 
-    salida[
+    resultado[
       objetivo.id
     ] = {
 
@@ -787,30 +928,19 @@ async function obtenerParque(
   }
 
 
-  return salida;
+  return resultado;
 }
 
 
 // ============================================================
-// PRECIO DE REFERENCIA
-//
-// Calculamos una mediana de precios observados.
-//
-// Prioridad:
-// 1. precio_unit de los items.
-// 2. subtotal / litros.
-// 3. total carga / litros carga.
-//
-// Esto evita impacto_estimado = 0
-// cuando alguna carga no tiene total.
+// PRECIO DE COMBUSTIBLE
 // ============================================================
 
-function calcularPrecioReferencia(
+function obtenerCandidatosPrecio(
   cargas
 ) {
 
-  const preciosItems = [];
-  const preciosCarga = [];
+  const candidatos = [];
 
 
   for (
@@ -863,7 +993,7 @@ function calcularPrecioReferencia(
         precioUnit > 0
       ) {
 
-        preciosItems.push(
+        candidatos.push(
           precioUnit
         );
 
@@ -876,7 +1006,7 @@ function calcularPrecioReferencia(
         litros > 0
       ) {
 
-        preciosItems.push(
+        candidatos.push(
           subtotal /
           litros
         );
@@ -901,7 +1031,7 @@ function calcularPrecioReferencia(
       totalCarga > 0
     ) {
 
-      preciosCarga.push(
+      candidatos.push(
         totalCarga /
         litrosCarga
       );
@@ -909,39 +1039,124 @@ function calcularPrecioReferencia(
   }
 
 
-  if (
-    preciosItems.length
-  ) {
-
-    return mediana(
-      preciosItems
-    );
-  }
-
-
-  if (
-    preciosCarga.length
-  ) {
-
-    return mediana(
-      preciosCarga
-    );
-  }
-
-
-  return 0;
+  return candidatos.filter(
+    x =>
+      Number.isFinite(x) &&
+      x > 0
+  );
 }
 
 
 // ============================================================
-// IMPORTE DE UN ITEM
+// PRECIO REFERENCIA ROBUSTO
 //
-// Prioridad:
+// 1. Calculamos mediana.
+// 2. Eliminamos precios extremos.
+// 3. Volvemos a calcular mediana.
 //
-// 1. subtotal
-// 2. precio_unit × litros
-// 3. proporción sobre total de carga
-// 4. precio referencia × litros
+// Esto evita que un comprobante mal interpretado
+// distorsione todo el costo.
+// ============================================================
+
+function calcularPrecioReferencia(
+  cargas
+) {
+
+  const candidatos =
+    obtenerCandidatosPrecio(
+      cargas
+    );
+
+
+  if (
+    !candidatos.length
+  ) {
+
+    return 0;
+  }
+
+
+  const medianaInicial =
+    mediana(
+      candidatos
+    );
+
+
+  if (
+    medianaInicial <= 0
+  ) {
+
+    return 0;
+  }
+
+
+  const filtrados =
+    candidatos.filter(
+      precio => {
+
+        return (
+          precio >=
+            medianaInicial * 0.5 &&
+
+          precio <=
+            medianaInicial * 2
+        );
+
+      }
+    );
+
+
+  if (
+    !filtrados.length
+  ) {
+
+    return medianaInicial;
+  }
+
+
+  return mediana(
+    filtrados
+  );
+}
+
+
+// ============================================================
+// VALIDAR PRECIO
+// ============================================================
+
+function precioEsRazonable(
+  precio,
+  referencia
+) {
+
+  if (
+    precio <= 0
+  ) {
+
+    return false;
+  }
+
+
+  if (
+    referencia <= 0
+  ) {
+
+    return true;
+  }
+
+
+  return (
+    precio >=
+      referencia * 0.5 &&
+
+    precio <=
+      referencia * 2
+  );
+}
+
+
+// ============================================================
+// IMPORTE ITEM
 // ============================================================
 
 function calcularImporteItem({
@@ -959,10 +1174,24 @@ function calcularImporteItem({
 
 
   if (
-    subtotal > 0
+    subtotal > 0 &&
+    litrosItem > 0
   ) {
 
-    return subtotal;
+    const precioSubtotal =
+      subtotal /
+      litrosItem;
+
+
+    if (
+      precioEsRazonable(
+        precioSubtotal,
+        precioReferencia
+      )
+    ) {
+
+      return subtotal;
+    }
   }
 
 
@@ -974,7 +1203,11 @@ function calcularImporteItem({
 
   if (
     precioUnit > 0 &&
-    litrosItem > 0
+    litrosItem > 0 &&
+    precioEsRazonable(
+      precioUnit,
+      precioReferencia
+    )
   ) {
 
     return (
@@ -995,15 +1228,28 @@ function calcularImporteItem({
     litrosCombustibleCarga > 0
   ) {
 
-    const proporcion =
-      litrosItem /
+    const precioCarga =
+      totalCarga /
       litrosCombustibleCarga;
 
 
-    return (
-      totalCarga *
-      proporcion
-    );
+    if (
+      precioEsRazonable(
+        precioCarga,
+        precioReferencia
+      )
+    ) {
+
+      const proporcion =
+        litrosItem /
+        litrosCombustibleCarga;
+
+
+      return (
+        totalCarga *
+        proporcion
+      );
+    }
   }
 
 
@@ -1024,38 +1270,20 @@ function calcularImporteItem({
 
 
 // ============================================================
-// CONSUMO DE COMBUSTIBLE
-//
-// Genera familias:
-//
-// total
-// bidones
-// unidades
-//
-// Y también familia declarada:
-//
-// dos_tiempos
-// tractor
-// cortadora
-// vehiculo
-// fijo
-//
-// si el item ya fue clasificado.
+// OBTENER CONSUMO DE UNA SEMANA
 // ============================================================
 
-async function obtenerConsumo(
-  periodo
+async function obtenerConsumoSemana(
+  semana
 ) {
 
   const desde =
-    primerDiaPeriodo(
-      periodo
-    );
+    semana;
 
 
   const hasta =
-    limiteSuperiorMes(
-      periodo
+    semanaSiguiente(
+      semana
     );
 
 
@@ -1122,6 +1350,14 @@ async function obtenerConsumo(
     cargas || [];
 
 
+  if (
+    !listaCargas.length
+  ) {
+
+    return [];
+  }
+
+
   const mapaObjetivos =
     await cargarMapaObjetivos();
 
@@ -1133,11 +1369,10 @@ async function obtenerConsumo(
 
 
   console.log(
-    `[cost-intelligence] ${periodo} precio referencia:`,
-    redondear(
+    `[cost-intelligence] semana ${semana} precio referencia $${redondear(
       precioReferencia,
       2
-    )
+    )}/L`
   );
 
 
@@ -1207,13 +1442,17 @@ async function obtenerConsumo(
     }
 
 
-    agrupado[k].litros +=
+    agrupado[
+      k
+    ].litros +=
       numero(
         litros
       );
 
 
-    agrupado[k].importe +=
+    agrupado[
+      k
+    ].importe +=
       numero(
         importe
       );
@@ -1223,7 +1462,9 @@ async function obtenerConsumo(
       cargaId
     ) {
 
-      agrupado[k]
+      agrupado[
+        k
+      ]
         .cargas
         .add(
           cargaId
@@ -1256,25 +1497,25 @@ async function obtenerConsumo(
       null;
 
 
+    const objetivoCarga =
+      objetivoCargaId
+        ? mapaObjetivos
+            .porId[
+              objetivoCargaId
+            ]
+        : null;
+
+
     const objetivoCargaNombre =
       (
         carga.objetivos &&
         carga.objetivos.nombre
-      )
-        ? carga.objetivos.nombre
-        : (
-            objetivoCargaId &&
-            mapaObjetivos
-              .porId[
-                objetivoCargaId
-              ]
-          )
-          ? mapaObjetivos
-              .porId[
-                objetivoCargaId
-              ]
-              .nombre
-          : null;
+      ) ||
+      (
+        objetivoCarga &&
+        objetivoCarga.nombre
+      ) ||
+      null;
 
 
     // ========================================================
@@ -1361,15 +1602,10 @@ async function obtenerConsumo(
     }
 
 
-    // ========================================================
-    // LITROS COMBUSTIBLES DE LA CARGA
-    // ========================================================
-
     const itemsCombustible =
       items.filter(
         item =>
-          item
-            .es_combustible !==
+          item.es_combustible !==
           false
       );
 
@@ -1378,10 +1614,10 @@ async function obtenerConsumo(
       itemsCombustible
         .reduce(
           (
-            total,
+            suma,
             item
           ) =>
-            total +
+            suma +
             numero(
               item.litros
             ),
@@ -1399,10 +1635,6 @@ async function obtenerConsumo(
         );
     }
 
-
-    // ========================================================
-    // ITEMS
-    // ========================================================
 
     for (
       const item of
@@ -1423,7 +1655,7 @@ async function obtenerConsumo(
       }
 
 
-      const importeItem =
+      const importe =
         calcularImporteItem({
 
           item,
@@ -1444,16 +1676,13 @@ async function obtenerConsumo(
           item.destino ||
           ''
         )
-          .toLowerCase()
-          .trim() ===
+          .trim()
+          .toLowerCase() ===
         'bidon';
 
 
       // ======================================================
-      // OBJETIVO DEL ITEM
-      //
-      // El reparto individual tiene prioridad
-      // sobre el objetivo general de la carga.
+      // RESOLVER OBJETIVO
       // ======================================================
 
       let objetivoId =
@@ -1483,9 +1712,6 @@ async function obtenerConsumo(
       }
 
 
-      // Históricos de bidones:
-      // destino_detalle puede contener
-      // el nombre del objetivo.
       if (
         !objetivoId &&
         esBidon &&
@@ -1495,7 +1721,8 @@ async function obtenerConsumo(
         const nombreRaw =
           String(
             item.destino_detalle
-          ).trim();
+          )
+            .trim();
 
 
         const encontrado =
@@ -1535,8 +1762,6 @@ async function obtenerConsumo(
       }
 
 
-      // Sin objetivo no podemos
-      // hacer inteligencia de costos.
       if (
         !objetivoId &&
         !objetivoNombre
@@ -1561,8 +1786,7 @@ async function obtenerConsumo(
 
         litros,
 
-        importe:
-          importeItem,
+        importe,
 
         cargaId:
           carga.id,
@@ -1586,8 +1810,7 @@ async function obtenerConsumo(
 
         litros,
 
-        importe:
-          importeItem,
+        importe,
 
         cargaId:
           carga.id,
@@ -1595,15 +1818,15 @@ async function obtenerConsumo(
 
 
       // ======================================================
-      // FAMILIA DECLARADA
+      // FAMILIA REAL DECLARADA
       // ======================================================
 
       const familiaDeclarada =
         String(
-          item
-            .familia_consumo ||
+          item.familia_consumo ||
           ''
-        ).trim();
+        )
+          .trim();
 
 
       if (
@@ -1625,8 +1848,7 @@ async function obtenerConsumo(
 
           litros,
 
-          importe:
-            importeItem,
+          importe,
 
           cargaId:
             carga.id,
@@ -1642,23 +1864,23 @@ async function obtenerConsumo(
         agrupado
       )
       .map(
-        x => ({
+        fila => ({
 
-          ...x,
+          ...fila,
 
           litros:
             redondear(
-              x.litros,
+              fila.litros,
               2
             ),
 
           importe:
             Math.round(
-              x.importe
+              fila.importe
             ),
 
           cantidad_cargas:
-            x.cargas.size,
+            fila.cargas.size,
 
         })
       )
@@ -1668,8 +1890,6 @@ async function obtenerConsumo(
 
 // ============================================================
 // RESOLVER OBJETIVOS
-//
-// Completa ID o nombre cuando uno de los dos falta.
 // ============================================================
 
 async function resolverObjetivos(
@@ -1682,18 +1902,16 @@ async function resolverObjetivos(
 
   return (
     consumos.map(
-      c => {
+      consumo => {
 
-        // Tiene ID:
-        // completamos nombre.
         if (
-          c.objetivo_id
+          consumo.objetivo_id
         ) {
 
           const encontrado =
             mapa
               .porId[
-                c.objetivo_id
+                consumo.objetivo_id
               ];
 
 
@@ -1703,7 +1921,7 @@ async function resolverObjetivos(
 
             return {
 
-              ...c,
+              ...consumo,
 
               objetivo_nombre:
                 encontrado.nombre,
@@ -1711,18 +1929,15 @@ async function resolverObjetivos(
           }
 
 
-          return c;
+          return consumo;
         }
 
 
-        // No tiene ID:
-        // intentamos resolver
-        // por nombre.
         const encontrado =
           mapa
             .porNombre[
               normalizarTexto(
-                c.objetivo_nombre
+                consumo.objetivo_nombre
               )
             ];
 
@@ -1731,13 +1946,13 @@ async function resolverObjetivos(
           !encontrado
         ) {
 
-          return c;
+          return consumo;
         }
 
 
         return {
 
-          ...c,
+          ...consumo,
 
           objetivo_id:
             encontrado.id,
@@ -1752,17 +1967,23 @@ async function resolverObjetivos(
 
 
 // ============================================================
-// CREAR SNAPSHOT MENSUAL
+// SNAPSHOT SEMANAL
 // ============================================================
 
-async function generarSnapshotMensual(
-  periodo =
-    periodoActualCba()
+async function generarSnapshotSemanal(
+  semana
 ) {
 
   console.log(
-    `[cost-intelligence] generando snapshot ${periodo}`
+    `[cost-intelligence] generando semana ${semana}`
   );
+
+
+  const periodo =
+    semana.slice(
+      0,
+      7
+    );
 
 
   const [
@@ -1775,8 +1996,8 @@ async function generarSnapshotMensual(
         periodo
       ),
 
-      obtenerConsumo(
-        periodo
+      obtenerConsumoSemana(
+        semana
       ),
 
     ]);
@@ -1792,21 +2013,13 @@ async function generarSnapshotMensual(
 
 
   for (
-    const c of
+    const consumo of
     consumos
   ) {
 
-    // Cost Intelligence necesita
-    // objetivo identificable.
     if (
-      !c.objetivo_id
+      !consumo.objetivo_id
     ) {
-
-      console.warn(
-        '[cost-intelligence] consumo sin objetivo resoluble:',
-        c.objetivo_nombre,
-        c.familia
-      );
 
       continue;
     }
@@ -1814,7 +2027,7 @@ async function generarSnapshotMensual(
 
     const p =
       parque[
-        c.objetivo_id
+        consumo.objetivo_id
       ] || {
 
         total:
@@ -1828,36 +2041,29 @@ async function generarSnapshotMensual(
     let parqueFamilia = 0;
 
 
-    // ========================================================
-    // FAMILIAS ESPECÍFICAS
-    // ========================================================
-
+    // Familia concreta.
     if (
       FAMILIAS_CON_MOTOR
         .includes(
-          c.familia
+          consumo.familia
         )
     ) {
 
       parqueFamilia =
         numero(
           p[
-            c.familia
+            consumo.familia
           ]
         );
     }
 
 
-    // ========================================================
-    // TOTAL / BIDONES
-    //
-    // Para estos usamos todo el parque con motor.
-    // ========================================================
-
+    // Total y bidones:
+    // normalizamos por parque motorizado.
     if (
-      c.familia ===
+      consumo.familia ===
         'total' ||
-      c.familia ===
+      consumo.familia ===
         'bidones'
     ) {
 
@@ -1868,15 +2074,10 @@ async function generarSnapshotMensual(
     }
 
 
-    // ========================================================
-    // UNIDADES
-    //
-    // No usamos parque genérico.
-    // Los vehículos deben compararse por su propia historia.
-    // ========================================================
-
+    // Unidades:
+    // no normalizamos todavía.
     if (
-      c.familia ===
+      consumo.familia ===
       'unidades'
     ) {
 
@@ -1887,50 +2088,52 @@ async function generarSnapshotMensual(
 
     const litrosPorEquipo =
       parqueFamilia > 0
+
         ? (
-            c.litros /
+            consumo.litros /
             parqueFamilia
           )
+
         : null;
 
 
     const costoPorEquipo =
       parqueFamilia > 0
+
         ? (
-            c.importe /
+            consumo.importe /
             parqueFamilia
           )
+
         : null;
 
 
     filas.push({
 
       periodo:
-        primerDiaPeriodo(
-          periodo
-        ),
+        semana,
 
       granularidad:
-        'mensual',
+        GRANULARIDAD,
 
       objetivo_id:
-        c.objetivo_id,
+        consumo.objetivo_id,
 
       objetivo_nombre:
-        c.objetivo_nombre,
+        consumo.objetivo_nombre,
 
       familia:
-        c.familia,
+        consumo.familia,
 
       litros:
         redondear(
-          c.litros,
+          consumo.litros,
           2
         ),
 
       importe:
         Math.round(
-          c.importe
+          consumo.importe
         ),
 
       parque_total:
@@ -1965,7 +2168,8 @@ async function generarSnapshotMensual(
 
       cantidad_cargas:
         numero(
-          c.cantidad_cargas
+          consumo
+            .cantidad_cargas
         ),
 
       updated_at:
@@ -1975,13 +2179,47 @@ async function generarSnapshotMensual(
   }
 
 
+  // ==========================================================
+  // LIMPIAR SNAPSHOTS SEMANALES ANTERIORES
+  //
+  // Solamente esta semana.
+  // Los mensuales viejos quedan intactos.
+  // ==========================================================
+
+  const {
+    error:
+      errorDelete
+  } =
+    await supabase
+      .from(
+        'cost_snapshots'
+      )
+      .delete()
+      .eq(
+        'periodo',
+        semana
+      )
+      .eq(
+        'granularidad',
+        GRANULARIDAD
+      );
+
+
+  if (
+    errorDelete
+  ) {
+
+    throw errorDelete;
+  }
+
+
   if (
     !filas.length
   ) {
 
     return {
 
-      periodo,
+      semana,
 
       snapshots:
         0,
@@ -2016,13 +2254,13 @@ async function generarSnapshotMensual(
 
 
   console.log(
-    `[cost-intelligence] ${data.length} snapshots generados`
+    `[cost-intelligence] semana ${semana}: ${data.length} snapshots`
   );
 
 
   return {
 
-    periodo,
+    semana,
 
     snapshots:
       data.length,
@@ -2031,37 +2269,97 @@ async function generarSnapshotMensual(
 
 
 // ============================================================
-// CALCULAR BASELINES
-//
-// Baseline = mediana de hasta N meses anteriores.
-//
-// Para familias con parque:
-// litros/equipo.
-//
-// Para unidades sin parque:
-// litros totales.
-//
-// La mediana evita que un pico extraordinario
-// deforme demasiado el patrón normal.
+// GENERAR TODAS LAS SEMANAS DEL MES
 // ============================================================
 
-async function calcularBaselines(
-  periodo =
-    periodoActualCba(),
-
-  ventanas =
-    VENTANA_BASELINE_DEFAULT
+async function generarSnapshotsSemanalesMes(
+  periodo
 ) {
 
-  const inicio =
-    periodoAnterior(
-      periodo,
+  const semanas =
+    semanasDelMes(
+      periodo
+    );
+
+
+  const hoy =
+    hoyCordoba();
+
+
+  const detalles = [];
+
+  let total = 0;
+
+
+  for (
+    const semana of semanas
+  ) {
+
+    // No generamos semanas
+    // completamente futuras.
+    if (
+      semana > hoy
+    ) {
+
+      continue;
+    }
+
+
+    const resultado =
+      await generarSnapshotSemanal(
+        semana
+      );
+
+
+    detalles.push(
+      resultado
+    );
+
+
+    total +=
+      numero(
+        resultado.snapshots
+      );
+  }
+
+
+  return {
+
+    periodo,
+
+    granularidad:
+      GRANULARIDAD,
+
+    snapshots:
+      total,
+
+    semanas:
+      detalles,
+  };
+}
+
+
+// ============================================================
+// OBTENER HISTORIAL PARA BASELINE
+// ============================================================
+
+async function obtenerHistorico(
+  semana,
+  objetivoId,
+  familia,
+  ventanas =
+    VENTANA_SEMANAS
+) {
+
+  const desde =
+    semanaAnterior(
+      semana,
       ventanas
     );
 
 
   const {
-    data: snapshots,
+    data,
     error
   } =
     await supabase
@@ -2069,17 +2367,25 @@ async function calcularBaselines(
         'cost_snapshots'
       )
       .select('*')
+      .eq(
+        'granularidad',
+        GRANULARIDAD
+      )
+      .eq(
+        'objetivo_id',
+        objetivoId
+      )
+      .eq(
+        'familia',
+        familia
+      )
       .gte(
         'periodo',
-        primerDiaPeriodo(
-          inicio
-        )
+        desde
       )
       .lt(
         'periodo',
-        primerDiaPeriodo(
-          periodo
-        )
+        semana
       )
       .order(
         'periodo',
@@ -2090,231 +2396,420 @@ async function calcularBaselines(
       );
 
 
-  if (
-    error
-  ) {
-
+  if (error) {
     throw error;
   }
 
 
-  const grupos = {};
+  return data || [];
+}
 
 
-  for (
-    const s of
-    snapshots || []
+// ============================================================
+// CALCULAR BASELINE DE UNA SERIE
+// ============================================================
+
+function construirBaseline(
+  historico
+) {
+
+  const filas =
+    historico || [];
+
+
+  const litros =
+    filas
+      .map(
+        x =>
+          numero(
+            x.litros
+          )
+      )
+      .filter(
+        x =>
+          x > 0
+      );
+
+
+  const costos =
+    filas
+      .map(
+        x =>
+          numero(
+            x.importe
+          )
+      )
+      .filter(
+        x =>
+          x > 0
+      );
+
+
+  const litrosEquipo =
+    filas
+      .map(
+        x =>
+          x.litros_por_equipo ==
+          null
+            ? null
+            : numero(
+                x.litros_por_equipo
+              )
+      )
+      .filter(
+        x =>
+          x != null &&
+          x > 0
+      );
+
+
+  const costosEquipo =
+    filas
+      .map(
+        x =>
+          x.costo_por_equipo ==
+          null
+            ? null
+            : numero(
+                x.costo_por_equipo
+              )
+      )
+      .filter(
+        x =>
+          x != null &&
+          x > 0
+      );
+
+
+  const parque =
+    filas
+      .map(
+        x =>
+          numero(
+            x.parque_familia
+          )
+      )
+      .filter(
+        x =>
+          x >= 0
+      );
+
+
+  const seriePrincipal =
+    litrosEquipo.length >=
+      MIN_MUESTRAS_ANOMALIA
+
+      ? litrosEquipo
+
+      : litros;
+
+
+  const media =
+    promedio(
+      seriePrincipal
+    );
+
+
+  const dispersion =
+    media > 0
+
+      ? (
+          desviacionEstandar(
+            seriePrincipal
+          ) /
+          media *
+          100
+        )
+
+      : 0;
+
+
+  return {
+
+    muestras:
+      filas.length,
+
+    consumo_base:
+      mediana(
+        litros
+      ),
+
+    costo_base:
+      mediana(
+        costos
+      ),
+
+    consumo_por_equipo_base:
+      litrosEquipo.length
+        ? mediana(
+            litrosEquipo
+          )
+        : null,
+
+    costo_por_equipo_base:
+      costosEquipo.length
+        ? mediana(
+            costosEquipo
+          )
+        : null,
+
+    parque_base:
+      parque.length
+        ? mediana(
+            parque
+          )
+        : 0,
+
+    dispersion_pct:
+      redondear(
+        dispersion,
+        2
+      ),
+  };
+}
+
+
+// ============================================================
+// CONFIANZA
+// ============================================================
+
+function calcularConfianza({
+  muestras,
+  dispersionPct,
+}) {
+
+  if (
+    muestras < 3
   ) {
 
-    const k =
-      `${s.objetivo_id}::${s.familia}`;
+    return {
+      nivel:
+        'insuficiente',
 
-
-    if (
-      !grupos[k]
-    ) {
-
-      grupos[k] = [];
-    }
-
-
-    grupos[k].push(
-      s
-    );
+      score:
+        0,
+    };
   }
 
 
-  const filas = [];
+  if (
+    muestras < 5
+  ) {
+
+    return {
+      nivel:
+        'baja',
+
+      score:
+        25,
+    };
+  }
+
+
+  if (
+    dispersionPct > 50
+  ) {
+
+    return {
+      nivel:
+        'baja',
+
+      score:
+        35,
+    };
+  }
+
+
+  if (
+    muestras >= 7 &&
+    dispersionPct <= 25
+  ) {
+
+    return {
+      nivel:
+        'alta',
+
+      score:
+        90,
+    };
+  }
+
+
+  if (
+    muestras >= 6 &&
+    dispersionPct <= 35
+  ) {
+
+    return {
+      nivel:
+        'alta',
+
+      score:
+        80,
+    };
+  }
+
+
+  return {
+    nivel:
+      'media',
+
+    score:
+      60,
+  };
+}
+
+
+// ============================================================
+// UMBRAL DINÁMICO
+// ============================================================
+
+function calcularUmbral(
+  dispersionPct
+) {
+
+  const dinamico =
+    numero(
+      dispersionPct
+    ) *
+    MULTIPLICADOR_DISPERSION;
+
+
+  return Math.max(
+    UMBRAL_MINIMO_PCT,
+    dinamico
+  );
+}
+
+
+// ============================================================
+// CALCULAR Y GUARDAR BASELINES
+// PARA UNA SEMANA
+// ============================================================
+
+async function calcularBaselinesSemana(
+  semana,
+  ventanas =
+    VENTANA_SEMANAS
+) {
+
+  const {
+    data: actuales,
+    error
+  } =
+    await supabase
+      .from(
+        'cost_snapshots'
+      )
+      .select('*')
+      .eq(
+        'periodo',
+        semana
+      )
+      .eq(
+        'granularidad',
+        GRANULARIDAD
+      );
+
+
+  if (error) {
+    throw error;
+  }
+
+
+  const filasBaseline = [];
 
 
   for (
-    const grupo of
-    Object.values(
-      grupos
-    )
+    const snapshot of
+    actuales || []
   ) {
 
+    const historico =
+      await obtenerHistorico(
+        semana,
+        snapshot.objetivo_id,
+        snapshot.familia,
+        ventanas
+      );
+
+
     if (
-      !grupo.length
+      !historico.length
     ) {
 
       continue;
     }
 
 
-    const ultimo =
-      grupo[
-        grupo.length - 1
-      ];
-
-
-    const consumoEquipo =
-      grupo
-        .map(
-          x =>
-            x.litros_por_equipo ==
-            null
-              ? null
-              : numero(
-                  x.litros_por_equipo
-                )
-        )
-        .filter(
-          x =>
-            x != null &&
-            x > 0
-        );
-
-
-    const costoEquipo =
-      grupo
-        .map(
-          x =>
-            x.costo_por_equipo ==
-            null
-              ? null
-              : numero(
-                  x.costo_por_equipo
-                )
-        )
-        .filter(
-          x =>
-            x != null &&
-            x > 0
-        );
-
-
-    const litros =
-      grupo
-        .map(
-          x =>
-            numero(
-              x.litros
-            )
-        )
-        .filter(
-          x =>
-            x > 0
-        );
-
-
-    const importes =
-      grupo
-        .map(
-          x =>
-            numero(
-              x.importe
-            )
-        )
-        .filter(
-          x =>
-            x > 0
-        );
-
-
-    const consumoPorEquipoBase =
-      mediana(
-        consumoEquipo
+    const base =
+      construirBaseline(
+        historico
       );
 
 
-    const costoPorEquipoBase =
-      mediana(
-        costoEquipo
-      );
-
-
-    const consumoBase =
-      mediana(
-        litros
-      );
-
-
-    const costoBase =
-      mediana(
-        importes
-      );
-
-
-    // Para medir cuán estable
-    // es la serie.
-    const serieDispersion =
-      consumoEquipo.length >= 3
-        ? consumoEquipo
-        : litros;
-
-
-    const media =
-      promedio(
-        serieDispersion
-      );
-
-
-    const dispersionPct =
-      media > 0
-        ? (
-            desviacionEstandar(
-              serieDispersion
-            ) /
-            media *
-            100
-          )
-        : 0;
-
-
-    filas.push({
+    filasBaseline.push({
 
       objetivo_id:
-        ultimo.objetivo_id,
+        snapshot.objetivo_id,
 
       objetivo_nombre:
-        ultimo.objetivo_nombre,
+        snapshot.objetivo_nombre,
 
       familia:
-        ultimo.familia,
+        snapshot.familia,
 
       granularidad:
-        'mensual',
+        GRANULARIDAD,
 
       ventanas,
 
       consumo_base:
         redondear(
-          consumoBase,
+          base.consumo_base,
           3
         ),
 
       costo_base:
         Math.round(
-          costoBase
+          base.costo_base
         ),
 
       parque_base:
-        mediana(
-          grupo.map(
-            x =>
-              numero(
-                x.parque_familia
-              )
-          )
+        redondear(
+          base.parque_base,
+          2
         ),
 
       consumo_por_equipo_base:
-        consumoPorEquipoBase ||
-        null,
+        base
+          .consumo_por_equipo_base ==
+        null
+          ? null
+          : redondear(
+              base
+                .consumo_por_equipo_base,
+              3
+            ),
 
       costo_por_equipo_base:
-        costoPorEquipoBase ||
-        null,
+        base
+          .costo_por_equipo_base ==
+        null
+          ? null
+          : Math.round(
+              base
+                .costo_por_equipo_base
+            ),
 
       dispersion_pct:
         redondear(
-          dispersionPct,
+          base.dispersion_pct,
           2
         ),
 
       muestras:
-        grupo.length,
+        base.muestras,
 
       calculado_at:
         new Date()
@@ -2324,12 +2819,12 @@ async function calcularBaselines(
 
 
   if (
-    !filas.length
+    !filasBaseline.length
   ) {
 
     return {
 
-      periodo,
+      semana,
 
       baselines:
         0,
@@ -2347,7 +2842,7 @@ async function calcularBaselines(
         'cost_baselines'
       )
       .upsert(
-        filas,
+        filasBaseline,
         {
           onConflict:
             'objetivo_id,familia,granularidad',
@@ -2364,37 +2859,24 @@ async function calcularBaselines(
   }
 
 
-  console.log(
-    `[cost-intelligence] ${data.length} baselines calculados`
-  );
-
-
   return {
 
-    periodo,
+    semana,
 
     baselines:
-      data.length,
+      data
+        ? data.length
+        : 0,
   };
 }
 
 
 // ============================================================
 // LIMPIAR ANOMALÍAS AUTOMÁTICAS
-//
-// Antes de recalcular:
-//
-// eliminamos solamente anomalías:
-//
-// - abiertas
-// - no validadas
-//
-// Nunca tocamos una anomalía
-// que alguien ya revisó.
 // ============================================================
 
-async function limpiarAnomaliasAutomaticas(
-  fecha
+async function limpiarAnomaliasSemana(
+  semana
 ) {
 
   const {
@@ -2407,7 +2889,7 @@ async function limpiarAnomaliasAutomaticas(
       .delete()
       .eq(
         'periodo',
-        fecha
+        semana
       )
       .eq(
         'estado',
@@ -2419,143 +2901,70 @@ async function limpiarAnomaliasAutomaticas(
       );
 
 
-  if (
-    error
-  ) {
-
+  if (error) {
     throw error;
   }
 }
 
 
 // ============================================================
-// DETECTAR ANOMALÍAS
+// DETECTAR ANOMALÍAS DE UNA SEMANA
 // ============================================================
 
-async function detectarAnomalias(
-  periodo =
-    periodoActualCba()
+async function detectarAnomaliasSemana(
+  semana
 ) {
 
-  const fecha =
-    primerDiaPeriodo(
-      periodo
-    );
+  const {
+    data: snapshots,
+    error
+  } =
+    await supabase
+      .from(
+        'cost_snapshots'
+      )
+      .select('*')
+      .eq(
+        'periodo',
+        semana
+      )
+      .eq(
+        'granularidad',
+        GRANULARIDAD
+      );
 
 
-  const [
-    snapRes,
-    baseRes
-  ] =
-    await Promise.all([
-
-      supabase
-        .from(
-          'cost_snapshots'
-        )
-        .select('*')
-        .eq(
-          'periodo',
-          fecha
-        ),
-
-      supabase
-        .from(
-          'cost_baselines'
-        )
-        .select('*')
-        .eq(
-          'granularidad',
-          'mensual'
-        ),
-
-    ]);
-
-
-  if (
-    snapRes.error
-  ) {
-
-    throw snapRes.error;
+  if (error) {
+    throw error;
   }
 
 
-  if (
-    baseRes.error
-  ) {
-
-    throw baseRes.error;
-  }
-
-
-  // Eliminamos alertas automáticas anteriores
-  // para recalcularlas con los datos actuales.
-  await limpiarAnomaliasAutomaticas(
-    fecha
+  await limpiarAnomaliasSemana(
+    semana
   );
 
-
-  const baselines = {};
-
-
-  for (
-    const b of
-    baseRes.data || []
-  ) {
-
-    baselines[
-      `${b.objetivo_id}::${b.familia}`
-    ] =
-      b;
-  }
-
-
-  const anomalias = [];
-
-
-  // ==========================================================
-  // SI EL MES ACTUAL NO ESTÁ CERRADO
-  //
-  // Escalamos el esperado al porcentaje
-  // de días hábiles transcurridos.
-  //
-  // Ejemplo:
-  //
-  // baseline mensual = 3.000 L
-  // transcurrió 40% del mes
-  //
-  // esperado a hoy ≈ 1.200 L
-  // ==========================================================
 
   const factorTiempo =
-    factorPeriodoTranscurrido(
-      periodo
+    factorSemanaTranscurrida(
+      semana
     );
 
 
-  console.log(
-    `[cost-intelligence] ${periodo} factor temporal:`,
-    redondear(
-      factorTiempo *
-      100,
-      1
-    ) + '%'
-  );
+  const anomalías = [];
 
 
   for (
-    const s of
-    snapRes.data || []
+    const snapshot of
+    snapshots || []
   ) {
 
     // ========================================================
-    // DEPÓSITO SE CONTROLA ECONÓMICAMENTE,
-    // PERO NO GENERA ALERTAS OPERATIVAS.
+    // DEPÓSITO NO GENERA ALERTA
     // ========================================================
 
     if (
       esObjetivoNoOperativo(
-        s.objetivo_nombre
+        snapshot.objetivo_nombre
       )
     ) {
 
@@ -2563,25 +2972,38 @@ async function detectarAnomalias(
     }
 
 
-    const b =
-      baselines[
-        `${s.objetivo_id}::${s.familia}`
-      ];
-
+    // ========================================================
+    // EVITAR DUPLICACIONES
+    // ========================================================
 
     if (
-      !b
+      FAMILIAS_NO_ALERTABLES
+        .includes(
+          snapshot.familia
+        )
     ) {
 
       continue;
     }
 
 
-    // Necesitamos historial suficiente.
+    const historico =
+      await obtenerHistorico(
+        semana,
+        snapshot.objetivo_id,
+        snapshot.familia,
+        VENTANA_SEMANAS
+      );
+
+
+    const base =
+      construirBaseline(
+        historico
+      );
+
+
     if (
-      numero(
-        b.muestras
-      ) <
+      base.muestras <
       MIN_MUESTRAS_ANOMALIA
     ) {
 
@@ -2589,22 +3011,53 @@ async function detectarAnomalias(
     }
 
 
+    const confianza =
+      calcularConfianza({
+
+        muestras:
+          base.muestras,
+
+        dispersionPct:
+          base.dispersion_pct,
+
+      });
+
+
+    // No generamos alerta
+    // con confianza baja.
+    if (
+      confianza.nivel ===
+        'baja' ||
+      confianza.nivel ===
+        'insuficiente'
+    ) {
+
+      continue;
+    }
+
+
     let metrica;
+
+    let esperadoSemana;
+
     let real;
-    let esperadoMensual;
 
 
     // ========================================================
-    // CON PARQUE CONFIABLE
+    // NORMALIZADO POR PARQUE
     // ========================================================
 
     if (
-      s.litros_por_equipo !=
+      snapshot
+        .litros_por_equipo !=
         null &&
-      b.consumo_por_equipo_base !=
+
+      base
+        .consumo_por_equipo_base !=
         null &&
+
       numero(
-        s.parque_familia
+        snapshot.parque_familia
       ) > 0
     ) {
 
@@ -2612,15 +3065,17 @@ async function detectarAnomalias(
         'litros_por_equipo';
 
 
-      real =
+      esperadoSemana =
         numero(
-          s.litros_por_equipo
+          base
+            .consumo_por_equipo_base
         );
 
 
-      esperadoMensual =
+      real =
         numero(
-          b.consumo_por_equipo_base
+          snapshot
+            .litros_por_equipo
         );
 
 
@@ -2635,31 +3090,22 @@ async function detectarAnomalias(
         'litros';
 
 
+      esperadoSemana =
+        numero(
+          base.consumo_base
+        );
+
+
       real =
         numero(
-          s.litros
-        );
-
-
-      esperadoMensual =
-        numero(
-          b.consumo_base
+          snapshot.litros
         );
     }
 
 
-    if (
-      esperadoMensual <= 0
-    ) {
-
-      continue;
-    }
-
-
-    // Mes actual:
-    // esperado proporcional a días transcurridos.
+    // Semana actual incompleta.
     const esperado =
-      esperadoMensual *
+      esperadoSemana *
       factorTiempo;
 
 
@@ -2684,10 +3130,16 @@ async function detectarAnomalias(
       100;
 
 
-    // Solo buscamos exceso.
+    const umbral =
+      calcularUmbral(
+        base.dispersion_pct
+      );
+
+
+    // Solo excesos.
     if (
       desvioPct <
-      UMBRAL_DESVIO_PCT
+      umbral
     ) {
 
       continue;
@@ -2709,7 +3161,7 @@ async function detectarAnomalias(
       litrosEsperados =
         esperado *
         numero(
-          s.parque_familia
+          snapshot.parque_familia
         );
 
     } else {
@@ -2722,31 +3174,29 @@ async function detectarAnomalias(
     const litrosExceso =
       Math.max(
         0,
+
         numero(
-          s.litros
+          snapshot.litros
         ) -
         litrosEsperados
       );
 
 
     // ========================================================
-    // PRECIO PROMEDIO REAL DEL SNAPSHOT
+    // PRECIO PROMEDIO REAL
     // ========================================================
 
     const precioPromedio =
       numero(
-        s.litros
-      ) > 0 &&
-      numero(
-        s.importe
+        snapshot.litros
       ) > 0
 
         ? (
             numero(
-              s.importe
+              snapshot.importe
             ) /
             numero(
-              s.litros
+              snapshot.litros
             )
           )
 
@@ -2763,48 +3213,50 @@ async function detectarAnomalias(
     // ========================================================
 
     let severidad =
-      'baja';
+      'media';
 
 
     if (
-      desvioPct >= 40
+      desvioPct >= 60
     ) {
 
       severidad =
         'critica';
 
     } else if (
-      desvioPct >= 25
+      desvioPct >= 35
     ) {
 
       severidad =
         'alta';
 
-    } else if (
-      desvioPct >= 15
-    ) {
+    } else {
 
       severidad =
         'media';
     }
 
 
-    anomalias.push({
+    // ========================================================
+    // GUARDAR
+    // ========================================================
+
+    anomalías.push({
 
       snapshot_id:
-        s.id,
+        snapshot.id,
 
       periodo:
-        s.periodo,
+        snapshot.periodo,
 
       objetivo_id:
-        s.objetivo_id,
+        snapshot.objetivo_id,
 
       objetivo_nombre:
-        s.objetivo_nombre,
+        snapshot.objetivo_nombre,
 
       familia:
-        s.familia,
+        snapshot.familia,
 
       metrica,
 
@@ -2839,30 +3291,32 @@ async function detectarAnomalias(
         ),
 
       impacto_estimado:
-        Math.round(
-          impacto
+        Math.max(
+          0,
+          Math.round(
+            impacto
+          )
         ),
 
       severidad,
 
       estado:
         'abierta',
+
+      // No usamos observacion para guardar
+      // confianza porque está reservada
+      // para revisión humana.
     });
   }
 
 
   if (
-    !anomalias.length
+    !anomalías.length
   ) {
-
-    console.log(
-      `[cost-intelligence] ${periodo}: sin anomalías`
-    );
-
 
     return {
 
-      periodo,
+      semana,
 
       anomalias:
         0,
@@ -2872,20 +3326,19 @@ async function detectarAnomalias(
 
   const {
     data,
-    error
+    error:
+      errorInsert
   } =
     await supabase
       .from(
         'cost_anomalies'
       )
       .upsert(
-        anomalias,
+        anomalías,
         {
           onConflict:
             'snapshot_id,metrica',
 
-          // Si existe una anomalía revisada,
-          // no la pisamos.
           ignoreDuplicates:
             true,
         }
@@ -2894,21 +3347,16 @@ async function detectarAnomalias(
 
 
   if (
-    error
+    errorInsert
   ) {
 
-    throw error;
+    throw errorInsert;
   }
-
-
-  console.log(
-    `[cost-intelligence] ${periodo}: ${data ? data.length : 0} anomalías`
-  );
 
 
   return {
 
-    periodo,
+    semana,
 
     anomalias:
       data
@@ -2919,11 +3367,55 @@ async function detectarAnomalias(
 
 
 // ============================================================
-// EJECUCIÓN COMPLETA
+// ANALIZAR UNA SEMANA COMPLETA
+// ============================================================
+
+async function analizarSemana(
+  semana
+) {
+
+  const snapshot =
+    await generarSnapshotSemanal(
+      semana
+    );
+
+
+  const baseline =
+    await calcularBaselinesSemana(
+      semana,
+      VENTANA_SEMANAS
+    );
+
+
+  const anomalias =
+    await detectarAnomaliasSemana(
+      semana
+    );
+
+
+  return {
+
+    semana,
+
+    snapshot,
+
+    baseline,
+
+    anomalias,
+  };
+}
+
+
+// ============================================================
+// EJECUTAR MES COMPLETO
 //
-// 1. Snapshot
-// 2. Baseline
-// 3. Anomalías
+// IMPORTANTE:
+//
+// Seguimos aceptando:
+//
+// ejecutarCostIntelligence('2026-09')
+//
+// Pero internamente ahora trabaja SEMANA A SEMANA.
 // ============================================================
 
 async function ejecutarCostIntelligence(
@@ -2935,58 +3427,144 @@ async function ejecutarCostIntelligence(
     Date.now();
 
 
+  if (
+    !/^\d{4}-\d{2}$/.test(
+      periodo
+    )
+  ) {
+
+    throw new Error(
+      'Periodo inválido. Usá formato YYYY-MM'
+    );
+  }
+
+
   console.log(
-    '============================================='
+    '================================================'
   );
 
   console.log(
-    `[cost-intelligence] iniciando ${periodo}`
+    `[cost-intelligence V2] procesando ${periodo}`
   );
 
 
-  // ==========================================================
-  // 1. SNAPSHOT
-  // ==========================================================
-
-  const snapshot =
-    await generarSnapshotMensual(
+  const semanas =
+    semanasDelMes(
       periodo
     );
 
 
-  // ==========================================================
-  // 2. BASELINE
-  // ==========================================================
+  const hoy =
+    hoyCordoba();
 
-  const baseline =
-    await calcularBaselines(
-      periodo,
-      VENTANA_BASELINE_DEFAULT
+
+  const resultados = [];
+
+
+  let totalSnapshots = 0;
+  let totalBaselines = 0;
+  let totalAnomalias = 0;
+
+
+  for (
+    const semana of semanas
+  ) {
+
+    // Semana completamente futura.
+    if (
+      semana > hoy
+    ) {
+
+      continue;
+    }
+
+
+    console.log(
+      `--- semana ${semana} ---`
     );
 
 
-  // ==========================================================
-  // 3. ANOMALÍAS
-  // ==========================================================
+    const resultado =
+      await analizarSemana(
+        semana
+      );
 
-  const anomalias =
-    await detectarAnomalias(
-      periodo
+
+    resultados.push(
+      resultado
     );
 
 
-  const resultado = {
+    totalSnapshots +=
+      numero(
+        resultado
+          .snapshot
+          .snapshots
+      );
+
+
+    totalBaselines +=
+      numero(
+        resultado
+          .baseline
+          .baselines
+      );
+
+
+    totalAnomalias +=
+      numero(
+        resultado
+          .anomalias
+          .anomalias
+      );
+  }
+
+
+  const resultadoFinal = {
 
     ok:
       true,
 
+    version:
+      '2.0',
+
     periodo,
 
-    snapshot,
+    granularidad:
+      GRANULARIDAD,
 
-    baseline,
+    semanas_procesadas:
+      resultados.length,
 
-    anomalias,
+    snapshot: {
+
+      periodo,
+
+      snapshots:
+        totalSnapshots,
+
+    },
+
+    baseline: {
+
+      periodo,
+
+      baselines:
+        totalBaselines,
+
+    },
+
+    anomalias: {
+
+      periodo,
+
+      anomalias:
+        totalAnomalias,
+
+    },
+
+    detalle_semanas:
+      resultados,
 
     duracion_ms:
       Date.now() -
@@ -2995,17 +3573,270 @@ async function ejecutarCostIntelligence(
 
 
   console.log(
-    '[cost-intelligence] finalizado',
-    resultado
+    '[cost-intelligence V2] finalizado:',
+    {
+      periodo,
+      semanas:
+        resultados.length,
+      snapshots:
+        totalSnapshots,
+      baselines:
+        totalBaselines,
+      anomalias:
+        totalAnomalias,
+    }
   );
 
 
   console.log(
-    '============================================='
+    '================================================'
   );
 
 
-  return resultado;
+  return resultadoFinal;
+}
+
+
+// ============================================================
+// COMPATIBILIDAD CON API EXISTENTE
+//
+// La API anterior llama:
+// generarSnapshotMensual('2026-09')
+//
+// Ahora genera snapshots semanales
+// del mes solicitado.
+// ============================================================
+
+async function generarSnapshotMensual(
+  periodo =
+    periodoActualCba()
+) {
+
+  return generarSnapshotsSemanalesMes(
+    periodo
+  );
+}
+
+
+// ============================================================
+// COMPATIBILIDAD:
+// calcularBaselines('2026-09')
+//
+// Calcula baseline de todas las semanas
+// existentes del mes.
+// ============================================================
+
+async function calcularBaselines(
+  periodo =
+    periodoActualCba(),
+
+  ventanas =
+    VENTANA_SEMANAS
+) {
+
+  const semanas =
+    semanasDelMes(
+      periodo
+    );
+
+
+  const hoy =
+    hoyCordoba();
+
+
+  let total = 0;
+
+  const detalle = [];
+
+
+  for (
+    const semana of semanas
+  ) {
+
+    if (
+      semana > hoy
+    ) {
+
+      continue;
+    }
+
+
+    const resultado =
+      await calcularBaselinesSemana(
+        semana,
+        ventanas
+      );
+
+
+    detalle.push(
+      resultado
+    );
+
+
+    total +=
+      numero(
+        resultado.baselines
+      );
+  }
+
+
+  return {
+
+    periodo,
+
+    granularidad:
+      GRANULARIDAD,
+
+    baselines:
+      total,
+
+    semanas:
+      detalle,
+  };
+}
+
+
+// ============================================================
+// COMPATIBILIDAD:
+// detectarAnomalias('2026-09')
+//
+// Analiza todas las semanas del mes.
+// ============================================================
+
+async function detectarAnomalias(
+  periodo =
+    periodoActualCba()
+) {
+
+  const semanas =
+    semanasDelMes(
+      periodo
+    );
+
+
+  const hoy =
+    hoyCordoba();
+
+
+  let total = 0;
+
+  const detalle = [];
+
+
+  for (
+    const semana of semanas
+  ) {
+
+    if (
+      semana > hoy
+    ) {
+
+      continue;
+    }
+
+
+    const resultado =
+      await detectarAnomaliasSemana(
+        semana
+      );
+
+
+    detalle.push(
+      resultado
+    );
+
+
+    total +=
+      numero(
+        resultado.anomalias
+      );
+  }
+
+
+  return {
+
+    periodo,
+
+    granularidad:
+      GRANULARIDAD,
+
+    anomalias:
+      total,
+
+    semanas:
+      detalle,
+  };
+}
+
+
+// ============================================================
+// OBTENER CONSUMO
+//
+// Compatibilidad.
+//
+// Si recibe YYYY-MM:
+// devuelve todas las semanas del mes.
+//
+// Si recibe YYYY-MM-DD:
+// devuelve esa semana.
+// ============================================================
+
+async function obtenerConsumo(
+  periodo
+) {
+
+  if (
+    /^\d{4}-\d{2}-\d{2}$/.test(
+      periodo
+    )
+  ) {
+
+    return obtenerConsumoSemana(
+      inicioSemana(
+        periodo
+      )
+    );
+  }
+
+
+  if (
+    /^\d{4}-\d{2}$/.test(
+      periodo
+    )
+  ) {
+
+    const semanas =
+      semanasDelMes(
+        periodo
+      );
+
+
+    const resultado = [];
+
+
+    for (
+      const semana of semanas
+    ) {
+
+      const filas =
+        await obtenerConsumoSemana(
+          semana
+        );
+
+
+      resultado.push(
+        ...filas
+      );
+    }
+
+
+    return resultado;
+  }
+
+
+  throw new Error(
+    'Periodo inválido'
+  );
 }
 
 
@@ -3017,15 +3848,36 @@ module.exports = {
 
   periodoActualCba,
 
+  inicioSemana,
+
+  semanasDelMes,
+
   obtenerParque,
 
   obtenerConsumo,
 
+  obtenerConsumoSemana,
+
+  generarSnapshotSemanal,
+
+  generarSnapshotsSemanalesMes,
+
+  // Compatibilidad
   generarSnapshotMensual,
+
+  calcularBaselinesSemana,
 
   calcularBaselines,
 
+  detectarAnomaliasSemana,
+
   detectarAnomalias,
 
+  analizarSemana,
+
   ejecutarCostIntelligence,
+
+  calcularConfianza,
+
+  calcularUmbral,
 };
