@@ -1,9 +1,9 @@
 // ============================================================
-// COST INTELLIGENCE V2.5 - ECOSERVICE
+// COST INTELLIGENCE V2.6 - ECOSERVICE
 // ============================================================
 // Inteligencia semanal de consumo y costo.
 //
-// V2.5 agrega clasificación automática usando información que
+// V2.6 consolida clasificación + parque confiable y trazable usando información que
 // YA existe en el módulo Combustible:
 //
 // 1) familia_consumo explícita                        -> se respeta
@@ -46,6 +46,8 @@ const MULTIPLICADOR_DISPERSION = 2;
 const CAMBIO_MAX_PARQUE_PCT = 50;
 const DESVIO_PRECIO_MAX_PCT = 35;
 const COBERTURA_FAMILIAS_MIN_PCT = 80;
+const CENSO_COMPLETITUD_MIN_RATIO = 0.60;
+const MAX_ANTIGUEDAD_CENSO_MESES = 2;
  
 const FAMILIAS_NO_ALERTABLES = ['bidones', 'unidades'];
 const FAMILIAS_NORMALIZABLES = ['dos_tiempos', 'tractor', 'cortadora', 'vehiculo', 'fijo'];
@@ -237,12 +239,14 @@ async function cargarMapaObjetivos() {
 async function obtenerParque(periodo) {
   const mapaObjetivos = await cargarMapaObjetivos();
  
-  // V2.5 combina dos fuentes:
-  // 1) último censo respondido: foto operativa informada por el objetivo;
-  // 2) stock_objetivo: inventario oficial, usado como respaldo cuando una
-  //    familia no fue informada o aparece en 0 en el censo.
-  // Los vehículos tienen además una regla especial más abajo: para el análisis
-  // semanal usamos las unidades distintas observadas en las cargas.
+  // V2.6: el inventario oficial queda como REFERENCIA, no como denominador
+  // automático. Para litros/equipo priorizamos evidencia temporal:
+  //   A) censo respondido del período y consistente -> confianza alta
+  //   B) último censo anterior razonablemente reciente -> confianza media
+  //   C) si existe un censo del período pero cae de forma abrupta respecto del
+  //      anterior, lo tratamos como probablemente incompleto. Conservamos el
+  //      último parque confiable sólo como referencia, con confianza baja.
+  // Vehículos pueden usar además unidades distintas observadas en las cargas.
   const [{ data: censos, error: errorCensos }, { data: inventario, error: errorInv }] = await Promise.all([
     supabase
       .from('censos_stock')
@@ -252,6 +256,7 @@ async function obtenerParque(periodo) {
         periodo,
         estado,
         respondido_at,
+        created_at,
         censos_stock_items(
           tipo_equipo,
           cantidad,
@@ -260,29 +265,42 @@ async function obtenerParque(periodo) {
       `)
       .eq('estado', 'respondido')
       .lte('periodo', periodo)
-      .order('periodo', { ascending: false }),
+      .order('periodo', { ascending: false })
+      .order('created_at', { ascending: false }),
  
     supabase
       .from('stock_objetivo')
-      .select('objetivo_id,tipo_equipo,cantidad')
+      .select('objetivo_id,tipo_equipo,cantidad,actualizado_at')
       .limit(10000),
   ]);
  
   if (errorCensos) throw errorCensos;
   if (errorInv) {
-    // El inventario oficial mejora la calidad, pero no debe tumbar el motor si
-    // la tabla no estuviera disponible en algún entorno.
-    console.warn('[cost-intelligence V2.5] stock_objetivo no disponible:', errorInv.message);
+    console.warn('[cost-intelligence V2.6] stock_objetivo no disponible:', errorInv.message);
   }
  
-  const ultimoCenso = {};
+  function diferenciaMeses(desde, hasta) {
+    if (!/^\d{4}-\d{2}$/.test(String(desde || '')) || !/^\d{4}-\d{2}$/.test(String(hasta || ''))) return 999;
+    const [ad, md] = desde.split('-').map(Number);
+    const [ah, mh] = hasta.split('-').map(Number);
+    return (ah - ad) * 12 + (mh - md);
+  }
+ 
+  function familiasDeCenso(censo) {
+    return censo
+      ? agruparPorFamilia(censo.censos_stock_items || [])
+      : agruparPorFamilia([]);
+  }
+ 
+  // Todos los censos por objetivo, ya ordenados de más nuevo a más viejo.
+  const censosPorObjetivo = {};
   for (const censo of censos || []) {
     if (!censo.objetivo_id) continue;
-    if (!ultimoCenso[censo.objetivo_id]) ultimoCenso[censo.objetivo_id] = censo;
+    if (!censosPorObjetivo[censo.objetivo_id]) censosPorObjetivo[censo.objetivo_id] = [];
+    censosPorObjetivo[censo.objetivo_id].push(censo);
   }
  
-  // Agrupar inventario oficial usando exactamente el mismo clasificador de
-  // familias que emplea el resto del sistema.
+  // Inventario oficial: sólo referencia/auditoría.
   const oficialPorObjetivo = {};
   for (const fila of inventario || []) {
     if (!fila.objetivo_id) continue;
@@ -300,73 +318,117 @@ async function obtenerParque(periodo) {
         otro: 0,
       };
     }
- 
     const cant = numero(fila.cantidad);
     const o = oficialPorObjetivo[fila.objetivo_id];
     o.total += cant;
     if (familia && Object.prototype.hasOwnProperty.call(o, familia)) o[familia] += cant;
-    if (['dos_tiempos', 'cortadora', 'tractor', 'vehiculo', 'fijo'].includes(familia)) {
-      o.con_motor += cant;
-    }
+    if (['dos_tiempos', 'cortadora', 'tractor', 'vehiculo', 'fijo'].includes(familia)) o.con_motor += cant;
   }
  
   const resultado = {};
  
   for (const objetivo of mapaObjetivos.lista) {
-    const censo = ultimoCenso[objetivo.id];
-    const familiasCenso = censo
-      ? agruparPorFamilia(censo.censos_stock_items || [])
-      : agruparPorFamilia([]);
- 
+    const lista = censosPorObjetivo[objetivo.id] || [];
+    const actual = lista[0] || null;
+    const anterior = lista.find(c => actual && c.periodo < actual.periodo) || null;
+    const famActual = familiasDeCenso(actual);
+    const famAnterior = familiasDeCenso(anterior);
     const oficial = oficialPorObjetivo[objetivo.id] || {};
  
-    // Para cada familia preferimos el censo cuando trae una cantidad positiva.
-    // Si el censo queda en 0 pero el inventario oficial tiene equipos, usamos
-    // ese inventario como respaldo. Esto evita falsos "parque 0" por censos
-    // parciales/incompletos.
-    const elegir = (familia) => {
-      const cen = numero(familiasCenso[familia]);
-      const off = numero(oficial[familia]);
-      if (cen > 0) return { valor: cen, fuente: 'censo' };
-      if (off > 0) return { valor: off, fuente: 'inventario_oficial' };
-      return { valor: 0, fuente: censo ? 'censo_sin_familia' : 'sin_dato' };
-    };
+    const totalActual = numero(famActual.total);
+    const totalAnterior = numero(famAnterior.total);
+    const mismoPeriodo = !!(actual && actual.periodo === periodo);
+    const ratioVsAnterior = totalAnterior > 0 ? totalActual / totalAnterior : null;
  
-    const dos = elegir('dos_tiempos');
-    const cort = elegir('cortadora');
-    const tractor = elegir('tractor');
-    const veh = elegir('vehiculo');
-    const fijo = elegir('fijo');
-    const sinMotor = elegir('sin_motor');
-    const otro = elegir('otro');
+    // Un censo del mes que de golpe informa menos del 60% del parque previo se
+    // considera probablemente parcial. Ej.: Cañuelas 14 -> 1 en septiembre.
+    const censoActualIncompleto = !!(
+      mismoPeriodo &&
+      anterior &&
+      totalAnterior > 0 &&
+      totalActual >= 0 &&
+      ratioVsAnterior < CENSO_COMPLETITUD_MIN_RATIO
+    );
  
-    const totalCenso = numero(familiasCenso.total);
-    const totalOficial = numero(oficial.total);
-    const motorCenso = numero(familiasCenso.con_motor);
-    const motorOficial = numero(oficial.con_motor);
+    let censoSeleccionado = actual;
+    let famSeleccionada = famActual;
+    let fuenteBase = 'sin_censo';
+    let confianzaBase = 'baja';
+    let observacionBase = 'Sin censo operativo confiable';
+ 
+    if (actual && mismoPeriodo && !censoActualIncompleto) {
+      fuenteBase = 'censo_periodo';
+      confianzaBase = 'alta';
+      observacionBase = null;
+    } else if (censoActualIncompleto && anterior) {
+      // Usamos el anterior sólo para mostrar una referencia consistente; la
+      // confianza queda BAJA y por lo tanto V2.6 NO genera anomalías por equipo.
+      censoSeleccionado = anterior;
+      famSeleccionada = famAnterior;
+      fuenteBase = 'ultimo_censo_previo_censo_actual_incompleto';
+      confianzaBase = 'baja';
+      observacionBase = `Censo ${periodo} probablemente incompleto: ${totalActual} equipos vs ${totalAnterior} en ${anterior.periodo}`;
+    } else if (actual) {
+      const antiguedad = diferenciaMeses(actual.periodo, periodo);
+      if (antiguedad <= MAX_ANTIGUEDAD_CENSO_MESES) {
+        fuenteBase = 'ultimo_censo';
+        confianzaBase = 'media';
+        observacionBase = `Sin censo completo del período; se usa ${actual.periodo}`;
+      } else {
+        fuenteBase = 'censo_antiguo';
+        confianzaBase = 'baja';
+        observacionBase = `Último censo ${actual.periodo} demasiado antiguo para medir litros/equipo`;
+      }
+    }
+ 
+    const familias = ['dos_tiempos', 'cortadora', 'tractor', 'vehiculo', 'fijo', 'sin_motor', 'otro'];
+    const fuentes = {};
+    const confianza = {};
+    const periodos = {};
+    const censosIds = {};
+    const observaciones = {};
+ 
+    for (const familia of familias) {
+      const valor = numero(famSeleccionada[familia]);
+      fuentes[familia] = valor > 0 ? fuenteBase : 'sin_dato_familia';
+      confianza[familia] = valor > 0 ? confianzaBase : 'baja';
+      periodos[familia] = censoSeleccionado ? censoSeleccionado.periodo : null;
+      censosIds[familia] = censoSeleccionado ? censoSeleccionado.id : null;
+      observaciones[familia] = valor > 0
+        ? observacionBase
+        : (numero(oficial[familia]) > 0
+            ? `Sin parque temporal confiable; inventario de referencia informa ${numero(oficial[familia])}`
+            : 'Sin parque informado para la familia');
+    }
  
     resultado[objetivo.id] = {
       objetivo_id: objetivo.id,
       objetivo_nombre: objetivo.nombre,
-      censo_id: censo ? censo.id : null,
-      censo_periodo: censo ? censo.periodo : null,
-      total: totalCenso > 0 ? totalCenso : totalOficial,
-      con_motor: motorCenso > 0 ? motorCenso : motorOficial,
-      dos_tiempos: dos.valor,
-      cortadora: cort.valor,
-      tractor: tractor.valor,
-      vehiculo: veh.valor,
-      fijo: fijo.valor,
-      sin_motor: sinMotor.valor,
-      otro: otro.valor,
-      fuentes: {
-        dos_tiempos: dos.fuente,
-        cortadora: cort.fuente,
-        tractor: tractor.fuente,
-        vehiculo: veh.fuente,
-        fijo: fijo.fuente,
-        sin_motor: sinMotor.fuente,
-        otro: otro.fuente,
+      censo_id: censoSeleccionado ? censoSeleccionado.id : null,
+      censo_periodo: censoSeleccionado ? censoSeleccionado.periodo : null,
+      censo_actual_id: actual ? actual.id : null,
+      censo_actual_periodo: actual ? actual.periodo : null,
+      censo_actual_incompleto: censoActualIncompleto,
+      total: numero(famSeleccionada.total),
+      con_motor: numero(famSeleccionada.con_motor),
+      dos_tiempos: numero(famSeleccionada.dos_tiempos),
+      cortadora: numero(famSeleccionada.cortadora),
+      tractor: numero(famSeleccionada.tractor),
+      vehiculo: numero(famSeleccionada.vehiculo),
+      fijo: numero(famSeleccionada.fijo),
+      sin_motor: numero(famSeleccionada.sin_motor),
+      otro: numero(famSeleccionada.otro),
+      fuentes,
+      confianza,
+      periodos,
+      censos_ids: censosIds,
+      observaciones,
+      inventario_referencia: oficial,
+      diagnostico_censo: {
+        actual_total: totalActual,
+        anterior_total: totalAnterior,
+        ratio_vs_anterior: ratioVsAnterior == null ? null : redondear(ratioVsAnterior, 3),
+        incompleto: censoActualIncompleto,
       },
     };
   }
@@ -375,7 +437,7 @@ async function obtenerParque(periodo) {
 }
  
 // ============================================================
-// V2.5 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
+// V2.6 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
 // ============================================================
  
 function productoEsNafta(producto) {
@@ -504,7 +566,7 @@ async function persistirClasificaciones(updates) {
       .eq('id', fila.id);
  
     if (error) {
-      console.warn('[cost-intelligence V2.5] no pude persistir clasificación item', fila.id, error.message);
+      console.warn('[cost-intelligence V2.6] no pude persistir clasificación item', fila.id, error.message);
       continue;
     }
  
@@ -636,7 +698,7 @@ async function obtenerConsumoSemana(semana) {
   const parque = await obtenerParque(semana.slice(0, 7));
   const precioReferencia = calcularPrecioReferencia(listaCargas);
  
-  console.log(`[cost-intelligence V2.5] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
+  console.log(`[cost-intelligence V2.6] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
  
   const agrupado = {};
   const actualizacionesFamilia = [];
@@ -711,7 +773,7 @@ async function obtenerConsumoSemana(semana) {
         unidadId: carga.unidad_id || null,
       });
  
-      // V2.5: una carga histórica sin items igualmente puede ser vehículo si
+      // V2.6: una carga histórica sin items igualmente puede ser vehículo si
       // el encabezado dice explícitamente destino=unidad. No inferimos por el
       // mero hecho de tener unidad_id porque algunos equipos también viven en
       // el maestro de unidades.
@@ -795,7 +857,7 @@ async function obtenerConsumoSemana(semana) {
       });
  
       // ------------------------------------------------------
-      // V2.5: familia automática
+      // V2.6: familia automática
       // ------------------------------------------------------
       const parqueObjetivo = objetivoId ? parque[objetivoId] : null;
       const clasificacion = resolverFamiliaConsumo(item, carga, parqueObjetivo);
@@ -831,7 +893,7 @@ async function obtenerConsumoSemana(semana) {
   // sigue siendo válido porque ya se clasificó en memoria.
   const persistencia = await persistirClasificaciones(actualizacionesFamilia);
   if (persistencia.actualizados > 0) {
-    console.log(`[cost-intelligence V2.5] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
+    console.log(`[cost-intelligence V2.6] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
   }
  
   return Object.values(agrupado).map(fila => ({
@@ -876,7 +938,7 @@ async function resolverObjetivos(consumos) {
 // ============================================================
  
 async function generarSnapshotSemanal(semana) {
-  console.log(`[cost-intelligence V2.5] generando ${semana}`);
+  console.log(`[cost-intelligence V2.6] generando ${semana}`);
  
   const periodo = semana.slice(0, 7);
   const [parque, consumoRaw] = await Promise.all([
@@ -893,16 +955,30 @@ async function generarSnapshotSemanal(semana) {
     const p = parque[consumo.objetivo_id] || { total: 0, con_motor: 0 };
  
     let parqueFamilia = 0;
+    let parqueOrigen = null;
+    let parquePeriodo = null;
+    let parqueConfianza = null;
+    let parqueCensoId = null;
+    let parqueObservacion = null;
+ 
     if (FAMILIAS_NORMALIZABLES.includes(consumo.familia)) {
       parqueFamilia = numero(p[consumo.familia]);
+      parqueOrigen = p.fuentes ? p.fuentes[consumo.familia] : null;
+      parquePeriodo = p.periodos ? p.periodos[consumo.familia] : null;
+      parqueConfianza = p.confianza ? p.confianza[consumo.familia] : 'baja';
+      parqueCensoId = p.censos_ids ? p.censos_ids[consumo.familia] : null;
+      parqueObservacion = p.observaciones ? p.observaciones[consumo.familia] : null;
     }
  
-    // V2.5: para vehículos, la evidencia más directa es la propia carga.
-    // Si una o más unidades distintas cargaron combustible en la semana, ese
-    // número es el parque observado mínimo y evita mostrar "parque 0" cuando
-    // conocemos concretamente la unidad consumidora.
+    // Vehículo: una unidad realmente identificada en la carga es evidencia
+    // directa y prevalece sobre un censo parcial.
     if (consumo.familia === 'vehiculo' && numero(consumo.unidades_observadas) > 0) {
       parqueFamilia = numero(consumo.unidades_observadas);
+      parqueOrigen = 'unidad_observada';
+      parquePeriodo = semana.slice(0, 7);
+      parqueConfianza = 'alta';
+      parqueCensoId = null;
+      parqueObservacion = `${parqueFamilia} unidad(es) distinta(s) identificada(s) en cargas de la semana`;
     }
  
     const litrosPorEquipo = parqueFamilia > 0 ? consumo.litros / parqueFamilia : null;
@@ -919,6 +995,11 @@ async function generarSnapshotSemanal(semana) {
       parque_total: numero(p.total),
       parque_motor: numero(p.con_motor),
       parque_familia: parqueFamilia,
+      parque_origen: parqueOrigen,
+      parque_periodo: parquePeriodo,
+      parque_confianza: parqueConfianza,
+      parque_censo_id: parqueCensoId,
+      parque_observacion: parqueObservacion,
       litros_por_equipo: litrosPorEquipo == null ? null : redondear(litrosPorEquipo, 3),
       costo_por_equipo: costoPorEquipo == null ? null : Math.round(costoPorEquipo),
       cantidad_cargas: numero(consumo.cantidad_cargas),
@@ -996,13 +1077,23 @@ function construirBaseline(historico) {
  
   const litros = filas.map(x => numero(x.litros)).filter(x => x > 0);
   const costos = filas.map(x => numero(x.importe)).filter(x => x > 0);
-  const litrosEquipo = filas
+ 
+  // V2.6: para métricas por equipo sólo usamos snapshots cuyo denominador no
+  // esté marcado con confianza baja. Los snapshots antiguos sin metadata se
+  // aceptan por compatibilidad hasta que se reconstruya el histórico.
+  const filasParqueConfiable = filas.filter(x =>
+    x.parque_confianza == null || x.parque_confianza === 'alta' || x.parque_confianza === 'media'
+  );
+ 
+  const litrosEquipo = filasParqueConfiable
     .map(x => x.litros_por_equipo == null ? null : numero(x.litros_por_equipo))
     .filter(x => x != null && x > 0);
-  const costosEquipo = filas
+  const costosEquipo = filasParqueConfiable
     .map(x => x.costo_por_equipo == null ? null : numero(x.costo_por_equipo))
     .filter(x => x != null && x > 0);
-  const parque = filas.map(x => numero(x.parque_familia)).filter(x => x > 0);
+  const parque = filasParqueConfiable
+    .map(x => numero(x.parque_familia))
+    .filter(x => x > 0);
  
   const consumoBase = mediana(litros);
   const costoBase = mediana(costos);
@@ -1021,6 +1112,7 @@ function construirBaseline(historico) {
  
   return {
     muestras: filas.length,
+    muestras_equipo: litrosEquipo.length,
     consumo_base: consumoBase,
     costo_base: costoBase,
     consumo_por_equipo_base: consumoEquipoBase,
@@ -1108,15 +1200,27 @@ function seleccionarPrecioImpacto({ snapshot, historico }) {
 // CALIDAD DE PARQUE / CONFIANZA / UMBRAL
 // ============================================================
  
-function evaluarCalidadParque({ parqueActual, parqueHistorico }) {
+function evaluarCalidadParque({ parqueActual, parqueHistorico, parqueConfianza, parqueOrigen, parqueObservacion }) {
   const actual = numero(parqueActual);
   const historico = numero(parqueHistorico);
+ 
+  if (parqueConfianza === 'baja') {
+    return {
+      confiable: false,
+      cambio_pct: null,
+      motivo: parqueObservacion || 'Parque con confianza baja',
+      origen: parqueOrigen || null,
+      confianza: parqueConfianza,
+    };
+  }
  
   if (actual <= 0 || historico <= 0) {
     return {
       confiable: false,
       cambio_pct: null,
       motivo: 'Sin parque suficiente',
+      origen: parqueOrigen || null,
+      confianza: parqueConfianza || 'baja',
     };
   }
  
@@ -1127,6 +1231,8 @@ function evaluarCalidadParque({ parqueActual, parqueHistorico }) {
       confiable: false,
       cambio_pct: redondear(cambioPct, 2),
       motivo: 'Cambio abrupto de parque',
+      origen: parqueOrigen || null,
+      confianza: parqueConfianza || null,
     };
   }
  
@@ -1134,6 +1240,8 @@ function evaluarCalidadParque({ parqueActual, parqueHistorico }) {
     confiable: true,
     cambio_pct: redondear(cambioPct, 2),
     motivo: null,
+    origen: parqueOrigen || null,
+    confianza: parqueConfianza || null,
   };
 }
  
@@ -1198,7 +1306,9 @@ async function calcularBaselinesSemana(semana, ventanas = VENTANA_SEMANAS) {
           ? null
           : Math.round(base.costo_por_equipo_base),
       dispersion_pct: redondear(base.dispersion_pct, 2),
-      muestras: base.muestras,
+      muestras: FAMILIAS_NORMALIZABLES.includes(snapshot.familia)
+        ? numero(base.muestras_equipo)
+        : numero(base.muestras),
       calculado_at: new Date().toISOString(),
     });
   }
@@ -1221,10 +1331,10 @@ async function calcularBaselinesSemana(semana, ventanas = VENTANA_SEMANAS) {
 }
  
 // ============================================================
-// ANOMALÍAS / EXPLICABILIDAD V2.5
+// ANOMALÍAS / EXPLICABILIDAD V2.6
 // ============================================================
 //
-// Principios V2.5:
+// Principios V2.6:
 // 1) Una familia real se evalúa por litros/equipo solamente cuando
 //    el parque es confiable.
 // 2) Si el parque cambia bruscamente o falta, NO convertimos ese
@@ -1392,16 +1502,49 @@ async function detectarAnomaliasSemana(semana) {
  
     const base = construirBaseline(historico);
     const esFamiliaReal = FAMILIAS_NORMALIZABLES.includes(snapshot.familia);
+    const muestrasComparables = esFamiliaReal ? numero(base.muestras_equipo) : numero(base.muestras);
+ 
+    // V2.6: la calidad del parque ACTUAL se evalúa antes que el aprendizaje.
+    // Si el censo actual es incompleto o la fuente tiene confianza baja,
+    // informamos calidad de datos aunque todavía falte historia.
+    if (esFamiliaReal) {
+      const calidadActual = evaluarCalidadParque({
+        parqueActual: snapshot.parque_familia,
+        parqueHistorico: base.parque_base || snapshot.parque_familia,
+        parqueConfianza: snapshot.parque_confianza,
+        parqueOrigen: snapshot.parque_origen,
+        parqueObservacion: snapshot.parque_observacion,
+      });
+ 
+      if (!calidadActual.confiable || snapshot.litros_por_equipo == null) {
+        calidad.push({
+          objetivo_id: snapshot.objetivo_id,
+          objetivo_nombre: snapshot.objetivo_nombre,
+          familia: snapshot.familia,
+          litros: redondear(snapshot.litros, 2),
+          parque_actual: numero(snapshot.parque_familia),
+          parque_base: redondear(base.parque_base, 2),
+          parque_origen: snapshot.parque_origen || null,
+          parque_periodo: snapshot.parque_periodo || null,
+          parque_confianza: snapshot.parque_confianza || null,
+          parque_censo_id: snapshot.parque_censo_id || null,
+          parque_observacion: snapshot.parque_observacion || null,
+          cambio_parque_pct: calidadActual.cambio_pct,
+          motivo: calidadActual.motivo || 'Parque actual no confiable',
+        });
+        continue;
+      }
+    }
  
     // Una familia nueva puede estar perfectamente clasificada pero todavía no
     // tiene historia suficiente. Se informa como aprendizaje, no como anomalía.
-    if (base.muestras < MIN_MUESTRAS_ANOMALIA) {
+    if (muestrasComparables < MIN_MUESTRAS_ANOMALIA) {
       if (esFamiliaReal) {
         aprendizaje.push({
           objetivo_id: snapshot.objetivo_id,
           objetivo_nombre: snapshot.objetivo_nombre,
           familia: snapshot.familia,
-          muestras: base.muestras,
+          muestras: muestrasComparables,
           requeridas: MIN_MUESTRAS_ANOMALIA,
           litros: redondear(snapshot.litros, 2),
           parque_familia: numero(snapshot.parque_familia),
@@ -1415,7 +1558,7 @@ async function detectarAnomaliasSemana(semana) {
     }
  
     const confianza = calcularConfianza({
-      muestras: base.muestras,
+      muestras: muestrasComparables,
       dispersionPct: base.dispersion_pct,
     });
  
@@ -1425,7 +1568,7 @@ async function detectarAnomaliasSemana(semana) {
           objetivo_id: snapshot.objetivo_id,
           objetivo_nombre: snapshot.objetivo_nombre,
           familia: snapshot.familia,
-          muestras: base.muestras,
+          muestras: muestrasComparables,
           requeridas: MIN_MUESTRAS_ANOMALIA,
           litros: redondear(snapshot.litros, 2),
           parque_familia: numero(snapshot.parque_familia),
@@ -1447,9 +1590,12 @@ async function detectarAnomaliasSemana(semana) {
       const calidadParque = evaluarCalidadParque({
         parqueActual: snapshot.parque_familia,
         parqueHistorico: base.parque_base,
+        parqueConfianza: snapshot.parque_confianza,
+        parqueOrigen: snapshot.parque_origen,
+        parqueObservacion: snapshot.parque_observacion,
       });
  
-      // V2.5: un problema de parque ya no se transforma en "consumo anormal".
+      // V2.6: un problema de parque ya no se transforma en "consumo anormal".
       // Lo separamos como calidad de datos.
       if (
         !calidadParque.confiable ||
@@ -1462,6 +1608,11 @@ async function detectarAnomaliasSemana(semana) {
           familia: snapshot.familia,
           parque_actual: numero(snapshot.parque_familia),
           parque_base: redondear(base.parque_base, 2),
+          parque_origen: snapshot.parque_origen || null,
+          parque_periodo: snapshot.parque_periodo || null,
+          parque_confianza: snapshot.parque_confianza || null,
+          parque_censo_id: snapshot.parque_censo_id || null,
+          parque_observacion: snapshot.parque_observacion || null,
           cambio_parque_pct: calidadParque.cambio_pct,
           motivo: calidadParque.motivo || 'Sin indicador litros/equipo comparable',
         });
@@ -1483,7 +1634,7 @@ async function detectarAnomaliasSemana(semana) {
     // Sólo excesos por ahora.
     if (desvioPct < umbral) continue;
  
-    // V2.5: si el TOTAL está prácticamente explicado por familias reales,
+    // V2.6: si el TOTAL está prácticamente explicado por familias reales,
     // no generamos una alerta genérica. El mix de maquinaria/producto manda.
     if (snapshot.familia === 'total') {
       const cobertura = coberturaPorObjetivo.get(snapshot.objetivo_id) || {
@@ -1546,7 +1697,7 @@ async function detectarAnomaliasSemana(semana) {
       precio_origen: precio.origen,
       confianza_nivel: confianza.nivel,
       confianza_score: confianza.score,
-      muestras_historicas: base.muestras,
+      muestras_historicas: muestrasComparables,
       dispersion_pct: redondear(base.dispersion_pct, 2),
       umbral_pct: redondear(umbral, 2),
       calidad_dato: calidadDato,
@@ -1610,7 +1761,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   }
  
   console.log('================================================');
-  console.log(`[cost-intelligence V2.5] procesando ${periodo}`);
+  console.log(`[cost-intelligence V2.6] procesando ${periodo}`);
  
   const semanas = semanasDelMes(periodo);
   const hoy = hoyCordoba();
@@ -1623,7 +1774,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   for (const semana of semanas) {
     if (semana > hoy) continue;
  
-    console.log(`[cost-intelligence V2.5] semana ${semana}`);
+    console.log(`[cost-intelligence V2.6] semana ${semana}`);
     const resultado = await analizarSemana(semana);
     resultados.push(resultado);
  
@@ -1634,7 +1785,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
  
   const resultadoFinal = {
     ok: true,
-    version: '2.5',
+    version: '2.6',
     periodo,
     granularidad: GRANULARIDAD,
     semanas_procesadas: resultados.length,
@@ -1645,7 +1796,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
     duracion_ms: Date.now() - inicio,
   };
  
-  console.log('[cost-intelligence V2.5] finalizado', {
+  console.log('[cost-intelligence V2.6] finalizado', {
     periodo,
     semanas: resultados.length,
     snapshots: totalSnapshots,
