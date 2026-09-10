@@ -480,16 +480,156 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
     const severidades = { critica:0, alta:0, media:0 };
     anomalias.forEach(a => { if (severidades[a.severidad] != null) severidades[a.severidad]++; });
  
-    // V2.4: primero van anomalías operativas vigentes; luego problemas de calidad.
+    // V3.0 · Matriz estricta CENSO + COMBUSTIBLE.
+    // Primero verificamos si existen ambos datos. Sólo cuando ambos están presentes
+    // se considera la familia apta para análisis estadístico. Si falta uno o ambos,
+    // se informa el faltante sin calcular pérdida económica.
+    const { data:censosCab, error:censosCabErr } = await supabase
+      .from('censos_stock')
+      .select('id,periodo,objetivo_id,created_at')
+      .lte('periodo', periodo)
+      .order('created_at', { ascending:false })
+      .limit(2000);
+    if (censosCabErr) throw censosCabErr;
+ 
+    const cabeceras = censosCab || [];
+    const idsCenso = cabeceras.map(x => x.id).filter(Boolean);
+    let itemsCenso = [];
+    if (idsCenso.length) {
+      const { data, error } = await supabase
+        .from('censos_stock_items')
+        .select('censo_id,tipo_equipo,cantidad')
+        .in('censo_id', idsCenso);
+      if (error) throw error;
+      itemsCenso = data || [];
+    }
+ 
+    const itemsPorCenso = new Map();
+    for (const i of itemsCenso) {
+      if (!itemsPorCenso.has(i.censo_id)) itemsPorCenso.set(i.censo_id, []);
+      itemsPorCenso.get(i.censo_id).push(i);
+    }
+ 
+    // Último censo declarado HASTA el período seleccionado por objetivo.
+    const censoPorObjetivo = new Map();
+    for (const c of cabeceras) {
+      if (!c.objetivo_id || censoPorObjetivo.has(c.objetivo_id)) continue;
+      censoPorObjetivo.set(c.objetivo_id, c);
+    }
+ 
+    // Combustible de la semana más reciente disponible del período.
+    const ultimaSemana = snapshots.reduce((m,x) => String(x.periodo||'') > m ? String(x.periodo||'') : m, '');
+    const snapsUltimaSemana = snapshots.filter(x => String(x.periodo||'') === ultimaSemana);
+    const combustiblePorObjFam = new Map();
+    for (const x of snapsUltimaSemana) {
+      if (!x.objetivo_id || !['tractor','dos_tiempos','vehiculo','cortadora','fijo'].includes(x.familia)) continue;
+      const key = `${x.objetivo_id}|${x.familia}`;
+      const prev = combustiblePorObjFam.get(key) || { litros:0, importe:0, snapshot:x };
+      prev.litros += ciNum(x.litros);
+      prev.importe += ciNum(x.importe);
+      prev.snapshot = x;
+      combustiblePorObjFam.set(key, prev);
+    }
+ 
+    const familiasCensoPorObjetivo = new Map();
+    for (const [objetivoId,c] of censoPorObjetivo.entries()) {
+      const agrupado = agruparPorFamilia(itemsPorCenso.get(c.id) || []);
+      const fams = {};
+      for (const fam of ['tractor','dos_tiempos','vehiculo','cortadora','fijo']) {
+        fams[fam] = ciNum(agrupado[fam]);
+      }
+      familiasCensoPorObjetivo.set(objetivoId, { censo:c, familias:fams, total_motor:ciNum(agrupado.con_motor) });
+    }
+ 
+    const nombresObjetivo = new Map();
+    for (const x of snapshots) if (x.objetivo_id) nombresObjetivo.set(x.objetivo_id, x.objetivo_nombre || 'Sin objetivo');
+    for (const c of cabeceras) if (c.objetivo_id && !nombresObjetivo.has(c.objetivo_id)) nombresObjetivo.set(c.objetivo_id, 'Objetivo');
+ 
+    const objetivoIds = new Set([
+      ...nombresObjetivo.keys(),
+      ...censoPorObjetivo.keys(),
+      ...snapsUltimaSemana.map(x=>x.objetivo_id).filter(Boolean),
+    ]);
+ 
+    const estadoDetalle = [];
+    const estadoObjetivos = [];
+    for (const objetivoId of objetivoIds) {
+      const nombre = nombresObjetivo.get(objetivoId) || 'Objetivo';
+      const infoCenso = familiasCensoPorObjetivo.get(objetivoId);
+      const tieneCenso = !!infoCenso;
+      const famsCenso = infoCenso?.familias || {};
+      const familias = new Set();
+      for (const fam of ['tractor','dos_tiempos','vehiculo','cortadora','fijo']) {
+        if (ciNum(famsCenso[fam]) > 0) familias.add(fam);
+        if (combustiblePorObjFam.has(`${objetivoId}|${fam}`)) familias.add(fam);
+      }
+ 
+      const totalCombObj = [...combustiblePorObjFam.entries()]
+        .filter(([k]) => k.startsWith(`${objetivoId}|`))
+        .reduce((acc,[,v]) => acc + ciNum(v.litros), 0);
+ 
+      if (!familias.size && !tieneCenso && totalCombObj <= 0) {
+        estadoObjetivos.push({
+          objetivo_id:objetivoId, objetivo_nombre:nombre, estado:'faltan_ambos',
+          etiqueta:'Faltan ambos', censo_periodo:null, familias:[], litros:0,
+          detalle:'No hay censo de máquinas ni combustible clasificado para evaluar.'
+        });
+        continue;
+      }
+ 
+      const detallesObj = [];
+      for (const fam of familias) {
+        const parque = ciNum(famsCenso[fam]);
+        const fuel = combustiblePorObjFam.get(`${objetivoId}|${fam}`);
+        const litros = ciNum(fuel?.litros);
+        const hayParque = tieneCenso && parque > 0;
+        const hayCombustible = litros > 0;
+        let estado = 'completo';
+        if (!hayParque && !hayCombustible) estado = 'faltan_ambos';
+        else if (!hayParque) estado = 'falta_parque';
+        else if (!hayCombustible) estado = 'falta_combustible';
+ 
+        const detalle = {
+          objetivo_id:objetivoId, objetivo_nombre:nombre, familia:fam, estado,
+          parque, litros:Math.round(litros*1000)/1000,
+          consumo_por_equipo: hayParque && hayCombustible ? Math.round((litros/parque)*1000)/1000 : null,
+          censo_id:infoCenso?.censo?.id || null,
+          censo_periodo:infoCenso?.censo?.periodo || null,
+          semana_combustible:ultimaSemana || null,
+          apto_analisis: estado === 'completo',
+        };
+        estadoDetalle.push(detalle);
+        detallesObj.push(detalle);
+      }
+ 
+      const prioridad = ['faltan_ambos','falta_parque','falta_combustible','completo'];
+      const estadoObj = prioridad.find(e => detallesObj.some(d=>d.estado===e)) || (tieneCenso?'falta_combustible':'falta_parque');
+      estadoObjetivos.push({
+        objetivo_id:objetivoId, objetivo_nombre:nombre, estado:estadoObj,
+        etiqueta:{completo:'Completo',falta_parque:'Falta parque',falta_combustible:'Falta combustible',faltan_ambos:'Faltan ambos'}[estadoObj],
+        censo_periodo:infoCenso?.censo?.periodo || null,
+        litros:Math.round(totalCombObj*1000)/1000,
+        familias:detallesObj,
+      });
+    }
+ 
+    const resumenEstados = { completo:0, falta_parque:0, falta_combustible:0, faltan_ambos:0 };
+    for (const o of estadoObjetivos) if (resumenEstados[o.estado] != null) resumenEstados[o.estado]++;
+    const faltantesInformacion = estadoDetalle.filter(x => x.estado !== 'completo');
+ 
+    // V3.0: Dónde actuar hoy prioriza faltantes de información. Las anomalías
+    // operativas sólo se muestran si la familia tiene censo + combustible.
+    const familiasAptas = new Set(estadoDetalle.filter(x=>x.apto_analisis).map(x=>`${x.objetivo_id}|${x.familia}`));
+    const anomaliasAptas = anomalias.filter(a => familiasAptas.has(`${a.objetivo_id}|${a.familia}`));
     const dondeActuarHoy = [
-      ...anomalias.map(a => ({ ...a, tipo:'anomalia' })),
-      ...calidadUnica,
-    ].slice(0, 20);
+      ...anomaliasAptas.map(a => ({ ...a, tipo:'anomalia' })),
+      ...faltantesInformacion.map(x => ({ ...x, tipo:'faltante_informacion' })),
+    ].slice(0, 30);
  
     res.json({
       ok:true,
-      version:'dashboard-costos-2.8',
-      motor_version:'2.6',
+      version:'dashboard-costos-3.0',
+      motor_version:'3.0',
       periodo,
       granularidad:'semanal',
       semanas,
@@ -523,6 +663,14 @@ router.get('/api/costos/resumen', auth, async (req, res) => {
       calidad_gestion:{
         resueltas: qualityReviews.filter(r => r.estado === 'resuelta').length,
         historial: qualityReviews.slice(0, 30),
+      },
+      estado_informacion:{
+        semana_combustible:ultimaSemana || null,
+        total_objetivos:estadoObjetivos.length,
+        resumen:resumenEstados,
+        objetivos:estadoObjetivos,
+        detalle:estadoDetalle,
+        faltantes:faltantesInformacion,
       },
       historico_modelo:{
         superadas:superadasModelo.length,
