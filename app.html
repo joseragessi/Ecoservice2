@@ -593,18 +593,135 @@ let supBusca='', supEstado='', supAbierto=null;
 /* ── Combustible CAPATAZ: como supervisor pero a SU unidad y SU objetivo ── */
 let capData=null, capPaso='foto', capUnidad={gasoil:[],super:[]};
 let capObjNombre='', capPatente='', capPatenteManual='';
+// V4 · Cost Intelligence: el capataz elige la MÁQUINA, no "unidad o bidón".
+let capDestinos=null;      // {censo:{hay,periodo}, grupos:[...], destinos:[...]}
+let capStock=null;         // lo que tiene cargado este mes (pantalla Stock)
+let capStockEdit=null;     // copia editable mientras carga el stock
+let capSec='combustible';  // 'combustible' | 'stock' | 'panol'
 
-function abrirCombustibleCapataz(){capPaso='foto';capData=null;render();}
+function abrirCombustibleCapataz(){capSec='combustible';capPaso='foto';capData=null;cargarCapDestinos();render();}
+async function cargarCapDestinos(){
+  try{capDestinos=await api('/api/app/capataz/combustible/destinos');}
+  catch(e){capDestinos=null;}
+  render();
+}
 function renderCombustibleCapataz(){
-  $('kpis').innerHTML='';$('tabs').innerHTML='';
+  $('kpis').innerHTML='';
+  // Menú del capataz: combustible, sus máquinas y el pañol. Antes entraba
+  // directo a combustible y no tenía forma de ver ni corregir su stock.
+  const tabCap=(k,txt)=>`<div class="tab ${capSec===k?'on':''}" onclick="capIr('${k}')">${txt}</div>`;
+  $('tabs').innerHTML=tabCap('combustible','⛽ Combustible')+tabCap('stock','🚜 Mis máquinas')
+    +`<div class="tab" onclick="abrirPanol()">🧰 Pañol</div>`;
+  if(capSec==='stock')return renderCapStock();
   if(capPaso==='foto')return renderCapFoto();
   if(capPaso==='repartir')return renderCapRepartir();
 }
+function capIr(sec){
+  capSec=sec;
+  if(sec==='stock'){capStock=null;capStockEdit=null;cargarCapStock();}
+  else{capPaso='foto';capData=null;}
+  render();
+}
+/* ── Mis máquinas · el capataz ve y corrige su stock ──────────────
+   Es la salida del bloqueo: sin censo del mes no puede cargar combustible,
+   así que la app le muestra lo del último censo para que confirme o corrija
+   en dos toques, en vez de escribir todo de cero. */
+async function cargarCapStock(){
+  try{
+    capStock=await api('/api/app/capataz/stock');
+    capStockEdit=(capStock.items||[]).map(i=>({...i,numeros:(i.numeros||[]).slice()}));
+  }catch(e){capStock={__error:e.message};}
+  render();
+}
+function renderCapStock(){
+  if(!capStock)return $('lista').innerHTML='<div class="vacio">Cargando tus máquinas…</div>';
+  if(capStock.__error)return $('lista').innerHTML=`<div class="vacio">${capStock.__error}</div>`;
+  const its=capStockEdit||[];
+  const conMotor=its.filter(i=>i.clasificacion&&i.clasificacion.es_maquinaria);
+  const sinMotor=its.filter(i=>!(i.clasificacion&&i.clasificacion.es_maquinaria));
+  const totM=conMotor.reduce((a,i)=>a+(Number(i.cantidad)||0),0);
+  // Agrupadas por familia, como en el panel: 2 tiempos, tractores, vehículos…
+  const LBL={dos_tiempos:'🌾 Dos tiempos',cortadora:'✂️ Cortadoras',mini_tractor:'🚜 Mini tractores',
+    tractor:'🚜 Tractores',vehiculo:'🚛 Vehículos',fijo:'⚙️ Equipos fijos',otro_motor:'🔧 Otras con motor'};
+  const porFam={};
+  conMotor.forEach(i=>{const f=(i.clasificacion||{}).familia_consumo||'otro_motor';(porFam[f]=porFam[f]||[]).push(i);});
+  const orden=['dos_tiempos','cortadora','mini_tractor','tractor','vehiculo','fijo','otro_motor'];
+  const ix=i=>its.indexOf(i);
+  const fila=i=>`<div style="display:flex;align-items:center;gap:7px;padding:8px 9px;background:#F4F6F3;border-radius:9px;margin-bottom:6px">
+      <input type="number" value="${i.cantidad}" onchange="capStockSet(${ix(i)},'cantidad',this.value)"
+        style="width:48px;padding:6px;border:1px solid #d8dcd8;border-radius:7px;font-family:monospace;font-size:14px;text-align:center;box-sizing:border-box">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(i.tipo_equipo)}</div>
+        <input type="text" value="${esc((i.numeros||[]).join(', '))}" placeholder="N° de máquina (opcional)"
+          onchange="capStockNums(${ix(i)},this.value)"
+          style="width:100%;margin-top:4px;padding:5px 7px;border:1px solid #e3e7e2;border-radius:6px;font-size:11.5px;font-family:monospace;box-sizing:border-box">
+      </div>
+      <button onclick="capStockQuitar(${ix(i)})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
+    </div>`;
+  const aviso=capStock.confirmado
+    ? `<div style="background:var(--brote-soft,#E5F5EC);border-radius:11px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:var(--brote-2,#0F7E40)">
+         ✓ Ya confirmaste tus máquinas de este mes. Podés corregirlas cuando quieras.</div>`
+    : capStock.base_periodo
+    ? `<div style="background:#FBF0DC;border:1px solid #EED9AE;border-radius:11px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#8A5A0B">
+         Esto es lo que informaste en <b>${esc(capStock.base_periodo)}</b>. Confirmá lo que sigue igual y corregí lo que cambió.</div>`
+    : `<div style="background:#FBF0DC;border:1px solid #EED9AE;border-radius:11px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#8A5A0B">
+         Todavía no cargaste tus máquinas. Agregá las que tenés en el objetivo.</div>`;
+  $('lista').innerHTML=`
+    ${aviso}
+    <div style="font-size:12px;color:#586B60;margin-bottom:10px">${esc(capStock.objetivo.nombre||'tu objetivo')} · <b>${totM}</b> máquina${totM===1?'':'s'} con motor</div>
+    ${orden.filter(f=>porFam[f]).map(f=>`
+      <div style="background:#fff;border-radius:12px;padding:12px 13px;margin-bottom:10px">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">${LBL[f]||f}</div>
+        ${porFam[f].map(fila).join('')}
+      </div>`).join('')}
+    ${sinMotor.length?`<div style="background:#fff;border-radius:12px;padding:12px 13px;margin-bottom:10px;opacity:.75">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:4px">🧰 Herramientas</div>
+      <div style="font-size:11.5px;color:#8C9B92;margin-bottom:8px">Palas, machetes y demás. No hace falta que estén acá, pero si ya las cargaste las dejamos.</div>
+      ${sinMotor.map(fila).join('')}</div>`:''}
+    <button onclick="capStockAgregar()" style="width:100%;padding:11px;border:1px dashed #d8dcd8;border-radius:11px;background:none;color:#586B60;font-size:13px;font-family:inherit;cursor:pointer;margin-bottom:12px">＋ Agregar una máquina</button>
+    <button onclick="capStockGuardar()" style="width:100%;padding:15px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">✓ Confirmar mis máquinas</button>`;
+}
+function capStockSet(i,k,v){if(capStockEdit[i])capStockEdit[i][k]=k==='cantidad'?(parseInt(v)||0):v;render();}
+function capStockNums(i,v){if(capStockEdit[i])capStockEdit[i].numeros=String(v||'').split(',').map(x=>x.trim()).filter(Boolean);render();}
+function capStockQuitar(i){capStockEdit.splice(i,1);render();}
+function capStockAgregar(){
+  const t=prompt('¿Qué máquina? (ej: Motoguadaña, Tractor, Motosierra)');
+  if(!t||!t.trim())return;
+  capStockEdit.push({tipo_equipo:t.trim(),cantidad:1,numeros:[],observacion:null,
+    clasificacion:{es_maquinaria:true,familia_consumo:'otro_motor'}});
+  render();
+}
+async function capStockGuardar(){
+  const items=(capStockEdit||[]).filter(i=>i.tipo_equipo&&Number(i.cantidad)>0);
+  if(!items.length){toast('Cargá al menos una máquina');return;}
+  try{
+    const r=await api('/api/app/capataz/stock',{method:'POST',body:JSON.stringify({items})});
+    if(r&&r.ok){toast(`✓ ${r.equipos} máquinas cargadas`);capSec='combustible';capPaso='foto';capData=null;capDestinos=null;render();}
+    else toast('No se pudo guardar');
+  }catch(e){toast('Error: '+e.message);}
+}
+function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+
 function renderCapFoto(){
+  // Sin censo del mes no se puede saber a qué máquina fue el combustible:
+  // se bloquea y se ofrece cargarlo acá mismo (decisión V4, 09-sep).
+  if(capDestinos&&capDestinos.censo&&!capDestinos.censo.hay){
+    $('lista').innerHTML=`
+      <div style="background:#FBF0DC;border:1px solid #EED9AE;border-radius:14px;padding:16px;margin-bottom:12px">
+        <div style="font-weight:700;font-size:15px;color:#8A5A0B;margin-bottom:6px">⚠ Primero cargá tus máquinas</div>
+        <div style="font-size:12.5px;color:#8A5A0B;line-height:1.5">Para cargar combustible necesitamos saber qué máquinas tenés este mes. Si no, no podemos saber a cuál fue cada litro.<br><br>Son 2 minutos: te muestro lo del mes pasado y vos confirmás o corregís.</div>
+      </div>
+      <button onclick="capIr('stock')" style="width:100%;padding:15px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">📋 Cargar mis máquinas</button>
+      <div class="card" style="margin-top:14px;padding:13px">
+        <div style="font-size:12.5px;color:#586B60;line-height:1.5"><b style="color:#16221C">¿Por qué?</b><br>
+        Antes el combustible se cargaba "a bidones" y no sabíamos a qué máquina iba. Ahora cada litro va a una máquina, y así se puede ver cuánto consume cada una.</div>
+      </div>`;
+    return;
+  }
   $('lista').innerHTML=`
     <div class="card" style="padding:16px">
       <h3 style="margin:0 0 4px">Cargar combustible</h3>
-      <div class="desc" style="margin-bottom:14px">Sacale una foto al remito. Leo los litros y vos repartís cuánto va a tu unidad y cuánto a bidones.</div>
+      <div class="desc" style="margin-bottom:14px">Sacale una foto al remito. Leo los litros y vos decís a qué máquina fue cada uno.</div>
       <div id="cap-msg" style="font-size:13px;color:var(--tinta-2,#586B60);margin-bottom:12px"></div>
       <input type="file" id="cap-file" accept="image/*" capture="environment" style="display:none" onchange="capFoto(this)">
       <input type="file" id="cap-file-gal" accept="image/*" style="display:none" onchange="capFoto(this)">
@@ -626,7 +743,9 @@ function capFoto(input){
       const d=await api('/api/app/capataz/combustible/leer',{method:'POST',body:JSON.stringify({fileData:b64,fileType:'image/jpeg'})});
       if(d.__error){$('cap-msg').textContent=d.__error;return;}
       capData=d;capObjNombre=d.objetivo_nombre||'tu objetivo';capPatente=d.patente||'';
-      capUnidad={gasoil:d.litros.gasoil>0?[{litros:'',destino:'unidad'}]:[],super:d.litros.super>0?[{litros:'',destino:'unidad'}]:[]};
+      // Un renglón vacío por producto: el capataz elige la máquina.
+      capUnidad={gasoil:d.litros.gasoil>0?[{litros:'',ref:''}]:[],super:d.litros.super>0?[{litros:'',ref:''}]:[]};
+      if(!capDestinos)await cargarCapDestinos();
       capPaso='repartir';render();
     }catch(e){$('cap-msg').textContent='Error: '+e.message;}
   };
@@ -643,49 +762,80 @@ function renderCapRepartir(){
       :`<div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:10px">✕ Te pasaste ${Math.abs(rest)} lt</div>`;
     const pct=Math.min(100,Math.round(sum*100/tot));
     const barCol=capCuadra(tipo)?color:rest>0?'#D98A1F':'#C0392B';
+    // Solo las máquinas del objetivo que toman ESTE combustible. Un tractor
+    // no aparece en el bloque de súper.
+    const opts=capOpciones(tipo);
     const rens=capUnidad[tipo].map((r,i)=>`
       <div style="display:flex;align-items:center;gap:7px;padding:8px;background:#F4F6F3;border-radius:10px;margin-bottom:7px">
-        <input type="number" value="${r.litros}" placeholder="0" onchange="capSet('${tipo}',${i},this.value)" style="width:58px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
+        <input type="number" value="${r.litros}" placeholder="0" onchange="capSet('${tipo}',${i},this.value)" style="width:56px;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:14px;font-family:monospace;text-align:center;box-sizing:border-box">
         <span style="color:#8C9B92">→</span>
-        ${r.destino==='unidad'
-          ?(capPatente
-            ?`<div style="flex:1;font-size:12.5px;color:#3B7DC4;font-weight:600">🚛 ${capPatente} <span style="font-size:9px;background:#E8F1FA;padding:1px 6px;border-radius:4px">tu unidad</span></div>`
-            // Sin camión fijo en la ficha (la mayoría de los capataces de
-            // objetivo): que escriba la patente o el número de máquina.
-            :`<input type="text" value="${capPatenteManual.replace(/"/g,'&quot;')}" placeholder="Patente o N° de máquina"
-                oninput="capPatenteManual=this.value" style="flex:1;min-width:0;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;box-sizing:border-box">`)
-          :`<div style="flex:1;font-size:12.5px;color:#7C5CBF;font-weight:600">🛢 Bidones → ${capObjNombre}</div>`}
-        <button onclick="capDest('${tipo}',${i})" style="background:none;border:none;font-size:15px;cursor:pointer">${r.destino==='unidad'?'🛢':'🚛'}</button>
+        <select onchange="capRef('${tipo}',${i},this.value)" style="flex:1;min-width:0;padding:7px;border:1px solid #d8dcd8;border-radius:7px;font-size:12.5px;font-family:inherit;background:#fff;box-sizing:border-box">
+          <option value="">— elegí la máquina —</option>
+          ${opts.map(o=>`<option value="${esc(o.ref_tipo+':'+o.ref_id)}" ${r.ref===o.ref_tipo+':'+o.ref_id?'selected':''}>${esc(o.emoji+' '+o.label)}</option>`).join('')}
+          <option value="__otra" ${r.ref==='__otra'?'selected':''}>❓ No aparece mi máquina</option>
+        </select>
         <button onclick="capQuitar('${tipo}',${i})" style="background:none;border:none;color:#C0505E;font-size:15px;cursor:pointer">🗑</button>
-      </div>`).join('');
+      </div>
+      ${r.ref==='__otra'?`<div style="margin:-3px 0 7px 65px;font-size:11.5px;color:#8A5A0B;background:#FBF0DC;border-radius:8px;padding:7px 9px">
+        Agregala en <b onclick="capIr('stock')" style="text-decoration:underline;cursor:pointer">Mis máquinas</b> y volvé. Si es de otro objetivo, avisá a Logística.</div>`:''}`).join('');
     return `<div style="border:1px solid #E6EBE4;border-top:3px solid ${color};border-radius:14px;padding:14px;margin-bottom:13px;background:#fff">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;font-size:15px">${emoji} ${label}</span><span style="font-family:monospace;font-weight:700;font-size:14px">${tot} lt</span></div>
       <div style="height:8px;background:#F4F6F3;border-radius:5px;overflow:hidden;margin-bottom:5px"><div style="width:${pct}%;height:100%;background:${barCol}"></div></div>
       ${estado}${rens}
-      <button onclick="capAgregar('${tipo}')" style="width:100%;padding:9px;border:1px dashed #d8dcd8;border-radius:9px;background:none;color:#586B60;font-size:12.5px;font-family:inherit;cursor:pointer;font-weight:500">＋ Agregar (unidad o bidón)</button>
+      <button onclick="capAgregar('${tipo}')" style="width:100%;padding:9px;border:1px dashed #d8dcd8;border-radius:9px;background:none;color:#586B60;font-size:12.5px;font-family:inherit;cursor:pointer;font-weight:500">＋ Agregar otra máquina</button>
+      ${capUnidad[tipo].filter(r=>r.ref&&r.ref!=='__otra').map(r=>{const o=capBuscaDest(r.ref);
+        return o&&o.modo==='grupo'&&o.cantidad>1&&Number(r.litros)>0
+          ?`<div style="font-size:11px;color:#8C9B92;margin-top:5px">${esc(o.label)}: ${Math.round(Number(r.litros)/o.cantidad*100)/100} lt cada una.</div>`:'';}).join('')}
     </div>`;
   };
-  const cuadra=(capData.litros.gasoil>0?capCuadra('gasoil'):true)&&(capData.litros.super>0?capCuadra('super'):true);
+  const todosConDest=['gasoil','super'].every(t=>capUnidad[t].every(r=>!(Number(r.litros)>0)||(r.ref&&r.ref!=='__otra')));
+  const cuadra=(capData.litros.gasoil>0?capCuadra('gasoil'):true)&&(capData.litros.super>0?capCuadra('super'):true)&&todosConDest;
   $('lista').innerHTML=`
     <button onclick="capPaso='foto';render()" style="background:none;border:none;color:var(--brote-2);font-size:14px;font-weight:600;padding:4px 0;margin-bottom:6px;cursor:pointer">← Volver</button>
-    <div style="font-size:12px;color:#586B60;margin-bottom:12px">Los bidones van a <b>${capObjNombre}</b>${capPatente?` · la unidad es <b>${capPatente}</b>`:' · para la máquina, escribí la patente en el renglón'}</div>
+    <div style="font-size:12px;color:#586B60;margin-bottom:12px">Decime a qué máquina de <b>${capObjNombre}</b> fue cada litro.</div>
     ${bloque('gasoil','Gasoil','🛢','#D98A1F')}
     ${bloque('super','Super','⛽','#3B7DC4')}
     <button onclick="capGuardar()" ${cuadra?'':'disabled'} style="width:100%;padding:15px;border:none;border-radius:12px;background:${cuadra?'var(--brote)':'#d8dcd8'};color:${cuadra?'#fff':'#8C9B92'};font-size:15px;font-weight:700;font-family:inherit;cursor:${cuadra?'pointer':'default'}">Confirmar carga</button>
-    ${cuadra?'':'<div style="text-align:center;font-size:12px;color:#C0392B;margin-top:6px">Ajustá los litros hasta que cuadre.</div>'}`;
+    ${cuadra?'':`<div style="text-align:center;font-size:12px;color:#C0392B;margin-top:6px">${todosConDest?'Ajustá los litros hasta que cuadre.':'Elegí a qué máquina fue cada litro.'}</div>`}`;
 }
 function capSet(t,i,v){capUnidad[t][i].litros=v;render();}
-function capAgregar(t){capUnidad[t].push({litros:'',destino:'bidon'});render();}
+function capAgregar(t){capUnidad[t].push({litros:'',ref:''});render();}
 function capQuitar(t,i){capUnidad[t].splice(i,1);render();}
-function capDest(t,i){const r=capUnidad[t][i];r.destino=r.destino==='unidad'?'bidon':'unidad';render();}
+function capRef(t,i,v){capUnidad[t][i].ref=v;render();}
+// Los destinos que aceptan este combustible. El nombre del producto real lo
+// da el OCR; si no vino, se usa el genérico.
+function capOpciones(tipo){
+  const todos=(capDestinos&&capDestinos.destinos)||[];
+  const prod=((capData&&capData.productos)||[]).map(p=>p.producto).find(p=>{
+    const P=String(p||'').toUpperCase();
+    return tipo==='super'?/SUPER|NAFTA/.test(P):/DIESEL|GASOIL/.test(P);
+  })||(tipo==='super'?'SUPER':'GASOIL');
+  return todos.filter(d=>{
+    const c=String(d.combustible||'').toLowerCase();
+    if(!c||c==='mixto')return true;
+    return tipo==='super'?c==='super':c==='gasoil';
+  });
+}
+function capBuscaDest(ref){
+  const todos=(capDestinos&&capDestinos.destinos)||[];
+  return todos.find(d=>d.ref_tipo+':'+d.ref_id===ref)||null;
+}
 async function capGuardar(){
-  const repartos=[];
+  const repartos=[];let faltaDest=false;
   ['gasoil','super'].forEach(t=>capUnidad[t].forEach(r=>{const l=Number(r.litros)||0;
-    if(l>0)repartos.push({tipo:t,litros:l,destino:r.destino,
-      patente:r.destino==='unidad'?(capPatente||capPatenteManual.trim()||null):null});}));
+    if(l<=0)return;
+    const d=capBuscaDest(r.ref);
+    if(!d){faltaDest=true;return;}
+    repartos.push({tipo:t,litros:l,
+      // V4: se guarda la máquina declarada. `destino` (unidad/bidón) sale de
+      // la familia, para que todo lo que ya lee combustible siga andando.
+      destino_tipo:d.ref_tipo==='unidad'?'unidad':(d.modo==='individual'?'maquina_individual':'grupo_maquinas'),
+      destino_codigo:String(d.ref_id),destino_nombre:d.label,familia:d.familia,
+      unidad_id:d.ref_tipo==='unidad'?d.ref_id:null,
+      destino:d.familia==='vehiculo'?'unidad':'bidon',
+      patente:d.ref_tipo==='unidad'?(d.numeros||[])[0]||null:null});}));
+  if(faltaDest){toast('Elegí a qué máquina fue cada litro');return;}
   if(!repartos.length){toast('No hay litros para cargar');return;}
-  if(!capPatente&&repartos.some(r=>r.destino==='unidad'&&!r.patente)){
-    toast('Escribí la patente o el número de la máquina');return;}
   try{
     const d=await api('/api/app/capataz/combustible',{method:'POST',body:JSON.stringify({proveedor:capData.proveedor,numero:capData.numero,fecha:capData.fecha,tipo_doc:capData.tipo_doc||'remito',repartos,datos_ia:capData.items_raw?{items:capData.items_raw}:null})});
     if(d&&d.ok){cbResumenGuardado(repartos.map(r=>({...r,objetivo_nombre:r.destino==='bidon'?capObjNombre:null})));capPaso='foto';capData=null;}
