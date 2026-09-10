@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.2 · dashboard gerencial';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.4 · calidad + explicabilidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -559,7 +559,7 @@ function go(v){
   programarAutoRefresh(v);
 }
  
-/* ===== Cost Intelligence · Dashboard gerencial ===== */
+/* ===== Cost Intelligence · Dashboard gerencial V2.4 ===== */
 let ciPeriodo=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
 let ciData=null;
  
@@ -571,7 +571,8 @@ function ciFechaSemana(s){
   const p=String(s).split('-');if(p.length!==3)return s;
   return `${p[2]}/${p[1]}`;
 }
-function ciEtiquetaEstado(e){return ({abierta:'Abierta',en_revision:'En revisión',justificada:'Justificada',validada:'Validada',descartada:'Descartada',cerrada:'Cerrada'})[e]||cap(e||'abierta');}
+function ciEtiquetaEstado(e){return ({abierta:'Abierta',en_revision:'En revisión',justificada:'Justificada',validada:'Validada',descartada:'Descartada',cerrada:'Cerrada',superada_modelo:'Superada por modelo'})[e]||cap(e||'abierta');}
+function ciEtiquetaFamilia(f){return ({total:'Total',tractor:'Tractor',dos_tiempos:'Dos tiempos',vehiculo:'Vehículo',cortadora:'Cortadora',fijo:'Equipo fijo',bidones:'Bidones'})[f]||cap(f||'total');}
 function ciColorSev(s){return s==='critica'?'var(--rojo)':s==='alta'?'var(--diesel)':'var(--azul)';}
 function ciColorConf(s){return s==='alta'?'var(--brote-2)':s==='media'?'var(--diesel)':'var(--tinta-3)';}
  
@@ -585,29 +586,31 @@ function ciInstalarEstilos(){
     .ci-subtitle{font-size:13px;color:var(--tinta-2);margin-top:4px;line-height:1.45}
     .ci-actions{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
     .ci-month{padding:8px 10px;border:1px solid var(--linea-2);border-radius:9px;background:var(--blanco);font:inherit;color:var(--tinta)}
-    .ci-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+    .ci-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:14px}
     .ci-kpi{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;padding:16px;box-shadow:var(--sombra)}
     .ci-kpi-label{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--tinta-3);font-weight:700;margin-bottom:8px}
     .ci-kpi-value{font-size:25px;line-height:1;font-weight:760;letter-spacing:-.5px;color:var(--tinta)}
-    .ci-kpi-sub{font-size:11.5px;color:var(--tinta-3);margin-top:7px}
+    .ci-kpi-sub{font-size:11.5px;color:var(--tinta-3);margin-top:7px;line-height:1.35}
     .ci-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(310px,.85fr);gap:14px;margin-bottom:14px}
     .ci-card{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;padding:16px;box-shadow:var(--sombra)}
     .ci-card-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:13px}
     .ci-card-title{font-size:14px;font-weight:720;color:var(--tinta)}
-    .ci-card-sub{font-size:11.5px;color:var(--tinta-3);margin-top:2px}
+    .ci-card-sub{font-size:11.5px;color:var(--tinta-3);margin-top:2px;line-height:1.4}
     .ci-chart{display:flex;align-items:flex-end;gap:10px;height:180px;padding-top:20px}
     .ci-bar-wrap{flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px}
     .ci-bar{width:min(42px,72%);min-height:3px;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--brote),var(--brote-2));position:relative}
     .ci-bar-val{font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--tinta-2);white-space:nowrap}
     .ci-bar-lab{font-size:10.5px;color:var(--tinta-3);white-space:nowrap}
     .ci-health{display:flex;align-items:center;gap:16px;padding:8px 0 2px}
-    .ci-health-ring{width:86px;height:86px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--brote) 0 78%,var(--papel) 78% 100%);position:relative;flex:0 0 auto}
+    .ci-health-ring{width:86px;height:86px;border-radius:50%;display:grid;place-items:center;position:relative;flex:0 0 auto}
     .ci-health-ring:after{content:'';position:absolute;width:66px;height:66px;border-radius:50%;background:var(--blanco)}
     .ci-health-ring span{position:relative;z-index:1;font-weight:780;font-size:20px}
     .ci-sev{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:13px}
     .ci-sev-item{background:var(--papel);border-radius:9px;padding:9px;text-align:center}
     .ci-sev-num{font-size:18px;font-weight:760}
     .ci-alert{border:1px solid var(--linea);border-left:4px solid var(--diesel);border-radius:12px;padding:13px 14px;margin-bottom:9px;background:var(--blanco)}
+    .ci-alert.calidad{border-left-color:var(--diesel);background:linear-gradient(90deg,rgba(245,158,11,.055),transparent 38%)}
+    .ci-alert.operativa{background:linear-gradient(90deg,rgba(220,38,38,.045),transparent 38%)}
     .ci-alert-top{display:flex;gap:10px;align-items:flex-start}
     .ci-alert-name{font-weight:720;font-size:14px;color:var(--tinta)}
     .ci-alert-meta{font-size:11.5px;color:var(--tinta-3);margin-top:2px}
@@ -615,12 +618,17 @@ function ciInstalarEstilos(){
     .ci-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:11px 0}
     .ci-metric{background:var(--papel);border-radius:8px;padding:8px}.ci-metric span{display:block;font-size:9.5px;text-transform:uppercase;color:var(--tinta-3);letter-spacing:.35px}.ci-metric b{display:block;margin-top:3px;font-size:12px}
     .ci-tags{display:flex;gap:6px;flex-wrap:wrap}.ci-tag{font-size:10.5px;padding:4px 7px;border-radius:999px;background:var(--papel);color:var(--tinta-2);border:1px solid var(--linea)}
+    .ci-tag-warn{color:var(--diesel);background:rgba(245,158,11,.07);border-color:rgba(245,158,11,.22)}
+    .ci-tag-ok{color:var(--brote-2);background:rgba(22,163,74,.06);border-color:rgba(22,163,74,.18)}
     .ci-alert-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
     .ci-mini-btn{border:1px solid var(--linea-2);background:var(--blanco);color:var(--tinta-2);border-radius:8px;padding:6px 9px;font:inherit;font-size:11.5px;cursor:pointer}.ci-mini-btn:hover{border-color:var(--brote);color:var(--brote-2)}
     .ci-table{width:100%;border-collapse:collapse}.ci-table th{font-size:10px;text-transform:uppercase;letter-spacing:.45px;color:var(--tinta-3);font-weight:700;text-align:left;padding:8px;border-bottom:1px solid var(--linea)}.ci-table td{font-size:12px;padding:9px 8px;border-bottom:1px solid var(--linea)}
     .ci-empty{padding:34px 12px;text-align:center;color:var(--tinta-3);font-size:13px}
+    .ci-info-line{display:flex;gap:8px;align-items:flex-start;padding:9px 10px;border-radius:9px;background:var(--papel);margin-top:9px;font-size:11.5px;color:var(--tinta-2);line-height:1.4}
+    .ci-history{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px dashed var(--linea-2);border-radius:10px;background:var(--papel)}
+    @media(max-width:1180px){.ci-kpis{grid-template-columns:repeat(3,1fr)}}
     @media(max-width:1000px){.ci-kpis{grid-template-columns:repeat(2,1fr)}.ci-grid{grid-template-columns:1fr}.ci-metrics{grid-template-columns:repeat(2,1fr)}}
-    @media(max-width:620px){.ci-hero{display:block}.ci-actions{margin-top:12px;justify-content:flex-start}.ci-kpis{grid-template-columns:1fr 1fr}.ci-kpi-value{font-size:20px}.ci-metrics{grid-template-columns:1fr 1fr}.ci-alert-top{flex-wrap:wrap}.ci-impact{margin-left:0;text-align:left}.ci-chart{gap:5px}}
+    @media(max-width:620px){.ci-hero{display:block}.ci-actions{margin-top:12px;justify-content:flex-start}.ci-kpis{grid-template-columns:1fr 1fr}.ci-kpi-value{font-size:20px}.ci-metrics{grid-template-columns:1fr 1fr}.ci-alert-top{flex-wrap:wrap}.ci-impact{margin-left:0;text-align:left}.ci-chart{gap:5px}.ci-kpis>.ci-kpi:first-child{grid-column:1/-1}}
   `;
   document.head.appendChild(st);
 }
@@ -636,80 +644,120 @@ async function vCostos(view){
   }
 }
  
+function ciRenderSenal(a){
+  if(a.tipo==='calidad_datos'){
+    const fam=ciEtiquetaFamilia(a.familia);
+    return `<div class="ci-alert calidad">
+      <div class="ci-alert-top">
+        <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(fam)} · Calidad de datos</div></div>
+        <div class="ci-impact"><b style="color:var(--diesel)">Revisar</b><span>dato operativo</span></div>
+      </div>
+      <div class="ci-metrics">
+        <div class="ci-metric"><span>Familia</span><b>${ciEsc(fam)}</b></div>
+        <div class="ci-metric"><span>Consumo</span><b>${ciN(a.litros,2)} L</b></div>
+        <div class="ci-metric"><span>Parque informado</span><b>${ciN(a.parque_familia,0)}</b></div>
+        <div class="ci-metric"><span>Impacto $</span><b>Sin calcular</b></div>
+      </div>
+      <div class="ci-tags"><span class="ci-tag ci-tag-warn">⚠ ${ciEsc(a.titulo||'Revisar parque informado')}</span></div>
+      <div class="ci-info-line"><span>↳</span><span>${ciEsc(a.motivo||'Hay consumo clasificado pero falta parque confiable para calcular litros por equipo.')}</span></div>
+      ${a.objetivo_id?`<div class="ci-alert-actions"><button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button></div>`:''}
+    </div>`;
+  }
+ 
+  const col=ciColorSev(a.severidad);
+  const precioOrigen=a.precio_origen==='referencia_historica'?'Precio histórico':'Precio actual';
+  const conf=a.confianza_nivel||'—';
+  return `<div class="ci-alert operativa" style="border-left-color:${col}">
+    <div class="ci-alert-top">
+      <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(ciEtiquetaFamilia(a.familia||'total'))} · ${ciEtiquetaEstado(a.estado)}</div></div>
+      <div class="ci-impact"><b>${ciMoney(a.impacto_estimado)}</b><span>impacto estimado</span></div>
+    </div>
+    <div class="ci-metrics">
+      <div class="ci-metric"><span>Desvío</span><b style="color:${col}">+${ciN(a.desvio_pct,1)}%</b></div>
+      <div class="ci-metric"><span>Real</span><b>${ciN(a.real,2)} L</b></div>
+      <div class="ci-metric"><span>Esperado</span><b>${ciN(a.esperado,2)} L</b></div>
+      <div class="ci-metric"><span>Exceso</span><b>${ciN(a.litros_exceso,2)} L</b></div>
+    </div>
+    <div class="ci-tags">
+      <span class="ci-tag" style="color:${ciColorConf(conf)}">Confianza ${ciEsc(conf)} · ${ciN(a.muestras_historicas,0)} semanas</span>
+      <span class="ci-tag">Dispersión ${ciN(a.dispersion_pct,1)}%</span>
+      <span class="ci-tag">Umbral ${ciN(a.umbral_pct,1)}%</span>
+      <span class="ci-tag">${precioOrigen}: ${ciMoney(a.precio_utilizado)}/L</span>
+      ${a.calidad_dato&&a.calidad_dato!=='correcta'?`<span class="ci-tag ci-tag-warn">⚠ ${ciEsc(a.calidad_dato)}</span>`:''}
+    </div>
+    <div class="ci-alert-actions">
+      <button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button>
+      ${a.estado==='abierta'?`<button class="ci-mini-btn" onclick="ciCambiarEstado('${a.id}','en_revision')">Tomar revisión</button>`:''}
+      ${!['justificada','validada','descartada','cerrada','superada_modelo'].includes(a.estado)?`<button class="ci-mini-btn" onclick="ciJustificar('${a.id}')">Justificar</button><button class="ci-mini-btn" onclick="ciValidar('${a.id}',${Number(a.impacto_estimado)||0})">Validar ahorro</button>`:''}
+    </div>
+  </div>`;
+}
+ 
 function renderCostos(){
   const view=document.getElementById('view');if(!view||!ciData)return;
-  const d=ciData,k=d.kpis||{},sev=d.severidades||{},ev=d.evolucion_semanal||[],alerts=d.donde_actuar_hoy||[],objs=d.objetivos||[];
+  const d=ciData,k=d.kpis||{},sev=d.severidades||{},ev=d.evolucion_semanal||[],signals=d.donde_actuar_hoy||[],objs=d.objetivos||[];
+  const historial=d.historico_modelo||{};
   const maxLit=Math.max(...ev.map(x=>Number(x.litros)||0),1);
-  const abiertas=Number(k.alertas_abiertas||0), totalA=Number(k.alertas||0);
-  // Salud operativa: indicador visual, no score estadístico. Penaliza sólo alertas abiertas.
-  const salud=totalA===0?100:Math.max(20,Math.round(100-(abiertas/Math.max(Number(k.objetivos_controlados)||1,1))*25));
-  const saludTxt=abiertas===0?'Sin alertas abiertas':abiertas===1?'1 alerta requiere revisión':`${abiertas} alertas requieren revisión`;
+  const abiertas=Number(k.alertas_abiertas||0), totalA=Number(k.alertas||0), calidad=Number(k.calidad_datos||0), superadas=Number(k.alertas_superadas_modelo||historial.superadas||0);
+ 
+  // V2.4: la salud considera anomalías operativas y calidad de datos por separado.
+  // Una incidencia de calidad NO se presenta como pérdida económica.
+  const baseObj=Math.max(Number(k.objetivos_controlados)||1,1);
+  const penalizacion=Math.min(75,(abiertas/baseObj)*35+(calidad/baseObj)*12);
+  const salud=Math.max(20,Math.round(100-penalizacion));
+  const saludTxt=abiertas>0
+    ? `${abiertas} desvío${abiertas===1?'':'s'} operativo${abiertas===1?'':'s'} requiere${abiertas===1?'':'n'} revisión`
+    : calidad>0
+      ? `Sin desvíos · ${calidad} dato${calidad===1?'':'s'} a revisar`
+      : 'Sin desvíos ni incidencias de calidad';
+  const saludPct=Math.max(0,Math.min(100,salud));
  
   const chart=ev.length?`<div class="ci-chart">${ev.map(x=>{
     const h=Math.max(3,Math.round((Number(x.litros)||0)/maxLit*125));
     return `<div class="ci-bar-wrap"><div class="ci-bar-val">${ciN(x.litros,0)} L</div><div class="ci-bar" style="height:${h}px" title="${ciEsc(x.semana)} · ${ciN(x.litros,2)} L · ${ciMoney(x.costo)}"></div><div class="ci-bar-lab">${ciFechaSemana(x.semana)}</div></div>`;
   }).join('')}</div>`:'<div class="ci-empty">Todavía no hay semanas con consumo para este período.</div>';
  
-  const alertaHtml=alerts.length?alerts.map(a=>{
-    const col=ciColorSev(a.severidad);
-    const precioOrigen=a.precio_origen==='referencia_historica'?'Precio histórico':'Precio actual';
-    const conf=a.confianza_nivel||'—';
-    return `<div class="ci-alert" style="border-left-color:${col}">
-      <div class="ci-alert-top">
-        <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(cap(a.familia||'total'))} · ${ciEtiquetaEstado(a.estado)}</div></div>
-        <div class="ci-impact"><b>${ciMoney(a.impacto_estimado)}</b><span>impacto estimado</span></div>
-      </div>
-      <div class="ci-metrics">
-        <div class="ci-metric"><span>Desvío</span><b style="color:${col}">+${ciN(a.desvio_pct,1)}%</b></div>
-        <div class="ci-metric"><span>Real</span><b>${ciN(a.real,2)} L</b></div>
-        <div class="ci-metric"><span>Esperado</span><b>${ciN(a.esperado,2)} L</b></div>
-        <div class="ci-metric"><span>Exceso</span><b>${ciN(a.litros_exceso,2)} L</b></div>
-      </div>
-      <div class="ci-tags">
-        <span class="ci-tag" style="color:${ciColorConf(conf)}">Confianza ${ciEsc(conf)} · ${ciN(a.muestras_historicas,0)} semanas</span>
-        <span class="ci-tag">Dispersión ${ciN(a.dispersion_pct,1)}%</span>
-        <span class="ci-tag">Umbral ${ciN(a.umbral_pct,1)}%</span>
-        <span class="ci-tag">${precioOrigen}: ${ciMoney(a.precio_utilizado)}/L</span>
-        ${a.calidad_dato&&a.calidad_dato!=='correcta'?`<span class="ci-tag" style="color:var(--diesel)">⚠ ${ciEsc(a.calidad_dato)}</span>`:''}
-      </div>
-      <div class="ci-alert-actions">
-        <button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button>
-        ${a.estado==='abierta'?`<button class="ci-mini-btn" onclick="ciCambiarEstado('${a.id}','en_revision')">Tomar revisión</button>`:''}
-        ${!['justificada','validada','descartada','cerrada'].includes(a.estado)?`<button class="ci-mini-btn" onclick="ciJustificar('${a.id}')">Justificar</button><button class="ci-mini-btn" onclick="ciValidar('${a.id}',${Number(a.impacto_estimado)||0})">Validar ahorro</button>`:''}
-      </div>
-    </div>`;
-  }).join(''):'<div class="ci-empty"><b>No hay desvíos accionables.</b><br>El motor sigue aprendiendo con cada semana.</div>';
+  const senalesHtml=signals.length
+    ?signals.map(ciRenderSenal).join('')
+    :'<div class="ci-empty"><b>No hay señales accionables.</b><br>El motor sigue formando y estabilizando sus baselines.</div>';
  
   const ranking=objs.slice(0,12).map(o=>`<tr>
     <td><b>${ciEsc(o.objetivo_nombre)}</b><div class="sub" style="font-size:10.5px">${o.semanas} semana${o.semanas===1?'':'s'} analizada${o.semanas===1?'':'s'}</div></td>
     <td class="mono">${ciN(o.litros,1)} L</td><td class="mono">${ciMoney(o.costo)}</td>
     <td>${o.alertas?`<span class="badge b-red">${o.alertas}</span>`:'<span class="sub">—</span>'}</td>
+    <td>${o.calidad_datos?`<span class="badge" style="background:rgba(245,158,11,.12);color:var(--diesel)">${o.calidad_datos}</span>`:'<span class="sub">—</span>'}</td>
     <td class="mono" style="font-weight:${o.impacto?'700':'400'};color:${o.impacto?'var(--rojo)':'var(--tinta-3)'}">${o.impacto?ciMoney(o.impacto):'—'}</td>
   </tr>`).join('');
  
+  const historicoHtml=superadas>0
+    ?`<div class="ci-history"><div><b>${superadas} alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} por el modelo</b><div class="sub" style="font-size:11px;margin-top:3px">Se conserva${superadas===1?'':'n'} para auditoría y no afecta${superadas===1?'':'n'} los KPIs ni el impacto vigente.</div></div><span class="ci-tag ci-tag-ok">Auditoría preservada</span></div>`
+    :`<div class="ci-history"><div><b>Sin alertas históricas superadas</b><div class="sub" style="font-size:11px;margin-top:3px">El historial del modelo está limpio para este período.</div></div></div>`;
+ 
   view.innerHTML=`<div class="ci-wrap">
-    <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle">Inteligencia semanal de consumo · baseline propio por objetivo · impacto económico con control de calidad</div></div>
+    <div class="ci-hero"><div><div class="ci-title">Cost Intelligence</div><div class="ci-subtitle">Inteligencia semanal por objetivo y familia · consumo por equipo cuando el parque es confiable · calidad de datos separada del desvío económico</div></div>
       <div class="ci-actions"><input class="ci-month" type="month" value="${ciPeriodo}" onchange="ciPeriodo=this.value;vCostos(document.getElementById('view'))"><button class="btn ghost" onclick="vCostos(document.getElementById('view'))">Actualizar</button><button class="btn" onclick="ciRecalcular()">↻ Recalcular inteligencia</button></div></div>
     <div class="ci-kpis">
       <div class="ci-kpi"><div class="ci-kpi-label">Costo controlado</div><div class="ci-kpi-value">${ciMoney(k.costo_controlado)}</div><div class="ci-kpi-sub">${ciN(k.litros_controlados,1)} L · ${ciN(k.objetivos_controlados,0)} objetivos</div></div>
-      <div class="ci-kpi"><div class="ci-kpi-label">Desvíos detectados</div><div class="ci-kpi-value" style="color:${k.desvios_detectados?'var(--rojo)':'var(--tinta)'}">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">${ciN(k.alertas,0)} alerta${Number(k.alertas)===1?'':'s'} en el período</div></div>
-      <div class="ci-kpi"><div class="ci-kpi-label">Sin explicar</div><div class="ci-kpi-value">${ciMoney(k.desvios_sin_explicar)}</div><div class="ci-kpi-sub">${ciN(k.alertas_abiertas,0)} requieren gestión</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Desvíos operativos</div><div class="ci-kpi-value" style="color:${Number(k.desvios_detectados)>0?'var(--rojo)':'var(--brote-2)'}">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">${ciN(totalA,0)} alerta${totalA===1?'':'s'} vigente${totalA===1?'':'s'} · ${ciN(abiertas,0)} sin resolver</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">consumo con parque faltante o insuficiente; no se trata como pérdida</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Ahorro validado</div><div class="ci-kpi-value" style="color:var(--brote-2)">${ciMoney(k.ahorro_validado)}</div><div class="ci-kpi-sub">impacto confirmado por el equipo</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Histórico del modelo</div><div class="ci-kpi-value">${ciN(superadas,0)}</div><div class="ci-kpi-sub">alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} conservada${superadas===1?'':'s'} para auditoría</div></div>
     </div>
     <div class="ci-grid">
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Consumo semanal controlado</div><div class="ci-card-sub">Litros totales registrados en las semanas que tocan ${ciPeriodo}</div></div></div>${chart}</div>
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Salud operativa</div><div class="ci-card-sub">Lectura ejecutiva del período</div></div></div>
-        <div class="ci-health"><div class="ci-health-ring"><span>${salud}</span></div><div><div style="font-weight:720;font-size:14px">${saludTxt}</div><div class="sub" style="font-size:11.5px;margin-top:4px">Indicador visual basado en alertas abiertas; no reemplaza la confianza estadística de cada alerta.</div></div></div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Consumo semanal controlado</div><div class="ci-card-sub">Litros totales registrados en las semanas que tocan ${ciPeriodo}. La clasificación por familia se analiza sin duplicar este total.</div></div></div>${chart}</div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Salud operativa y del dato</div><div class="ci-card-sub">Lectura ejecutiva: distingue desvío real de problema de información</div></div></div>
+        <div class="ci-health"><div class="ci-health-ring" style="background:conic-gradient(var(--brote) 0 ${saludPct}%,var(--papel) ${saludPct}% 100%)"><span>${salud}</span></div><div><div style="font-weight:720;font-size:14px">${saludTxt}</div><div class="sub" style="font-size:11.5px;margin-top:4px">El score es una ayuda visual. La decisión se basa en cada familia, su baseline y la calidad del parque informado.</div></div></div>
         <div class="ci-sev"><div class="ci-sev-item"><div class="ci-sev-num" style="color:var(--rojo)">${sev.critica||0}</div><div class="sub">Críticas</div></div><div class="ci-sev-item"><div class="ci-sev-num" style="color:var(--diesel)">${sev.alta||0}</div><div class="sub">Altas</div></div><div class="ci-sev-item"><div class="ci-sev-num" style="color:var(--azul)">${sev.media||0}</div><div class="sub">Medias</div></div></div>
       </div>
     </div>
     <div class="ci-grid" style="grid-template-columns:minmax(0,1.35fr) minmax(360px,1fr)">
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Dónde actuar hoy</div><div class="ci-card-sub">Prioridad ordenada por impacto económico estimado</div></div></div>${alertaHtml}</div>
-      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Ranking por impacto y costo registrado</div></div></div>
-        <div style="overflow:auto"><table class="ci-table"><thead><tr><th>Objetivo</th><th>Litros</th><th>Costo</th><th>Alertas</th><th>Impacto</th></tr></thead><tbody>${ranking||'<tr><td colspan="5" class="ci-empty">Sin datos</td></tr>'}</tbody></table></div></div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Dónde actuar hoy</div><div class="ci-card-sub">Primero anomalías operativas vigentes; luego incidencias de calidad. Una incidencia de datos nunca se muestra como ahorro potencial.</div></div></div>${senalesHtml}</div>
+      <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Objetivos bajo control</div><div class="ci-card-sub">Ranking por anomalías vigentes, calidad de datos, impacto y costo</div></div></div>
+        <div style="overflow:auto"><table class="ci-table"><thead><tr><th>Objetivo</th><th>Litros</th><th>Costo</th><th>Alertas</th><th>Datos</th><th>Impacto</th></tr></thead><tbody>${ranking||'<tr><td colspan="6" class="ci-empty">Sin datos</td></tr>'}</tbody></table></div></div>
     </div>
+    <div class="ci-card"><div class="ci-card-head"><div><div class="ci-card-title">Trazabilidad del modelo</div><div class="ci-card-sub">Las alertas que una versión posterior explica o supera quedan registradas sin contaminar los indicadores vigentes.</div></div></div>${historicoHtml}</div>
   </div>`;
-  const cc=document.getElementById('c-costos');if(cc){cc.textContent=k.alertas_abiertas||0;cc.style.display=Number(k.alertas_abiertas)>0?'':'none';}
+  const cc=document.getElementById('c-costos');if(cc){const pendientes=abiertas+calidad;cc.textContent=pendientes;cc.style.display=pendientes>0?'':'none';}
 }
  
 async function ciRecalcular(){
@@ -740,12 +788,13 @@ async function ciHistorico(objetivoId,familia='total'){
     const d=await api(`/api/costos/historico/${encodeURIComponent(objetivoId)}?familia=${encodeURIComponent(familia)}`);
     const h=d.historico||[];const max=Math.max(...h.map(x=>Number(x.litros)||0),1);
     const bg=document.createElement('div');bg.className='modal-bg abierto';bg.style.zIndex=180;
-    bg.innerHTML=`<div class="modal" style="max-width:720px"><h3>Histórico semanal</h3><div class="sub" style="margin-bottom:12px">${ciEsc(h[0]?.objetivo_nombre||'Objetivo')} · ${ciEsc(cap(familia))}</div>
+    bg.innerHTML=`<div class="modal" style="max-width:720px"><h3>Histórico semanal</h3><div class="sub" style="margin-bottom:12px">${ciEsc(h[0]?.objetivo_nombre||'Objetivo')} · ${ciEsc(ciEtiquetaFamilia(familia))}</div>
       ${h.length?`<div style="display:grid;gap:7px">${h.map(x=>`<div style="display:grid;grid-template-columns:62px 1fr 82px;gap:9px;align-items:center"><span class="mono" style="font-size:11px">${ciFechaSemana(x.periodo)}</span><div style="height:8px;background:var(--papel);border-radius:5px"><div style="height:100%;width:${Math.max(2,(Number(x.litros)||0)/max*100)}%;background:var(--brote);border-radius:5px"></div></div><b class="mono" style="font-size:11px;text-align:right">${ciN(x.litros,2)} L</b></div>`).join('')}</div>`:'<div class="ci-empty">Sin histórico.</div>'}
       <div class="modal-acciones"><button class="btn" id="ci-h-cerrar">Cerrar</button></div></div>`;
     document.body.appendChild(bg);bg.querySelector('#ci-h-cerrar').onclick=()=>bg.remove();bg.onclick=e=>{if(e.target===bg)bg.remove();};
   }catch(e){toast(e.message||'No pude cargar el histórico','error');}
 }
+ 
  
 /* ===== Dashboard ===== */
 async function vDashboard(view){
