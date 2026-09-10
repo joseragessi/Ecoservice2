@@ -552,19 +552,8 @@ async function tienePedidoPendiente(telefono) {
  */
 async function mensajePedidoStock(objetivoId, nombreObjetivo, nombreCapataz) {
   const previo = await ultimoStockDelObjetivo(objetivoId, periodoActual());
+  if (!previo || !previo.items.length) return null;
   const nom = String(nombreCapataz || '').split(' ')[0] || 'capataz';
-  const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app').replace(/\/+$/, '');
-  // El stock se informa DESDE LA APP (decisión 10-sep): ahí el capataz ve sus
-  // máquinas agrupadas por familia y las confirma en dos toques. El recordatorio
-  // del lunes sigue saliendo por WhatsApp —es el canal que leen— pero lleva a
-  // la app en vez de pedir que escriban el listado por acá.
-  const pie = `\n\n📱 *Cargalo en la app:*\n${url}\n` +
-    `Vas a *Mis máquinas*, confirmás lo que sigue igual y corregís lo que cambió.` +
-    `\n\n_Sin el stock cargado no vas a poder cargar combustible._`;
-  if (!previo || !previo.items.length) {
-    return `📋 *Control de stock semanal*\n\n` +
-      `Hola *${nom}*. Todavía no informaste las máquinas de *${nombreObjetivo || 'tu objetivo'}*.` + pie;
-  }
   const total = previo.items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0);
   const nTaller = contarTaller(previo.items);
   const cuando = previo.mismo_mes
@@ -574,7 +563,10 @@ async function mensajePedidoStock(objetivoId, nombreObjetivo, nombreCapataz) {
     `Hola *${nom}*. ${cuando} en *${nombreObjetivo || 'tu objetivo'}*:\n\n` +
     `${listado(previo.items)}\n\n*Total: ${total} equipo${total === 1 ? '' : 's'}*` +
     (nTaller ? `\n🔧 ${nTaller} en el taller: no ${nTaller === 1 ? 'la' : 'las'} cuentes como faltante.` : '') +
-    pie;
+    `\n\n¿Está bien? Respondé *sí* para confirmarlo.\n` +
+    `Si algo cambió, decímelo en criollo:\n` +
+    `_agregá 2 motosierras la 12 y la 15_\n` +
+    `_la 21 no está_ (queda registrada como faltante)`;
 }
 
 module.exports = {
