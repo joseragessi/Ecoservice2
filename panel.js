@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.4 · calidad + explicabilidad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · Cost Intelligence V2.6 · parque trazable';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -559,7 +559,7 @@ function go(v){
   programarAutoRefresh(v);
 }
  
-/* ===== Cost Intelligence · Dashboard gerencial V2.4 ===== */
+/* ===== Cost Intelligence · Dashboard gerencial V2.6 ===== */
 let ciPeriodo=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'}).slice(0,7);
 let ciData=null;
  
@@ -575,6 +575,14 @@ function ciEtiquetaEstado(e){return ({abierta:'Abierta',en_revision:'En revisió
 function ciEtiquetaFamilia(f){return ({total:'Total',tractor:'Tractor',dos_tiempos:'Dos tiempos',vehiculo:'Vehículo',cortadora:'Cortadora',fijo:'Equipo fijo',bidones:'Bidones'})[f]||cap(f||'total');}
 function ciColorSev(s){return s==='critica'?'var(--rojo)':s==='alta'?'var(--diesel)':'var(--azul)';}
 function ciColorConf(s){return s==='alta'?'var(--brote-2)':s==='media'?'var(--diesel)':'var(--tinta-3)';}
+function ciEtiquetaParqueOrigen(o){return ({
+  censo_periodo:'Censo del período',
+  ultimo_censo_previo:'Último censo previo',
+  ultimo_censo_previo_censo_actual_incompleto:'Último censo previo',
+  unidad_observada:'Unidad observada',
+  unidades_observadas:'Unidades observadas',
+  sin_dato_familia:'Sin dato de parque'
+})[o]||cap(String(o||'sin dato').replaceAll('_',' '));}
  
 function ciInstalarEstilos(){
   if(document.getElementById('ci-styles'))return;
@@ -647,19 +655,28 @@ async function vCostos(view){
 function ciRenderSenal(a){
   if(a.tipo==='calidad_datos'){
     const fam=ciEtiquetaFamilia(a.familia);
+    const origen=ciEtiquetaParqueOrigen(a.parque_origen);
+    const conf=(a.parque_confianza||'baja').toLowerCase();
+    const parque=Number(a.parque_familia)||0;
+    const periodoParque=a.parque_periodo||'—';
     return `<div class="ci-alert calidad">
       <div class="ci-alert-top">
         <div><div class="ci-alert-name">${ciEsc(a.objetivo_nombre)}</div><div class="ci-alert-meta">Semana ${ciFechaSemana(a.periodo)} · ${ciEsc(fam)} · Calidad de datos</div></div>
-        <div class="ci-impact"><b style="color:var(--diesel)">Revisar</b><span>dato operativo</span></div>
+        <div class="ci-impact"><b style="color:var(--diesel)">Revisar</b><span>sin impacto económico</span></div>
       </div>
       <div class="ci-metrics">
-        <div class="ci-metric"><span>Familia</span><b>${ciEsc(fam)}</b></div>
         <div class="ci-metric"><span>Consumo</span><b>${ciN(a.litros,2)} L</b></div>
-        <div class="ci-metric"><span>Parque informado</span><b>${ciN(a.parque_familia,0)}</b></div>
-        <div class="ci-metric"><span>Impacto $</span><b>Sin calcular</b></div>
+        <div class="ci-metric"><span>${parque>0?'Parque de referencia':'Parque disponible'}</span><b>${parque>0?ciN(parque,0):'Sin dato'}</b></div>
+        <div class="ci-metric"><span>Fuente del parque</span><b>${ciEsc(origen)}</b></div>
+        <div class="ci-metric"><span>Confianza</span><b style="color:${ciColorConf(conf)}">${ciEsc(cap(conf))}</b></div>
       </div>
-      <div class="ci-tags"><span class="ci-tag ci-tag-warn">⚠ ${ciEsc(a.titulo||'Revisar parque informado')}</span></div>
-      <div class="ci-info-line"><span>↳</span><span>${ciEsc(a.motivo||'Hay consumo clasificado pero falta parque confiable para calcular litros por equipo.')}</span></div>
+      <div class="ci-tags">
+        <span class="ci-tag ci-tag-warn">⚠ ${ciEsc(a.titulo||'Revisar parque')}</span>
+        <span class="ci-tag">Parque: ${ciEsc(periodoParque)}</span>
+        ${a.parque_censo_id?`<span class="ci-tag">Censo ${ciEsc(String(a.parque_censo_id).slice(0,8))}</span>`:''}
+      </div>
+      <div class="ci-info-line"><span>↳</span><span>${ciEsc(a.motivo||a.parque_observacion||'No hay un parque suficientemente confiable para evaluar consumo por equipo.')}</span></div>
+      ${parque>0&&a.litros_por_equipo!=null?`<div class="ci-info-line"><span>i</span><span>Referencia matemática: ${ciN(a.litros_por_equipo,3)} L/equipo, pero no se usa para generar una anomalía porque la confianza del parque es ${ciEsc(conf)}.</span></div>`:''}
       ${a.objetivo_id?`<div class="ci-alert-actions"><button class="ci-mini-btn" onclick="ciHistorico('${ciEsc(a.objetivo_id)}','${ciEsc(a.familia||'total')}')">Ver histórico</button></div>`:''}
     </div>`;
   }
@@ -739,7 +756,7 @@ function renderCostos(){
     <div class="ci-kpis">
       <div class="ci-kpi"><div class="ci-kpi-label">Costo controlado</div><div class="ci-kpi-value">${ciMoney(k.costo_controlado)}</div><div class="ci-kpi-sub">${ciN(k.litros_controlados,1)} L · ${ciN(k.objetivos_controlados,0)} objetivos</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Desvíos operativos</div><div class="ci-kpi-value" style="color:${Number(k.desvios_detectados)>0?'var(--rojo)':'var(--brote-2)'}">${ciMoney(k.desvios_detectados)}</div><div class="ci-kpi-sub">${ciN(totalA,0)} alerta${totalA===1?'':'s'} vigente${totalA===1?'':'s'} · ${ciN(abiertas,0)} sin resolver</div></div>
-      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">consumo con parque faltante o insuficiente; no se trata como pérdida</div></div>
+      <div class="ci-kpi"><div class="ci-kpi-label">Calidad de datos</div><div class="ci-kpi-value" style="color:${calidad?'var(--diesel)':'var(--brote-2)'}">${ciN(calidad,0)}</div><div class="ci-kpi-sub">parque faltante, antiguo o de baja confianza; nunca se trata como pérdida</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Ahorro validado</div><div class="ci-kpi-value" style="color:var(--brote-2)">${ciMoney(k.ahorro_validado)}</div><div class="ci-kpi-sub">impacto confirmado por el equipo</div></div>
       <div class="ci-kpi"><div class="ci-kpi-label">Histórico del modelo</div><div class="ci-kpi-value">${ciN(superadas,0)}</div><div class="ci-kpi-sub">alerta${superadas===1?'':'s'} superada${superadas===1?'':'s'} conservada${superadas===1?'':'s'} para auditoría</div></div>
     </div>
