@@ -189,7 +189,17 @@ async function procesarMensaje(telefono, mensaje) {
       limpiarSesion(tel);
       return { __derivar: 'estaciones' };  // index.js arranca la búsqueda de estaciones
     }
-    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación), *4* (stock), *5* (viajes) o *6* (estación de servicio).';
+    // Cualquier otra cosa: se vuelve a MOSTRAR el menú, no un recordatorio
+    // corto. Antes, estando en el menú, escribir algo que no fuera 1-6 —
+    // incluso la palabra "menu"— devolvía solo la línea de opciones y el
+    // capataz quedaba dando vueltas sin ver la lista (10-sep, José).
+    return `¿Qué necesitás, *${s.capatazNombre || ''}*? Respondé con el número:\n\n` +
+           `  1. ⛽ Cargar combustible\n` +
+           `  2. 📦 Pedir insumos\n` +
+           `  3. 🔧 Reportar una reparación\n` +
+           `  4. 📋 Informar stock de maquinaria\n` +
+           `  5. 🚛 Cargar viajes del día\n` +
+           `  6. ⛽ Buscar estación de servicio`;
   }
 
   // P1: tipo de equipo
