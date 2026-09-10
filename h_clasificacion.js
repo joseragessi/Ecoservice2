@@ -80,7 +80,8 @@ const CENSO_CANUELAS = [
 let d = E.armarDestinos(CENSO_CANUELAS, [], []);
 eq('las palas y machetes NO son destinos',   !d.some(x => /pala|machete/i.test(x.tipo_equipo)), JSON.stringify(d.map(x => x.label)));
 eq('el tractor aparece individual, con su número', d.some(x => x.label === 'Tractor 5002A' && x.modo === 'individual'));
-eq('la Hilux aparece individual',            d.some(x => /Hilux 40/.test(x.label)));
+eq('la Hilux aparece individual, con marca en la etiqueta', d.some(x => /Camioneta Toyota 40/.test(x.label)), JSON.stringify(d.map(x => x.label)));
+eq('y guarda tipo y marca separados',        d.some(x => x.tipo_equipo === 'Camioneta' && x.marca === 'Toyota'));
 eq('las motoguadañas aparecen como GRUPO de 4', d.some(x => x.label === 'Motoguadaña (4)' && x.modo === 'grupo' && x.cantidad === 4), JSON.stringify(d.map(x => x.label)));
 eq('el cortacerco aparece',                  d.some(x => /Cortacerco/i.test(x.label)));
 
@@ -134,6 +135,66 @@ v = E.validarReparto(100, [{ litros: 99.9 }]);
 eq('diferencia de 0,1 NO cierra',            !v.cierra);
 v = E.validarReparto(100, []);
 eq('sin reparto queda pendiente',            v.estado === 'pendiente' && !v.cierra);
+
+console.log('\n— Marca separada del tipo (decisión 10-sep) —');
+const sm = t => E.separarMarca(t);
+// El caso que motivó todo: la misma motoguadaña escrita de 5 formas.
+['Motoguadaña','motoguadañas echo','motoguadañ Sthil 291','motoguadaña husqvarna','Motoguadañas'].forEach(t => {
+  eq(`"${t}" → tipo Motoguadaña`, sm(t).tipo === 'Motoguadaña', sm(t).tipo);
+});
+eq('"motoguadañas echo" trae marca Echo',        sm('motoguadañas echo').marca === 'Echo');
+eq('"motoguadañ Sthil 291" trae Stihl y modelo 291', sm('motoguadañ Sthil 291').marca === 'Stihl' && sm('motoguadañ Sthil 291').modelo === '291');
+eq('"Motoguadaña" sola no inventa marca',        sm('Motoguadaña').marca === null);
+eq('"husvarna" mal escrito igual matchea',       sm('motoguadaña husvarna').marca === 'Husqvarna');
+
+console.log('\n— Combinaciones que NO se pueden colapsar —');
+eq('"Motosierra extensible" NO es "Motosierra"', sm('Motosierra extensible').tipo === 'Motosierra extensible', sm('Motosierra extensible').tipo);
+eq('"Motosierra 250" sí es Motosierra',          sm('Motosierra 250').tipo === 'Motosierra' && sm('Motosierra 250').modelo === '250');
+eq('"Sopladora mochila" no es "Sopladora"',      sm('Sopladora mochila').tipo === 'Sopladora mochila');
+eq('"sopladora mochila Sthil" es la misma, marca Stihl', sm('sopladora mochila Sthil').tipo === 'Sopladora mochila' && sm('sopladora mochila Sthil').marca === 'Stihl');
+eq('"Mochila Fumigar" y "mochila pulverizadora" son lo mismo',
+  sm('Mochila Fumigar').tipo === sm('mochila pulverizadora').tipo, sm('Mochila Fumigar').tipo + ' vs ' + sm('mochila pulverizadora').tipo);
+
+console.log('\n— Tractores y vehículos —');
+eq('"tractor MF 1175" → Tractor, Massey',        sm('tractor MF 1175').tipo === 'Tractor' && sm('tractor MF 1175').marca === 'Massey');
+eq('"Tractor new holland TT45" → Tractor',       sm('Tractor new holland TT45').tipo === 'Tractor' && sm('Tractor new holland TT45').marca === 'New Holland');
+eq('"mini tractor John Deere" → Mini tractor',   sm('mini tractor John Deere').tipo === 'Mini tractor' && sm('mini tractor John Deere').marca === 'John Deere');
+eq('"giro cero" también es Mini tractor',        sm('giro cero husqvarna').tipo === 'Mini tractor');
+eq('"Toyot Hilux" → Camioneta, Toyota',          sm('Toyot Hilux').tipo === 'Camioneta' && sm('Toyot Hilux').marca === 'Toyota');
+eq('"fiat strada U12" → Camioneta, Fiat',        sm('fiat strada U12').tipo === 'Camioneta' && sm('fiat strada U12').marca === 'Fiat');
+
+console.log('\n— El tipo canónico no rompe lo que no conoce —');
+eq('"Pala de punta" queda igual',                sm('Pala de punta').tipo === 'Pala de punta');
+eq('"carro para tanque de 3000lts con bomba" no se convierte en modelo',
+  /carro para tanque/i.test(sm('carro para tanque de 3000lts con bomba').tipo), sm('carro para tanque de 3000lts con bomba').tipo);
+eq('un nombre que es solo números no se vacía',  sm('500').tipo === '500', sm('500').tipo);
+eq('vacío no rompe',                             sm('').tipo === '');
+eq('null no rompe',                              sm(null).tipo === '');
+
+console.log('\n— Los destinos: el capataz ve la marca, el consumo suma por tipo —');
+let dm = E.armarDestinos([
+  { tipo_equipo: 'motoguadañas echo', cantidad: 5, numeros: [] },
+  { tipo_equipo: 'motoguadañ Sthil 291', cantidad: 4, numeros: [] },
+], [], []);
+eq('el capataz ve las dos por separado, con marca',
+  dm.some(x => /Motoguadaña Echo \(5\)/.test(x.label)) && dm.some(x => /Motoguadaña Stihl 291 \(4\)/.test(x.label)), JSON.stringify(dm.map(x => x.label)));
+eq('pero las dos son tipo "Motoguadaña"', dm.every(x => x.tipo_equipo === 'Motoguadaña'), JSON.stringify(dm.map(x => x.tipo_equipo)));
+eq('cada una trae su marca', dm.map(x => x.marca).sort().join(',') === 'Echo,Stihl');
+eq('las dos son dos tiempos', dm.every(x => x.familia === 'dos_tiempos'));
+
+console.log('\n— Confirmar el tipo vale para todas sus marcas —');
+dm = E.armarDestinos([{ tipo_equipo: 'motoguadañas echo', cantidad: 5, numeros: [] }],
+  [{ tipo_equipo: 'Motoguadaña', clasificacion_confirmada: true, es_maquinaria: true, consume_combustible: true,
+     familia_consumo: 'dos_tiempos', combustible_habitual: 'super', modo_asignacion_combustible: 'grupo' }], []);
+eq('confirmar "Motoguadaña" alcanza para "motoguadañas echo"', dm.length === 1 && dm[0].familia === 'dos_tiempos', JSON.stringify(dm));
+dm = E.armarDestinos([{ tipo_equipo: 'motoguadañ Sthil 291', cantidad: 4, numeros: [] }],
+  [{ tipo_equipo: 'Motoguadaña', clasificacion_confirmada: true, es_maquinaria: false, consume_combustible: false }], []);
+eq('y si se manda el tipo a pañol, sus marcas también salen', dm.length === 0, JSON.stringify(dm));
+
+console.log('\n— La familia se resuelve igual con marca adentro —');
+eq('"motoguadañas echo" sigue siendo dos tiempos', s('motoguadañas echo').familia_consumo === 'dos_tiempos');
+eq('"tractor MF 1175" sigue siendo tractor',       s('tractor MF 1175').familia_consumo === 'tractor');
+eq('"fiat strada U12" sigue siendo vehículo',      s('fiat strada U12').familia_consumo === 'vehiculo');
 
 console.log('\n— Bordes —');
 eq('censo vacío no rompe',                   E.armarDestinos([], [], []).length === 0);
