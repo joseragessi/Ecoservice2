@@ -1332,4 +1332,68 @@ router.get(
     }
   }
 );
+// ============================================================
+// TEST TEMPORAL - VER ANOMALÍAS DESDE NAVEGADOR
+//
+// Ejemplo:
+// /api/cost-intelligence/test-anomalias/2026-09
+//
+// SOLO PARA PRUEBAS.
+// Después la eliminamos.
+// ============================================================
+
+router.get(
+  '/test-anomalias/:periodo',
+  async (req, res) => {
+    try {
+
+      const periodo =
+        String(req.params.periodo || '');
+
+      if (!/^\d{4}-\d{2}$/.test(periodo)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Periodo inválido. Usá formato YYYY-MM'
+        });
+      }
+
+      const fecha = `${periodo}-01`;
+
+      const { data, error } =
+        await supabase
+          .from('cost_anomalies')
+          .select('*')
+          .eq('periodo', fecha)
+          .order(
+            'impacto_estimado',
+            { ascending: false }
+          );
+
+      if (error) {
+        throw error;
+      }
+
+      return res.json({
+        ok: true,
+        periodo,
+        cantidad: (data || []).length,
+        anomalias: data || []
+      });
+
+    } catch (error) {
+
+      console.error(
+        '[cost-intelligence-test-anomalias] error:',
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.message ||
+          'Error leyendo anomalías'
+      });
+    }
+  }
+);
 module.exports = router;
