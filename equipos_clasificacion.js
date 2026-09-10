@@ -42,6 +42,104 @@ const MODO_FAMILIA = {
   tractor: 'individual', vehiculo: 'individual', fijo: 'individual', otro_motor: 'grupo', panol: null,
 };
 
+// ── Marcas ────────────────────────────────────────────────────
+// En los censos la marca viene pegada al tipo: "motoguadañas echo",
+// "motoguadañ Sthil 291", "sopladora mochila Sthil". Son la misma máquina
+// con distinta marca, pero el sistema las trata como tipos distintos y eso
+// parte el consumo en cinco filas.
+//
+// Decisión de José (10-sep): la marca es una ETIQUETA, no una categoría.
+// Se separa del tipo: el capataz sigue viéndolas por marca al repartir
+// (para saber cuál agarra) y los consumos suman por tipo.
+//
+// Las variantes mal escritas están a propósito: así las escriben los
+// capataces y así llegan al censo.
+const MARCAS = [
+  ['Stihl',      /\bs?th?ihl?\b|\bsthill?\b|\bstihl\b/i],
+  ['Husqvarna',  /\bhusq?varn?a?s?\b|\bhusvarna?s?\b|\bhusqvar\b/i],
+  ['Echo',       /\becho?s?\b/i],
+  ['Shindaiwa',  /\bshind?aiwa\b/i],
+  ['Kawasaki',   /\bkawasaki\b/i],
+  ['Honda',      /\bhonda\b/i],
+  ['John Deere', /\bjohn\s*deere?\b|\bjhon\s*deere?\b|\bdeere\b/i],
+  ['New Holland',/\bnew\s*holland\b/i],
+  ['Massey',     /\bmassey\b|\bmf\s*\d/i],
+  ['Pauny',      /\bpauny\b|\bpouny\b/i],
+  ['Toyota',     /\btoyot?a?\b/i],
+  ['Fiat',       /\bfiat\b/i],
+  ['Ford',       /\bford\b/i],
+  ['Chevrolet',  /\bchevrolet\b|\bs-?10\b/i],
+  ['Volkswagen', /\bvolkswagen\b|\bvw\b|\bamarok\b|\bsaveiro\b/i],
+  ['Renault',    /\brenault\b|\bkangoo\b/i],
+  ['Bobcat',     /\bbobcat\b/i],
+  ['Fema',       /\bfema\b/i],
+  ['Funes',      /\bfunes\b/i],
+];
+
+/**
+ * Separa marca y tipo de un nombre de equipo del censo.
+ * "motoguadañ Sthil 291" → { tipo: 'Motoguadaña', marca: 'Stihl', modelo: '291' }
+ * "Motoguadaña"          → { tipo: 'Motoguadaña', marca: null,    modelo: null }
+ *
+ * El tipo se devuelve NORMALIZADO al singular y con la primera en mayúscula,
+ * para que "motoguadañas echo" y "Motoguadaña" caigan en el mismo tipo.
+ */
+function separarMarca(nombre) {
+  const original = String(nombre == null ? '' : nombre).trim();
+  if (!original) return { tipo: '', marca: null, modelo: null, original };
+  let resto = original, marca = null;
+  for (const [nom, re] of MARCAS) {
+    if (re.test(resto)) { marca = nom; resto = resto.replace(re, ' '); break; }
+  }
+  // Lo que queda después de la marca: se le saca el modelo (números sueltos
+  // al final) y se normaliza. "291" en "Motoguadaña Stihl 291" es modelo.
+  // El modelo es el número del final ("Stihl 291", "MF 1175"). Se saca del
+  // tipo pero se conserva aparte: sirve para identificar la máquina y no
+  // tiene por qué partir el consumo.
+  let modelo = null;
+  const mm = resto.match(/\b(\d{2,4}[a-z]?)\b\s*$/i);
+  if (mm) { modelo = mm[1]; resto = resto.slice(0, mm.index); }
+  // Si al sacar el modelo no queda nada reconocible, se vuelve atrás: el
+  // número era parte del nombre, no un modelo suelto.
+  if (!resto.replace(/[^a-záéíóúñ]/gi, '').trim()) { resto = original; modelo = null; }
+  const tipo = tipoCanonico(resto);
+  return { tipo: tipo || tipoCanonico(original) || original, marca, modelo, original };
+}
+
+// Lleva un nombre de equipo a su forma canónica: sin plural, sin espacios de
+// más, con la primera en mayúscula. "motoguadañas" y "Motoguadaña" → "Motoguadaña".
+// El ORDEN importa: la primera regla que matchea gana. Las combinaciones
+// van antes que las simples, porque "Motosierra extensible" es un equipo
+// distinto de una motosierra y no se puede colapsar a "Motosierra".
+const CANONICOS = [
+  [/(motosierra|pod[oa]dora).*extensible|extensible.*(motosierra|pod)/i, 'Motosierra extensible'],
+  [/sopladoras?\s*(de\s*)?mochila|mochila\s*sopladora/i, 'Sopladora mochila'],
+  [/mochila\s*(pulverizadora|fumigadora|de\s*fumigar|fumigar)|pulverizadora\s*(de\s*)?mochila/i, 'Mochila pulverizadora'],
+  [/motoguada[nñ]a?s?/i, 'Motoguadaña'],
+  [/motosierras?/i,      'Motosierra'],
+  [/sopladoras?/i,       'Sopladora'],
+  [/extensibles?/i,      'Extensible'],
+  [/cortacercos?/i,      'Cortacerco'],
+  [/desmalezadoras?/i,   'Desmalezadora'],
+  [/mini\s*tractor(es)?|minitractor(es)?|giro\s*cero/i, 'Mini tractor'],
+  [/tractor(es)?/i,      'Tractor'],
+  [/camionetas?|hilux|pick\s*up|strada|saveiro|amarok|ranger|s-?10|kangoo|partner|montana|utilitari?o?/i, 'Camioneta'],
+  [/cami[oó]n(es)?/i,    'Camión'],
+  [/pulverizadoras?|fumigadoras?/i, 'Pulverizadora'],
+  [/compresor(es)?/i,    'Compresor'],
+  [/hidrolavadoras?/i,   'Hidrolavadora'],
+  [/generador(es)?|grupo\s*electr/i, 'Generador'],
+  [/cortadoras?\s*(de\s*)?c[eé]sped|corta\s*c[eé]sped/i, 'Cortadora de césped'],
+];
+function tipoCanonico(txt) {
+  const t = String(txt || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  for (const [re, canon] of CANONICOS) if (re.test(t)) return canon;
+  // Sin regla: se limpia el plural simple y se capitaliza.
+  const limpio = t.replace(/\bde\s+mano\b/i, '').replace(/\s+/g, ' ').trim();
+  return limpio.charAt(0).toUpperCase() + limpio.slice(1).toLowerCase();
+}
+
 function norm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
@@ -131,15 +229,25 @@ function aceptaCombustible(comb, producto) {
  */
 function armarDestinos(censoItems, inventario, unidades, opts) {
   const o = opts || {};
+  // La clasificación se busca por tipo CANÓNICO: si José confirmó
+  // "Motoguadaña", vale también para "motoguadañas echo".
   const clasePorTipo = {};
-  (inventario || []).forEach(f => { clasePorTipo[norm(f.tipo_equipo)] = clasificacionEfectiva(f); });
+  (inventario || []).forEach(f => {
+    const k = norm(separarMarca(f.tipo_equipo).tipo);
+    // Gana la confirmada: puede haber varias filas del mismo tipo.
+    if (!clasePorTipo[k] || f.clasificacion_confirmada) clasePorTipo[k] = clasificacionEfectiva(f);
+  });
 
   const destinos = [];
   (censoItems || []).forEach((it, ix) => {
     const tipo = it.tipo_equipo || it.tipo;
-    const k = norm(tipo);
+    const sep = separarMarca(tipo);
+    const k = norm(sep.tipo);
     if (!k) return;
-    const cl = clasePorTipo[k] || clasificacionEfectiva({ tipo_equipo: tipo });
+    const cl = clasePorTipo[k] || clasificacionEfectiva({ tipo_equipo: sep.tipo });
+    // La etiqueta que ve el capataz conserva la marca: al repartir tiene que
+    // saber CUÁL agarra ("Motoguadaña Echo"), aunque el consumo sume por tipo.
+    const etiqueta = [sep.tipo, sep.marca, sep.modelo].filter(Boolean).join(' ');
     if (!cl.es_maquinaria || !cl.consume_combustible) return;   // pañol no entra
     const nums = (it.numeros || []).map(n => String(n).trim()).filter(n => n && !/^(sn|s\/n|sin|-|0)$/i.test(n));
     const cant = Number(it.cantidad) || 0;
@@ -147,27 +255,27 @@ function armarDestinos(censoItems, inventario, unidades, opts) {
     if (cl.modo_asignacion_combustible === 'individual' && nums.length) {
       // Una entrada por máquina numerada: el capataz elige cuál.
       nums.forEach(n => destinos.push({
-        ref_tipo: 'censo', ref_id: `${ix}:${n}`, tipo_equipo: tipo,
+        ref_tipo: 'censo', ref_id: `${ix}:${n}`, tipo_equipo: sep.tipo, marca: sep.marca, modelo: sep.modelo,
         familia: cl.familia_consumo, combustible: cl.combustible_habitual,
         modo: 'individual', cantidad: 1, numeros: [n],
-        label: `${tipo} ${n}`, emoji: EMOJI_FAMILIA[cl.familia_consumo] || '🔧',
+        label: `${etiqueta} ${n}`, emoji: EMOJI_FAMILIA[cl.familia_consumo] || '🔧',
       }));
       // Las que no tienen número van juntas, si sobran.
       const sinNum = Math.max(0, cant - nums.length);
       if (sinNum > 0) destinos.push({
-        ref_tipo: 'censo', ref_id: `${ix}:sn`, tipo_equipo: tipo,
+        ref_tipo: 'censo', ref_id: `${ix}:sn`, tipo_equipo: sep.tipo, marca: sep.marca, modelo: sep.modelo,
         familia: cl.familia_consumo, combustible: cl.combustible_habitual,
         modo: 'grupo', cantidad: sinNum, numeros: [],
-        label: `${tipo} sin número (${sinNum})`, emoji: EMOJI_FAMILIA[cl.familia_consumo] || '🔧',
+        label: `${etiqueta} sin número (${sinNum})`, emoji: EMOJI_FAMILIA[cl.familia_consumo] || '🔧',
         sin_identificar: true,
       });
     } else {
       // Grupo: el combustible va al bidón que abastece a todas.
       destinos.push({
-        ref_tipo: 'censo', ref_id: String(ix), tipo_equipo: tipo,
+        ref_tipo: 'censo', ref_id: String(ix), tipo_equipo: sep.tipo, marca: sep.marca, modelo: sep.modelo,
         familia: cl.familia_consumo, combustible: cl.combustible_habitual,
         modo: 'grupo', cantidad: cant, numeros: nums,
-        label: cant > 1 ? `${tipo} (${cant})` : tipo,
+        label: cant > 1 ? `${etiqueta} (${cant})` : etiqueta,
         emoji: EMOJI_FAMILIA[cl.familia_consumo] || '🔧',
       });
     }
@@ -215,6 +323,7 @@ function validarReparto(litrosTicket, repartos) {
 
 module.exports = {
   FAMILIAS, LABEL_FAMILIA_V4, EMOJI_FAMILIA, COMBUSTIBLE_FAMILIA, MODO_FAMILIA,
+  MARCAS, separarMarca, tipoCanonico,
   norm, sugerirClasificacion, clasificacionEfectiva, aceptaCombustible,
   armarDestinos, agruparDestinos, validarReparto,
 };
