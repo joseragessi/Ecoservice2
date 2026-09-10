@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · Cost Intelligence V4 + clasificación de equipos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-10 · marcas separadas del tipo de equipo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2806,7 +2806,9 @@ async function vStockClasificacion(view){
       ${ops.map(([k,t])=>`<option value="${k}" ${val===k?'selected':''}>${t}</option>`).join('')}</select>`;
     return `<tr${f.origen==='sugerida'?' style="background:#FFFDF7"':''}>
       <td><b>${escStk(f.tipo_equipo)}</b>
-        <div class="sub" style="font-size:10.5px">${f.cantidad} equipo${f.cantidad===1?'':'s'} · ${f.n_objetivos} objetivo${f.n_objetivos===1?'':'s'}${f.objetivos.length?': '+escStk(f.objetivos.slice(0,3).join(', '))+(f.objetivos.length>3?'…':''):''}</div></td>
+        ${(f.marcas||[]).length?`<div style="margin-top:3px">${f.marcas.map(m=>`<span class="badge b-gray" style="margin-right:4px">${escStk(m.marca)} ${m.cantidad}</span>`).join('')}</div>`:''}
+        <div class="sub" style="font-size:10.5px;margin-top:2px">${f.cantidad} equipo${f.cantidad===1?'':'s'} · ${f.n_objetivos} objetivo${f.n_objetivos===1?'':'s'}${f.objetivos.length?': '+escStk(f.objetivos.slice(0,3).join(', '))+(f.objetivos.length>3?'…':''):''}</div>
+        ${(f.variantes||[]).length?`<div class="sub" style="font-size:10px;margin-top:2px" title="Así lo escribieron los capataces">agrupa: ${escStk(f.variantes.slice(0,4).join(' · '))}${f.variantes.length>4?' +'+(f.variantes.length-4):''}</div>`:''}</td>
       <td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" ${f.es_maquinaria?'checked':''}
         onchange="clsSet('${escStk(f.tipo_equipo).replace(/'/g,"\\'")}','es_maquinaria',this.checked)" style="accent-color:var(--brote);transform:scale(1.2)"></label></td>
       <td>${f.es_maquinaria?sel('familia_consumo',orden.filter(x=>x!=='panol').map(x=>[x,L[x]||x]),f.familia_consumo):'<span class="sub">—</span>'}</td>
@@ -2847,8 +2849,9 @@ async function vStockClasificacion(view){
       <tbody>${porFam[f].map(filaHTML).join('')}</tbody></table>
     </div>`).join('')||'<div class="panel"><div class="sub" style="padding:14px">Ningún equipo coincide con el filtro.</div></div>'}
   <div class="panel" style="margin-top:14px;font-size:12px;color:var(--tinta-2);line-height:1.6">
-    <b>Cómo funciona.</b> El sistema sugiere una clasificación para cada tipo de equipo mirando el nombre. Las filas en amarillo son sugerencias sin confirmar: valen igual para el cálculo, pero conviene revisarlas. Las marcadas <b>a revisar</b> son las que el sistema no supo qué eran y por las dudas mandó a pañol.
-    <div style="margin-top:6px">Destildar <b>¿Motor?</b> manda el equipo a pañol: deja de aparecer en la app del capataz al cargar combustible y deja de contar en los consumos. La clasificación es <b>por tipo de equipo</b>, no por objetivo: una motoguadaña es una motoguadaña en todos lados.</div>
+    <b>Cómo funciona.</b> Los equipos se agrupan por <b>tipo</b>, con la marca aparte: "Motoguadaña", "motoguadañas echo" y "motoguadañ Sthil 291" son <b>una</b> fila con las marcas debajo. Confirmás el tipo una vez y vale para todas sus marcas. El capataz igual las sigue viendo separadas por marca al repartir combustible, para saber cuál agarra.
+    <div style="margin-top:6px">El sistema sugiere una clasificación para cada tipo de equipo mirando el nombre. Las filas en amarillo son sugerencias sin confirmar: valen igual para el cálculo, pero conviene revisarlas. Las marcadas <b>a revisar</b> son las que el sistema no supo qué eran y por las dudas mandó a pañol.
+    </div><div style="margin-top:6px">Destildar <b>¿Motor?</b> manda el equipo a pañol: deja de aparecer en la app del capataz al cargar combustible y deja de contar en los consumos. La clasificación es <b>por tipo de equipo</b>, no por objetivo: una motoguadaña es una motoguadaña en todos lados.</div>
   </div>`;
 }
 function clsSet(tipo,campo,valor){
