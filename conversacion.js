@@ -120,6 +120,28 @@ function iniciarIncidencia(tel, capataz) {
   return `🔧 Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
 }
 
+/**
+ * El mensaje que lleva al capataz a la app: link y su usuario.
+ * NO se manda la contraseña: la crea él la primera vez que entra. Una clave
+ * mandada por WhatsApp queda escrita en el chat para siempre, y con el
+ * teléfono perdido cualquiera entra al sistema (decisión 10-sep).
+ */
+function mensajeApp(capataz) {
+  const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app').replace(/\/+$/, '');
+  const usuario = capataz && capataz.usuario ? String(capataz.usuario).trim().toLowerCase() : null;
+  if (!usuario) {
+    // Sin usuario cargado en Maestros no puede entrar: se lo dice, en vez de
+    // mandarlo a una pantalla donde va a fallar sin entender por qué.
+    return `📱 *El combustible y el stock de máquinas se cargan desde la app.*\n\n` +
+           `Todavía no tenés usuario creado. Escribile a Logística para que te lo den y volvé a escribirme.`;
+  }
+  return `📱 *App de EcoService*\n\n` +
+    `Desde acá cargás el combustible y tu stock de máquinas:\n${url}\n\n` +
+    `👤 Tu usuario: *${usuario}*\n` +
+    `🔑 La primera vez te va a pedir que crees tu contraseña. Elegí una que te acuerdes.\n\n` +
+    `_Tip: abrí el link, tocá el menú del navegador y elegí "Agregar a pantalla de inicio". Te queda como una aplicación más._`;
+}
+
 async function procesarMensaje(telefono, mensaje) {
   const tel   = telefono.replace('whatsapp:', '').replace('+', '');
   const texto = mensaje.trim();
@@ -132,7 +154,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (!sesiones[tel]) {
     const { data: capataz } = await supabase
       .from('capataces')
-      .select('id, nombre, objetivo_id')
+      .select('id, nombre, objetivo_id, usuario')
       .eq('telefono', tel)
       .eq('activo', true)
       .single();
@@ -151,13 +173,16 @@ async function procesarMensaje(telefono, mensaje) {
       _timer:        null,
     };
     resetTimeout(tel);
+    // Combustible y stock salieron del bot (10-sep): ahora van por la app,
+    // donde el capataz elige la MÁQUINA real y no puede cargar combustible
+    // sin tener el censo del mes. Por el bot no se puede hacer ninguna de
+    // las dos cosas, así que ofrecerlas solo llevaba a un circuito peor.
     return `👋 Hola *${capataz.nombre}*. ¿Qué necesitás?\nRespondé con el número:\n\n` +
-           `  1. ⛽ Cargar combustible\n` +
+           `  1. 🔧 Reportar una reparación\n` +
            `  2. 📦 Pedir insumos\n` +
-           `  3. 🔧 Reportar una reparación\n` +
-           `  4. 📋 Informar stock de maquinaria\n` +
-           `  5. 🚛 Cargar viajes del día\n` +
-           `  6. ⛽ Buscar estación de servicio`;
+           `  3. 🚛 Cargar viajes del día\n` +
+           `  4. ⛽ Buscar estación de servicio\n` +
+           `  5. 📱 Cargar combustible o mi stock (app)`;
   }
 
   const s = sesiones[tel];
@@ -167,29 +192,31 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 'menu') {
     const op = texto.trim();
     if (op === '1') {
-      limpiarSesion(tel);
-      return '⛽ Perfecto. Sacale una *foto* al remito o factura de la carga y mandámela por acá.';
+      return iniciarIncidencia(tel, s._capataz);
     }
     if (op === '2') {
       limpiarSesion(tel);
       return { __derivar: 'insumos' };  // index.js arranca el flujo de insumos
     }
     if (op === '3') {
-      return iniciarIncidencia(tel, s._capataz);
-    }
-    if (op === '4') {
-      limpiarSesion(tel);
-      return { __derivar: 'stock' };    // index.js arranca el flujo de stock
-    }
-    if (op === '5') {
       limpiarSesion(tel);
       return { __derivar: 'viajes' };   // index.js arranca el flujo de viajes
     }
-    if (op === '6') {
+    if (op === '4') {
       limpiarSesion(tel);
       return { __derivar: 'estaciones' };  // index.js arranca la búsqueda de estaciones
     }
-    return 'Respondé con *1* (combustible), *2* (insumos), *3* (reparación), *4* (stock), *5* (viajes) o *6* (estación de servicio).';
+    if (op === '5') {
+      limpiarSesion(tel);
+      return mensajeApp(s._capataz);
+    }
+    // El 6 era estaciones en el menú viejo: se acepta un tiempo más para
+    // quien tenga el mensaje anterior a la vista.
+    if (op === '6') {
+      limpiarSesion(tel);
+      return { __derivar: 'estaciones' };
+    }
+    return 'Respondé con *1* (reparación), *2* (insumos), *3* (viajes), *4* (estación de servicio) o *5* (app).';
   }
 
   // P1: tipo de equipo
@@ -294,4 +321,4 @@ async function procesarMensaje(telefono, mensaje) {
   return 'No entendí tu respuesta. Enviá cualquier mensaje para empezar de nuevo.';
 }
 
-module.exports = { procesarMensaje: ses.conPersistencia('conversacion', sesiones, procesarMensaje) };
+module.exports = { procesarMensaje: ses.conPersistencia('conversacion', sesiones, procesarMensaje), mensajeApp };
