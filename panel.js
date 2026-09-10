@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-04 · desvíos: renumeradas, textos en el número, nombre real por máquina';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-09 · combustible: filtro por capataz y búsqueda libre';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
 
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -986,7 +986,7 @@ async function cambiarInsumo(id,estado){
 /* ===== Combustible ===== */
 let filtroComb='';
 let combTab='cargas';           // 'cargas' | 'analisis'
-let combObj='', combUni='';     // filtros de objetivo y unidad (vacío = todos)
+let combObj='', combUni='', combCap='', combQ='';   // filtros: objetivo, unidad, capataz, búsqueda libre (vacío = todos)
 let combAlias=null;             // {alias:[], objetivos:[]} — se pide una vez
 
 /* Unifica nombres de objetivo escritos a mano. El supervisor carga el destino
@@ -1129,8 +1129,22 @@ async function vCombustible(view){
     // filtro por objetivo hay que mirar también el destino de cada ítem.
     const tocaObjetivo=(c,obj)=>objDe(c)===obj
       ||(c.cargas_combustible_items||[]).some(i=>i.destino==='bidon'&&destinoDe(i,c)===obj);
+    // La búsqueda libre barre lo que se ve en la fila: proveedor, número de
+    // comprobante o lote, capataz, patente, producto y el destino del bidón.
+    // Es lo que se usa cuando uno se acuerda de "la de Ragaglia" o de un
+    // número suelto y no de qué objetivo era.
+    const normQ=t=>String(t==null?'':t).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const qComb=normQ(combQ).trim();
+    const matchQ=c=>{
+      if(!qComb)return true;
+      const partes=[c.proveedores&&c.proveedores.nombre,c.numero_remito,c.numero_factura,c.lote,c.tarjeta,
+        c.capataces&&c.capataces.nombre,uniDe(c),c.patente_raw,c.objetivos&&c.objetivos.nombre,
+        ...(c.cargas_combustible_items||[]).flatMap(i=>[i.producto,i.destino_detalle])];
+      return normQ(partes.filter(Boolean).join(' ')).includes(qComb);
+    };
     const vivas=todasVivas.filter(c=>
-      (!combObj||tocaObjetivo(c,combObj))&&(!combUni||uniDe(c)===combUni));
+      (!combObj||tocaObjetivo(c,combObj))&&(!combUni||uniDe(c)===combUni)
+      &&(!combCap||(c.capataces&&c.capataces.nombre)===combCap)&&matchQ(c));
     // Listas para los selectores: salen de TODAS las cargas del mes, no de las
     // filtradas (si no, al elegir uno desaparecerían los demás).
     const objetivosLista=[...new Set(todasVivas.flatMap(c=>[objDe(c),
@@ -1187,6 +1201,19 @@ async function vCombustible(view){
       <option value="">Todas las unidades</option>
       ${unidadesLista.map(u=>`<option value="${escStk(u)}" ${u===combUni?'selected':''}>${escStk(u)}</option>`).join('')}
     </select>`;
+    // Capataces que cargaron combustible en el período, con cuántas cargas
+    // hizo cada uno: el número al lado ayuda a ver quién carga y quién no.
+    const capCuenta={};
+    todasVivas.forEach(c=>{const n=c.capataces&&c.capataces.nombre;if(n)capCuenta[n]=(capCuenta[n]||0)+1;});
+    const capatacesLista=Object.keys(capCuenta).sort((a,b)=>a.localeCompare(b));
+    const selCap=`<select class="busca" style="width:auto" onchange="combCap=this.value;go('combustible')">
+      <option value="">Todos los capataces</option>
+      ${capatacesLista.map(n=>`<option value="${escStk(n)}" ${n===combCap?'selected':''}>${escStk(n)} · ${capCuenta[n]}</option>`).join('')}
+    </select>`;
+    // El foco y el cursor se restauran a mano: go() vuelve a dibujar la vista
+    // entera y sin esto el input se pierde a la primera letra.
+    const buscador=`<input class="busca" id="comb-q" placeholder="Buscar proveedor, N°, producto, bidón…" value="${escStk(combQ)}"
+      style="width:230px" oninput="combQ=this.value;clearTimeout(window._combQT);window._combQT=setTimeout(()=>{go('combustible');setTimeout(()=>{const i=document.getElementById('comb-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);},350)">`;
 
     // Detalle del objetivo elegido: variación contra el mes anterior, litros
     // por unidad y lo facturado. La comparación necesita un mes concreto: con
@@ -1239,13 +1266,14 @@ async function vCombustible(view){
     view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Combustible</div>
       <div class="view-desc">Cargas por unidad y objetivo · destino unidad o bidones</div></div>
-      <div class="spacer"></div>${selObj} ${selUni} ${selMes}
+      <div class="spacer"></div>${buscador} ${selObj} ${selUni} ${selCap} ${selMes}
       <button class="btn-salir" style="margin-left:6px" onclick="combPDFObjetivos()">🖨 PDF por objetivo</button></div>
     ${tabs}
-    ${(combObj||combUni)?`<div style="margin-bottom:12px;font-size:12.5px;color:var(--tinta-2)">
-      Filtrando por ${combObj?`objetivo <b>${escStk(combObj)}</b>`:''}${combObj&&combUni?' y ':''}${combUni?`unidad <b>${escStk(combUni)}</b>`:''}
+    ${(combObj||combUni||combCap||combQ)?`<div style="margin-bottom:12px;font-size:12.5px;color:var(--tinta-2)">
+      Filtrando por ${[combObj?`objetivo <b>${escStk(combObj)}</b>`:'',combUni?`unidad <b>${escStk(combUni)}</b>`:'',
+        combCap?`capataz <b>${escStk(combCap)}</b>`:'',combQ?`la búsqueda <b>"${escStk(combQ)}"</b>`:''].filter(Boolean).join(' · ')}
       · ${vivas.length} de ${todasVivas.length} cargas
-      <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';go('combustible')">Limpiar</button>
+      <button class="btn ghost" style="padding:3px 10px;font-size:11.5px;margin-left:8px" onclick="combObj='';combUni='';combCap='';combQ='';go('combustible')">Limpiar</button>
       ${combObj?`<div class="sub" style="font-size:11px;margin-top:5px">
         Los KPI y los gráficos de abajo cuentan esas cargas <b>completas</b>, incluidos los litros que
         fueron a otros objetivos en la misma cargada. Los litros que corresponden solo a
@@ -1328,7 +1356,7 @@ async function vCombustible(view){
             ?`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();restaurarCarga('${c.id}')">Restaurar</button>`
             :`<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();editarCarga('${c.id}')">Editar</button>
               <button class="btn ghost" style="padding:4px 10px;font-size:11.5px;color:var(--rojo);margin-left:5px" onclick="event.stopPropagation();anularCarga('${c.id}','${(c.numero_remito||c.numero_factura||'s/n').replace(/'/g,'')}',${c.litros_total||0})">✕ Anular</button>`}</td></tr>`;}).join('')
-        :`<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>${(combObj||combUni)?'Ninguna carga del período coincide con el filtro.':'No hay cargas registradas.'}</div></div></td></tr>`}</tbody></table></div>`;
+        :`<tr><td colspan="9"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20V5a2 2 0 012-2h6a2 2 0 012 2v15"/></svg><div>${(combObj||combUni||combCap||combQ)?'Ninguna carga del período coincide con el filtro.':'No hay cargas registradas.'}</div></div></td></tr>`}</tbody></table></div>`;
   }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar el combustible.</div>`;}
 }
 function verCarga(id){
