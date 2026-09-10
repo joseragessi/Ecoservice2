@@ -163,9 +163,25 @@ async function api(ruta,opts={}){
 }
 
 // ── Login ───────────────────────────────────────────────
+// El capataz recibe por WhatsApp el link y su usuario, sin contraseña: la
+// crea acá la primera vez (una clave mandada por WhatsApp queda escrita en
+// el chat para siempre). Antes de pedirla se consulta si el usuario ya tiene
+// una; si no, se le muestra la pantalla de crearla en vez de rebotarlo con
+// "usuario o clave incorrectos", que no le dice nada.
+let creandoClave=false;
 async function login(){
   const u=$('in-user').value.trim(),c=$('in-pass').value;
-  if(!u||!c){mostrarErr('Completá usuario y clave.');return;}
+  if(!u){mostrarErr('Escribí tu usuario.');return;}
+  if(!creandoClave){
+    try{
+      const r=await fetch('/api/app/primer-ingreso',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario:u})});
+      const d=await r.json();
+      if(r.ok&&d.crear){modoCrearClave(d.nombre||'');return;}
+    }catch(e){/* si falla, sigue el login normal */}
+  }
+  if(creandoClave)return crearClave();
+  if(!c){mostrarErr('Escribí tu clave.');return;}
   const b=$('btn-login');b.disabled=true;b.textContent='Entrando…';
   try{
     const r=await fetch('/api/app/login',{method:'POST',
@@ -180,6 +196,50 @@ async function login(){
     arrancar();
   }catch(e){mostrarErr(e.message);}
   finally{b.disabled=false;b.textContent='Entrar';}
+}
+function modoCrearClave(nombre){
+  creandoClave=true;
+  $('login-err').style.display='none';
+  document.querySelector('#login p').textContent=nombre?`Hola ${nombre}, creá tu contraseña`:'Creá tu contraseña';
+  const campos=document.querySelectorAll('#login .campo');
+  campos[0].style.opacity='.6';
+  $('in-user').readOnly=true;
+  campos[1].querySelector('label').textContent='Nueva clave';
+  $('in-pass').placeholder='elegí una clave';
+  $('in-pass').setAttribute('autocomplete','new-password');
+  $('in-pass').value='';
+  if(!$('in-pass2')){
+    const div=document.createElement('div');
+    div.className='campo';
+    div.innerHTML='<label>Repetila</label><input id="in-pass2" type="password" autocomplete="new-password" placeholder="la misma clave">';
+    campos[1].after(div);
+  }
+  $('btn-login').textContent='Crear mi clave';
+  setTimeout(()=>$('in-pass').focus(),50);
+}
+async function crearClave(){
+  const u=$('in-user').value.trim(),c=$('in-pass').value,c2=$('in-pass2')?$('in-pass2').value:'';
+  if(c.length<4){mostrarErr('La clave necesita al menos 4 caracteres.');return;}
+  if(c!==c2){mostrarErr('Las dos claves no son iguales.');return;}
+  const b=$('btn-login');b.disabled=true;b.textContent='Creando…';
+  try{
+    const r=await fetch('/api/app/crear-clave',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario:u,clave:c})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'No pude crear la clave');
+    // Creada: se entra directo, sin pedirla de nuevo.
+    creandoClave=false;
+    const rl=await fetch('/api/app/login',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario:u,clave:c})});
+    const dl=await rl.json();
+    if(!rl.ok)throw new Error(dl.error||'Clave creada, pero no pude entrar. Probá de nuevo.');
+    token=dl.token;rol=dl.rol;nombre=dl.nombre;
+    localStorage.setItem('eco_app_token',token);
+    localStorage.setItem('eco_app_rol',rol);
+    localStorage.setItem('eco_app_nombre',nombre);
+    arrancar();
+  }catch(e){mostrarErr(e.message);}
+  finally{b.disabled=false;b.textContent=creandoClave?'Crear mi clave':'Entrar';}
 }
 function mostrarErr(m){const e=$('login-err');e.textContent=m;e.style.display='block';}
 function salir(){
