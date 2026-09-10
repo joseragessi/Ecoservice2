@@ -1,9 +1,9 @@
 // ============================================================
-// COST INTELLIGENCE V2.4 - ECOSERVICE
+// COST INTELLIGENCE V2.5 - ECOSERVICE
 // ============================================================
 // Inteligencia semanal de consumo y costo.
 //
-// V2.4 agrega clasificación automática usando información que
+// V2.5 agrega clasificación automática usando información que
 // YA existe en el módulo Combustible:
 //
 // 1) familia_consumo explícita                        -> se respeta
@@ -237,25 +237,43 @@ async function cargarMapaObjetivos() {
 async function obtenerParque(periodo) {
   const mapaObjetivos = await cargarMapaObjetivos();
  
-  const { data: censos, error } = await supabase
-    .from('censos_stock')
-    .select(`
-      id,
-      objetivo_id,
-      periodo,
-      estado,
-      respondido_at,
-      censos_stock_items(
-        tipo_equipo,
-        cantidad,
-        numeros
-      )
-    `)
-    .eq('estado', 'respondido')
-    .lte('periodo', periodo)
-    .order('periodo', { ascending: false });
+  // V2.5 combina dos fuentes:
+  // 1) último censo respondido: foto operativa informada por el objetivo;
+  // 2) stock_objetivo: inventario oficial, usado como respaldo cuando una
+  //    familia no fue informada o aparece en 0 en el censo.
+  // Los vehículos tienen además una regla especial más abajo: para el análisis
+  // semanal usamos las unidades distintas observadas en las cargas.
+  const [{ data: censos, error: errorCensos }, { data: inventario, error: errorInv }] = await Promise.all([
+    supabase
+      .from('censos_stock')
+      .select(`
+        id,
+        objetivo_id,
+        periodo,
+        estado,
+        respondido_at,
+        censos_stock_items(
+          tipo_equipo,
+          cantidad,
+          numeros
+        )
+      `)
+      .eq('estado', 'respondido')
+      .lte('periodo', periodo)
+      .order('periodo', { ascending: false }),
  
-  if (error) throw error;
+    supabase
+      .from('stock_objetivo')
+      .select('objetivo_id,tipo_equipo,cantidad')
+      .limit(10000),
+  ]);
+ 
+  if (errorCensos) throw errorCensos;
+  if (errorInv) {
+    // El inventario oficial mejora la calidad, pero no debe tumbar el motor si
+    // la tabla no estuviera disponible en algún entorno.
+    console.warn('[cost-intelligence V2.5] stock_objetivo no disponible:', errorInv.message);
+  }
  
   const ultimoCenso = {};
   for (const censo of censos || []) {
@@ -263,28 +281,93 @@ async function obtenerParque(periodo) {
     if (!ultimoCenso[censo.objetivo_id]) ultimoCenso[censo.objetivo_id] = censo;
   }
  
+  // Agrupar inventario oficial usando exactamente el mismo clasificador de
+  // familias que emplea el resto del sistema.
+  const oficialPorObjetivo = {};
+  for (const fila of inventario || []) {
+    if (!fila.objetivo_id) continue;
+    const familia = familiaConsumo(fila.tipo_equipo || '');
+    if (!oficialPorObjetivo[fila.objetivo_id]) {
+      oficialPorObjetivo[fila.objetivo_id] = {
+        total: 0,
+        con_motor: 0,
+        dos_tiempos: 0,
+        cortadora: 0,
+        tractor: 0,
+        vehiculo: 0,
+        fijo: 0,
+        sin_motor: 0,
+        otro: 0,
+      };
+    }
+ 
+    const cant = numero(fila.cantidad);
+    const o = oficialPorObjetivo[fila.objetivo_id];
+    o.total += cant;
+    if (familia && Object.prototype.hasOwnProperty.call(o, familia)) o[familia] += cant;
+    if (['dos_tiempos', 'cortadora', 'tractor', 'vehiculo', 'fijo'].includes(familia)) {
+      o.con_motor += cant;
+    }
+  }
+ 
   const resultado = {};
  
   for (const objetivo of mapaObjetivos.lista) {
     const censo = ultimoCenso[objetivo.id];
-    const familias = censo
+    const familiasCenso = censo
       ? agruparPorFamilia(censo.censos_stock_items || [])
       : agruparPorFamilia([]);
+ 
+    const oficial = oficialPorObjetivo[objetivo.id] || {};
+ 
+    // Para cada familia preferimos el censo cuando trae una cantidad positiva.
+    // Si el censo queda en 0 pero el inventario oficial tiene equipos, usamos
+    // ese inventario como respaldo. Esto evita falsos "parque 0" por censos
+    // parciales/incompletos.
+    const elegir = (familia) => {
+      const cen = numero(familiasCenso[familia]);
+      const off = numero(oficial[familia]);
+      if (cen > 0) return { valor: cen, fuente: 'censo' };
+      if (off > 0) return { valor: off, fuente: 'inventario_oficial' };
+      return { valor: 0, fuente: censo ? 'censo_sin_familia' : 'sin_dato' };
+    };
+ 
+    const dos = elegir('dos_tiempos');
+    const cort = elegir('cortadora');
+    const tractor = elegir('tractor');
+    const veh = elegir('vehiculo');
+    const fijo = elegir('fijo');
+    const sinMotor = elegir('sin_motor');
+    const otro = elegir('otro');
+ 
+    const totalCenso = numero(familiasCenso.total);
+    const totalOficial = numero(oficial.total);
+    const motorCenso = numero(familiasCenso.con_motor);
+    const motorOficial = numero(oficial.con_motor);
  
     resultado[objetivo.id] = {
       objetivo_id: objetivo.id,
       objetivo_nombre: objetivo.nombre,
       censo_id: censo ? censo.id : null,
       censo_periodo: censo ? censo.periodo : null,
-      total: familias.total || 0,
-      con_motor: familias.con_motor || 0,
-      dos_tiempos: familias.dos_tiempos || 0,
-      cortadora: familias.cortadora || 0,
-      tractor: familias.tractor || 0,
-      vehiculo: familias.vehiculo || 0,
-      fijo: familias.fijo || 0,
-      sin_motor: familias.sin_motor || 0,
-      otro: familias.otro || 0,
+      total: totalCenso > 0 ? totalCenso : totalOficial,
+      con_motor: motorCenso > 0 ? motorCenso : motorOficial,
+      dos_tiempos: dos.valor,
+      cortadora: cort.valor,
+      tractor: tractor.valor,
+      vehiculo: veh.valor,
+      fijo: fijo.valor,
+      sin_motor: sinMotor.valor,
+      otro: otro.valor,
+      fuentes: {
+        dos_tiempos: dos.fuente,
+        cortadora: cort.fuente,
+        tractor: tractor.fuente,
+        vehiculo: veh.fuente,
+        fijo: fijo.fuente,
+        sin_motor: sinMotor.fuente,
+        otro: otro.fuente,
+      },
     };
   }
  
@@ -292,7 +375,7 @@ async function obtenerParque(periodo) {
 }
  
 // ============================================================
-// V2.4 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
+// V2.5 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
 // ============================================================
  
 function productoEsNafta(producto) {
@@ -421,7 +504,7 @@ async function persistirClasificaciones(updates) {
       .eq('id', fila.id);
  
     if (error) {
-      console.warn('[cost-intelligence V2.4] no pude persistir clasificación item', fila.id, error.message);
+      console.warn('[cost-intelligence V2.5] no pude persistir clasificación item', fila.id, error.message);
       continue;
     }
  
@@ -504,7 +587,7 @@ function calcularImporteItem({ item, carga, litrosItem, litrosCombustibleCarga, 
 }
  
 // ============================================================
-// CONSUMO SEMANAL V2.4
+// CONSUMO SEMANAL V2.5
 // ============================================================
  
 async function obtenerConsumoSemana(semana) {
@@ -553,7 +636,7 @@ async function obtenerConsumoSemana(semana) {
   const parque = await obtenerParque(semana.slice(0, 7));
   const precioReferencia = calcularPrecioReferencia(listaCargas);
  
-  console.log(`[cost-intelligence V2.4] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
+  console.log(`[cost-intelligence V2.5] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
  
   const agrupado = {};
   const actualizacionesFamilia = [];
@@ -562,7 +645,7 @@ async function obtenerConsumoSemana(semana) {
     return `${objetivoId || normalizarTexto(objetivoNombre) || 'sin_objetivo'}::${familia}`;
   }
  
-  function sumar({ objetivoId, objetivoNombre, familia, litros, importe, cargaId }) {
+  function sumar({ objetivoId, objetivoNombre, familia, litros, importe, cargaId, unidadId }) {
     const k = clave(objetivoId, objetivoNombre, familia);
  
     if (!agrupado[k]) {
@@ -573,12 +656,14 @@ async function obtenerConsumoSemana(semana) {
         litros: 0,
         importe: 0,
         cargas: new Set(),
+        unidades_observadas: new Set(),
       };
     }
  
     agrupado[k].litros += numero(litros);
     agrupado[k].importe += numero(importe);
     if (cargaId) agrupado[k].cargas.add(cargaId);
+    if (unidadId) agrupado[k].unidades_observadas.add(String(unidadId));
   }
  
   for (const carga of listaCargas) {
@@ -623,7 +708,24 @@ async function obtenerConsumoSemana(semana) {
         litros,
         importe,
         cargaId: carga.id,
+        unidadId: carga.unidad_id || null,
       });
+ 
+      // V2.5: una carga histórica sin items igualmente puede ser vehículo si
+      // el encabezado dice explícitamente destino=unidad. No inferimos por el
+      // mero hecho de tener unidad_id porque algunos equipos también viven en
+      // el maestro de unidades.
+      if (normalizarTexto(carga.destino) === 'unidad') {
+        sumar({
+          objetivoId: objetivoCargaId,
+          objetivoNombre: objetivoCargaNombre,
+          familia: 'vehiculo',
+          litros,
+          importe,
+          cargaId: carga.id,
+          unidadId: carga.unidad_id || null,
+        });
+      }
  
       continue;
     }
@@ -693,12 +795,16 @@ async function obtenerConsumoSemana(semana) {
       });
  
       // ------------------------------------------------------
-      // V2.4: familia automática
+      // V2.5: familia automática
       // ------------------------------------------------------
       const parqueObjetivo = objetivoId ? parque[objetivoId] : null;
       const clasificacion = resolverFamiliaConsumo(item, carga, parqueObjetivo);
  
       if (clasificacion.familia) {
+        const unidadObservada = clasificacion.familia === 'vehiculo'
+          ? (item.unidad_id || carga.unidad_id || null)
+          : null;
+ 
         sumar({
           objetivoId,
           objetivoNombre,
@@ -706,6 +812,7 @@ async function obtenerConsumoSemana(semana) {
           litros,
           importe,
           cargaId: carga.id,
+          unidadId: unidadObservada,
         });
  
         // Sólo persistimos si no había una familia explícita válida.
@@ -724,14 +831,17 @@ async function obtenerConsumoSemana(semana) {
   // sigue siendo válido porque ya se clasificó en memoria.
   const persistencia = await persistirClasificaciones(actualizacionesFamilia);
   if (persistencia.actualizados > 0) {
-    console.log(`[cost-intelligence V2.4] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
+    console.log(`[cost-intelligence V2.5] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
   }
  
   return Object.values(agrupado).map(fila => ({
-    ...fila,
+    objetivo_id: fila.objetivo_id,
+    objetivo_nombre: fila.objetivo_nombre,
+    familia: fila.familia,
     litros: redondear(fila.litros, 2),
     importe: Math.round(fila.importe),
     cantidad_cargas: fila.cargas.size,
+    unidades_observadas: fila.unidades_observadas.size,
   }));
 }
  
@@ -766,7 +876,7 @@ async function resolverObjetivos(consumos) {
 // ============================================================
  
 async function generarSnapshotSemanal(semana) {
-  console.log(`[cost-intelligence V2.4] generando ${semana}`);
+  console.log(`[cost-intelligence V2.5] generando ${semana}`);
  
   const periodo = semana.slice(0, 7);
   const [parque, consumoRaw] = await Promise.all([
@@ -785,6 +895,14 @@ async function generarSnapshotSemanal(semana) {
     let parqueFamilia = 0;
     if (FAMILIAS_NORMALIZABLES.includes(consumo.familia)) {
       parqueFamilia = numero(p[consumo.familia]);
+    }
+ 
+    // V2.5: para vehículos, la evidencia más directa es la propia carga.
+    // Si una o más unidades distintas cargaron combustible en la semana, ese
+    // número es el parque observado mínimo y evita mostrar "parque 0" cuando
+    // conocemos concretamente la unidad consumidora.
+    if (consumo.familia === 'vehiculo' && numero(consumo.unidades_observadas) > 0) {
+      parqueFamilia = numero(consumo.unidades_observadas);
     }
  
     const litrosPorEquipo = parqueFamilia > 0 ? consumo.litros / parqueFamilia : null;
@@ -1103,10 +1221,10 @@ async function calcularBaselinesSemana(semana, ventanas = VENTANA_SEMANAS) {
 }
  
 // ============================================================
-// ANOMALÍAS / EXPLICABILIDAD V2.4
+// ANOMALÍAS / EXPLICABILIDAD V2.5
 // ============================================================
 //
-// Principios V2.4:
+// Principios V2.5:
 // 1) Una familia real se evalúa por litros/equipo solamente cuando
 //    el parque es confiable.
 // 2) Si el parque cambia bruscamente o falta, NO convertimos ese
@@ -1184,7 +1302,7 @@ async function sincronizarAnomaliasSemana(semana, candidatas) {
   let reactivadas = 0;
   let nuevas = 0;
  
-  // Todo lo que estaba activo y ya no lo reproduce V2.4 queda como
+  // Todo lo que estaba activo y ya no lo reproduce V2.5 queda como
   // histórico, sin borrarlo y sin tocar una alerta validada/cerrada.
   for (const a of existentes || []) {
     const clave = `${a.snapshot_id}|${a.metrica}`;
@@ -1331,7 +1449,7 @@ async function detectarAnomaliasSemana(semana) {
         parqueHistorico: base.parque_base,
       });
  
-      // V2.4: un problema de parque ya no se transforma en "consumo anormal".
+      // V2.5: un problema de parque ya no se transforma en "consumo anormal".
       // Lo separamos como calidad de datos.
       if (
         !calidadParque.confiable ||
@@ -1365,7 +1483,7 @@ async function detectarAnomaliasSemana(semana) {
     // Sólo excesos por ahora.
     if (desvioPct < umbral) continue;
  
-    // V2.4: si el TOTAL está prácticamente explicado por familias reales,
+    // V2.5: si el TOTAL está prácticamente explicado por familias reales,
     // no generamos una alerta genérica. El mix de maquinaria/producto manda.
     if (snapshot.familia === 'total') {
       const cobertura = coberturaPorObjetivo.get(snapshot.objetivo_id) || {
@@ -1492,7 +1610,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   }
  
   console.log('================================================');
-  console.log(`[cost-intelligence V2.4] procesando ${periodo}`);
+  console.log(`[cost-intelligence V2.5] procesando ${periodo}`);
  
   const semanas = semanasDelMes(periodo);
   const hoy = hoyCordoba();
@@ -1505,7 +1623,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   for (const semana of semanas) {
     if (semana > hoy) continue;
  
-    console.log(`[cost-intelligence V2.4] semana ${semana}`);
+    console.log(`[cost-intelligence V2.5] semana ${semana}`);
     const resultado = await analizarSemana(semana);
     resultados.push(resultado);
  
@@ -1516,7 +1634,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
  
   const resultadoFinal = {
     ok: true,
-    version: '2.4',
+    version: '2.5',
     periodo,
     granularidad: GRANULARIDAD,
     semanas_procesadas: resultados.length,
@@ -1527,7 +1645,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
     duracion_ms: Date.now() - inicio,
   };
  
-  console.log('[cost-intelligence V2.4] finalizado', {
+  console.log('[cost-intelligence V2.5] finalizado', {
     periodo,
     semanas: resultados.length,
     snapshots: totalSnapshots,
