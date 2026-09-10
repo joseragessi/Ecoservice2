@@ -1,9 +1,9 @@
 // ============================================================
-// COST INTELLIGENCE V2.3 - ECOSERVICE
+// COST INTELLIGENCE V2.4 - ECOSERVICE
 // ============================================================
 // Inteligencia semanal de consumo y costo.
 //
-// V2.3 agrega clasificación automática usando información que
+// V2.4 agrega clasificación automática usando información que
 // YA existe en el módulo Combustible:
 //
 // 1) familia_consumo explícita                        -> se respeta
@@ -45,6 +45,7 @@ const UMBRAL_MINIMO_PCT = 15;
 const MULTIPLICADOR_DISPERSION = 2;
 const CAMBIO_MAX_PARQUE_PCT = 50;
 const DESVIO_PRECIO_MAX_PCT = 35;
+const COBERTURA_FAMILIAS_MIN_PCT = 80;
  
 const FAMILIAS_NO_ALERTABLES = ['bidones', 'unidades'];
 const FAMILIAS_NORMALIZABLES = ['dos_tiempos', 'tractor', 'cortadora', 'vehiculo', 'fijo'];
@@ -291,7 +292,7 @@ async function obtenerParque(periodo) {
 }
  
 // ============================================================
-// V2.3 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
+// V2.4 - CLASIFICACIÓN AUTOMÁTICA DE COMBUSTIBLE
 // ============================================================
  
 function productoEsNafta(producto) {
@@ -420,7 +421,7 @@ async function persistirClasificaciones(updates) {
       .eq('id', fila.id);
  
     if (error) {
-      console.warn('[cost-intelligence V2.3] no pude persistir clasificación item', fila.id, error.message);
+      console.warn('[cost-intelligence V2.4] no pude persistir clasificación item', fila.id, error.message);
       continue;
     }
  
@@ -503,7 +504,7 @@ function calcularImporteItem({ item, carga, litrosItem, litrosCombustibleCarga, 
 }
  
 // ============================================================
-// CONSUMO SEMANAL V2.3
+// CONSUMO SEMANAL V2.4
 // ============================================================
  
 async function obtenerConsumoSemana(semana) {
@@ -552,7 +553,7 @@ async function obtenerConsumoSemana(semana) {
   const parque = await obtenerParque(semana.slice(0, 7));
   const precioReferencia = calcularPrecioReferencia(listaCargas);
  
-  console.log(`[cost-intelligence V2.3] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
+  console.log(`[cost-intelligence V2.4] ${semana} precio ref: $${redondear(precioReferencia, 2)}/L`);
  
   const agrupado = {};
   const actualizacionesFamilia = [];
@@ -692,7 +693,7 @@ async function obtenerConsumoSemana(semana) {
       });
  
       // ------------------------------------------------------
-      // V2.3: familia automática
+      // V2.4: familia automática
       // ------------------------------------------------------
       const parqueObjetivo = objetivoId ? parque[objetivoId] : null;
       const clasificacion = resolverFamiliaConsumo(item, carga, parqueObjetivo);
@@ -723,7 +724,7 @@ async function obtenerConsumoSemana(semana) {
   // sigue siendo válido porque ya se clasificó en memoria.
   const persistencia = await persistirClasificaciones(actualizacionesFamilia);
   if (persistencia.actualizados > 0) {
-    console.log(`[cost-intelligence V2.3] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
+    console.log(`[cost-intelligence V2.4] ${semana}: ${persistencia.actualizados} items clasificados/persistidos`);
   }
  
   return Object.values(agrupado).map(fila => ({
@@ -765,7 +766,7 @@ async function resolverObjetivos(consumos) {
 // ============================================================
  
 async function generarSnapshotSemanal(semana) {
-  console.log(`[cost-intelligence V2.3] generando ${semana}`);
+  console.log(`[cost-intelligence V2.4] generando ${semana}`);
  
   const periodo = semana.slice(0, 7);
   const [parque, consumoRaw] = await Promise.all([
@@ -1102,18 +1103,145 @@ async function calcularBaselinesSemana(semana, ventanas = VENTANA_SEMANAS) {
 }
  
 // ============================================================
-// ANOMALÍAS
+// ANOMALÍAS / EXPLICABILIDAD V2.4
+// ============================================================
+//
+// Principios V2.4:
+// 1) Una familia real se evalúa por litros/equipo solamente cuando
+//    el parque es confiable.
+// 2) Si el parque cambia bruscamente o falta, NO convertimos ese
+//    problema de datos en una alerta de consumo.
+// 3) Si >= 80% del TOTAL de un objetivo está explicado por familias
+//    reales, la alerta TOTAL se suprime. Primero mandan las familias.
+// 4) Si una familia todavía no tiene 5 muestras comparables queda
+//    "en aprendizaje" y no se acusa un desvío.
+// 5) Las alertas que el modelo nuevo deja de reproducir no se borran:
+//    pasan a estado superada_modelo para conservar auditoría.
 // ============================================================
  
-async function limpiarAnomaliasSemana(semana) {
-  const { error } = await supabase
+function construirMapaCoberturaFamilias(snapshots) {
+  const porObjetivo = new Map();
+ 
+  for (const s of snapshots || []) {
+    if (!s.objetivo_id) continue;
+ 
+    let x = porObjetivo.get(s.objetivo_id);
+    if (!x) {
+      x = {
+        total_litros: 0,
+        litros_clasificados: 0,
+        familias: [],
+      };
+      porObjetivo.set(s.objetivo_id, x);
+    }
+ 
+    if (s.familia === 'total') {
+      x.total_litros = numero(s.litros);
+      continue;
+    }
+ 
+    if (FAMILIAS_NORMALIZABLES.includes(s.familia)) {
+      x.litros_clasificados += numero(s.litros);
+      x.familias.push(s.familia);
+    }
+  }
+ 
+  for (const x of porObjetivo.values()) {
+    const total = numero(x.total_litros);
+    const clasificados = Math.min(total, numero(x.litros_clasificados));
+ 
+    x.litros_clasificados = redondear(clasificados, 2);
+    x.cobertura_pct = total > 0
+      ? redondear((clasificados / total) * 100, 2)
+      : 0;
+    x.familias = [...new Set(x.familias)];
+  }
+ 
+  return porObjetivo;
+}
+ 
+async function sincronizarAnomaliasSemana(semana, candidatas) {
+  const activasModelo = ['abierta', 'en_revision', 'pendiente', 'superada_modelo'];
+ 
+  const { data: existentes, error } = await supabase
     .from('cost_anomalies')
-    .delete()
+    .select('id,snapshot_id,metrica,estado,validada')
     .eq('periodo', semana)
-    .eq('estado', 'abierta')
-    .eq('validada', false);
+    .eq('validada', false)
+    .in('estado', activasModelo);
  
   if (error) throw error;
+ 
+  const porClave = new Map(
+    (existentes || []).map(a => [`${a.snapshot_id}|${a.metrica}`, a])
+  );
+ 
+  const clavesActuales = new Set(
+    (candidatas || []).map(a => `${a.snapshot_id}|${a.metrica}`)
+  );
+ 
+  let superadas = 0;
+  let reactivadas = 0;
+  let nuevas = 0;
+ 
+  // Todo lo que estaba activo y ya no lo reproduce V2.4 queda como
+  // histórico, sin borrarlo y sin tocar una alerta validada/cerrada.
+  for (const a of existentes || []) {
+    const clave = `${a.snapshot_id}|${a.metrica}`;
+ 
+    if (!clavesActuales.has(clave) && a.estado !== 'superada_modelo') {
+      const { error: upErr } = await supabase
+        .from('cost_anomalies')
+        .update({
+          estado: 'superada_modelo',
+          revisado_at: new Date().toISOString(),
+        })
+        .eq('id', a.id)
+        .eq('validada', false);
+ 
+      if (upErr) throw upErr;
+      superadas++;
+    }
+  }
+ 
+  // Insertamos solamente nuevas alertas. Si una alerta que el modelo había
+  // superado vuelve a ser válida para la misma snapshot/métrica, la reactivamos.
+  for (const candidata of candidatas || []) {
+    const clave = `${candidata.snapshot_id}|${candidata.metrica}`;
+    const existente = porClave.get(clave);
+ 
+    if (existente) {
+      if (existente.estado === 'superada_modelo') {
+        const { error: reactErr } = await supabase
+          .from('cost_anomalies')
+          .update({
+            ...candidata,
+            estado: 'abierta',
+            revisado_at: null,
+          })
+          .eq('id', existente.id)
+          .eq('validada', false);
+ 
+        if (reactErr) throw reactErr;
+        reactivadas++;
+      }
+      continue;
+    }
+ 
+    const { error: insErr } = await supabase
+      .from('cost_anomalies')
+      .insert(candidata);
+ 
+    if (insErr) throw insErr;
+    nuevas++;
+  }
+ 
+  return {
+    detectadas: (candidatas || []).length,
+    nuevas,
+    reactivadas,
+    superadas,
+  };
 }
  
 async function detectarAnomaliasSemana(semana) {
@@ -1125,10 +1253,13 @@ async function detectarAnomaliasSemana(semana) {
  
   if (error) throw error;
  
-  await limpiarAnomaliasSemana(semana);
- 
   const factorTiempo = factorSemanaTranscurrida(semana);
+  const coberturaPorObjetivo = construirMapaCoberturaFamilias(snapshots || []);
+ 
   let anomalias = [];
+  const aprendizaje = [];
+  const calidad = [];
+  const totalesSuprimidos = [];
  
   for (const snapshot of snapshots || []) {
     if (esObjetivoNoOperativo(snapshot.objetivo_nombre)) continue;
@@ -1142,21 +1273,57 @@ async function detectarAnomaliasSemana(semana) {
     );
  
     const base = construirBaseline(historico);
-    if (base.muestras < MIN_MUESTRAS_ANOMALIA) continue;
+    const esFamiliaReal = FAMILIAS_NORMALIZABLES.includes(snapshot.familia);
+ 
+    // Una familia nueva puede estar perfectamente clasificada pero todavía no
+    // tiene historia suficiente. Se informa como aprendizaje, no como anomalía.
+    if (base.muestras < MIN_MUESTRAS_ANOMALIA) {
+      if (esFamiliaReal) {
+        aprendizaje.push({
+          objetivo_id: snapshot.objetivo_id,
+          objetivo_nombre: snapshot.objetivo_nombre,
+          familia: snapshot.familia,
+          muestras: base.muestras,
+          requeridas: MIN_MUESTRAS_ANOMALIA,
+          litros: redondear(snapshot.litros, 2),
+          parque_familia: numero(snapshot.parque_familia),
+          litros_por_equipo: snapshot.litros_por_equipo == null
+            ? null
+            : redondear(snapshot.litros_por_equipo, 3),
+          motivo: 'Historial insuficiente',
+        });
+      }
+      continue;
+    }
  
     const confianza = calcularConfianza({
       muestras: base.muestras,
       dispersionPct: base.dispersion_pct,
     });
  
-    if (confianza.nivel === 'baja' || confianza.nivel === 'insuficiente') continue;
+    if (confianza.nivel === 'baja' || confianza.nivel === 'insuficiente') {
+      if (esFamiliaReal) {
+        aprendizaje.push({
+          objetivo_id: snapshot.objetivo_id,
+          objetivo_nombre: snapshot.objetivo_nombre,
+          familia: snapshot.familia,
+          muestras: base.muestras,
+          requeridas: MIN_MUESTRAS_ANOMALIA,
+          litros: redondear(snapshot.litros, 2),
+          parque_familia: numero(snapshot.parque_familia),
+          litros_por_equipo: snapshot.litros_por_equipo == null
+            ? null
+            : redondear(snapshot.litros_por_equipo, 3),
+          motivo: 'Historial todavía inestable',
+        });
+      }
+      continue;
+    }
  
     let metrica = 'litros';
     let real = numero(snapshot.litros);
     let esperadoSemana = numero(base.consumo_base);
     let calidadDato = 'correcta';
- 
-    const esFamiliaReal = FAMILIAS_NORMALIZABLES.includes(snapshot.familia);
  
     if (esFamiliaReal) {
       const calidadParque = evaluarCalidadParque({
@@ -1164,19 +1331,28 @@ async function detectarAnomaliasSemana(semana) {
         parqueHistorico: base.parque_base,
       });
  
+      // V2.4: un problema de parque ya no se transforma en "consumo anormal".
+      // Lo separamos como calidad de datos.
       if (
-        calidadParque.confiable &&
-        snapshot.litros_por_equipo != null &&
-        base.consumo_por_equipo_base != null
+        !calidadParque.confiable ||
+        snapshot.litros_por_equipo == null ||
+        base.consumo_por_equipo_base == null
       ) {
-        metrica = 'litros_por_equipo';
-        real = numero(snapshot.litros_por_equipo);
-        esperadoSemana = numero(base.consumo_por_equipo_base);
-      } else {
-        // Si la familia es conocida pero el parque no es confiable,
-        // degradamos a litros totales de ESA MISMA FAMILIA, no del objetivo.
-        calidadDato = calidadParque.motivo || 'Parque no confiable';
+        calidad.push({
+          objetivo_id: snapshot.objetivo_id,
+          objetivo_nombre: snapshot.objetivo_nombre,
+          familia: snapshot.familia,
+          parque_actual: numero(snapshot.parque_familia),
+          parque_base: redondear(base.parque_base, 2),
+          cambio_parque_pct: calidadParque.cambio_pct,
+          motivo: calidadParque.motivo || 'Sin indicador litros/equipo comparable',
+        });
+        continue;
       }
+ 
+      metrica = 'litros_por_equipo';
+      real = numero(snapshot.litros_por_equipo);
+      esperadoSemana = numero(base.consumo_por_equipo_base);
     }
  
     const esperado = esperadoSemana * factorTiempo;
@@ -1188,6 +1364,30 @@ async function detectarAnomaliasSemana(semana) {
  
     // Sólo excesos por ahora.
     if (desvioPct < umbral) continue;
+ 
+    // V2.4: si el TOTAL está prácticamente explicado por familias reales,
+    // no generamos una alerta genérica. El mix de maquinaria/producto manda.
+    if (snapshot.familia === 'total') {
+      const cobertura = coberturaPorObjetivo.get(snapshot.objetivo_id) || {
+        cobertura_pct: 0,
+        litros_clasificados: 0,
+        familias: [],
+      };
+ 
+      if (numero(cobertura.cobertura_pct) >= COBERTURA_FAMILIAS_MIN_PCT) {
+        totalesSuprimidos.push({
+          objetivo_id: snapshot.objetivo_id,
+          objetivo_nombre: snapshot.objetivo_nombre,
+          litros_total: redondear(snapshot.litros, 2),
+          litros_clasificados: redondear(cobertura.litros_clasificados, 2),
+          cobertura_pct: redondear(cobertura.cobertura_pct, 2),
+          familias: cobertura.familias,
+          desvio_total_pct: redondear(desvioPct, 2),
+          motivo: 'Total explicado por familias de consumo',
+        });
+        continue;
+      }
+    }
  
     let litrosEsperados;
     if (metrica === 'litros_por_equipo') {
@@ -1237,9 +1437,7 @@ async function detectarAnomaliasSemana(semana) {
     });
   }
  
-  // Si el mismo objetivo tiene una alerta específica por familia,
-  // esa alerta explica mejor el desvío que la alerta TOTAL. Evitamos
-  // duplicar impacto económico en el dashboard.
+  // Si existe una alerta específica por familia, nunca duplicamos con TOTAL.
   const objetivosConAlertaEspecifica = new Set(
     anomalias
       .filter(a => a.familia !== 'total')
@@ -1252,21 +1450,20 @@ async function detectarAnomaliasSemana(semana) {
     !objetivosConAlertaEspecifica.has(a.objetivo_id)
   );
  
-  if (!anomalias.length) return { semana, anomalias: 0 };
- 
-  const { data, error: insertError } = await supabase
-    .from('cost_anomalies')
-    .upsert(anomalias, {
-      onConflict: 'snapshot_id,metrica',
-      ignoreDuplicates: true,
-    })
-    .select();
- 
-  if (insertError) throw insertError;
+  const sync = await sincronizarAnomaliasSemana(semana, anomalias);
  
   return {
     semana,
-    anomalias: data ? data.length : 0,
+    anomalias: anomalias.length,
+    nuevas: sync.nuevas,
+    reactivadas: sync.reactivadas,
+    superadas: sync.superadas,
+    en_aprendizaje: aprendizaje.length,
+    calidad_datos: calidad.length,
+    totales_suprimidos: totalesSuprimidos.length,
+    detalle_aprendizaje: aprendizaje,
+    detalle_calidad: calidad,
+    detalle_totales_suprimidos: totalesSuprimidos,
   };
 }
  
@@ -1295,7 +1492,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   }
  
   console.log('================================================');
-  console.log(`[cost-intelligence V2.3] procesando ${periodo}`);
+  console.log(`[cost-intelligence V2.4] procesando ${periodo}`);
  
   const semanas = semanasDelMes(periodo);
   const hoy = hoyCordoba();
@@ -1308,7 +1505,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
   for (const semana of semanas) {
     if (semana > hoy) continue;
  
-    console.log(`[cost-intelligence V2.3] semana ${semana}`);
+    console.log(`[cost-intelligence V2.4] semana ${semana}`);
     const resultado = await analizarSemana(semana);
     resultados.push(resultado);
  
@@ -1319,7 +1516,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
  
   const resultadoFinal = {
     ok: true,
-    version: '2.3',
+    version: '2.4',
     periodo,
     granularidad: GRANULARIDAD,
     semanas_procesadas: resultados.length,
@@ -1330,7 +1527,7 @@ async function ejecutarCostIntelligence(periodo = periodoActualCba()) {
     duracion_ms: Date.now() - inicio,
   };
  
-  console.log('[cost-intelligence V2.3] finalizado', {
+  console.log('[cost-intelligence V2.4] finalizado', {
     periodo,
     semanas: resultados.length,
     snapshots: totalSnapshots,
