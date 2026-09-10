@@ -1,6 +1,7 @@
 // ============================================================
 // COST INTELLIGENCE API
 // Ecoservice
+// V1.2
 // ============================================================
 
 const express = require('express');
@@ -22,8 +23,7 @@ const SECRET = process.env.PANEL_SECRET;
 
 if (!SECRET) {
   console.warn(
-    '[cost-intelligence] PANEL_SECRET no configurado. ' +
-    'Cost Intelligence requiere PANEL_SECRET para autenticar el panel.'
+    '[cost-intelligence] PANEL_SECRET no configurado.'
   );
 }
 
@@ -46,17 +46,14 @@ function verificar(token) {
     return null;
   }
 
-
   const esperado = crypto
     .createHmac('sha256', SECRET)
     .update(body)
     .digest('base64url');
 
-
   if (sig !== esperado) {
     return null;
   }
-
 
   try {
 
@@ -66,14 +63,12 @@ function verificar(token) {
         .toString()
     );
 
-
     if (
       payload.exp &&
       Date.now() > payload.exp
     ) {
       return null;
     }
-
 
     return payload;
 
@@ -91,19 +86,15 @@ async function auth(req, res, next) {
     const h =
       req.headers.authorization || '';
 
-
     const token =
       h.startsWith('Bearer ')
         ? h.slice(7)
         : null;
 
-
     const payload =
       verificar(token);
 
-
     if (!payload) {
-
       return res
         .status(401)
         .json({
@@ -111,8 +102,6 @@ async function auth(req, res, next) {
         });
     }
 
-
-    // Kill switch de Ecoservice
     if (
       !(await control.estaOperativo())
     ) {
@@ -120,14 +109,11 @@ async function auth(req, res, next) {
       return res
         .status(423)
         .json({
-
           error:
-            'Sistema bloqueado: PIN vencido. Renová SYSTEM_PIN en Railway.',
-
+            'Sistema bloqueado: PIN vencido.',
           bloqueado: true
         });
     }
-
 
     req.usuario =
       payload.usuario;
@@ -135,9 +121,7 @@ async function auth(req, res, next) {
     req.esAdmin =
       payload.admin === true;
 
-
     next();
-
 
   } catch (error) {
 
@@ -145,7 +129,6 @@ async function auth(req, res, next) {
       '[cost-intelligence] auth:',
       error
     );
-
 
     return res
       .status(500)
@@ -158,9 +141,49 @@ async function auth(req, res, next) {
 
 
 // ============================================================
+// UTILIDADES
+// ============================================================
+
+function numero(v) {
+  const n = Number(v);
+  return Number.isFinite(n)
+    ? n
+    : 0;
+}
+
+
+function redondear(v, decimales = 2) {
+
+  const p =
+    10 ** decimales;
+
+  return Math.round(
+    (
+      numero(v) +
+      Number.EPSILON
+    ) * p
+  ) / p;
+}
+
+
+function periodoValido(valor) {
+
+  const periodo =
+    String(valor || '');
+
+  return /^\d{4}-\d{2}$/.test(periodo)
+    ? periodo
+    : costIntelligence.periodoActualCba();
+}
+
+
+function fechaPeriodo(periodo) {
+  return `${periodo}-01`;
+}
+
+
+// ============================================================
 // HEALTH
-// No necesita autenticación.
-// Sirve para comprobar que el módulo cargó.
 // ============================================================
 
 router.get(
@@ -168,18 +191,11 @@ router.get(
   (req, res) => {
 
     res.json({
-
       ok: true,
-
-      modulo:
-        'Cost Intelligence',
-
-      version:
-        '1.0.0',
-
+      modulo: 'Cost Intelligence',
+      version: '1.2.0',
       timestamp:
         new Date().toISOString()
-
     });
   }
 );
@@ -187,21 +203,6 @@ router.get(
 
 // ============================================================
 // EJECUTAR CEREBRO COMPLETO
-//
-// POST
-// /api/cost-intelligence/ejecutar
-//
-// body:
-// {
-//   "periodo": "2026-09"
-// }
-//
-// Ejecuta:
-//
-// snapshot
-// baseline
-// anomalías
-//
 // ============================================================
 
 router.post(
@@ -211,25 +212,10 @@ router.post(
 
     try {
 
-      const periodoRecibido =
-        String(
-          req.body?.periodo || ''
-        );
-
-
       const periodo =
-        /^\d{4}-\d{2}$/.test(
-          periodoRecibido
-        )
-          ? periodoRecibido
-          : costIntelligence
-              .periodoActualCba();
-
-
-      console.log(
-        `[cost-intelligence-api] ejecutando ${periodo}`
-      );
-
+        periodoValido(
+          req.body?.periodo
+        );
 
       const resultado =
         await costIntelligence
@@ -237,12 +223,10 @@ router.post(
             periodo
           );
 
-
       return res.json({
         ok: true,
         ...resultado
       });
-
 
     } catch (error) {
 
@@ -251,17 +235,13 @@ router.post(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error ejecutando Cost Intelligence'
-
         });
     }
   }
@@ -269,10 +249,7 @@ router.post(
 
 
 // ============================================================
-// GENERAR SNAPSHOT
-//
-// POST
-// /api/cost-intelligence/snapshot
+// SNAPSHOT
 // ============================================================
 
 router.post(
@@ -282,20 +259,10 @@ router.post(
 
     try {
 
-      const recibido =
-        String(
-          req.body?.periodo || ''
-        );
-
-
       const periodo =
-        /^\d{4}-\d{2}$/.test(
-          recibido
-        )
-          ? recibido
-          : costIntelligence
-              .periodoActualCba();
-
+        periodoValido(
+          req.body?.periodo
+        );
 
       const resultado =
         await costIntelligence
@@ -303,12 +270,10 @@ router.post(
             periodo
           );
 
-
       return res.json({
         ok: true,
         ...resultado
       });
-
 
     } catch (error) {
 
@@ -317,17 +282,13 @@ router.post(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error generando snapshot'
-
         });
     }
   }
@@ -335,10 +296,7 @@ router.post(
 
 
 // ============================================================
-// CALCULAR BASELINES
-//
-// POST
-// /api/cost-intelligence/baselines
+// BASELINES
 // ============================================================
 
 router.post(
@@ -348,20 +306,10 @@ router.post(
 
     try {
 
-      const recibido =
-        String(
-          req.body?.periodo || ''
-        );
-
-
       const periodo =
-        /^\d{4}-\d{2}$/.test(
-          recibido
-        )
-          ? recibido
-          : costIntelligence
-              .periodoActualCba();
-
+        periodoValido(
+          req.body?.periodo
+        );
 
       const ventanas =
         Number(
@@ -372,7 +320,6 @@ router.post(
             )
           : 6;
 
-
       const resultado =
         await costIntelligence
           .calcularBaselines(
@@ -380,12 +327,10 @@ router.post(
             ventanas
           );
 
-
       return res.json({
         ok: true,
         ...resultado
       });
-
 
     } catch (error) {
 
@@ -394,17 +339,13 @@ router.post(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error calculando baselines'
-
         });
     }
   }
@@ -413,9 +354,6 @@ router.post(
 
 // ============================================================
 // DETECTAR ANOMALÍAS
-//
-// POST
-// /api/cost-intelligence/detectar-anomalias
 // ============================================================
 
 router.post(
@@ -425,20 +363,10 @@ router.post(
 
     try {
 
-      const recibido =
-        String(
-          req.body?.periodo || ''
-        );
-
-
       const periodo =
-        /^\d{4}-\d{2}$/.test(
-          recibido
-        )
-          ? recibido
-          : costIntelligence
-              .periodoActualCba();
-
+        periodoValido(
+          req.body?.periodo
+        );
 
       const resultado =
         await costIntelligence
@@ -446,12 +374,10 @@ router.post(
             periodo
           );
 
-
       return res.json({
         ok: true,
         ...resultado
       });
-
 
     } catch (error) {
 
@@ -460,17 +386,13 @@ router.post(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error detectando anomalías'
-
         });
     }
   }
@@ -478,10 +400,7 @@ router.post(
 
 
 // ============================================================
-// RESUMEN PARA DASHBOARD
-//
-// GET
-// /api/cost-intelligence/resumen?periodo=2026-09
+// RESUMEN DASHBOARD
 // ============================================================
 
 router.get(
@@ -491,24 +410,13 @@ router.get(
 
     try {
 
-      const recibido =
-        String(
-          req.query?.periodo || ''
+      const periodo =
+        periodoValido(
+          req.query?.periodo
         );
 
-
-      const periodo =
-        /^\d{4}-\d{2}$/.test(
-          recibido
-        )
-          ? recibido
-          : costIntelligence
-              .periodoActualCba();
-
-
       const fecha =
-        `${periodo}-01`;
-
+        fechaPeriodo(periodo);
 
       const [
         snapshotsResult,
@@ -517,9 +425,7 @@ router.get(
         await Promise.all([
 
           supabase
-            .from(
-              'cost_snapshots'
-            )
+            .from('cost_snapshots')
             .select('*')
             .eq(
               'periodo',
@@ -527,9 +433,7 @@ router.get(
             ),
 
           supabase
-            .from(
-              'cost_anomalies'
-            )
+            .from('cost_anomalies')
             .select('*')
             .eq(
               'periodo',
@@ -541,9 +445,7 @@ router.get(
                 ascending: false
               }
             )
-
         ]);
-
 
       if (
         snapshotsResult.error
@@ -551,64 +453,53 @@ router.get(
         throw snapshotsResult.error;
       }
 
-
       if (
         anomaliesResult.error
       ) {
         throw anomaliesResult.error;
       }
 
-
       const snapshots =
         snapshotsResult.data || [];
-
 
       const anomalies =
         anomaliesResult.data || [];
 
-
-      // Solo familia total para
-      // evitar duplicar costos.
       const snapshotsTotales =
         snapshots.filter(
           s =>
             s.familia === 'total'
         );
 
-
       const costoControlado =
         snapshotsTotales.reduce(
           (total, item) =>
             total +
-            Number(
-              item.importe || 0
+            numero(
+              item.importe
             ),
           0
         );
-
 
       const litrosControlados =
         snapshotsTotales.reduce(
           (total, item) =>
             total +
-            Number(
-              item.litros || 0
+            numero(
+              item.litros
             ),
           0
         );
-
 
       const desviosDetectados =
         anomalies.reduce(
           (total, item) =>
             total +
-            Number(
-              item.impacto_estimado ||
-              0
+            numero(
+              item.impacto_estimado
             ),
           0
         );
-
 
       const desviosSinExplicar =
         anomalies
@@ -622,25 +513,21 @@ router.get(
           .reduce(
             (total, item) =>
               total +
-              Number(
-                item.impacto_estimado ||
-                0
+              numero(
+                item.impacto_estimado
               ),
             0
           );
-
 
       const ahorroValidado =
         anomalies.reduce(
           (total, item) =>
             total +
-            Number(
-              item.ahorro_validado ||
-              0
+            numero(
+              item.ahorro_validado
             ),
           0
         );
-
 
       const objetivosControlados =
         new Set(
@@ -651,31 +538,6 @@ router.get(
             )
             .filter(Boolean)
         ).size;
-
-
-      const criticas =
-        anomalies.filter(
-          x =>
-            x.severidad ===
-            'critica'
-        ).length;
-
-
-      const altas =
-        anomalies.filter(
-          x =>
-            x.severidad ===
-            'alta'
-        ).length;
-
-
-      const medias =
-        anomalies.filter(
-          x =>
-            x.severidad ===
-            'media'
-        ).length;
-
 
       return res.json({
 
@@ -691,10 +553,10 @@ router.get(
             ),
 
           litros_controlados:
-            Math.round(
-              litrosControlados *
-              100
-            ) / 100,
+            redondear(
+              litrosControlados,
+              2
+            ),
 
           desvios_detectados:
             Math.round(
@@ -715,28 +577,16 @@ router.get(
             objetivosControlados,
 
           alertas:
-            anomalies.length,
-
-          alertas_criticas:
-            criticas,
-
-          alertas_altas:
-            altas,
-
-          alertas_medias:
-            medias
+            anomalies.length
 
         },
-
 
         donde_actuar_hoy:
           anomalies.slice(
             0,
             10
           )
-
       });
-
 
     } catch (error) {
 
@@ -745,17 +595,13 @@ router.get(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error obteniendo resumen'
-
         });
     }
   }
@@ -763,10 +609,7 @@ router.get(
 
 
 // ============================================================
-// HISTÓRICO DE SNAPSHOTS
-//
-// GET
-// /api/cost-intelligence/snapshots
+// SNAPSHOTS
 // ============================================================
 
 router.get(
@@ -778,9 +621,7 @@ router.get(
 
       let query =
         supabase
-          .from(
-            'cost_snapshots'
-          )
+          .from('cost_snapshots')
           .select('*')
           .order(
             'periodo',
@@ -788,7 +629,6 @@ router.get(
               ascending: false
             }
           );
-
 
       if (
         req.query.objetivo_id
@@ -801,7 +641,6 @@ router.get(
           );
       }
 
-
       if (
         req.query.familia
       ) {
@@ -813,7 +652,6 @@ router.get(
           );
       }
 
-
       const {
         data,
         error
@@ -822,17 +660,14 @@ router.get(
           2000
         );
 
-
       if (error) {
         throw error;
       }
-
 
       return res.json({
         ok: true,
         data: data || []
       });
-
 
     } catch (error) {
 
@@ -841,17 +676,13 @@ router.get(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error obteniendo snapshots'
-
         });
     }
   }
@@ -859,10 +690,7 @@ router.get(
 
 
 // ============================================================
-// BASELINES
-//
-// GET
-// /api/cost-intelligence/baselines
+// GET BASELINES
 // ============================================================
 
 router.get(
@@ -874,9 +702,7 @@ router.get(
 
       let query =
         supabase
-          .from(
-            'cost_baselines'
-          )
+          .from('cost_baselines')
           .select('*')
           .order(
             'objetivo_nombre',
@@ -884,7 +710,6 @@ router.get(
               ascending: true
             }
           );
-
 
       if (
         req.query.objetivo_id
@@ -897,7 +722,6 @@ router.get(
           );
       }
 
-
       if (
         req.query.familia
       ) {
@@ -909,7 +733,6 @@ router.get(
           );
       }
 
-
       const {
         data,
         error
@@ -918,17 +741,14 @@ router.get(
           2000
         );
 
-
       if (error) {
         throw error;
       }
-
 
       return res.json({
         ok: true,
         data: data || []
       });
-
 
     } catch (error) {
 
@@ -937,17 +757,13 @@ router.get(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error obteniendo baselines'
-
         });
     }
   }
@@ -955,16 +771,7 @@ router.get(
 
 
 // ============================================================
-// LISTADO DE ANOMALÍAS
-//
-// GET
-// /api/cost-intelligence/anomalias
-//
-// Parámetros opcionales:
-//
-// ?periodo=2026-09
-// ?estado=abierta
-// ?objetivo_id=...
+// ANOMALÍAS
 // ============================================================
 
 router.get(
@@ -976,9 +783,7 @@ router.get(
 
       let query =
         supabase
-          .from(
-            'cost_anomalies'
-          )
+          .from('cost_anomalies')
           .select('*')
           .order(
             'impacto_estimado',
@@ -986,7 +791,6 @@ router.get(
               ascending: false
             }
           );
-
 
       if (
         req.query.periodo
@@ -999,7 +803,6 @@ router.get(
           );
       }
 
-
       if (
         req.query.estado
       ) {
@@ -1010,7 +813,6 @@ router.get(
             req.query.estado
           );
       }
-
 
       if (
         req.query.objetivo_id
@@ -1023,7 +825,6 @@ router.get(
           );
       }
 
-
       const {
         data,
         error
@@ -1032,21 +833,14 @@ router.get(
           1000
         );
 
-
       if (error) {
         throw error;
       }
 
-
       return res.json({
-
         ok: true,
-
-        data:
-          data || []
-
+        data: data || []
       });
-
 
     } catch (error) {
 
@@ -1055,17 +849,13 @@ router.get(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error obteniendo anomalías'
-
         });
     }
   }
@@ -1074,21 +864,6 @@ router.get(
 
 // ============================================================
 // REVISAR ANOMALÍA
-//
-// POST
-// /api/cost-intelligence/anomalias/:id/revisar
-//
-// Ejemplo:
-//
-// {
-//   "estado": "justificada",
-//   "causa": "Mayor actividad",
-//   "observacion": "Poda extraordinaria",
-//   "responsable": "José",
-//   "validada": false,
-//   "ahorro_validado": 0
-// }
-//
 // ============================================================
 
 router.post(
@@ -1101,7 +876,6 @@ router.post(
       const id =
         req.params.id;
 
-
       const {
         estado,
         causa,
@@ -1112,7 +886,6 @@ router.post(
       } =
         req.body || {};
 
-
       const estadosPermitidos = [
         'abierta',
         'en_revision',
@@ -1122,15 +895,12 @@ router.post(
         'cerrada'
       ];
 
-
       const cambios = {
 
         revisado_at:
           new Date()
             .toISOString()
-
       };
-
 
       if (
         estado &&
@@ -1142,7 +912,6 @@ router.post(
           estado;
       }
 
-
       if (
         causa !== undefined
       ) {
@@ -1150,7 +919,6 @@ router.post(
         cambios.causa =
           causa || null;
       }
-
 
       if (
         observacion !==
@@ -1161,7 +929,6 @@ router.post(
           observacion || null;
       }
 
-
       if (
         responsable !==
         undefined
@@ -1171,7 +938,6 @@ router.post(
           responsable || null;
       }
 
-
       if (
         validada !== undefined
       ) {
@@ -1179,7 +945,6 @@ router.post(
         cambios.validada =
           Boolean(validada);
       }
-
 
       if (
         ahorro_validado !==
@@ -1189,21 +954,18 @@ router.post(
         cambios.ahorro_validado =
           Math.max(
             0,
-            Number(
+            numero(
               ahorro_validado
-            ) || 0
+            )
           );
       }
-
 
       const {
         data,
         error
       } =
         await supabase
-          .from(
-            'cost_anomalies'
-          )
+          .from('cost_anomalies')
           .update(
             cambios
           )
@@ -1214,21 +976,15 @@ router.post(
           .select()
           .single();
 
-
       if (error) {
         throw error;
       }
 
-
       return res.json({
-
         ok: true,
-
         anomalia:
           data
-
       });
-
 
     } catch (error) {
 
@@ -1237,17 +993,13 @@ router.post(
         error
       );
 
-
       return res
         .status(500)
         .json({
-
           ok: false,
-
           error:
             error.message ||
             'Error revisando anomalía'
-
         });
     }
   }
@@ -1255,17 +1007,7 @@ router.post(
 
 
 // ============================================================
-// EXPORT
-// ============================================================
-// ============================================================
-// TEST TEMPORAL DESDE NAVEGADOR
-//
-// Ejemplo:
-// /api/cost-intelligence/test/2026-09
-//
-// IMPORTANTE:
-// Esta ruta es solo para pruebas iniciales.
-// Después la eliminamos.
+// TEST TEMPORAL - EJECUTAR DESDE NAVEGADOR
 // ============================================================
 
 router.get(
@@ -1279,9 +1021,10 @@ router.get(
           req.params.periodo || ''
         );
 
-
       if (
-        !/^\d{4}-\d{2}$/.test(periodo)
+        !/^\d{4}-\d{2}$/.test(
+          periodo
+        )
       ) {
 
         return res
@@ -1289,15 +1032,9 @@ router.get(
           .json({
             ok: false,
             error:
-              'Periodo inválido. Usá formato YYYY-MM'
+              'Periodo inválido'
           });
       }
-
-
-      console.log(
-        `[cost-intelligence-test] ejecutando ${periodo}`
-      );
-
 
       const resultado =
         await costIntelligence
@@ -1305,13 +1042,11 @@ router.get(
             periodo
           );
 
-
       return res.json({
         ok: true,
         modo: 'test',
         ...resultado
       });
-
 
     } catch (error) {
 
@@ -1319,7 +1054,6 @@ router.get(
         '[cost-intelligence-test] error:',
         error
       );
-
 
       return res
         .status(500)
@@ -1332,41 +1066,57 @@ router.get(
     }
   }
 );
+
+
 // ============================================================
-// TEST TEMPORAL - VER ANOMALÍAS DESDE NAVEGADOR
-//
-// Ejemplo:
-// /api/cost-intelligence/test-anomalias/2026-09
-//
-// SOLO PARA PRUEBAS.
-// Después la eliminamos.
+// TEST TEMPORAL - VER ANOMALÍAS
 // ============================================================
 
 router.get(
   '/test-anomalias/:periodo',
   async (req, res) => {
+
     try {
 
       const periodo =
-        String(req.params.periodo || '');
+        String(
+          req.params.periodo || ''
+        );
 
-      if (!/^\d{4}-\d{2}$/.test(periodo)) {
-        return res.status(400).json({
-          ok: false,
-          error: 'Periodo inválido. Usá formato YYYY-MM'
-        });
+      if (
+        !/^\d{4}-\d{2}$/.test(
+          periodo
+        )
+      ) {
+
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              'Periodo inválido'
+          });
       }
 
-      const fecha = `${periodo}-01`;
+      const fecha =
+        `${periodo}-01`;
 
-      const { data, error } =
+      const {
+        data,
+        error
+      } =
         await supabase
           .from('cost_anomalies')
           .select('*')
-          .eq('periodo', fecha)
+          .eq(
+            'periodo',
+            fecha
+          )
           .order(
             'impacto_estimado',
-            { ascending: false }
+            {
+              ascending: false
+            }
           );
 
       if (error) {
@@ -1376,24 +1126,382 @@ router.get(
       return res.json({
         ok: true,
         periodo,
-        cantidad: (data || []).length,
-        anomalias: data || []
+        cantidad:
+          (data || []).length,
+        anomalias:
+          data || []
+      });
+
+    } catch (error) {
+
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            error.message ||
+            'Error leyendo anomalías'
+        });
+    }
+  }
+);
+
+
+// ============================================================
+// NUEVO TEST TEMPORAL - TOP DESVÍOS
+//
+// No exige que superen 15%.
+// Sirve para validar el cerebro.
+//
+// URL:
+// /api/cost-intelligence/test-desvios/2026-09
+// ============================================================
+
+router.get(
+  '/test-desvios/:periodo',
+  async (req, res) => {
+
+    try {
+
+      const periodo =
+        String(
+          req.params.periodo || ''
+        );
+
+      if (
+        !/^\d{4}-\d{2}$/.test(
+          periodo
+        )
+      ) {
+
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              'Periodo inválido'
+          });
+      }
+
+      const fecha =
+        `${periodo}-01`;
+
+      const [
+        snapshotsRes,
+        baselinesRes
+      ] =
+        await Promise.all([
+
+          supabase
+            .from('cost_snapshots')
+            .select('*')
+            .eq(
+              'periodo',
+              fecha
+            ),
+
+          supabase
+            .from('cost_baselines')
+            .select('*')
+            .eq(
+              'granularidad',
+              'mensual'
+            )
+        ]);
+
+      if (
+        snapshotsRes.error
+      ) {
+        throw snapshotsRes.error;
+      }
+
+      if (
+        baselinesRes.error
+      ) {
+        throw baselinesRes.error;
+      }
+
+      const snapshots =
+        snapshotsRes.data || [];
+
+      const baselines =
+        baselinesRes.data || [];
+
+      const mapaBaselines = {};
+
+      for (
+        const b of baselines
+      ) {
+
+        mapaBaselines[
+          `${b.objetivo_id}::${b.familia}`
+        ] = b;
+      }
+
+      const filas = [];
+
+      for (
+        const s of snapshots
+      ) {
+
+        const nombre =
+          String(
+            s.objetivo_nombre ||
+            ''
+          ).toLowerCase();
+
+        // Depósito no participa
+        // de comparación operativa.
+        if (
+          nombre.includes(
+            'deposito'
+          ) ||
+          nombre.includes(
+            'depósito'
+          )
+        ) {
+          continue;
+        }
+
+        const baseline =
+          mapaBaselines[
+            `${s.objetivo_id}::${s.familia}`
+          ];
+
+        if (!baseline) {
+          continue;
+        }
+
+        if (
+          numero(
+            baseline.muestras
+          ) < 1
+        ) {
+          continue;
+        }
+
+        let metrica;
+        let real;
+        let esperado;
+
+        if (
+          s.litros_por_equipo != null &&
+          baseline.consumo_por_equipo_base != null &&
+          numero(
+            s.parque_familia
+          ) > 0
+        ) {
+
+          metrica =
+            'litros_por_equipo';
+
+          real =
+            numero(
+              s.litros_por_equipo
+            );
+
+          esperado =
+            numero(
+              baseline
+                .consumo_por_equipo_base
+            );
+
+        } else {
+
+          metrica =
+            'litros';
+
+          real =
+            numero(
+              s.litros
+            );
+
+          esperado =
+            numero(
+              baseline
+                .consumo_base
+            );
+        }
+
+        if (
+          esperado <= 0
+        ) {
+          continue;
+        }
+
+        const diferencia =
+          real -
+          esperado;
+
+        const desvioPct =
+          diferencia /
+          esperado *
+          100;
+
+        let litrosEsperados;
+
+        if (
+          metrica ===
+          'litros_por_equipo'
+        ) {
+
+          litrosEsperados =
+            esperado *
+            numero(
+              s.parque_familia
+            );
+
+        } else {
+
+          litrosEsperados =
+            esperado;
+        }
+
+        const litrosDiferencia =
+          numero(
+            s.litros
+          ) -
+          litrosEsperados;
+
+        const precioPromedio =
+          numero(
+            s.litros
+          ) > 0
+            ? numero(
+                s.importe
+              ) /
+              numero(
+                s.litros
+              )
+            : 0;
+
+        const impactoEstimado =
+          litrosDiferencia *
+          precioPromedio;
+
+        filas.push({
+
+          objetivo:
+            s.objetivo_nombre,
+
+          objetivo_id:
+            s.objetivo_id,
+
+          familia:
+            s.familia,
+
+          muestras_historicas:
+            numero(
+              baseline.muestras
+            ),
+
+          metrica,
+
+          esperado:
+            redondear(
+              esperado,
+              3
+            ),
+
+          real:
+            redondear(
+              real,
+              3
+            ),
+
+          desvio_pct:
+            redondear(
+              desvioPct,
+              2
+            ),
+
+          litros_reales:
+            redondear(
+              s.litros,
+              2
+            ),
+
+          litros_esperados:
+            redondear(
+              litrosEsperados,
+              2
+            ),
+
+          diferencia_litros:
+            redondear(
+              litrosDiferencia,
+              2
+            ),
+
+          importe_real:
+            Math.round(
+              numero(
+                s.importe
+              )
+            ),
+
+          precio_promedio:
+            redondear(
+              precioPromedio,
+              2
+            ),
+
+          impacto_estimado:
+            Math.round(
+              impactoEstimado
+            ),
+
+          parque:
+            numero(
+              s.parque_familia
+            )
+        });
+      }
+
+      filas.sort(
+        (a, b) =>
+          b.desvio_pct -
+          a.desvio_pct
+      );
+
+      return res.json({
+
+        ok: true,
+
+        periodo,
+
+        cantidad:
+          filas.length,
+
+        top_desvios:
+          filas.slice(
+            0,
+            20
+          )
       });
 
     } catch (error) {
 
       console.error(
-        '[cost-intelligence-test-anomalias] error:',
+        '[cost-intelligence-test-desvios]',
         error
       );
 
-      return res.status(500).json({
-        ok: false,
-        error:
-          error.message ||
-          'Error leyendo anomalías'
-      });
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            error.message ||
+            'Error calculando top desvíos'
+        });
     }
   }
 );
+
+
+// ============================================================
+// EXPORT
+// ============================================================
+
 module.exports = router;
