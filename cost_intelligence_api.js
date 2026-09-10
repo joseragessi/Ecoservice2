@@ -1681,5 +1681,204 @@ router.get(
 // ============================================================
 // EXPORT
 // ============================================================
+// ============================================================
+// TEST TEMPORAL - HISTÓRICO DE UN OBJETIVO
+//
+// URL:
+// /api/cost-intelligence/test-historico/:objetivoId
+//
+// Ejemplo:
+// /api/cost-intelligence/test-historico/44ec31c7-05c5-4917-bc96-a5586a36f2f7
+// ============================================================
 
+router.get(
+  '/test-historico/:objetivoId',
+  async (req, res) => {
+
+    try {
+
+      const objetivoId =
+        String(
+          req.params.objetivoId || ''
+        );
+
+      if (
+        !objetivoId
+      ) {
+
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              'objetivoId requerido'
+          });
+      }
+
+
+      const {
+        data,
+        error
+      } =
+        await supabase
+          .from('cost_snapshots')
+          .select(
+            'periodo, objetivo_id, objetivo_nombre, familia, litros, importe, parque_familia, litros_por_equipo, cantidad_cargas'
+          )
+          .eq(
+            'granularidad',
+            'semanal'
+          )
+          .eq(
+            'objetivo_id',
+            objetivoId
+          )
+          .eq(
+            'familia',
+            'total'
+          )
+          .order(
+            'periodo',
+            {
+              ascending: true
+            }
+          );
+
+
+      if (error) {
+        throw error;
+      }
+
+
+      const filas =
+        data || [];
+
+
+      const litros =
+        filas
+          .map(
+            x =>
+              Number(
+                x.litros || 0
+              )
+          )
+          .filter(
+            x =>
+              Number.isFinite(x) &&
+              x > 0
+          );
+
+
+      const ordenados =
+        [...litros]
+          .sort(
+            (a, b) =>
+              a - b
+          );
+
+
+      let mediana = 0;
+
+
+      if (
+        ordenados.length
+      ) {
+
+        const mitad =
+          Math.floor(
+            ordenados.length /
+            2
+          );
+
+
+        mediana =
+          ordenados.length % 2
+
+            ? ordenados[
+                mitad
+              ]
+
+            : (
+                ordenados[
+                  mitad - 1
+                ] +
+                ordenados[
+                  mitad
+                ]
+              ) / 2;
+      }
+
+
+      return res.json({
+
+        ok: true,
+
+        objetivo_id:
+          objetivoId,
+
+        objetivo_nombre:
+          filas[0]
+            ? filas[0]
+                .objetivo_nombre
+            : null,
+
+        familia:
+          'total',
+
+        cantidad_semanas:
+          filas.length,
+
+        mediana_litros:
+          Math.round(
+            mediana *
+            100
+          ) / 100,
+
+        historico:
+          filas.map(
+            fila => ({
+
+              semana:
+                fila.periodo,
+
+              litros:
+                Number(
+                  fila.litros || 0
+                ),
+
+              importe:
+                Number(
+                  fila.importe || 0
+                ),
+
+              cantidad_cargas:
+                Number(
+                  fila.cantidad_cargas || 0
+                )
+
+            })
+          )
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        '[cost-intelligence-test-historico]',
+        error
+      );
+
+
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            error.message ||
+            'Error leyendo histórico'
+        });
+    }
+  }
+);
 module.exports = router;
