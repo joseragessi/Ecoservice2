@@ -655,6 +655,14 @@ app.post(
 
         } else if (
 
+          // Las opciones del menú (1 a 6) NUNCA se toman como respuesta al
+          // pedido de stock: si no, un capataz con censo pendiente que elige
+          // "1" para cargar combustible cae en el flujo de stock y no
+          // entiende nada (pasó con Claudio Chavez el 11-sep).
+          !/^[1-6]$/.test(mensaje.trim())
+
+          &&
+
           await tienePedidoPendiente(
             telefono
           )
