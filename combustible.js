@@ -401,15 +401,16 @@ async function sugerirApp(capataz) {
     const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app')
       .replace(/^https?:\/\//, '').replace(/\/+$/, '');
     // El capataz de la sesión puede venir sin estos campos: se traen acá.
-    let usuario = capataz.usuario, ultima = capataz.app_sugerida_at;
-    if (usuario === undefined || ultima === undefined) {
+    let usuario = capataz.usuario, clave = capataz.clave_hash;
+    if (usuario === undefined || clave === undefined) {
       const { data } = await supabase.from('capataces')
-        .select('usuario, app_sugerida_at').eq('id', capataz.id).maybeSingle();
-      if (data) { usuario = data.usuario; ultima = data.app_sugerida_at; }
+        .select('usuario, clave_hash').eq('id', capataz.id).maybeSingle();
+      if (data) { usuario = data.usuario; clave = data.clave_hash; }
     }
-    const hace7 = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const completa = !ultima || new Date(ultima).getTime() < hace7;
-    if (!completa) return `\n\n_📱 Recordá que también podés cargarlo en la app:_ ${url}`;
+    // Se sugiere SIEMPRE hasta que el capataz entra a la app por primera vez
+    // (decisión 11-sep). Tener clave creada es la señal de que ya entró: a
+    // partir de ahí el bot deja de insistir.
+    if (clave) return '';
 
     try {
       await supabase.from('capataces')
