@@ -728,7 +728,13 @@ function renderCapStock(){
          Todavía no cargaste tus máquinas. Agregá las que tenés en el objetivo.</div>`;
   $('lista').innerHTML=`
     ${aviso}
-    <div style="font-size:12px;color:#586B60;margin-bottom:10px">${esc(capStock.objetivo.nombre||'tu objetivo')} · <b>${totM}</b> máquina${totM===1?'':'s'} con motor</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:11px">
+      <div style="font-size:12px;color:#586B60;min-width:0">${esc(capStock.objetivo.nombre||'tu objetivo')} · <b>${totM}</b> máquina${totM===1?'':'s'} con motor</div>
+    </div>
+    <!-- El botón va ARRIBA: es lo primero que necesita quien entra a cargar
+         sus máquinas por primera vez, y quien ya las tiene no baja hasta el
+         final para sumar una (pedido de José, 11-sep). -->
+    <button onclick="capStockAgregar()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer;margin-bottom:13px">＋ Agregar una máquina</button>
     ${orden.filter(f=>porFam[f]).map(f=>`
       <div style="background:#fff;border-radius:12px;padding:12px 13px;margin-bottom:10px">
         <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">${LBL[f]||f}</div>
@@ -738,8 +744,9 @@ function renderCapStock(){
       <div style="font-weight:700;font-size:13.5px;margin-bottom:4px">🧰 Herramientas</div>
       <div style="font-size:11.5px;color:#8C9B92;margin-bottom:8px">Palas, machetes y demás. No hace falta que estén acá, pero si ya las cargaste las dejamos.</div>
       ${sinMotor.map(fila).join('')}</div>`:''}
-    <button onclick="capStockAgregar()" style="width:100%;padding:11px;border:1px dashed #d8dcd8;border-radius:11px;background:none;color:#586B60;font-size:13px;font-family:inherit;cursor:pointer;margin-bottom:12px">＋ Agregar una máquina</button>
-    <button onclick="capStockGuardar()" style="width:100%;padding:15px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">✓ Confirmar mis máquinas</button>`;
+    ${its.length?`<button onclick="capStockAgregar()" style="width:100%;padding:11px;border:1px dashed #d8dcd8;border-radius:11px;background:none;color:#586B60;font-size:13px;font-family:inherit;cursor:pointer;margin-bottom:12px">＋ Agregar otra</button>`:''}
+    <button onclick="capStockGuardar()" style="width:100%;padding:15px;border:none;border-radius:12px;background:${its.length?'var(--brote,#159B51)':'#d8dcd8'};color:${its.length?'#fff':'#96a096'};font-size:15px;font-weight:700;font-family:inherit;cursor:${its.length?'pointer':'default'}">✓ Confirmar mis máquinas</button>
+    ${its.length?'':'<div style="text-align:center;font-size:11.5px;color:#8C9B92;margin-top:7px">Agregá al menos una máquina para confirmar.</div>'}`;
 }
 function capStockSet(i,k,v){if(capStockEdit[i])capStockEdit[i][k]=k==='cantidad'?(parseInt(v)||0):v;render();}
 function capStockNums(i,v){if(capStockEdit[i])capStockEdit[i].numeros=String(v||'').split(',').map(x=>x.trim()).filter(Boolean);render();}
