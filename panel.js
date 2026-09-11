@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-10 · marcas separadas del tipo de equipo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-11 · Cost Intelligence y Reportes ocultos hasta que el dato esté';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -427,7 +427,26 @@ function aplicarPermisosNav(){
  
 // ── Cost Intelligence · entrada dinámica al menú ─────────────────────────────
 // Se agrega desde JS para no exigir cambios en panel.html.
+/* ── Módulos ocultos ──────────────────────────────────────────
+   Cost Intelligence y Reportes muestran números que todavía no se sostienen:
+   Cost Intelligence porque depende de que el capataz declare a qué máquina
+   fue cada litro (recién empieza), y Reportes porque arrastra criterios
+   viejos. Se ocultan del menú hasta que el dato esté (decisión 11-sep).
+
+   El código queda entero: para volver a mostrarlos, sacá el módulo de esta
+   lista. Las vistas siguen funcionando si alguien entra por URL. */
+const MODULOS_OCULTOS=['costos','reportes'];
+
+function ocultarModulos(){
+  MODULOS_OCULTOS.forEach(v=>{
+    const el=document.querySelector(`.nav-item[data-v="${v}"]`);
+    if(el)el.style.display='none';
+  });
+}
+
 function asegurarNavCostos(){
+  // No se inyecta si está oculto: si no, aparece y desaparece en cada render.
+  if(MODULOS_OCULTOS.includes('costos'))return;
   if(document.querySelector('.nav-item[data-v="costos"]'))return;
   const nav=document.getElementById('nav');if(!nav)return;
   const combustible=nav.querySelector('.nav-item[data-v="combustible"]');
@@ -448,6 +467,7 @@ async function iniciar(){
   document.getElementById('user-name').textContent=localStorage.getItem('eco_user')||'';
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
   asegurarNavCostos();
+  ocultarModulos();
   aplicarPermisosNav();
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
   try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
@@ -455,7 +475,9 @@ async function iniciar(){
   // El dashboard salió del menú (agosto 2026: no aportaba). La vista sigue en
   // el código por si se retoma, pero ya no se entra por defecto.
   const orden=['costos','bateas','reparaciones','combustible','compras','insumos','stock','maestros'];
-  go(orden.find(puedeVer)||'dashboard');
+  // Los módulos ocultos tampoco pueden ser la vista de arranque: 'costos'
+  // está primero en la lista, así que sin esto todos entraban ahí.
+  go(orden.filter(v=>!MODULOS_OCULTOS.includes(v)).find(puedeVer)||'dashboard');
   refrescarContadores();
   // El aviso de preventivos va DESPUÉS de pintar la vista: si saltara antes,
   // el popup aparecería sobre una pantalla en blanco. Solo para quien ve
