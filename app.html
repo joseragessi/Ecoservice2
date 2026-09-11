@@ -744,11 +744,145 @@ function renderCapStock(){
 function capStockSet(i,k,v){if(capStockEdit[i])capStockEdit[i][k]=k==='cantidad'?(parseInt(v)||0):v;render();}
 function capStockNums(i,v){if(capStockEdit[i])capStockEdit[i].numeros=String(v||'').split(',').map(x=>x.trim()).filter(Boolean);render();}
 function capStockQuitar(i){capStockEdit.splice(i,1);render();}
+/* ── Agregar una máquina ──────────────────────────────────────
+   Una hoja que sube desde abajo, en dos pasos: qué máquina y cuántas.
+   Reemplaza el prompt() donde el capataz escribía el nombre a mano: ahí
+   cada uno escribía distinto ("desmalezadora", "Desmalezadora", "desmaleza")
+   y terminaban siendo tres máquinas distintas en el sistema. */
+
+// El catálogo: lo que el capataz puede elegir con un toque. Sale de los tipos
+// reales del parque de EcoService, ordenado por lo que más hay: 335 de los
+// 471 equipos son de dos tiempos, así que va primero.
+const CAT_MAQ=[
+  ['Dos tiempos',[
+    ['Motoguadaña','🌾','dos_tiempos'],['Motosierra','🪚','dos_tiempos'],
+    ['Sopladora','🌬','dos_tiempos'],['Motosierra extensible','🪚','dos_tiempos'],
+    ['Cortacerco','✂️','dos_tiempos'],['Sopladora mochila','🌬','dos_tiempos'],
+  ]],
+  ['Grandes',[
+    ['Tractor','🚜','tractor'],['Mini tractor','🚜','mini_tractor'],
+    ['Camioneta','🚛','vehiculo'],['Camión','🚚','vehiculo'],
+    ['Cortadora de césped','✂️','cortadora'],
+  ]],
+  ['Otras',[
+    ['Mochila pulverizadora','💧','otro_motor'],['Compresor','💨','fijo'],
+    ['Hidrolavadora','🚿','fijo'],['Generador','⚡','fijo'],
+    ['Desmalezadora','🌿','otro_motor'],
+  ]],
+];
+let agrPaso=1, agrTipo=null, agrCant=1, agrNums=[], agrMarca='', agrQ='';
+
 function capStockAgregar(){
-  const t=prompt('¿Qué máquina? (ej: Motoguadaña, Tractor, Motosierra)');
-  if(!t||!t.trim())return;
-  capStockEdit.push({tipo_equipo:t.trim(),cantidad:1,numeros:[],observacion:null,
-    clasificacion:{es_maquinaria:true,familia_consumo:'otro_motor'}});
+  agrPaso=1;agrTipo=null;agrCant=1;agrNums=[];agrMarca='';agrQ='';
+  renderAgregar();
+}
+function agrCerrar(){const h=document.getElementById('agr-hoja');if(h)h.remove();}
+
+function renderAgregar(){
+  agrCerrar();
+  const bg=document.createElement('div');
+  bg.id='agr-hoja';
+  bg.style.cssText='position:fixed;inset:0;background:rgba(22,34,28,.35);z-index:300;display:flex;align-items:flex-end';
+  bg.onclick=e=>{if(e.target===bg)agrCerrar();};
+  bg.innerHTML=`<div style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-height:88vh;overflow:auto;padding:14px 15px 22px;box-shadow:0 -5px 22px rgba(0,0,0,.18)">
+    <div style="width:38px;height:4px;background:#D4D9D2;border-radius:3px;margin:0 auto 13px"></div>
+    ${agrPaso===1?agrPaso1():agrPaso2()}</div>`;
+  document.body.appendChild(bg);
+  if(agrPaso===2)setTimeout(()=>{const i=document.getElementById('agr-num');if(i)i.focus();},80);
+}
+
+function agrPaso1(){
+  const q=agrQ.trim().toLowerCase();
+  const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const nq=norm(q);
+  const grupos=nq
+    ? [['Coincidencias',CAT_MAQ.flatMap(([,ms])=>ms).filter(([t])=>norm(t).includes(nq))]]
+    : CAT_MAQ;
+  const hayAlgo=grupos.some(([,ms])=>ms.length);
+  const pill=([t,em,fam])=>`<button onclick="agrElegir('${esc(t)}','${fam}')"
+    style="border:1.5px solid #D4D9D2;border-radius:12px;padding:10px 13px;font-size:13.5px;font-weight:600;background:#fff;font-family:inherit;display:flex;align-items:center;gap:6px;cursor:pointer">
+    <span style="font-size:17px">${em}</span>${esc(t)}</button>`;
+  return `<div style="font-size:16px;font-weight:700;margin-bottom:3px">¿Qué máquina agregás?</div>
+    <div style="font-size:12.5px;color:#8C9B92;margin-bottom:13px">Tocá una. Podés sumar varias sin salir.</div>
+    <input id="agr-q" value="${esc(agrQ)}" placeholder="🔍 Buscar…" oninput="agrQ=this.value;renderAgregar();setTimeout(()=>{const i=document.getElementById('agr-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0)"
+      style="width:100%;padding:11px 13px;border:1px solid #D4D9D2;border-radius:11px;font-size:15px;font-family:inherit;margin-bottom:12px;background:#F1F4F0;box-sizing:border-box">
+    ${grupos.filter(([,ms])=>ms.length).map(([g,ms])=>`
+      <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:#8C9B92;font-weight:700;margin:12px 0 7px">${esc(g)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px">${ms.map(pill).join('')}</div>`).join('')}
+    ${(q&&!hayAlgo)?`<div style="margin-top:14px;background:#FBF0DC;border:1px solid #EED9AE;border-radius:11px;padding:12px 13px;font-size:12.5px;color:#8A5A0B;line-height:1.45">
+      No tengo <b>"${esc(agrQ)}"</b> en la lista. Fijate si está con otro nombre; si no, agregala igual.</div>`:''}
+    ${q?`<button onclick="agrElegir('${esc(agrQ.trim())}','otro_motor')"
+      style="width:100%;margin-top:11px;padding:12px;border:1.5px dashed #C4CAC2;border-radius:12px;background:none;color:#586B60;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer">
+      ✏️ Agregar "${esc(agrQ.trim())}"</button>`:''}
+    <button onclick="agrCerrar()" style="width:100%;margin-top:9px;padding:11px;border:1px solid #D4D9D2;border-radius:11px;background:#fff;color:#586B60;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer">Cancelar</button>`;
+}
+
+function agrElegir(tipo,familia){
+  agrTipo={tipo,familia};agrCant=1;agrNums=[];agrMarca='';agrPaso=2;renderAgregar();
+}
+
+function agrPaso2(){
+  const t=agrTipo.tipo;
+  const faltan=agrCant-agrNums.length;
+  // ¿Ya tiene esta máquina cargada? Se avisa ANTES de agregar: fusionar en
+  // silencio puede hacerle perder números sin que se entere (decisión 11-sep).
+  const ya=(capStockEdit||[]).find(i=>normTipoApp(i.tipo_equipo)===normTipoApp(t));
+  return `<div style="font-size:16px;font-weight:700">${esc(t)}</div>
+    <div style="font-size:12.5px;color:#8C9B92;margin-bottom:13px">¿Cuántas tenés?</div>
+    <div style="display:flex;align-items:center;gap:10px;background:#F1F4F0;border-radius:12px;padding:8px 11px;margin-bottom:13px">
+      <button onclick="agrCant=Math.max(1,agrCant-1);agrNums=agrNums.slice(0,agrCant);renderAgregar()"
+        style="width:40px;height:40px;border:1px solid #D4D9D2;border-radius:10px;background:#fff;font-size:20px;font-weight:700;color:#586B60;font-family:inherit;cursor:pointer">−</button>
+      <div style="flex:1;text-align:center;font-size:25px;font-weight:700;font-family:ui-monospace,monospace">${agrCant}</div>
+      <button onclick="agrCant=Math.min(99,agrCant+1);renderAgregar()"
+        style="width:40px;height:40px;border:1px solid #D4D9D2;border-radius:10px;background:#fff;font-size:20px;font-weight:700;color:#586B60;font-family:inherit;cursor:pointer">＋</button>
+    </div>
+    <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:#8C9B92;font-weight:700;margin-bottom:5px">Números <span style="text-transform:none;letter-spacing:0;font-weight:400">· si los sabés</span></div>
+    <input id="agr-num" placeholder="Escribí uno y tocá Enter" onkeydown="if(event.key==='Enter'){agrAddNum(this.value);this.value='';}"
+      onblur="if(this.value.trim()){agrAddNum(this.value);this.value='';}"
+      style="width:100%;padding:11px 13px;border:1px solid #D4D9D2;border-radius:11px;font-size:16px;font-family:inherit;background:#F1F4F0;box-sizing:border-box">
+    ${agrNums.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+      ${agrNums.map((n,ix)=>`<span style="background:#FBF0DC;color:#8A5A0B;border-radius:8px;padding:6px 10px;font-size:13px;font-family:ui-monospace,monospace;display:flex;gap:7px">${esc(n)}
+        <b onclick="agrNums.splice(${ix},1);renderAgregar()" style="opacity:.55;cursor:pointer">✕</b></span>`).join('')}</div>`:''}
+    <div style="font-size:11.5px;color:#8C9B92;margin-top:6px;line-height:1.4">
+      ${agrNums.length>=agrCant?'Listo, están todos.'
+        :`Van ${agrNums.length} de ${agrCant}. Si no ${faltan===1?'sabés el otro':'sabés los otros'}, dejalo así — igual queda${agrCant>1?'n':''} cargada${agrCant>1?'s':''}.`}</div>
+    <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:#8C9B92;font-weight:700;margin:14px 0 5px">Marca <span style="text-transform:none;letter-spacing:0;font-weight:400">· opcional</span></div>
+    <input value="${esc(agrMarca)}" placeholder="Stihl, Husqvarna, Echo…" oninput="agrMarca=this.value"
+      style="width:100%;padding:11px 13px;border:1px solid #D4D9D2;border-radius:11px;font-size:16px;font-family:inherit;background:#F1F4F0;box-sizing:border-box">
+    ${ya?`<div style="margin-top:13px;background:#E8F1FA;border:1px solid #C5DBF0;border-radius:11px;padding:11px 13px;font-size:12.5px;color:#2A5D94;line-height:1.45">
+      Ya tenés <b>${ya.cantidad} ${esc(ya.tipo_equipo)}</b>${(ya.numeros||[]).length?` (N° ${esc(ya.numeros.join(', '))})`:''} cargada${ya.cantidad===1?'':'s'}. ¿Las sumo a esas?</div>
+      <button onclick="agrGuardar(true)" style="width:100%;margin-top:9px;padding:14px;border:none;border-radius:12px;background:#159B51;color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">✓ Sumar — quedan ${ya.cantidad+agrCant}</button>
+      <button onclick="agrGuardar(false)" style="width:100%;margin-top:8px;padding:12px;border:1px solid #D4D9D2;border-radius:11px;background:#fff;color:#586B60;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer">Dejarlas separadas</button>`
+      :`<button onclick="agrGuardar(false)" style="width:100%;margin-top:15px;padding:15px;border:none;border-radius:12px;background:#159B51;color:#fff;font-size:15.5px;font-weight:700;font-family:inherit;cursor:pointer">Agregar</button>`}
+    <button onclick="agrPaso=1;renderAgregar()" style="width:100%;margin-top:8px;padding:12px;border:1px solid #D4D9D2;border-radius:11px;background:#fff;color:#586B60;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer">← Elegir otra máquina</button>`;
+}
+
+function agrAddNum(v){
+  const partes=String(v||'').split(/[,;]/).map(x=>x.trim()).filter(Boolean);
+  partes.forEach(n=>{if(!agrNums.some(x=>x.toLowerCase()===n.toLowerCase()))agrNums.push(n);});
+  // Cargar más números que la cantidad declarada sube la cantidad sola: es lo
+  // que el capataz quiso decir, y es mejor que trabarlo con un error.
+  if(agrNums.length>agrCant)agrCant=agrNums.length;
+  renderAgregar();
+}
+function normTipoApp(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
+
+function agrGuardar(sumar){
+  const t=agrTipo.tipo, marca=agrMarca.trim();
+  if(sumar){
+    const ya=capStockEdit.find(i=>normTipoApp(i.tipo_equipo)===normTipoApp(t));
+    if(ya){
+      ya.cantidad=(Number(ya.cantidad)||0)+agrCant;
+      agrNums.forEach(n=>{if(!(ya.numeros||[]).some(x=>String(x).toLowerCase()===n.toLowerCase()))(ya.numeros=ya.numeros||[]).push(n);});
+      if(marca&&!ya.observacion)ya.observacion=marca;
+      agrCerrar();toast(`✓ Quedaron ${ya.cantidad} ${t.toLowerCase()}`);render();return;
+    }
+  }
+  capStockEdit.push({tipo_equipo:t,cantidad:agrCant,numeros:agrNums.slice(),
+    observacion:marca||null,
+    clasificacion:{es_maquinaria:true,familia_consumo:agrTipo.familia}});
+  agrCerrar();
+  toast(`✓ ${agrCant} ${t.toLowerCase()}${agrCant>1?'s':''} agregada${agrCant>1?'s':''}`);
   render();
 }
 async function capStockGuardar(){
