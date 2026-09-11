@@ -138,14 +138,14 @@ async function sugerenciaApp(capataz) {
     const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app').replace(/^https?:\/\//, '').replace(/\/+$/, '');
     const usuario = capataz.usuario ? String(capataz.usuario).trim().toLowerCase() : null;
 
-    const ultima = capataz.app_sugerida_at ? new Date(capataz.app_sugerida_at).getTime() : 0;
-    const haceUnaSemana = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const completa = !ultima || ultima < haceUnaSemana;
+    // El mensaje completo sale SIEMPRE hasta que el capataz empieza a usar la
+    // app (decisión 11-sep). Antes era una vez por semana, y la línea corta
+    // pasaba desapercibida: quien nunca entró no se enteraba del link.
+    // Deja de insistir cuando ya tiene clave creada, que es la señal de que
+    // entró al menos una vez.
+    if (capataz.clave_hash) return '';
 
-    if (!completa) return `\n\n_📱 También podés cargarlo en la app:_ ${url}`;
-
-    // Se marca ANTES de armar el texto: si falla el update, peor es repetir
-    // el mensaje largo todos los días.
+    // Se marca la fecha igual, para saber a quién ya se le avisó.
     try {
       await supabase.from('capataces')
         .update({ app_sugerida_at: new Date().toISOString() }).eq('id', capataz.id);
@@ -181,7 +181,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (!sesiones[tel]) {
     const { data: capataz } = await supabase
       .from('capataces')
-      .select('id, nombre, objetivo_id, usuario, app_sugerida_at')
+      .select('id, nombre, objetivo_id, usuario, app_sugerida_at, clave_hash')
       .eq('telefono', tel)
       .eq('activo', true)
       .single();
