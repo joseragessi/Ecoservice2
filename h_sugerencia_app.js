@@ -48,23 +48,23 @@ const hace=(d)=>new Date(Date.now()-d*86400000).toISOString();
   eq('avisa que la contraseña la crea él', /cre[áa]s tu contrase/i.test(m));
   eq('marca la fecha para no repetir', updates.length===1 && updates[0].app_sugerida_at);
 
-  console.log('\n— Ya se la sugerimos hace 2 días: solo una línea —');
+  console.log('\n— Insiste hasta que entre a la app (decisión 11-sep) —');
   updates=[];
-  m=await sugerirApp({id:'c1',usuario:'eislas',app_sugerida_at:hace(2)});
-  eq('sugiere corto', m.length>0 && m.length<160, `${m.length} chars`);
-  eq('sigue trayendo el link', /railway\.app\/app/.test(m));
-  eq('sin el bloque largo', !/¿Sab[íi]as/.test(m), m);
-  eq('no vuelve a marcar la fecha', updates.length===0);
+  m=await sugerirApp({id:'c1',usuario:'eislas',app_sugerida_at:hace(0),clave_hash:null});
+  eq('aunque se la sugerimos hoy, vuelve a salir COMPLETA', /¿Sab[íi]as/.test(m), m.slice(0,80));
+  m=await sugerirApp({id:'c1',usuario:'eislas',app_sugerida_at:hace(2),clave_hash:null});
+  eq('a los 2 días también', /¿Sab[íi]as/.test(m));
+  eq('con el link y el usuario siempre', /railway\.app\/app/.test(m) && /eislas/.test(m));
 
-  console.log('\n— Pasaron 8 días: vuelve el completo —');
+  console.log('\n— Deja de insistir cuando ya entró —');
   updates=[];
-  m=await sugerirApp({id:'c1',usuario:'eislas',app_sugerida_at:hace(8)});
-  eq('vuelve el mensaje largo', /¿Sab[íi]as/.test(m));
-  eq('y marca la fecha de nuevo', updates.length===1);
+  m=await sugerirApp({id:'c1',usuario:'eislas',app_sugerida_at:hace(1),clave_hash:'abc123:def'});
+  eq('con clave creada, no sugiere nada', m==='', m);
+  eq('y no toca la base', updates.length===0);
 
   console.log('\n— Sin usuario cargado en Maestros —');
-  updates=[];
-  m=await sugerirApp({id:'c2',usuario:null,app_sugerida_at:null});
+  updates=[];CAP={usuario:null,clave_hash:null};
+  m=await sugerirApp({id:'c2',usuario:null,clave_hash:null});
   eq('NO manda el link (iría a una pantalla donde falla)', !/railway\.app\/app/.test(m), m);
   eq('lo manda a Logística', /Log[íi]stica/i.test(m));
   eq('y le dice que siga por WhatsApp', /segu[ií].*por ac[áa]/i.test(m));
@@ -84,9 +84,16 @@ const hace=(d)=>new Date(Date.now()-d*86400000).toISOString();
   fallarUpdate=false;
 
   console.log('\n— Los datos se traen si no vienen en la sesión —');
-  CAP={usuario:'dvega',app_sugerida_at:null};updates=[];
+  CAP={usuario:'dvega',clave_hash:null};updates=[];
   m=await sugerirApp({id:'c9'});
   eq('busca usuario y fecha en la base', /dvega/.test(m), m.slice(0,200));
+
+  console.log('\n— El menú NO cae en el flujo de stock (bug del 11-sep) —');
+  const idx=fs.readFileSync(__dirname+'/index.js','utf8');
+  const sinEsp=idx.replace(/\s+/g,' ');
+  eq('las opciones 1-6 pasan de largo el pedido pendiente',
+    /!\/\^\[1-6\]\$\/\.test\( ?mensaje\.trim\(\) ?\) && await tienePedidoPendiente/.test(sinEsp),
+    sinEsp.slice(sinEsp.indexOf('tienePedidoPendiente')-160, sinEsp.indexOf('tienePedidoPendiente')+40));
 
   console.log('\n— El menú sigue igual: es sugerencia, no bloqueo —');
   const conv=fs.readFileSync(__dirname+'/conversacion.js','utf8');
