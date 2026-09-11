@@ -387,6 +387,52 @@ function resumenFinal(sesion, nombre) {
   return `✅ Carga registrada, *${nombre}*:\n${lineas}`;
 }
 
+/**
+ * Sugerencia de usar la app, que se agrega DESPUÉS de registrar la carga.
+ * Va al final y no al principio a propósito: el capataz ya hizo lo que
+ * vino a hacer, así que el mensaje no le estorba.
+ *
+ * Es una SUGERENCIA (decisión 10-sep): el flujo por WhatsApp sigue igual.
+ * El mensaje completo sale una vez por semana; el resto, una línea.
+ */
+async function sugerirApp(capataz) {
+  try {
+    if (!capataz || !capataz.id) return '';
+    const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app')
+      .replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // El capataz de la sesión puede venir sin estos campos: se traen acá.
+    let usuario = capataz.usuario, ultima = capataz.app_sugerida_at;
+    if (usuario === undefined || ultima === undefined) {
+      const { data } = await supabase.from('capataces')
+        .select('usuario, app_sugerida_at').eq('id', capataz.id).maybeSingle();
+      if (data) { usuario = data.usuario; ultima = data.app_sugerida_at; }
+    }
+    const hace7 = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const completa = !ultima || new Date(ultima).getTime() < hace7;
+    if (!completa) return `\n\n_📱 Recordá que también podés cargarlo en la app:_ ${url}`;
+
+    try {
+      await supabase.from('capataces')
+        .update({ app_sugerida_at: new Date().toISOString() }).eq('id', capataz.id);
+    } catch (e) { /* la columna puede no existir todavía */ }
+
+    if (!usuario) {
+      return `\n\n━━━━━━━━━━━━━━\n📱 *Ahora también se puede cargar desde la app*\n\n` +
+        `Ahí elegís a qué máquina fue cada litro. Todavía no tenés usuario creado: pedíselo a Logística y te lo damos.\n\n` +
+        `_Mientras tanto, seguí cargando por acá._`;
+    }
+    return `\n\n━━━━━━━━━━━━━━\n📱 *¿Sabías que ahora podés cargarlo en la app?*\n\n` +
+      `Ahí elegís *a qué máquina* fue cada litro, en vez de "bidones". Así después se ve cuánto consume cada una.\n\n` +
+      `${url}\n\n` +
+      `👤 Tu usuario: *${String(usuario).trim().toLowerCase()}*\n` +
+      `🔑 La primera vez creás tu contraseña.\n\n` +
+      `_Si preferís, seguí cargando por acá — funciona igual._`;
+  } catch (e) {
+    console.error('[app] sugerencia combustible:', e.message || e);
+    return '';
+  }
+}
+
 // ── Entrada 1: llega la FOTO ──────────────────────────────────
 
 // Fecha de la carga saneada: si el OCR no leyó fecha, o leyó una futura o de
@@ -603,7 +649,7 @@ async function continuarConversacion(telefono, mensaje) {
     // Confirmación
     if (sesion.paso === 'confirmar_libre' && texto === '1') {
       const carga = await guardarCarga(sesion);
-      const resumen = resumenFinal(sesion, nombre);
+      const resumen = resumenFinal(sesion, nombre) + await sugerirApp(sesion.capataz);
       delete sesiones[tel];
       if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
       return resumen;
@@ -618,7 +664,7 @@ async function continuarConversacion(telefono, mensaje) {
         equipo_id: null, objetivo_id: null, detalle: null,
       }));
       const carga = await guardarCarga(sesion);
-      const resumen = resumenFinal(sesion, nombre);
+      const resumen = resumenFinal(sesion, nombre) + await sugerirApp(sesion.capataz);
       delete sesiones[tel];
       if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
       return resumen;
@@ -681,7 +727,7 @@ async function continuarConversacion(telefono, mensaje) {
     if (sesion.atajoBidones) {
       // Con el atajo no hay nada más que confirmar: se guarda directo.
       const carga = await guardarCarga(sesion);
-      const resumen = resumenFinal(sesion, nombre);
+      const resumen = resumenFinal(sesion, nombre) + await sugerirApp(sesion.capataz);
       delete sesiones[tel];
       if (!carga) return '⚠️ No pude guardar la carga. Avisá a administración.';
       return resumen;
