@@ -120,6 +120,55 @@ function iniciarIncidencia(tel, capataz) {
   return `🔧 Registremos la incidencia.\n\n*¿Qué equipo presenta la falla?*\nRespondé con el número:\n\n${lista}`;
 }
 
+/**
+ * Sugerencia de usar la app al cargar combustible. Devuelve el texto que se
+ * agrega al mensaje del bot, o '' si no corresponde sugerir ahora.
+ *
+ * Cadencia: el mensaje completo una vez por semana; el resto de las veces
+ * una línea sola. Si saliera entero en cada carga, a la tercera vez lo
+ * saltean sin leer y deja de servir.
+ *
+ * La fecha del último aviso se guarda en `capataces.app_sugerida_at`.
+ * Si la columna no existe todavía, se sugiere igual (versión corta) en vez
+ * de romper la carga: el combustible es más importante que el aviso.
+ */
+async function sugerenciaApp(capataz) {
+  try {
+    if (!capataz || !capataz.id) return '';
+    const url = (process.env.APP_URL || 'https://ecoservice-production.up.railway.app/app').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    const usuario = capataz.usuario ? String(capataz.usuario).trim().toLowerCase() : null;
+
+    const ultima = capataz.app_sugerida_at ? new Date(capataz.app_sugerida_at).getTime() : 0;
+    const haceUnaSemana = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const completa = !ultima || ultima < haceUnaSemana;
+
+    if (!completa) return `\n\n_📱 También podés cargarlo en la app:_ ${url}`;
+
+    // Se marca ANTES de armar el texto: si falla el update, peor es repetir
+    // el mensaje largo todos los días.
+    try {
+      await supabase.from('capataces')
+        .update({ app_sugerida_at: new Date().toISOString() }).eq('id', capataz.id);
+    } catch (e) { /* la columna puede no existir: se sugiere igual */ }
+
+    if (!usuario) {
+      // Sin usuario en Maestros no se le manda un link donde va a fallar.
+      return `\n\n━━━━━━━━━━━━━━\n📱 *Ahora también se puede cargar desde la app*\n\n` +
+        `Ahí elegís a qué máquina fue cada litro. Todavía no tenés usuario creado: pedíselo a Logística y te lo damos.\n\n` +
+        `_Mientras tanto, seguí mandando la foto por acá._`;
+    }
+    return `\n\n━━━━━━━━━━━━━━\n📱 *¿Sabías que ahora podés cargarlo en la app?*\n\n` +
+      `Ahí elegís *a qué máquina* fue cada litro, en vez de "bidones". Así después se ve cuánto consume cada una.\n\n` +
+      `${url}\n\n` +
+      `👤 Tu usuario: *${usuario}*\n` +
+      `🔑 La primera vez creás tu contraseña.\n\n` +
+      `_Si preferís, seguí mandando la foto por acá — funciona igual._`;
+  } catch (e) {
+    console.error('[app] sugerencia:', e.message || e);
+    return '';
+  }
+}
+
 async function procesarMensaje(telefono, mensaje) {
   const tel   = telefono.replace('whatsapp:', '').replace('+', '');
   const texto = mensaje.trim();
@@ -132,7 +181,7 @@ async function procesarMensaje(telefono, mensaje) {
   if (!sesiones[tel]) {
     const { data: capataz } = await supabase
       .from('capataces')
-      .select('id, nombre, objetivo_id')
+      .select('id, nombre, objetivo_id, usuario, app_sugerida_at')
       .eq('telefono', tel)
       .eq('activo', true)
       .single();
@@ -167,8 +216,12 @@ async function procesarMensaje(telefono, mensaje) {
   if (s.paso === 'menu') {
     const op = texto.trim();
     if (op === '1') {
+      const cap = s._capataz;
       limpiarSesion(tel);
-      return '⛽ Perfecto. Sacale una *foto* al remito o factura de la carga y mandámela por acá.';
+      // El flujo por WhatsApp sigue funcionando igual: esto es una SUGERENCIA
+      // (decisión 10-sep). En la app el capataz elige a qué MÁQUINA fue cada
+      // litro; por acá sigue siendo "unidad o bidón". Se sugiere, no se obliga.
+      return '⛽ Dale. Sacale una *foto* al remito y mandámela por acá.' + await sugerenciaApp(cap);
     }
     if (op === '2') {
       limpiarSesion(tel);
