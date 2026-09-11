@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-11 · Cost Intelligence y Reportes ocultos hasta que el dato esté';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-11 · Cost Intelligence y Reportes ocultos (en puedeVer)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -412,7 +412,24 @@ function misModulos(){
   try{const m=JSON.parse(localStorage.getItem('eco_mods')||'null');return Array.isArray(m)?m:null;}
   catch(e){return null;}
 }
-function puedeVer(mod){const m=misModulos();return m===null||m.includes(mod);}
+/* ── Módulos ocultos ──────────────────────────────────────────
+   Cost Intelligence y Reportes muestran números que todavía no se sostienen:
+   Cost Intelligence porque depende de que el capataz declare a qué máquina
+   fue cada litro (recién empieza), y Reportes porque arrastra criterios
+   viejos. Se ocultan del menú hasta que el dato esté (decisión 11-sep).
+
+   Va dentro de `puedeVer` y no como un display:none aparte: así ningún
+   camino los muestra. La primera versión los ocultaba al arrancar, pero
+   `aplicarPermisosNav()` corría después y volvía a mostrar Reportes.
+
+   El código queda entero: para volver a mostrarlos, sacá el módulo de esta
+   lista. Las vistas siguen funcionando si alguien entra por URL. */
+const MODULOS_OCULTOS=['costos','reportes'];
+
+function puedeVer(mod){
+  if(MODULOS_OCULTOS.includes(mod))return false;
+  const m=misModulos();return m===null||m.includes(mod);
+}
 function toastPermiso(){alert('No tenés acceso a ese módulo. Pedile al administrador que te lo habilite.');}
 function aplicarPermisosNav(){
   const m=misModulos();
@@ -427,23 +444,6 @@ function aplicarPermisosNav(){
  
 // ── Cost Intelligence · entrada dinámica al menú ─────────────────────────────
 // Se agrega desde JS para no exigir cambios en panel.html.
-/* ── Módulos ocultos ──────────────────────────────────────────
-   Cost Intelligence y Reportes muestran números que todavía no se sostienen:
-   Cost Intelligence porque depende de que el capataz declare a qué máquina
-   fue cada litro (recién empieza), y Reportes porque arrastra criterios
-   viejos. Se ocultan del menú hasta que el dato esté (decisión 11-sep).
-
-   El código queda entero: para volver a mostrarlos, sacá el módulo de esta
-   lista. Las vistas siguen funcionando si alguien entra por URL. */
-const MODULOS_OCULTOS=['costos','reportes'];
-
-function ocultarModulos(){
-  MODULOS_OCULTOS.forEach(v=>{
-    const el=document.querySelector(`.nav-item[data-v="${v}"]`);
-    if(el)el.style.display='none';
-  });
-}
-
 function asegurarNavCostos(){
   // No se inyecta si está oculto: si no, aparece y desaparece en cada render.
   if(MODULOS_OCULTOS.includes('costos'))return;
@@ -467,7 +467,6 @@ async function iniciar(){
   document.getElementById('user-name').textContent=localStorage.getItem('eco_user')||'';
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
   asegurarNavCostos();
-  ocultarModulos();
   aplicarPermisosNav();
   try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
   try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
