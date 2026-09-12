@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-11 · reparaciones por prioridad y antigüedad + aviso manual al capataz';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-12 · panel más rápido: caché de lecturas, deduplicación y llamadas en paralelo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -158,19 +158,89 @@ function railLabels(labels,idx){return `<div class="rail-labels">${labels.map((l
    Cualquier escritura (POST/PATCH/PUT/DELETE) borra la caché completa, así
    que un cambio propio se ve siempre al instante. Los 30 s solo pueden
    demorar un cambio hecho por OTRA persona desde la app. */
-const CACHE_TTL_MS=30*1000;
-const _cacheApi=new Map();   // ruta -> {t, data}
-function invalidarCacheApi(){ _cacheApi.clear(); if(typeof perfServices!=='undefined')perfServices=null; }
-async function apiC(ruta){
-  const hit=_cacheApi.get(ruta);
-  if(hit && Date.now()-hit.t < CACHE_TTL_MS) return hit.data;
-  const data=await api(ruta);
-  _cacheApi.set(ruta,{t:Date.now(),data});
-  return data;
+/* ── VELOCIDAD ────────────────────────────────────────────────
+   Medido el 03-sep con DevTools: cada llamada al servidor tarda entre 330 y
+   920 ms aunque devuelva 0.1 kB (Córdoba → Railway → Supabase). Un recorrido
+   de cuatro módulos disparaba 18 llamadas, con /api/reparaciones repetida 4
+   veces y /api/facturas 5. El problema nunca fue el tamaño de los datos:
+   es la CANTIDAD de veces que se pregunta.
+
+   Tres cosas, de mayor a menor impacto:
+
+   1. TODOS los GET se cachean. Antes solo 2 de 195 llamadas usaban apiC().
+      Es seguro porque cualquier escritura borra la caché entera: un cambio
+      propio se ve siempre al instante. Lo único que puede demorarse es un
+      cambio hecho por OTRA persona, y para eso está el aviso de cambios.
+
+   2. TTL según qué tan seguido cambia el dato. Los maestros (objetivos,
+      mecánicos, unidades) no cambian en toda la jornada; las facturas sí.
+
+   3. Deduplicación: si dos partes de la pantalla piden lo mismo al mismo
+      tiempo, se hace UN solo fetch y las dos esperan esa respuesta.
+
+   Para desactivar todo: escribí `CACHE_OFF=true` en la consola.
+   Para ver cuánto se ahorró: `cacheStats()`. */
+
+let CACHE_OFF=false;
+const CACHE_TTL_MS=45*1000;          // datos operativos
+const CACHE_TTL_LARGO=10*60*1000;    // maestros: no cambian en toda la jornada
+const RUTAS_LARGAS=[/^\/api\/objetivos/,/^\/api\/mecanicos/,/^\/api\/maestros/,
+  /^\/api\/unidades/,/^\/api\/capataces/,/^\/api\/equipos/,
+  /^\/api\/maquinas/,/^\/api\/stock\/clasificacion/];
+/* No se cachean: cambian en cada llamada o son puntuales.
+
+   Ojo con `flexxus-estado`: mientras se imputa una factura, flxVigilar()
+   pregunta "¿ya terminó?" cada 2,5 segundos durante hasta 3 minutos.
+   Cacheada 45 s, las primeras 18 consultas devolverían la misma respuesta
+   vieja y la pantalla quedaría trabada aunque Flexxus ya hubiera contestado. */
+const RUTAS_SIN_CACHE=[/^\/api\/cambios/,/^\/api\/panel-version/,/^\/api\/login/,
+  /\/exportar/,/\/pdf/,
+  // COMPRAS Y FLEXXUS QUEDAN AFUERA, ENTERO (decisión de José, 12-sep).
+  // El módulo está funcionando en producción con la integración contable y
+  // no se toca por ganar unos segundos: imputar una factura mal es un
+  // problema de otra escala que un panel lento. Si algún día se quiere
+  // acelerar, se hace aparte y con su propia prueba.
+  /^\/api\/compras/,/^\/api\/flexxus/,/flexxus/];
+
+const _cacheApi=new Map();      // ruta -> {t, data}
+const _enVuelo=new Map();       // ruta -> Promise (deduplicación)
+function invalidarCacheApi(){ _cacheApi.clear(); _enVuelo.clear(); if(typeof perfServices!=='undefined')perfServices=null; }
+function _ttlDe(ruta){ return RUTAS_LARGAS.some(re=>re.test(ruta))?CACHE_TTL_LARGO:CACHE_TTL_MS; }
+function _cacheable(ruta){ return !CACHE_OFF && !RUTAS_SIN_CACHE.some(re=>re.test(ruta)); }
+
+// apiC queda por compatibilidad: api() ya cachea igual.
+async function apiC(ruta){ return api(ruta); }
+
+const _stats={hits:0,miss:0,dedup:0};
+function cacheStats(){
+  const tot=_stats.hits+_stats.miss+_stats.dedup;
+  console.log(`Llamadas evitadas: ${_stats.hits+_stats.dedup} de ${tot} (${tot?Math.round((_stats.hits+_stats.dedup)/tot*100):0}%)`);
+  console.log(`  · ${_stats.hits} desde caché · ${_stats.dedup} deduplicadas · ${_stats.miss} al servidor`);
+  console.log(`  · ~${Math.round((_stats.hits+_stats.dedup)*0.5)} segundos ahorrados (a 500 ms por llamada)`);
+  return _stats;
 }
+
 async function api(ruta, opts={}) {
+  const metodo=(opts.method||'GET').toUpperCase();
   // Toda escritura invalida: nunca mostrar datos viejos después de un cambio.
-  if((opts.method||'GET').toUpperCase()!=='GET') invalidarCacheApi();
+  if(metodo!=='GET') invalidarCacheApi();
+
+  if(metodo==='GET' && _cacheable(ruta)){
+    const hit=_cacheApi.get(ruta);
+    if(hit && Date.now()-hit.t < _ttlDe(ruta)){ _stats.hits++; return hit.data; }
+    const vuelo=_enVuelo.get(ruta);
+    if(vuelo){ _stats.dedup++; return vuelo; }   // ya hay uno igual en camino
+    _stats.miss++;
+    const pr=_fetchApi(ruta,opts)
+      .then(d=>{ _cacheApi.set(ruta,{t:Date.now(),data:d}); return d; })
+      .finally(()=>_enVuelo.delete(ruta));
+    _enVuelo.set(ruta,pr);
+    return pr;
+  }
+  return _fetchApi(ruta,opts);
+}
+
+async function _fetchApi(ruta, opts={}) {
   const r = await fetch(ruta, { ...opts,
     headers:{ 'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{}), ...(opts.headers||{}) }});
   if (r.status===401){ salir(); throw new Error('Sesión vencida'); }
@@ -468,8 +538,15 @@ async function iniciar(){
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
   asegurarNavCostos();
   aplicarPermisosNav();
-  try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
-  try{mecanicos=await api('/api/mecanicos');}catch(e){mecanicos=[];}
+  // En paralelo: son independientes, y esperar una detrás de otra duplicaba
+  // el tiempo hasta ver la primera pantalla (~1 s en vez de ~0,5).
+  {
+    const [o,m]=await Promise.all([
+      api('/api/objetivos').catch(()=>[]),
+      api('/api/mecanicos').catch(()=>[]),
+    ]);
+    objetivos=o; mecanicos=m;
+  }
   // Entrar por el primer módulo permitido (no siempre es el dashboard)
   // El dashboard salió del menú (agosto 2026: no aportaba). La vista sigue en
   // el código por si se retoma, pero ya no se entra por defecto.
@@ -8715,13 +8792,16 @@ async function vMaestros(view){
 }
 async function cargarMaestros(){
   try{
-    if(maestroTab==='capataces'&&!unidadesData.length){
-      try{unidadesData=await api('/api/maestros/unidades');}catch(e){unidadesData=[];}
-    }
-    if((maestroTab==='capataces'||maestroTab==='mecanicos')&&!objetivos.length){
-      try{objetivos=await api('/api/objetivos');}catch(e){objetivos=[];}
-    }
-    maestrosData=await api('/api/maestros/'+maestroTab);renderMaestros();}
+    // Las tres en paralelo: antes eran tres esperas encadenadas de ~500 ms.
+    // Las que no hacen falta para la pestaña resuelven sin pedir nada.
+    const pUni=(maestroTab==='capataces'&&!unidadesData.length)
+      ? api('/api/maestros/unidades').catch(()=>[]) : Promise.resolve(null);
+    const pObj=((maestroTab==='capataces'||maestroTab==='mecanicos')&&!objetivos.length)
+      ? api('/api/objetivos').catch(()=>[]) : Promise.resolve(null);
+    const [u,o,md]=await Promise.all([pUni,pObj,api('/api/maestros/'+maestroTab)]);
+    if(u)unidadesData=u;
+    if(o)objetivos=o;
+    maestrosData=md;renderMaestros();}
   catch(e){document.getElementById('mm-lista').innerHTML='<div class="cargando-v">No pude cargar.</div>';}
 }
 function renderMaestros(){
