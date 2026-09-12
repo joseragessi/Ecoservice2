@@ -2114,6 +2114,99 @@ router.post('/api/stock/fotos/backfill', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'No pude hacer el backfill: ' + (err.message || '') }); }
 });
  
+// ── AVISO: máquinas que no llegan al taller ───────────────────
+// Una reparación reportada hace más de 7 días que todavía no ingresó al
+// taller es una máquina parada en el objetivo que nadie mandó. El mecánico
+// no la puede tocar —desde el 11-sep ya no le resta puntos— pero la máquina
+// sigue sin andar.
+//
+// NO se manda solo: lo dispara José desde el panel cuando corresponde. Un
+// aviso automático diario termina ignorado, y él sabe cuándo ya lo habló.
+const DIAS_SIN_INGRESAR = 7;
+
+// Qué se mandaría: se consulta antes de mandar, para poder mostrarlo.
+async function maquinasSinIngresar() {
+  const corte = new Date(Date.now() - DIAS_SIN_INGRESAR * 86400000).toISOString();
+  const { data, error } = await supabase
+    .from('incidencias')
+    .select('id, tipo_equipo, numero_unidad, tipo_falla, prioridad, created_at, aviso_traslado_at, capataz_id, capataces(nombre, telefono), objetivos(nombre)')
+    .is('fecha_ingreso_taller', null)
+    .neq('estado', 'finalizado')
+    .lt('created_at', corte)
+    .order('created_at');
+  if (error) throw error;
+  return data || [];
+}
+
+router.get('/api/reparaciones/sin-ingresar', auth, async (req, res) => {
+  try {
+    const incs = await maquinasSinIngresar();
+    // Agrupadas por capataz: un mensaje con todas sus máquinas, no uno por
+    // cada una. Tres máquinas son tres mensajes que nadie lee.
+    const porCap = {};
+    incs.forEach(i => {
+      const k = i.capataz_id || 'sin';
+      const g = porCap[k] || (porCap[k] = {
+        capataz_id: i.capataz_id || null,
+        nombre: i.capataces ? i.capataces.nombre : null,
+        telefono: i.capataces ? i.capataces.telefono : null,
+        objetivo: i.objetivos ? i.objetivos.nombre : null,
+        incidencias: [], avisado_at: null,
+      });
+      g.incidencias.push({
+        id: i.id, tipo_equipo: i.tipo_equipo, numero_unidad: i.numero_unidad,
+        tipo_falla: i.tipo_falla, prioridad: i.prioridad, created_at: i.created_at,
+        dias: Math.floor((Date.now() - new Date(i.created_at)) / 86400000),
+        avisado_at: i.aviso_traslado_at,
+      });
+      // El aviso más reciente del grupo: sirve para no repetir sin darse cuenta.
+      if (i.aviso_traslado_at && (!g.avisado_at || i.aviso_traslado_at > g.avisado_at)) g.avisado_at = i.aviso_traslado_at;
+    });
+    const grupos = Object.values(porCap)
+      .map(g => ({ ...g, sin_avisar: g.incidencias.filter(x => !x.avisado_at).length }))
+      .sort((a, b) => b.incidencias.length - a.incidencias.length);
+    res.json({ total: incs.length, dias: DIAS_SIN_INGRESAR, grupos });
+  } catch (err) {
+    console.error('sin-ingresar:', err);
+    res.status(500).json({ error: 'No pude armar la lista: ' + (err.message || '') });
+  }
+});
+
+// Mandarle el aviso a UN capataz. Se dispara desde el panel, a mano.
+router.post('/api/reparaciones/sin-ingresar/avisar', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ids = Array.isArray(b.incidencia_ids) ? b.incidencia_ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'No hay máquinas para avisar' });
+
+    const incs = (await maquinasSinIngresar()).filter(i => ids.includes(i.id));
+    if (!incs.length) return res.status(404).json({ error: 'Esas máquinas ya no están sin ingresar' });
+    const cap = incs[0].capataces;
+    if (!cap || !cap.telefono) return res.status(422).json({ error: 'Ese capataz no tiene teléfono cargado en Maestros' });
+
+    const nom = String(cap.nombre || '').split(' ')[0] || 'capataz';
+    const n = incs.length;
+    const lineas = incs.map(i => {
+      const dias = Math.floor((Date.now() - new Date(i.created_at)) / 86400000);
+      return `  • ${i.tipo_equipo || 'Equipo'} ${i.numero_unidad || ''} — reportada hace ${dias} días${i.tipo_falla ? ` (${i.tipo_falla})` : ''}`;
+    }).join('\n');
+    const texto = `🔧 Hola *${nom}*. ${n === 1 ? 'Esta máquina sigue' : `Estas ${n} máquinas siguen`} sin llegar al taller:\n\n${lineas}\n\n` +
+      `${n === 1 ? 'La reportaste' : 'Las reportaste'} pero ${n === 1 ? 'no llegó' : 'no llegaron'}, así que ${n === 1 ? 'nadie la pudo revisar' : 'nadie las pudo revisar'}.\n` +
+      `¿${n === 1 ? 'La podés mandar' : 'Las podés mandar'} o ${n === 1 ? 'ya se arregló' : 'ya se arreglaron'}? Avisale a Logística.`;
+
+    const ok = await notificarCapataz(cap.telefono, texto);
+    if (!ok) return res.status(502).json({ error: 'No pude mandar el WhatsApp. Revisá el teléfono del capataz.' });
+
+    const ahora = new Date().toISOString();
+    await supabase.from('incidencias').update({ aviso_traslado_at: ahora }).in('id', incs.map(i => i.id));
+    console.log(`[traslado] ${req.usuario || '?'} avisó ${incs.length} a ${cap.nombre}`);
+    res.json({ ok: true, avisadas: incs.length, capataz: cap.nombre });
+  } catch (err) {
+    console.error('sin-ingresar avisar:', err);
+    res.status(500).json({ error: 'No pude avisar: ' + (err.message || '') });
+  }
+});
+
 // ── CLASIFICACIÓN DE EQUIPOS (Cost Intelligence V4) ───────────
 // Qué tiene motor y qué es de pañol, por tipo de equipo. Lo que tiene motor
 // entra a Combustible; lo que no, no ensucia ningún cálculo de consumo.
