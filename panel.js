@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-11 · Cost Intelligence y Reportes ocultos (en puedeVer)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-11 · reparaciones por prioridad y antigüedad + aviso manual al capataz';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -5853,7 +5853,7 @@ function informeMecanico(nombre){
     ['Urgencias (crítica / alta / parada)',M.urgencia],
     ['Preventivos realizados',M.prev],
     ['Services cargados',M.serv||0],
-    ['Dormidas (abiertas >'+PERF_DORMIDA_DIAS+' días)',-(M.dormidas||0)],
+    ['Dormidas (en el taller >'+PERF_DORMIDA_DIAS+' días)',-(M.dormidas||0)],
   ].filter(([,v])=>v);
  
   // ── Reparaciones del mes, compacto: una línea cada una ──
@@ -5924,7 +5924,8 @@ function informeMecanico(nombre){
   </div>
  
   ${f.rebotes.length?`<div class="reb"><b>Volvieron al taller:</b> ${f.rebotes.map(r=>`${esc(r.eq)} ${esc(r.uni)} a los ${r.dias} d${r.fallaBase?` (entró por ${esc(r.fallaBase)}${r.fallaVuelta&&r.fallaVuelta!==r.fallaBase?`, volvió por ${esc(r.fallaVuelta)}`:''})`:''}`).join(' · ')}</div>`:''}
-  ${f.dormidas.length?`<div class="reb" style="background:#fff8ec;border-color:#f0d8a8"><b style="color:#9a6212">Abiertas hace más de ${PERF_DORMIDA_DIAS} días sin esperar repuestos (−2 c/u):</b> ${f.dormidas.map(d=>`${esc(d.eq)} ${esc(d.uni)} (${Math.round(d.dias)} d)`).join(' · ')}</div>`:''}
+  ${f.dormidas.length?`<div class="reb" style="background:#fff8ec;border-color:#f0d8a8"><b style="color:#9a6212">En el taller hace más de ${PERF_DORMIDA_DIAS} días sin esperar repuestos (−2 c/u):</b> ${f.dormidas.map(d=>`${esc(d.eq)} ${esc(d.uni)} (${Math.round(d.dias)} d en el taller)`).join(' · ')}</div>`:''}
+  ${(f.sin_ingresar||[]).length?`<div class="reb" style="background:#F4F6F2;border-color:#E6EBE4"><b style="color:#586B60">Reportadas hace más de ${PERF_DORMIDA_DIAS} días que todavía NO llegaron al taller (no restan):</b> ${f.sin_ingresar.map(d=>`${esc(d.eq)} ${esc(d.uni)} (${Math.round(d.dias)} d${d.objetivo?' · '+esc(d.objetivo):''}${d.capataz?' · '+esc(d.capataz):''})`).join(' · ')}<div style="font-size:11px;color:#8C9B92;margin-top:4px">Están en el objetivo, no en el taller. El mecánico no las puede tocar: hay que reclamarle al capataz que las mande.</div></div>`:''}
  
   <h2>Reparaciones cerradas en el mes · ${reps.length}</h2>
   ${reps.length?`<table><thead><tr><th>Máquina</th><th>Cómo se puntuó</th><th style="text-align:right">Pts</th></tr></thead>
@@ -6172,15 +6173,39 @@ async function vRepPerf(view){
   const base90PorMec={};
   base90.forEach(f=>{const m=nomMec(f)||'Sin asignar';base90PorMec[m]=(base90PorMec[m]||0)+1;});
  
-  // Dormidas AL CORTE: abiertas hace más de N días a esa fecha, que no
-  // esperan repuestos. Una que se cerró después del corte todavía estaba
-  // abierta ese día y cuenta igual; si se cerró antes, no.
-  const dormidas={};
+  // Dormidas AL CORTE: en el taller hace más de N días, sin esperar repuestos.
+  //
+  // ⚠️ CAMBIÓ EL 11-sep. El reloj arranca en el INGRESO AL TALLER, no en el
+  // reporte del capataz. Antes contaba desde `created_at`, y eso castigaba al
+  // mecánico por máquinas que nunca le llegaron: de 18 dormidas ese día, 14
+  // seguían en el objetivo. Carlos Gonzalez tenía −12 puntos (el 40% del
+  // objetivo del mes) y 5 de sus 6 dormidas nunca habían entrado al taller.
+  // El puntaje tiene que medir lo que el mecánico hace o deja de hacer; que
+  // el capataz mande la máquina no depende de él.
+  //
+  // Las que nunca ingresaron se juntan aparte: no puntúan, pero se muestran
+  // para poder reclamarle al capataz.
+  const dormidas={}, sinIngresar={};
   todas.filter(r=>r.estado!=='esperando_repuestos'&&!r.motivo_cierre
     &&(r.estado!=='finalizado'||!r.fecha_finalizado||new Date(r.fecha_finalizado).getTime()>corte)
     &&new Date(r.created_at).getTime()<=corte).forEach(r=>{
-    const d=diasEntre(r.created_at,new Date(corte).toISOString());
-    if(d!=null&&d>PERF_DORMIDA_DIAS){const m=nomMec(r)||'Sin asignar';(dormidas[m]=dormidas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',dias:Math.round(d*10)/10});}
+    const m=nomMec(r)||'Sin asignar';
+    const ing=r.fecha_ingreso_taller;
+    if(!ing||new Date(ing).getTime()>corte){
+      // Todavía en el objetivo. No resta, pero se anota si lleva mucho.
+      const dRep=diasEntre(r.created_at,new Date(corte).toISOString());
+      if(dRep!=null&&dRep>PERF_DORMIDA_DIAS){
+        (sinIngresar[m]=sinIngresar[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',
+          dias:Math.round(dRep*10)/10,objetivo:r.objetivos?r.objetivos.nombre:null,
+          capataz:r.capataces?r.capataces.nombre:null});
+      }
+      return;
+    }
+    const d=diasEntre(ing,new Date(corte).toISOString());
+    if(d!=null&&d>PERF_DORMIDA_DIAS){
+      (dormidas[m]=dormidas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',
+        dias:Math.round(d*10)/10,desde_reporte:Math.round((diasEntre(r.created_at,new Date(corte).toISOString())||0)*10)/10});
+    }
   });
  
   // Puntaje del mes, con el detalle línea por línea (el "por qué").
@@ -6282,7 +6307,8 @@ async function vRepPerf(view){
     const obj=objetivoDe(n);
     return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,obj,es2T:obj===PERF_OBJETIVO_2T,
       cumple:M.total>=obj&&habilitado,
-      rebotes:rebotes[n]||[],descartes:descartes[n]||[],anteriores:anteriores[n]||[],dormidas:dormidas[n]||[]};
+      rebotes:rebotes[n]||[],descartes:descartes[n]||[],anteriores:anteriores[n]||[],
+      dormidas:dormidas[n]||[],sin_ingresar:sinIngresar[n]||[]};
   }).sort((a,b)=>b.M.total-a.M.total);
   // El informe individual lee de acá: mismos números que el ranking, siempre.
   perfFilas=filas;
@@ -6341,7 +6367,7 @@ async function vRepPerf(view){
             <span style="flex:1">↩̶ ${x.eq} ${x.uni} a los ${x.dias} d · ${x.por==='auto'?`otra falla (${x.fallaBase} ≠ ${x.fallaVuelta})`:`descartado a mano${x.motivo?': '+x.motivo:''}`}</span>
             ${x.por==='manual'?`<button class="btn-salir" style="padding:2px 8px;font-size:10.5px" onclick="restaurarRebote('${x.idVuelta}')">Restaurar</button>`:''}
           </div>`).join('')}`:''}
-        <div class="sub" style="font-size:11px;margin-top:8px">🤖 Cada reparación se analiza al finalizarla: criticidad, falla, lo que hizo el taller y los repuestos → <b>1 punto ≈ 1 hora de mano de obra</b> (la espera de repuestos no cuenta). ✏️ podés corregir cualquier puntaje a mano. 📋 = sin analizar todavía, puntúa por la tabla de pesos. Aparte: preventivo +2 · service cargado +2 · dormida &gt;${PERF_DORMIDA_DIAS}d −2. La calidad no suma: habilita (≤${PERF_REINC_MAX}% de rebotes en el mes; un rebote cuenta solo en el mes en que la máquina volvió).</div>
+        <div class="sub" style="font-size:11px;margin-top:8px">🤖 Cada reparación se analiza al finalizarla: criticidad, falla, lo que hizo el taller y los repuestos → <b>1 punto ≈ 1 hora de mano de obra</b> (la espera de repuestos no cuenta). ✏️ podés corregir cualquier puntaje a mano. 📋 = sin analizar todavía, puntúa por la tabla de pesos. Aparte: preventivo +2 · service cargado +2 · dormida &gt;${PERF_DORMIDA_DIAS}d en el taller −2 (el reloj arranca en el <b>ingreso</b>, no en el reporte: lo que sigue en el objetivo no resta). La calidad no suma: habilita (≤${PERF_REINC_MAX}% de rebotes en el mes; un rebote cuenta solo en el mes en que la máquina volvió).</div>
       </div>`;
     return `<div class="panel" style="cursor:pointer;margin-bottom:10px${f.cumple?';border:1.5px solid var(--brote)':''}" onclick="perfOpen=perfOpen==='${f.n.replace(/'/g,"\\'")}'?null:'${f.n.replace(/'/g,"\\'")}';go('reparaciones')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
@@ -7230,7 +7256,21 @@ function renderReparaciones(view){
     (!repFPrio||r.prioridad===repFPrio)&&
     (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
     (!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj))&&
-    matchRep(r));
+    matchRep(r))
+    // ORDEN (11-sep): crítico → alta → media → baja, y DENTRO de cada
+    // prioridad, lo más viejo primero. Antes ordenaba solo por fecha y lo
+    // urgente quedaba enterrado abajo: solo se mira lo que está arriba.
+    // Las dos cosas juntas: arriba lo crítico, y dentro de lo crítico lo que
+    // más tiempo lleva esperando.
+    .slice().sort((a,b)=>{
+      const P={critico:0,alta:1,media:2,baja:3};
+      const pa=P[a.prioridad]!==undefined?P[a.prioridad]:9, pb=P[b.prioridad]!==undefined?P[b.prioridad]:9;
+      if(pa!==pb)return pa-pb;
+      // Las finalizadas van al fondo de su prioridad: lo abierto es lo que hay que mirar.
+      const fa=a.estado==='finalizado'?1:0, fb=b.estado==='finalizado'?1:0;
+      if(fa!==fb)return fa-fb;
+      return new Date(a.created_at)-new Date(b.created_at);   // más vieja primero
+    });
   const resumen={critico:cnt('prioridad','critico'),alta:cnt('prioridad','alta'),media:cnt('prioridad','media'),baja:cnt('prioridad','baja')};
  
   const activas=repData.filter(r=>r.estado!=='finalizado').length;
@@ -7277,6 +7317,7 @@ function renderReparaciones(view){
       <div style="display:flex;gap:14px;font-size:12px;align-items:center" class="mono">
         <span style="color:#DC4A5B">● ${resumen.critico} crítico</span><span style="color:#D98A1F">● ${resumen.alta} alta</span>
         <span style="color:#3B7DC4">● ${resumen.media} media</span><span style="color:#159B51">● ${resumen.baja} baja</span>
+        <button class="btn-salir" style="font-family:'Sora'" onclick="repSinIngresar()" title="máquinas reportadas hace más de una semana que nunca llegaron al taller">🚚 No llegaron</button>
         <button class="btn-salir" style="font-family:'Sora'" onclick="exportarIncidencias()" title="descarga lo que estás viendo, con los filtros aplicados">⬇ Exportar</button>
         <button class="btn" style="font-family:'Sora'" onclick="repAltaToggle()">+ Nueva incidencia</button></div></div>
     ${tabsRep()}
@@ -7296,12 +7337,63 @@ function renderReparaciones(view){
           <span class="sub" style="font-size:12px;white-space:nowrap">${filtrada.length} de ${base.length}</span>
           ${repFQ||repFPrio||repFMec||repFObj||repFIngreso?`<button class="btn ghost" style="padding:5px 11px;font-size:11.5px" onclick="repLimpiarFiltros()">✕ limpiar</button>`:''}
         </div>
+        <div class="sub" style="font-size:11px;margin-bottom:7px">Ordenadas por prioridad y, dentro de cada una, las más viejas primero.</div>
         <table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Unidad</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
         <tbody id="rep-body">${filas||`<tr><td colspan="8"><div class="empty"><div>${repFQ?'Nada con esa búsqueda.':'No hay incidencias con estos filtros.'}</div></div></td></tr>`}</tbody></table></div>
       <div class="side" id="rep-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg><div>Elegí una incidencia<br>para ver el detalle</div></div></div>
     </div>`;
   window._repFiltrada=filtrada;
 }
+/* ── Máquinas que no llegaron al taller ───────────────────────
+   Reportadas hace más de una semana, todavía en el objetivo. El mecánico no
+   las puede tocar (desde el 11-sep ya no le restan puntos), pero la máquina
+   sigue sin andar. José le avisa al capataz desde acá, a mano: un aviso
+   automático diario termina ignorado, y él sabe cuándo ya lo habló. */
+async function repSinIngresar(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='sin-ing';
+  bg.innerHTML=`<div class="modal" style="max-width:620px"><div class="modal-tit">🚚 Máquinas que no llegaron al taller</div><div class="cargando-v">Buscando…</div></div>`;
+  document.body.appendChild(bg);
+  try{
+    const d=await api('/api/reparaciones/sin-ingresar');
+    const P={critico:'b-red',alta:'b-amber',media:'b-blue',baja:'b-green'};
+    bg.querySelector('.modal').innerHTML=`<div class="modal-tit">🚚 Máquinas que no llegaron al taller</div>
+      <div class="sub" style="margin:4px 0 12px">Reportadas hace más de ${d.dias} días y todavía en el objetivo. No le restan puntos al mecánico —no las puede tocar— pero la máquina sigue parada.</div>
+      ${d.grupos.length?d.grupos.map(g=>`
+        <div class="panel" style="margin-bottom:10px;padding:12px 14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <div><b>${escStk(g.nombre||'Sin capataz')}</b>${g.objetivo?`<span class="sub"> · ${escStk(g.objetivo)}</span>`:''}
+              <div class="sub" style="font-size:11px">${g.incidencias.length} máquina${g.incidencias.length===1?'':'s'}${g.avisado_at?` · último aviso ${fechaAR(String(g.avisado_at).slice(0,10))}`:''}</div></div>
+            ${g.telefono
+              ? `<button class="btn" style="padding:7px 13px;font-size:12.5px" onclick="repAvisar('${g.capataz_id}',this)">📲 Avisar${g.sin_avisar<g.incidencias.length?' de nuevo':''}</button>`
+              : '<span class="badge b-gray">sin teléfono en Maestros</span>'}
+          </div>
+          ${g.incidencias.map(i=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--linea);font-size:12.5px">
+            <span class="badge ${P[i.prioridad]||'b-gray'}">${escStk(i.prioridad||'—')}</span>
+            <span style="flex:1">${escStk(i.tipo_equipo||'Equipo')} <b class="mono">${escStk(i.numero_unidad||'')}</b>${i.tipo_falla?`<span class="sub"> · ${escStk(i.tipo_falla)}</span>`:''}</span>
+            <span class="mono ${i.dias>14?'':'sub'}" style="${i.dias>14?'color:var(--rojo);font-weight:600':''}">${i.dias} d</span>
+            ${i.avisado_at?'<span class="badge b-gray" style="font-size:9.5px">avisado</span>':''}
+          </div>`).join('')}
+        </div>`).join('')
+        :'<div class="sub" style="padding:14px 0">Ninguna. Todo lo reportado llegó al taller.</div>'}
+      <div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('sin-ing').remove()">Cerrar</button></div>`;
+    window._sinIng=d;
+  }catch(e){bg.querySelector('.modal').innerHTML=`<div class="sub">${escStk(e.message)}</div><div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('sin-ing').remove()">Cerrar</button></div>`;}
+}
+async function repAvisar(capatazId,btn){
+  const d=window._sinIng;if(!d)return;
+  const g=d.grupos.find(x=>String(x.capataz_id)===String(capatazId));if(!g)return;
+  const ya=g.avisado_at?`\n\nYa se le avisó el ${fechaAR(String(g.avisado_at).slice(0,10))}.`:'';
+  if(!await uiConfirm(`Se le manda un WhatsApp a <b>${escStk(g.nombre)}</b> con ${g.incidencias.length} máquina${g.incidencias.length===1?'':'s'} para que ${g.incidencias.length===1?'la mande':'las mande'} al taller.${ya}`,
+    '¿Avisar al capataz?',{ok:'📲 Avisar'}))return;
+  btn.disabled=true;btn.textContent='Enviando…';
+  try{
+    const r=await api('/api/reparaciones/sin-ingresar/avisar',{method:'POST',
+      body:JSON.stringify({incidencia_ids:g.incidencias.map(i=>i.id)})});
+    toast(`✓ Avisadas ${r.avisadas} a ${r.capataz}`);
+    document.getElementById('sin-ing').remove();repSinIngresar();
+  }catch(e){btn.disabled=false;btn.textContent='📲 Avisar';toast(e.message,'error');}
+}
+
 let repDetalleAbierto=false;
 async function cambiarTipoRep(id,tipo){
   try{
