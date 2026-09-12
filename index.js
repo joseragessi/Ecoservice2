@@ -85,6 +85,72 @@ const app = express();
 app.use(compression());
 
 
+// ── Caché de lecturas del lado del SERVIDOR ──────────────────
+// El panel ya cachea del lado del navegador, pero eso sirve para UN usuario.
+// Acá son varios a la vez (José, Sole, Leila, Owen) y todos piden lo mismo:
+// sin esto, cada uno dispara su propia consulta a Supabase.
+//
+// Además, el 304 que devolvía Express NO ahorraba trabajo: la consulta a
+// Supabase se ejecutaba igual y recién al final se comparaba el ETag. Solo
+// se ahorraba el transporte, que no era el problema (0.1 kB tardando 900 ms).
+//
+// 20 segundos: suficiente para que varios usuarios compartan la respuesta,
+// corto para que un cambio de otro se vea casi enseguida. Cualquier escritura
+// borra la caché entera, así que un cambio propio nunca se demora.
+const _cacheGet = new Map();          // clave -> {t, status, body}
+const CACHE_GET_MS = 20 * 1000;
+// Lo que NO se puede cachear ni 20 segundos:
+//  · cambios / panel-version: son el aviso de que algo cambió.
+//  · login.
+//  · flexxus/estado: el estado de la conexión al ERP.
+//  · flexxus-estado de una factura: es el "¿ya terminó?" que el panel
+//    pregunta cada pocos segundos mientras se imputa. Cacheado, la pantalla
+//    se quedaría quieta aunque Flexxus ya hubiera respondido.
+//  · Lo mismo con la cola de imputación y el estado de las órdenes.
+// COMPRAS Y FLEXXUS QUEDAN AFUERA, ENTERO (decisión de José, 12-sep): el
+// módulo funciona en producción con la integración contable y no se toca por
+// ganar unos segundos. Imputar una factura mal es un problema de otra escala.
+// Tampoco: el aviso de cambios, la versión del panel y el login.
+const NO_CACHEAR = /^\/api\/(compras|flexxus|cambios|panel-version|login)/;
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+
+  // Cualquier escritura vacía la caché: nadie ve un dato viejo después de
+  // un cambio, ni siquiera otro usuario.
+  if (req.method !== 'GET') { _cacheGet.clear(); return next(); }
+  if (NO_CACHEAR.test(req.path)) return next();
+
+  // La clave incluye el usuario: hay endpoints que responden distinto según
+  // los permisos, y mezclarlos sería un agujero de seguridad.
+  const auth = req.headers.authorization || '';
+  const clave = auth.slice(-24) + '|' + req.originalUrl;
+
+  const hit = _cacheGet.get(clave);
+  if (hit && Date.now() - hit.t < CACHE_GET_MS) {
+    res.set('X-Cache', 'HIT');
+    return res.status(hit.status).json(hit.body);
+  }
+
+  // Se intercepta res.json para guardar lo que se responde.
+  const orig = res.json.bind(res);
+  res.json = (body) => {
+    // Solo se cachean las respuestas OK: un error no se repite a los demás.
+    if (res.statusCode === 200) {
+      _cacheGet.set(clave, { t: Date.now(), status: 200, body });
+      // Tope de entradas, para que la memoria no crezca sin control.
+      if (_cacheGet.size > 400) {
+        const viejas = [..._cacheGet.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, 150);
+        viejas.forEach(([k]) => _cacheGet.delete(k));
+      }
+    }
+    res.set('X-Cache', 'MISS');
+    return orig(body);
+  };
+  next();
+});
+
+
 // Registro de cambios por módulo:
 // cada escritura marca su módulo para que
 // el panel se entere sin recargar cada tanto.
