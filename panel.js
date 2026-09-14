@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-12 · panel más rápido: caché de lecturas, deduplicación y llamadas en paralelo';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-14 · stock por mes y comparación; se saca Desvíos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2849,7 +2849,11 @@ function horaStk(iso){if(!iso)return'';return new Date(iso).toLocaleString('es-A
    Las vistas viejas (Por objetivo, Inventario, Consolidado, Detalle) siguen
    en el código y se llegan desde Control mientras el padrón se termina de
    cargar: no se perdió nada, dejaron de ser pestañas de primer nivel. */
-const STOCK_TABS=[['general','General'],['desvios','Desvíos'],['clasificacion','Clasificación'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
+// Desvíos salió el 14-sep: la comparación de dos meses en General cubre lo
+// que José necesita (la diferencia y si está en el taller) sin las movidas
+// entre objetivos, las renumeradas ni los cierres con motivo. El código de
+// la vista queda por si alguna vez se retoma.
+const STOCK_TABS=[['general','General'],['clasificacion','Clasificación'],['maquinas','Máquinas'],['panol','Pañol'],['censo','Censo']];
 const STOCK_SUB={};   // las subvistas colgaban de Control, que se sacó
 function tabsStk(){
   return `<div class="toggle-imp" style="margin-bottom:16px">
@@ -2863,7 +2867,8 @@ function difStk(d){
  
 async function vStock(view){
   if(stockTab==='general')return vStockGeneral(view);
-  if(stockTab==='desvios')return vStockDesvios(view);
+  // Si quedó guardado el tab viejo en una pestaña abierta, cae en General.
+  if(stockTab==='desvios'){stockTab='general';return vStockGeneral(view);}
   if(stockTab==='clasificacion')return vStockClasificacion(view);
   if(stockTab==='panol')return vStockPanol(view);
   if(stockTab==='maquinas')return vMaquinas(view);
@@ -2876,6 +2881,70 @@ async function vStock(view){
   return vStockCenso(view);
 }
  
+/* Comparar dos meses: qué declaró cada objetivo en uno y en otro.
+   El TALLER es el de HOY, con la fecha de ingreso al lado — no se
+   reconstruye el pasado (decisión de José, 14-sep).
+   Y el protocolo manda: el capataz declara todo lo que tiene, así que una
+   máquina que no aparece pero está en el taller NO es faltante. Faltante es
+   solo lo que no está declarado NI en el taller. */
+function pintarComparacion(view,selMes,selComp){
+  const C=stkGen.comparacion, T=C.totales||{};
+  const fD=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${+m[3]}/${+m[2]}`:'';};
+  const chip=x=>{
+    if(x.estado==='taller')return `<span class="nu t" title="en el taller${x.ingreso?' desde el '+fD(x.ingreso):''}">${escStk(x.n)}</span>`;
+    if(x.estado==='falta')return `<span class="nu f" title="no declarada y no está en el taller">${escStk(x.n)}</span>`;
+    if(x.estado==='nuevo')return `<span class="nu n" title="apareció en ${mesStk(C.hasta)}">${escStk(x.n)}</span>`;
+    return `<span class="nu">${escStk(x.n)}</span>`;
+  };
+  let vis=(C.objetivos||[]).filter(o=>!stkGenF.objetivo||o.objetivo===stkGenF.objetivo);
+  if(stkSoloCambios)vis=vis.filter(o=>o.faltan||o.nuevos||o.en_taller||!o.declaro_b||o.total_a!==o.total_b);
+  const objetivos=[...new Set((C.objetivos||[]).map(o=>o.objetivo))].sort();
+
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
+    <div class="view-desc">General · <b>${mesStk(C.desde||stkGen.periodo||'')}</b> contra <b>${mesStk(C.hasta)}</b> · qué cambió</div></div></div>
+  ${tabsStk()}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+    <span class="sub" style="font-weight:600">Mes:</span>${selMes}
+    <span class="sub">comparar con:</span>${selComp}
+    <span style="width:1px;height:22px;background:var(--linea-2);margin:0 2px"></span>
+    <select class="busca" style="width:auto" onchange="stkGenF.objetivo=this.value;go('stock')">
+      <option value="">Todos los objetivos</option>
+      ${objetivos.map(o=>`<option ${stkGenF.objetivo===o?'selected':''}>${escStk(o)}</option>`).join('')}</select>
+    <label style="font-size:12.5px;display:flex;align-items:center;gap:5px"><input type="checkbox" ${stkSoloCambios?'checked':''} onchange="stkSoloCambios=this.checked;go('stock')" style="accent-color:var(--rojo)"> solo con cambios</label>
+  </div>
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:12px">
+    <div class="kpi"><div class="kpi-label">Faltan</div><div class="kpi-val" style="color:${T.faltan?'var(--rojo)':'inherit'}">${T.faltan||0}</div><div class="kpi-sub">no declaradas y no están en el taller</div></div>
+    <div class="kpi"><div class="kpi-label">En el taller</div><div class="kpi-val" style="color:var(--tinta-3)">${T.en_taller||0}</div><div class="kpi-sub">no faltan: están en reparación</div></div>
+    <div class="kpi"><div class="kpi-label">Nuevas</div><div class="kpi-val" style="color:var(--brote-2)">${T.nuevos||0}</div><div class="kpi-sub">aparecieron en ${escStk(mesStk(C.hasta))}</div></div>
+    <div class="kpi"><div class="kpi-label">Sin declarar</div><div class="kpi-val" style="color:${T.sin_declarar?'var(--diesel)':'inherit'}">${T.sin_declarar||0}</div><div class="kpi-sub">de ${T.objetivos||0} objetivos</div></div>
+  </div>
+  ${vis.length?`<div class="panel" style="padding:0;overflow:hidden">
+    <div class="tablewrap"><table>
+      <thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">${escStk(mesStk(C.desde||stkGen.periodo||''))}</th><th class="num">${escStk(mesStk(C.hasta))}</th><th class="num">Dif.</th><th>N° de máquina</th></tr></thead>
+      <tbody>${vis.map(o=>{
+        if(!o.declaro_b)return `<tr><td><b>${escStk(o.objetivo)}</b> <span class="badge b-amber">sin declarar</span></td>
+          <td colspan="2" class="sub" style="font-style:italic">${o.total_a} equipos en ${escStk(mesStk(C.desde||''))}</td>
+          <td class="num sub">—</td><td class="num sub">?</td><td class="sub">No declaró en ${escStk(mesStk(C.hasta))}</td></tr>`;
+        const dif=o.total_b-o.total_a;
+        return o.tipos.map((t,ix)=>`<tr${t.faltan?' style="background:#FFF9F9"':''}>
+          ${ix===0?`<td rowspan="${o.tipos.length}" style="vertical-align:top"><b>${escStk(o.objetivo)}</b>
+            ${o.faltan?`<span class="badge b-red">${o.faltan} falta${o.faltan===1?'':'n'}</span>`:''}
+            ${dif!==0?`<div class="sub mono" style="font-size:11px;margin-top:2px;color:${dif<0?'var(--rojo)':'var(--brote-2)'}">${dif>0?'+':''}${dif} en total</div>`:''}</td>`:''}
+          <td>${escStk(t.tipo)}${t.obs?`<div class="sub" style="font-size:10.5px">${escStk(t.obs)}</div>`:''}</td>
+          <td class="num mono">${t.a||'—'}</td>
+          <td class="num mono">${t.b||'—'}</td>
+          <td class="num mono" style="font-weight:700;color:${t.dif<0?'var(--rojo)':t.dif>0?'var(--brote-2)':'var(--tinta-3)'}">${t.dif===0?'=':(t.dif>0?'+':'')+t.dif}</td>
+          <td>${t.numeros.length?t.numeros.map(chip).join(''):'<span class="sub">sin números</span>'}</td>
+        </tr>`).join('');
+      }).join('')}</tbody></table></div></div>`
+    :'<div class="panel"><div class="sub" style="padding:14px">Ningún objetivo cambió entre esos dos meses.</div></div>'}
+  <div class="panel" style="margin-top:14px;font-size:12px;color:var(--tinta-2);line-height:1.6">
+    <b>Cómo se lee.</b> <span class="nu">20</span> declarada y en el objetivo · <span class="nu t">31</span> <b>en el taller</b> (pasá el mouse para ver desde cuándo) · <span class="nu f">19</span> <b>falta</b>: no se declaró y el taller no la tiene · <span class="nu n">240</span> apareció en ${escStk(mesStk(C.hasta))}.
+    <div style="margin-top:6px">El capataz declara todo lo que tiene en el momento del censo. Si una máquina está en el taller, la declare o no, se tacha: <b>no cuenta como faltante</b>. El taller es el de <b>hoy</b>, no el de ese mes — por eso va la fecha de ingreso.</div>
+  </div>`;
+}
+
 /* ═══ Stock · Clasificación de equipos ═════════════════════════
    Qué tiene motor y qué es de pañol. Lo que tiene motor entra a Combustible
    y a los cálculos de consumo; lo que no, no ensucia nada. El sistema
@@ -3206,6 +3275,9 @@ function dsvExportar(){
    números, marca y los faltantes abiertos. Cada N° abre la ficha de la
    máquina si está en el padrón. */
 let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:'',marca:''};
+// Mes que se está mirando y mes contra el que se compara (14-sep).
+// stkMes vacío = el último censo de cada objetivo, como fue siempre.
+let stkMes='', stkComp='', stkSoloCambios=true;
  
 /* La marca del censo viene dentro de la OBSERVACIÓN — el campo dice
    "Observación (marca, detalle…)" y ahí el capataz escribe "Stihl",
@@ -3237,9 +3309,17 @@ async function vStockGeneral(view){
   // mientras mirabas la pantalla, seguías viendo el mes anterior sin ningún
   // indicio de que estabas mirando algo viejo.
   if(stkGen&&stkGen.__t&&Date.now()-stkGen.__t>30000)stkGen=null;
+  // Si cambió el mes o el mes de comparación, hay que volver a pedir.
+  if(stkGen&&(stkGen.periodo||'')!==(stkMes||''))stkGen=null;
+  if(stkGen&&!!stkGen.comparacion!==!!stkComp)stkGen=null;
+  if(stkGen&&stkComp&&stkGen.comparacion&&stkGen.comparacion.hasta!==stkComp)stkGen=null;
   if(!stkGen){
     view.innerHTML=tabsStk()+'<div class="cargando-v">Cargando…</div>';
-    try{stkGen=await api('/api/stock/general');stkGen.__t=Date.now();}
+    try{
+      const qs=[];
+      if(stkMes)qs.push('periodo='+stkMes);
+      if(stkComp)qs.push('comparar='+stkComp);
+      stkGen=await api('/api/stock/general'+(qs.length?'?'+qs.join('&'):''));stkGen.__t=Date.now();}
     catch(e){view.innerHTML=tabsStk()+`<div class="cargando-v">${escStk(e.message||'No pude cargar')}</div>`;return;}
     // El padrón para linkear cada número a su ficha (si falla, sin links).
     // OJO: /api/maquinas devuelve {maquinas, objetivos}, no un array.
@@ -3286,11 +3366,24 @@ async function vStockGeneral(view){
   const filasPorObj={};
   vis.forEach(f=>{(filasPorObj[f.objetivo]=filasPorObj[f.objetivo]||[]).push(f);});
  
+  const meses=(stkGen.periodos||[]);
+  const selMes=`<select onchange="stkMes=this.value;stkGen=null;go('stock')" class="busca" style="width:auto;${stkMes?'border-color:var(--brote);background:var(--brote-soft);color:var(--brote-2);font-weight:600':''}">
+      <option value="">Último censo de cada uno</option>
+      ${meses.map(m=>`<option value="${m}" ${stkMes===m?'selected':''}>${mesStk(m)}</option>`).join('')}</select>`;
+  const selComp=`<select onchange="stkComp=this.value;stkGen=null;go('stock')" class="busca" style="width:auto;${stkComp?'border-color:var(--brote);background:var(--brote-soft);color:var(--brote-2);font-weight:600':''}">
+      <option value="">— no comparar —</option>
+      ${meses.filter(m=>m!==stkMes).map(m=>`<option value="${m}" ${stkComp===m?'selected':''}>${mesStk(m)}</option>`).join('')}</select>`;
+  // En modo comparación la vista es otra: dos meses lado a lado.
+  if(stkComp&&stkGen.comparacion)return pintarComparacion(view,selMes,selComp);
+
   view.innerHTML=`
   <div class="view-head"><div><div class="view-title">Stock de maquinaria</div>
-    <div class="view-desc">General · qué hay y dónde, según el último censo de cada objetivo</div></div></div>
+    <div class="view-desc">General · qué hay y dónde, ${stkMes?`según lo declarado en <b>${mesStk(stkMes)}</b>`:'según el último censo de cada objetivo'}</div></div></div>
   ${tabsStk()}
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+    <span class="sub" style="font-weight:600">Mes:</span>${selMes}
+    <span class="sub">comparar con:</span>${selComp}
+    <span style="width:1px;height:22px;background:var(--linea-2);margin:0 2px"></span>
     <select onchange="stkGenF.tipo=this.value;go('stock')" style="padding:6px 10px;border:1px solid var(--linea);border-radius:8px;font-size:12.5px">
       <option value="">Todos los tipos</option>
       ${tipos.map(t=>`<option ${F.tipo===t?'selected':''}>${escStk(t)}</option>`).join('')}
@@ -3439,7 +3532,7 @@ async function vStockGeneral(view){
             :fFecha(f.periodo)}${f.repedido?'<div style="font-size:10px;color:var(--tinta-3);font-family:inherit">repedido, sin reconfirmar</div>':''}</td>
           <td rowspan="${fs.length}" style="vertical-align:top"><div style="display:flex;flex-direction:column;gap:5px">
             <button class="mini-btn" onclick="editarStockObjetivo('${f.objetivo_id}')" title="corregir el stock de este objetivo">✏️ Editar</button>
-            <button class="mini-btn" onclick="imprimirPlanillaStock('${f.objetivo_id}')" title="planilla de control físico, una hoja">🖨 Planilla</button>
+            <button class="mini-btn" onclick="planillaElegirMes('${f.objetivo_id}','${escStk(f.objetivo).replace(/'/g,"\\'")}')" title="planilla de control físico, de este mes o de uno anterior">🖨 Planilla</button>
           </div></td>`:''}
         </tr>`;}).join('');
     }).join('')}
@@ -4673,8 +4766,41 @@ function imprimirStockGeneral(){
   w.document.close();
 }
  
-function imprimirPlanillaStock(objetivoId){
-  const filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
+// Elegir de qué mes se imprime la planilla. El último sale directo; los
+// anteriores, del histórico del objetivo.
+async function planillaElegirMes(objetivoId,nombre){
+  let h=[];
+  try{h=await api('/api/stock/historico/'+objetivoId);}catch(e){}
+  if(h.length<=1)return imprimirPlanillaStock(objetivoId);   // un solo censo: sin preguntar
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='pl-mes';
+  bg.innerHTML=`<div class="modal" style="max-width:380px"><div class="modal-tit">🖨 Planilla de ${escStk(nombre)}</div>
+    <div class="sub" style="margin:4px 0 12px">¿De qué mes?</div>
+    ${h.map((p,i)=>`<button class="btn-salir" style="width:100%;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center"
+      onclick="document.getElementById('pl-mes').remove();imprimirPlanillaStock('${objetivoId}',${i===0?'null':"'"+p.periodo+"'"})">
+      <span>${mesStk(p.periodo)}${i===0?' <span class="badge b-green" style="margin-left:6px">último</span>':''}</span>
+      <span class="mono sub">${p.total} eq.</span></button>`).join('')}
+    <div class="modal-acciones"><button class="btn-salir" onclick="document.getElementById('pl-mes').remove()">Cancelar</button></div></div>`;
+  document.body.appendChild(bg);
+}
+
+// `periodo` es opcional: sin él sale el último censo (como siempre); con
+// él, el de ese mes. José pidió el 14-sep poder descargar la planilla de
+// meses anteriores: sirve para comparar contra lo que había, y para el
+// control físico de un mes ya cerrado.
+async function imprimirPlanillaStock(objetivoId,periodo){
+  let filas;
+  if(periodo){
+    // Del histórico del objetivo: mismos ítems que muestra la ficha lateral.
+    let h;
+    try{h=await api('/api/stock/historico/'+objetivoId);}catch(e){return alert('No pude cargar el histórico.');}
+    const c=(h||[]).find(x=>x.periodo===periodo);
+    if(!c)return alert('No hay censo de '+mesStk(periodo)+' para ese objetivo.');
+    const base=(stkGen&&stkGen.filas||[]).find(f=>f.objetivo_id===objetivoId)||{};
+    filas=(c.items||[]).map(i=>({objetivo_id:objetivoId,objetivo:base.objetivo||c.objetivo||'',grupo:base.grupo||null,
+      periodo:c.periodo,tipo:i.tipo_equipo,cantidad:i.cantidad,numeros:i.numeros||[],observacion:i.observacion||null}));
+  }else{
+    filas=(stkGen&&stkGen.filas||[]).filter(f=>f.objetivo_id===objetivoId);
+  }
   if(!filas.length)return alert('Ese objetivo no tiene censo cargado.');
   const obj=filas[0];
   const norm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -5661,10 +5787,11 @@ async function cargarHistorico(objetivoId){
     const h=await api('/api/stock/historico/'+objetivoId);
     const c2=document.getElementById('stk-hist');if(!c2)return;
     c2.innerHTML=h.length?h.map(p=>`
-      <div class="queue-item" style="margin-bottom:6px">
+      <div class="queue-item" style="margin-bottom:6px;align-items:center">
         <div style="flex:1"><div style="font-weight:600;font-size:12px">${mesStk(p.periodo)}</div>
         <div class="sub" style="font-size:11px">${p.items.map(i=>i.tipo_equipo+' ×'+i.cantidad).join(' · ')||'sin equipos'}</div></div>
-        <div class="mono" style="font-size:13px">${p.total}</div>
+        <div class="mono" style="font-size:13px;margin-right:8px">${p.total}</div>
+        <button class="mini-btn" onclick="imprimirPlanillaStock('${objetivoId}','${p.periodo}')" title="planilla de control físico de ${mesStk(p.periodo)}">🖨</button>
       </div>`).join('')
       :'<div class="sub" style="padding:4px 0">Sin censos anteriores.</div>';
   }catch(e){
