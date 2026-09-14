@@ -152,29 +152,63 @@ async function buscarDuplicado(datos, capatazId, litrosTotal) {
   try {
     const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const { data: recientes } = await supabase.from('cargas_combustible')
-      .select('id, fecha, numero_remito, numero_factura, lote, litros_total, patente_raw, capataz_id, capataces(nombre), proveedores(nombre)')
+      .select('id, fecha, numero_remito, numero_factura, lote, tarjeta, litros_total, patente_raw, capataz_id, capataces(nombre), proveedores(nombre)')
       .neq('estado', 'anulada').gte('fecha', desde)
       .order('fecha', { ascending: false }).limit(300);
     const num = numNorm(datos.numero);
     const lote = numNorm(datos.lote);
     const pat = normalizarPatente(datos.patente || '');
+    const tarj = numNorm(datos.tarjeta);
+
+    // ⚠️ REESCRITO EL 14-sep. Antes alcanzaba con que coincidiera UN número
+    // suelto, y eso daba falsos positivos todo el tiempo:
+    //
+    //  · El comprobante 2951 aparece 3 veces en 10 días, de tres capataces
+    //    distintos, con proveedores distintos: los surtidores reinician la
+    //    numeración y el mismo número se repite entre estaciones.
+    //  · El OCR cruza los campos: el 10-sep, una carga de Ezequiel quedó con
+    //    remito 20260498 y lote 1404, y la otra con remito 1406 y lote
+    //    20260498 — el mismo par de números al revés.
+    //
+    // Por eso ahora un número solo NO alcanza: tiene que venir acompañado de
+    // algo que lo respalde (mismos litros, misma fecha, misma tarjeta). Es
+    // preferible dejar pasar un duplicado —que se ve después en el panel y se
+    // anula— antes que frenar una carga real, como le pasó a Claudio el
+    // 14-sep con una carga nueva de 146 lt.
+    const litrosIguales = c => litrosTotal && c.litros_total &&
+      Math.abs(Number(c.litros_total) - Number(litrosTotal)) < 0.01;
+    const mismaFecha = c => c.fecha && datos.fecha && c.fecha === datos.fecha;
+    const mismoCapataz = c => capatazId && String(c.capataz_id) === String(capatazId);
+    const mismaPatente = c => pat && normalizarPatente(c.patente_raw || '') === pat;
+    // Los números del comprobante, TODOS contra TODOS: como el OCR cruza los
+    // campos, un lote puede haber quedado guardado como remito.
+    const numerosDe = c => [c.lote, c.numero_remito, c.numero_factura].map(numNorm).filter(Boolean);
+    const misNumeros = [lote, num].filter(Boolean);
+
     for (const c of (recientes || [])) {
-      // (a0) Mismo lote de tarjeta. Es el identificador más fuerte de estos
-      // tickets: el N° de comprobante (Compr) se repite entre estaciones, el
-      // lote no. Va primero, antes del número.
-      if (lote && numNorm(c.lote) === lote) {
-        return { carga: c, motivo: 'mismo lote de tarjeta' };
+      const coincideNumero = misNumeros.some(n => numerosDe(c).includes(n));
+
+      // (a) Mismo número de tarjeta Y mismo comprobante: es la combinación
+      // más fuerte. Dos cargas de la misma tarjeta con el mismo número de
+      // ticket son la misma carga.
+      if (tarj && coincideNumero && numNorm(c.tarjeta) === tarj) {
+        return { carga: c, motivo: 'misma tarjeta y mismo comprobante' };
       }
-      // (a) Mismo número de comprobante
-      if (num && (numNorm(c.numero_remito) === num || numNorm(c.numero_factura) === num)) {
-        return { carga: c, motivo: 'mismo número de comprobante' };
+      // (b) Mismo comprobante Y mismos litros: los litros son el respaldo.
+      // Que dos cargas distintas compartan número Y litros exactos hasta el
+      // centilitro es casi imposible.
+      if (coincideNumero && litrosIguales(c)) {
+        return { carga: c, motivo: 'mismo comprobante y mismos litros' };
       }
-      // (b) Misma fecha + mismos litros + mismo capataz o misma patente
-      const litOk = litrosTotal && c.litros_total &&
-        Math.abs(Number(c.litros_total) - Number(litrosTotal)) < 0.01;
-      const patOk = pat && normalizarPatente(c.patente_raw || '') === pat;
-      const capOk = capatazId && String(c.capataz_id) === String(capatazId);
-      if (c.fecha === datos.fecha && litOk && (capOk || patOk)) {
+      // (c) Mismo comprobante, misma fecha y mismo capataz. Sin los litros,
+      // pero con fecha y persona: un capataz no carga dos veces el mismo
+      // ticket el mismo día.
+      if (coincideNumero && mismaFecha(c) && mismoCapataz(c)) {
+        return { carga: c, motivo: 'mismo comprobante, mismo día y mismo capataz' };
+      }
+      // (d) Sin número que coincida: misma fecha, mismos litros y mismo
+      // capataz o patente. Es la regla que ya estaba y no daba problemas.
+      if (mismaFecha(c) && litrosIguales(c) && (mismoCapataz(c) || mismaPatente(c))) {
         return { carga: c, motivo: 'misma fecha, mismos litros' };
       }
     }
