@@ -266,6 +266,18 @@ const RE_VIAJES =
 const SALUDOS =
   /^(hola|holaa+|buenas|buen d[ií]a|buenos d[ií]as|buenas tardes|buenas noches|hey|ola|q onda|que onda|menu|men[uú]|gracias|ok|dale|listo|si|s[ií]|no|test|prueba)\b/i;
 
+// Lo que es CLARAMENTE pedir el menú. Más chico que SALUDOS a propósito:
+// "sí", "ok" y "dale" son respuestas (por ejemplo, al pedido de stock) y no
+// pueden mandarse al menú.
+//
+// 14-sep (lunes): el recordatorio de stock sale a TODOS a las 8, así que
+// todos tienen pedido pendiente, y cualquier "hola" caía en el listado de
+// stock en vez del menú. José escribió al bot y recibió las 52 máquinas del
+// depósito. Ahora un saludo va siempre al menú, y el menú avisa que hay
+// stock pendiente.
+const PIDE_MENU =
+  /^(hola|holaa+|buenas|buen d[ií]a|buenos d[ií]as|buenas tardes|buenas noches|hey|ola|q onda|que onda|menu|men[uú]|inicio|volver)\s*[!.]*$/i;
+
 
 const RE_EQUIPO =
   /motoguada|guadaña|motosierra|extensible|soplad|tractor|giro cero|plana|toyota|camioneta|cami[oó]n|atego|hidrogr[uú]a|hidro gr[uú]a|carro|remolque|m[aá]quina|maquina|unidad/i;
@@ -738,6 +750,11 @@ app.post(
 
           &&
 
+          // Un saludo o "menu" va siempre al menú, aunque haya stock pendiente.
+          !PIDE_MENU.test(mensaje.trim())
+
+          &&
+
           await tienePedidoPendiente(
             telefono
           )
@@ -781,6 +798,17 @@ app.post(
               mensaje
 
             );
+
+          // Si llegó al menú con un pedido de stock pendiente, se le avisa al
+          // pie: antes ese pedido se lo llevaba directo al listado y el capataz
+          // no podía hacer otra cosa (14-sep).
+          if (
+            typeof respuesta === 'string' &&
+            /Respondé con el número/.test(respuesta) &&
+            await tienePedidoPendiente(telefono)
+          ) {
+            respuesta += '\n\n📋 _Tenés pendiente informar tu stock de máquinas: elegí *4*, o mandame el listado directo._';
+          }
 
 
           // Si eligió insumos
