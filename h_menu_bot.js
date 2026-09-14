@@ -124,12 +124,35 @@ const txt = r => (r && r.__derivar) ? `[derivar:${r.__derivar}]` : String(r || '
   await alMenu(); await procesarMensaje(TEL, '3');
   eq('con el prefijo whatsapp: también funciona', enConversacion('whatsapp:+' + TEL, 'x') === true);
 
-  console.log('\n— El ruteo de index.js —');
+  console.log('\n— EL LUNES: todos tienen pedido de stock pendiente (14-sep) —');
   const fs = require('fs');
   const src = fs.readFileSync(__dirname + '/index.js', 'utf8');
   const plano = src.replace(/\s+/g, ' ');
-  eq('el pedido de stock respeta la conversación abierta (con el mensaje, para distinguir las opciones del menú)',
-    /!enConversacion\( ?telefono, ?mensaje ?\) && await tienePedidoPendiente/.test(plano), 'falta el chequeo o no pasa el mensaje');
+  // Se extrae PIDE_MENU real y se simula la condición completa del ruteo:
+  //   !enConversacion(tel, msg) && !PIDE_MENU.test(msg) && pendiente
+  const mPM = src.match(/const PIDE_MENU =\s*(\/[^\n]+\/i);/);
+  eq('existe PIDE_MENU', !!mPM);
+  const PIDE_MENU = mPM ? new Function('return ' + mPM[1])() : /$^/;
+  const lunes = (msg) => !enConversacion(TEL, msg) && !PIDE_MENU.test(msg.trim()) && true;
+  CONV._limpiar(TEL);
+  for (const m of ['hola', 'Hola', 'buenas', 'menu', 'Menu', 'MENU', 'buen dia', 'hey', 'hola!']) {
+    eq(`"${m}" un lunes va al MENÚ, no al listado de stock`, !lunes(m), m);
+  }
+  eq('"sí" un lunes SÍ va al stock (es la confirmación del pedido)', lunes('sí'));
+  eq('"si" también', lunes('si'));
+  eq('"ok" también (es una respuesta, no un pedido de menú)', lunes('ok'));
+  eq('un listado un lunes va al stock', lunes('3 motoguadañas N° 12, 15 y 21'));
+  eq('"hola que tal como andas" NO es pedir el menú (frase larga): va al stock', lunes('hola que tal como andas'));
+
+  await alMenu();
+  const menu = await procesarMensaje(TEL, 'hola');
+  eq('el menú se muestra con las 6 opciones', /Cargar combustible[\s\S]*Buscar estaci/i.test(txt(menu)));
+  eq('index.js le agrega el aviso de stock pendiente al pie',
+    /Tenés pendiente informar tu stock/.test(src) && /Respondé con el número/.test(src));
+
+  console.log('\n— El ruteo de index.js —');
+  eq('el pedido de stock respeta la conversación abierta Y los saludos',
+    /!enConversacion\( ?telefono, ?mensaje ?\) &&[^&]*!PIDE_MENU\.test\( ?mensaje\.trim\(\) ?\) && await tienePedidoPendiente/.test(plano), 'falta alguno de los dos chequeos');
   eq('ya no depende del rango 1-6 (que dejaba afuera el 10)',
     !/\[1-6\]\$\/\.test\( ?mensaje/.test(plano), 'sigue el parche viejo');
   // Las demás sesiones se siguen chequeando antes que el pedido de stock.
