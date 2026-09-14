@@ -357,4 +357,29 @@ async function procesarMensaje(telefono, mensaje) {
   return 'No entendí tu respuesta. Enviá cualquier mensaje para empezar de nuevo.';
 }
 
-module.exports = { procesarMensaje: ses.conPersistencia('conversacion', sesiones, procesarMensaje) };
+/**
+ * ¿Este teléfono está en medio de una conversación con el bot?
+ *
+ * Hace falta para que el pedido de stock NO le robe los mensajes a un flujo
+ * ya abierto. El 12-sep, Agustín estaba reportando una reparación, eligió el
+ * equipo "10" de la lista de tipos, y como no era 1-6 el bot lo tomó como
+ * respuesta al censo y le pidió el listado de maquinaria. Le pasaba a todos
+ * los capataces con censo pendiente, que hoy son la mayoría.
+ *
+ * `paso` distinto de 'menu' significa que está adentro de algo: eligiendo
+ * equipo, escribiendo la falla, etc. Estando en el menú sí puede irse a
+ * cualquier lado.
+ */
+function enConversacion(telefono) {
+  const tel = String(telefono || '').replace('whatsapp:', '').replace('+', '');
+  const s = sesiones[tel];
+  return !!(s && s.paso && s.paso !== 'menu');
+}
+
+module.exports = {
+  procesarMensaje: ses.conPersistencia('conversacion', sesiones, procesarMensaje),
+  enConversacion,
+  // Para el harness: poder empezar cada caso desde cero sin depender de que
+  // exista un comando que corte el flujo.
+  _limpiar: limpiarSesion,
+};
