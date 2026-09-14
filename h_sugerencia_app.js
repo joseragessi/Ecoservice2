@@ -96,7 +96,7 @@ const hace=(d)=>new Date(Date.now()-d*86400000).toISOString();
   const idx=fs.readFileSync(__dirname+'/index.js','utf8');
   const sinEsp=idx.replace(/\s+/g,' ');
   eq('el pedido pendiente respeta cualquier conversación abierta',
-    /!enConversacion\( ?telefono ?\) && await tienePedidoPendiente/.test(sinEsp),
+    /!enConversacion\( ?telefono, ?mensaje ?\) && await tienePedidoPendiente/.test(sinEsp),
     sinEsp.slice(sinEsp.indexOf('tienePedidoPendiente')-120, sinEsp.indexOf('tienePedidoPendiente')+40));
 
   console.log('\n— El menú sigue igual: es sugerencia, no bloqueo —');
