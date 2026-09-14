@@ -88,12 +88,16 @@ const hace=(d)=>new Date(Date.now()-d*86400000).toISOString();
   m=await sugerirApp({id:'c9'});
   eq('busca usuario y fecha en la base', /dvega/.test(m), m.slice(0,200));
 
-  console.log('\n— El menú NO cae en el flujo de stock (bug del 11-sep) —');
+  console.log('\n— El menú NO cae en el flujo de stock —');
+  // El parche del 11-sep cubría solo las opciones 1-6 del menú; el 12-sep
+  // Agustín quedó trabado eligiendo el equipo "10" de una lista de 13. Ahora
+  // se mira el ESTADO de la conversación, no el texto. Se verifica en
+  // profundidad en h_menu_bot.js.
   const idx=fs.readFileSync(__dirname+'/index.js','utf8');
   const sinEsp=idx.replace(/\s+/g,' ');
-  eq('las opciones 1-6 pasan de largo el pedido pendiente',
-    /!\/\^\[1-6\]\$\/\.test\( ?mensaje\.trim\(\) ?\) && await tienePedidoPendiente/.test(sinEsp),
-    sinEsp.slice(sinEsp.indexOf('tienePedidoPendiente')-160, sinEsp.indexOf('tienePedidoPendiente')+40));
+  eq('el pedido pendiente respeta cualquier conversación abierta',
+    /!enConversacion\( ?telefono ?\) && await tienePedidoPendiente/.test(sinEsp),
+    sinEsp.slice(sinEsp.indexOf('tienePedidoPendiente')-120, sinEsp.indexOf('tienePedidoPendiente')+40));
 
   console.log('\n— El menú sigue igual: es sugerencia, no bloqueo —');
   const conv=fs.readFileSync(__dirname+'/conversacion.js','utf8');
