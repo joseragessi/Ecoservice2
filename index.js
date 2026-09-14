@@ -5,7 +5,7 @@ const compression = require('compression');
 const express  = require('express');
 const twilio   = require('twilio');
 
-const { procesarMensaje } = require('./conversacion');
+const { procesarMensaje, enConversacion } = require('./conversacion');
 
 const {
   procesarComprobante,
@@ -721,11 +721,20 @@ app.post(
 
         } else if (
 
-          // Las opciones del menú (1 a 6) NUNCA se toman como respuesta al
-          // pedido de stock: si no, un capataz con censo pendiente que elige
-          // "1" para cargar combustible cae en el flujo de stock y no
-          // entiende nada (pasó con Claudio Chavez el 11-sep).
-          !/^[1-6]$/.test(mensaje.trim())
+          // ⚠️ El pedido de stock NO le roba los mensajes a una conversación
+          // ya abierta. Las demás sesiones (combustible, insumos, stock,
+          // estaciones, viajes) se chequean más arriba; la de REPARACIONES
+          // faltaba, y por eso se la comía este bloque.
+          //
+          // 11-sep: Claudio eligió "1" (combustible) y cayó en stock.
+          // 12-sep: Agustín estaba reportando una reparación, eligió el
+          //   equipo "10" de la lista de tipos —que tiene 13— y cayó en
+          //   stock otra vez. El parche anterior solo cubría del 1 al 6.
+          //
+          // Por eso ahora no se mira el texto sino el ESTADO: si el capataz
+          // está adentro de algo, ese algo manda. Cualquier número de
+          // cualquier submenú queda cubierto, no solo el 1-6.
+          !enConversacion(telefono)
 
           &&
 
