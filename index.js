@@ -734,7 +734,7 @@ app.post(
           // Por eso ahora no se mira el texto sino el ESTADO: si el capataz
           // está adentro de algo, ese algo manda. Cualquier número de
           // cualquier submenú queda cubierto, no solo el 1-6.
-          !enConversacion(telefono)
+          !enConversacion(telefono, mensaje)
 
           &&
 
