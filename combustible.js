@@ -185,30 +185,34 @@ async function buscarDuplicado(datos, capatazId, litrosTotal) {
     const numerosDe = c => [c.lote, c.numero_remito, c.numero_factura].map(numNorm).filter(Boolean);
     const misNumeros = [lote, num].filter(Boolean);
 
+    // LA REGLA: los litros son obligatorios. Sin litros iguales no hay
+    // duplicado, punto. Un duplicado real es el mismo ticket mandado dos
+    // veces, y el mismo ticket tiene los mismos litros hasta el centilitro.
+    //
+    // Se llegó acá después de dos falsos positivos el 14-sep, los dos con
+    // Claudio en el surtidor del depósito:
+    //   13:05 · una carga NUEVA de 146 lt frenada porque coincidía "un
+    //           número" con la de otro capataz.
+    //   13:06 · su segunda carga del día (34 lt, después de una de 43,8)
+    //           frenada por "mismo comprobante, mismo día, mismo capataz".
+    // Los dos tickets traen "2951", que NO es un número de comprobante: es
+    // el número de la TERMINAL de ECOSERVICE SRL y sale en todos sus
+    // tickets. Cualquier regla que confíe en ese número sin los litros va a
+    // frenar cargas reales. Ni "misma tarjeta + número" alcanza: misma
+    // tarjeta + 2951 son todas las cargas de esa tarjeta en el depósito.
     for (const c of (recientes || [])) {
+      if (!litrosIguales(c)) continue;
       const coincideNumero = misNumeros.some(n => numerosDe(c).includes(n));
-
-      // (a) Mismo número de tarjeta Y mismo comprobante: es la combinación
-      // más fuerte. Dos cargas de la misma tarjeta con el mismo número de
-      // ticket son la misma carga.
-      if (tarj && coincideNumero && numNorm(c.tarjeta) === tarj) {
-        return { carga: c, motivo: 'misma tarjeta y mismo comprobante' };
-      }
-      // (b) Mismo comprobante Y mismos litros: los litros son el respaldo.
-      // Que dos cargas distintas compartan número Y litros exactos hasta el
-      // centilitro es casi imposible.
-      if (coincideNumero && litrosIguales(c)) {
+      // (a) Mismos litros y mismo comprobante.
+      if (coincideNumero) {
         return { carga: c, motivo: 'mismo comprobante y mismos litros' };
       }
-      // (c) Mismo comprobante, misma fecha y mismo capataz. Sin los litros,
-      // pero con fecha y persona: un capataz no carga dos veces el mismo
-      // ticket el mismo día.
-      if (coincideNumero && mismaFecha(c) && mismoCapataz(c)) {
-        return { carga: c, motivo: 'mismo comprobante, mismo día y mismo capataz' };
+      // (b) Mismos litros, misma tarjeta.
+      if (tarj && numNorm(c.tarjeta) === tarj) {
+        return { carga: c, motivo: 'misma tarjeta y mismos litros' };
       }
-      // (d) Sin número que coincida: misma fecha, mismos litros y mismo
-      // capataz o patente. Es la regla que ya estaba y no daba problemas.
-      if (mismaFecha(c) && litrosIguales(c) && (mismoCapataz(c) || mismaPatente(c))) {
+      // (c) Mismos litros, misma fecha, y mismo capataz o misma patente.
+      if (mismaFecha(c) && (mismoCapataz(c) || mismaPatente(c))) {
         return { carga: c, motivo: 'misma fecha, mismos litros' };
       }
     }
