@@ -100,20 +100,36 @@ const txt = r => (r && r.__derivar) ? `[derivar:${r.__derivar}]` : String(r || '
     eq(`equipo "${n}" no cae en stock`, !/listado de maquinaria/i.test(txt(rr)), txt(rr).slice(0, 60));
   }
 
-  console.log('\n— enConversacion: el estado que usa index.js —');
+  console.log('\n— enConversacion: lo que decide si el pedido de stock puede intervenir —');
+  // Simula EXACTAMENTE la condición de index.js con un pedido de stock
+  // pendiente: `!enConversacion(tel, msg) && pendiente`. Si da true, el
+  // mensaje se lo lleva el stock y el capataz ve "mandame el listado".
+  const seLoLlevaStock = (msg) => !enConversacion(TEL, msg) && true /* pendiente */;
+
   await alMenu();
-  eq('en el menú, NO está en conversación (puede irse a cualquier lado)', enConversacion(TEL) === false);
-  await procesarMensaje(TEL, '3');
-  eq('adentro de reparaciones, sí', enConversacion(TEL) === true);
-  eq('un teléfono sin sesión, no', enConversacion('5490000000000') === false);
-  eq('con el prefijo whatsapp: también funciona', enConversacion('whatsapp:+' + TEL) === true);
+  for (const op of ['1', '2', '3', '4', '5', '6']) {
+    eq(`en el menú, la opción ${op} NO se la lleva el stock (bug de Ivar, 14-sep)`, !seLoLlevaStock(op));
+  }
+  eq('en el menú, un texto que no es opción SÍ puede ir al stock (ej: un listado)', seLoLlevaStock('3 motoguadañas N° 12, 15 y 21'));
+  eq('en el menú, "hola" también puede ir al stock', seLoLlevaStock('hola'));
+
+  await procesarMensaje(TEL, '3');                       // entra a reparaciones
+  for (const msg of ['1', '10', '13', 'MG-045', 'se rompió el cable', 'hola', '3 motoguadañas']) {
+    eq(`adentro de reparaciones, "${msg}" NO se lo lleva el stock (bug de Agustín, 12-sep)`, !seLoLlevaStock(msg), msg);
+  }
+
+  CONV._limpiar(TEL);
+  eq('sin sesión, cualquier cosa puede ir al stock', seLoLlevaStock('3') && seLoLlevaStock('hola'));
+  eq('un teléfono sin sesión, no está en conversación', enConversacion('5490000000000', '3') === false);
+  await alMenu(); await procesarMensaje(TEL, '3');
+  eq('con el prefijo whatsapp: también funciona', enConversacion('whatsapp:+' + TEL, 'x') === true);
 
   console.log('\n— El ruteo de index.js —');
   const fs = require('fs');
   const src = fs.readFileSync(__dirname + '/index.js', 'utf8');
   const plano = src.replace(/\s+/g, ' ');
-  eq('el pedido de stock respeta la conversación abierta',
-    /!enConversacion\( ?telefono ?\) && await tienePedidoPendiente/.test(plano), 'falta el chequeo');
+  eq('el pedido de stock respeta la conversación abierta (con el mensaje, para distinguir las opciones del menú)',
+    /!enConversacion\( ?telefono, ?mensaje ?\) && await tienePedidoPendiente/.test(plano), 'falta el chequeo o no pasa el mensaje');
   eq('ya no depende del rango 1-6 (que dejaba afuera el 10)',
     !/\[1-6\]\$\/\.test\( ?mensaje/.test(plano), 'sigue el parche viejo');
   // Las demás sesiones se siguen chequeando antes que el pedido de stock.
