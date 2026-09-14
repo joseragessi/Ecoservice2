@@ -60,15 +60,29 @@ function eq(n, c, d) { if (c) { ok++; console.log('✓ ' + n); } else { mal++; c
   r = await buscarDuplicado({ numero: '2951', fecha: '2026-09-13' }, 'nadie', 100);
   eq('tampoco frena a un capataz distinto', r === null, r && r.motivo);
 
+  console.log('\n— EL SEGUNDO CASO DE CLAUDIO (14-sep 13:06): dos cargas el mismo día —');
+  // Claudio ya cargó hoy 43,771 lt en el surtidor del depósito (ticket con
+  // "2951"), y ahora carga 33,994 lt en el mismo surtidor (otro ticket, mismo
+  // "2951" porque es el número de la terminal). Son dos cargas distintas.
+  BASE.push({ id: 'clau-hoy', fecha: '2026-09-14', numero_remito: '2951', lote: '2951', tarjeta: '8407',
+    litros_total: '43.7710', patente_raw: null, capataz_id: 'clau', capataces: { nombre: 'Claudio Cahvez' } });
+  r = await buscarDuplicado({ numero: '2951', lote: '2951', tarjeta: '8407', fecha: '2026-09-14' }, 'clau', 33.994);
+  eq('la segunda carga del día, con otros litros, NO es duplicada', r === null, r && `la confundió con ${r.carga.id} (${r.motivo})`);
+  r = await buscarDuplicado({ numero: '2951', lote: '2951', tarjeta: '8407', fecha: '2026-09-14' }, 'clau', 43.771);
+  eq('pero reenviar la MISMA (mismos litros) sí se detecta', r !== null && r.carga.id === 'clau-hoy', JSON.stringify(r && r.motivo));
+  BASE.pop();
+
   console.log('\n— Lo que SÍ es duplicado —');
   r = await buscarDuplicado({ numero: '2951', fecha: '2026-09-09' }, 'lalo', 39.002);
   eq('mismo número + mismos litros → duplicado', r !== null && r.carga.id === 'lalo', JSON.stringify(r && r.motivo));
   eq('y dice por qué', /litros/.test((r || {}).motivo || ''), (r || {}).motivo);
   r = await buscarDuplicado({ numero: '2951', fecha: '2026-09-09' }, 'lalo', 41);
-  eq('mismo número, mismo día y mismo capataz → duplicado aunque cambien los litros',
-    r !== null && r.carga.id === 'lalo', JSON.stringify(r && r.motivo));
+  eq('mismo número, mismo día, mismo capataz pero OTROS litros → NO es duplicado (regla sacada el 14-sep)',
+    r === null, JSON.stringify(r && r.motivo));
   r = await buscarDuplicado({ numero: '2989', lote: '20251760', tarjeta: '8062120460002', fecha: '2026-09-14' }, 'otro', 999);
-  eq('misma tarjeta + mismo comprobante → duplicado', r !== null && r.carga.id === 'clau', JSON.stringify(r && r.motivo));
+  eq('misma tarjeta + mismo comprobante pero OTROS litros → NO es duplicado (los litros mandan)', r === null, JSON.stringify(r && r.motivo));
+  r = await buscarDuplicado({ numero: '9999', tarjeta: '8062120460002', fecha: '2026-09-14' }, 'otro', 55.514);
+  eq('misma tarjeta + mismos litros → duplicado', r !== null && r.carga.id === 'clau', JSON.stringify(r && r.motivo));
 
   console.log('\n— El OCR cruza remito y lote —');
   // eze1 tiene remito 20260498 y lote 1404; eze2 al revés. Reenviar el mismo
@@ -92,7 +106,9 @@ function eq(n, c, d) { if (c) { ok++; console.log('✓ ' + n); } else { mal++; c
   r = await buscarDuplicado({ numero: '0002951', fecha: '2026-09-09' }, 'lalo', 39.002);
   eq('los ceros de adelante no importan', r !== null && r.carga.id === 'lalo');
   r = await buscarDuplicado({ numero: '2951', fecha: '2026-09-09' }, 'lalo', 39.0025);
-  eq('una diferencia de medio centilitro NO cuenta como mismos litros (pero cae por capataz+día)', r !== null);
+  eq('medio centilitro de diferencia cuenta como mismos litros (tolerancia 0,01) → duplicado', r !== null);
+  r = await buscarDuplicado({ numero: '2951', fecha: '2026-09-09' }, 'lalo', 39.05);
+  eq('cinco centilitros de diferencia ya NO → pasa', r === null, r && r.motivo);
 
   console.log(`\n${ok} ok · ${mal} mal`);
   process.exit(mal ? 1 : 0);
