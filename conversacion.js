@@ -370,10 +370,21 @@ async function procesarMensaje(telefono, mensaje) {
  * equipo, escribiendo la falla, etc. Estando en el menú sí puede irse a
  * cualquier lado.
  */
-function enConversacion(telefono) {
+function enConversacion(telefono, texto) {
   const tel = String(telefono || '').replace('whatsapp:', '').replace('+', '');
   const s = sesiones[tel];
-  return !!(s && s.paso && s.paso !== 'menu');
+  if (!s || !s.paso) return false;
+  // Adentro de un flujo (eligiendo equipo, escribiendo la falla…): manda
+  // el flujo, sea lo que sea que escribió.
+  if (s.paso !== 'menu') return true;
+  // En el MENÚ: solo las opciones 1-6 son del menú. Cualquier otra cosa
+  // puede ir a donde corresponda (por ejemplo, un listado de stock).
+  //
+  // 14-sep: la versión anterior devolvía false en el menú, y eso reabrió el
+  // bug de Claudio — Ivar eligió "3" (reparación) y el pedido de stock se
+  // lo comió. Los dos arreglos tienen que convivir: el menú maneja sus
+  // opciones, y un flujo abierto maneja todo.
+  return /^[1-6]$/.test(String(texto || '').trim());
 }
 
 module.exports = {
