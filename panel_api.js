@@ -6391,7 +6391,7 @@ router.get('/api/stock/historico/:objetivo_id', auth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('censos_stock')
-      .select('periodo, estado, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros)')
+      .select('periodo, estado, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
       .eq('objetivo_id', req.params.objetivo_id)
       .eq('estado', 'respondido')
       .order('periodo', { ascending: false });
@@ -8051,13 +8051,32 @@ router.get('/api/stock/general', auth, async (req, res) => {
        respaldo cuando no hay ambigüedad. */
     if (censos.error) throw censos.error;
  
+    /* Qué censo se muestra (14-sep, pedido de José):
+         sin ?periodo  → el último respondido de cada objetivo (como siempre)
+         con ?periodo  → el de ESE mes, para ver qué declaró en agosto
+         con ?comparar → además, el de ese otro mes, para ver la diferencia
+
+       El TALLER es siempre el de HOY, no se reconstruye el pasado: por eso
+       cada máquina en el taller viene con su fecha de ingreso, que aclara
+       sola que es información actual. Decisión expresa de José: "no debería
+       ser una complicación, simplemente aclarar qué máquina está en el
+       taller y desde qué fecha". */
+    const periodoPedido = /^\d{4}-\d{2}$/.test(String(req.query.periodo || '')) ? req.query.periodo : null;
+    const periodoComp = /^\d{4}-\d{2}$/.test(String(req.query.comparar || '')) ? req.query.comparar : null;
+
+    const censoDe = (objetivoId, periodo) => (censos.data || [])
+      .find(c => c.objetivo_id === objetivoId && (periodo ? c.periodo === periodo : true)) || null;
+
     // Último censo respondido por objetivo (vienen ordenados desc)
     const ultimo = {};
     (censos.data || []).forEach(c => { if (!ultimo[c.objetivo_id]) ultimo[c.objetivo_id] = c; });
+
+    // Los meses que tienen algún censo, para el selector del panel.
+    const periodos = [...new Set((censos.data || []).map(c => c.periodo))].sort().reverse();
  
     const filas = [];
     (objs.data || []).forEach(o => {
-      const c = ultimo[o.id];
+      const c = periodoPedido ? censoDe(o.id, periodoPedido) : ultimo[o.id];
       // Un objetivo NUEVO (o uno que nunca respondió el censo) no tiene
       // ítems, pero igual tiene que aparecer: si no, no hay dónde cargarle
       // el stock desde el panel.
@@ -8092,7 +8111,78 @@ router.get('/api/stock/general', auth, async (req, res) => {
       });
     });
     const { sin_ubicar } = cruzarTaller(filas, incid.data || []);
-    res.json({ filas, faltantes: faltantes.data || [], taller_sin_ubicar: sin_ubicar });
+    /* COMPARACIÓN entre dos meses. Se calcula acá y no en el panel porque
+       hace falta el censo del otro mes, que ya está en memoria.
+
+       El protocolo manda (José, 14-sep): el capataz declara TODO lo que
+       tiene en ese momento. Entonces una máquina que no aparece en el mes
+       nuevo pero está en el taller NO es faltante: se marca como en taller,
+       con su fecha. Faltante es solo lo que no está declarado ni en el
+       taller. */
+    let comparacion = null;
+    if (periodoComp) {
+      const nA = normNum;   // el mismo normalizador que usa el cruce con el taller
+      comparacion = { desde: periodoPedido, hasta: periodoComp, objetivos: [] };
+      (objs.data || []).forEach(o => {
+        const ca = periodoPedido ? censoDe(o.id, periodoPedido) : ultimo[o.id];
+        const cb = censoDe(o.id, periodoComp);
+        if (!ca && !cb) return;
+        // Qué hay en el taller de este objetivo, hoy, por número.
+        const tallerNum = {};
+        (incid.data || []).filter(i => i.objetivo_id === o.id).forEach(i => {
+          const n = nA(i.numero_unidad);
+          if (n && !tallerNum[n]) tallerNum[n] = i;
+        });
+        const porTipo = {};
+        const cargar = (censo, lado) => (censo ? censo.censos_stock_items || [] : []).forEach(i => {
+          const k = String(i.tipo_equipo || '').trim();
+          const e = porTipo[k] || (porTipo[k] = { tipo: k, a: 0, b: 0, numsA: [], numsB: [], obs: null });
+          e[lado] += Number(i.cantidad) || 0;
+          (i.numeros || []).forEach(x => e[lado === 'a' ? 'numsA' : 'numsB'].push(String(x)));
+          if (i.observacion && !e.obs) e.obs = i.observacion;
+        });
+        cargar(ca, 'a'); cargar(cb, 'b');
+
+        const tipos = Object.values(porTipo).map(e => {
+          const setB = new Set(e.numsB.map(nA));
+          const setA = new Set(e.numsA.map(nA));
+          const numeros = [];
+          // Los del mes viejo: siguen, están en el taller, o faltan.
+          e.numsA.forEach(x => {
+            const n = nA(x);
+            if (!n) return;
+            if (setB.has(n)) { numeros.push({ n: x, estado: tallerNum[n] ? 'taller' : 'ok', ingreso: tallerNum[n] ? tallerNum[n].fecha_ingreso_taller : null }); return; }
+            if (tallerNum[n]) { numeros.push({ n: x, estado: 'taller', ingreso: tallerNum[n].fecha_ingreso_taller }); return; }
+            numeros.push({ n: x, estado: 'falta' });
+          });
+          // Los que aparecieron en el mes nuevo.
+          e.numsB.forEach(x => { const n = nA(x); if (n && !setA.has(n)) numeros.push({ n: x, estado: 'nuevo' }); });
+          return { tipo: e.tipo, a: e.a, b: e.b, dif: e.b - e.a, obs: e.obs, numeros,
+            faltan: numeros.filter(x => x.estado === 'falta').length,
+            en_taller: numeros.filter(x => x.estado === 'taller').length,
+            nuevos: numeros.filter(x => x.estado === 'nuevo').length };
+        }).sort((x, y) => (y.faltan - x.faltan) || String(x.tipo).localeCompare(String(y.tipo)));
+
+        comparacion.objetivos.push({
+          objetivo_id: o.id, objetivo: o.nombre, grupo: o.grupo_stock || null,
+          declaro_a: !!ca, declaro_b: !!cb,
+          total_a: tipos.reduce((s2, t) => s2 + t.a, 0), total_b: tipos.reduce((s2, t) => s2 + t.b, 0),
+          faltan: tipos.reduce((s2, t) => s2 + t.faltan, 0),
+          en_taller: tipos.reduce((s2, t) => s2 + t.en_taller, 0),
+          nuevos: tipos.reduce((s2, t) => s2 + t.nuevos, 0),
+          tipos,
+        });
+      });
+      comparacion.objetivos.sort((a2, b2) => (b2.faltan - a2.faltan) || String(a2.objetivo).localeCompare(String(b2.objetivo)));
+      comparacion.totales = comparacion.objetivos.reduce((s2, x) => {
+        s2.faltan += x.faltan; s2.en_taller += x.en_taller; s2.nuevos += x.nuevos;
+        if (!x.declaro_b) s2.sin_declarar++;
+        return s2;
+      }, { faltan: 0, en_taller: 0, nuevos: 0, sin_declarar: 0, objetivos: comparacion.objetivos.length });
+    }
+
+    res.json({ filas, faltantes: faltantes.data || [], taller_sin_ubicar: sin_ubicar,
+      periodo: periodoPedido, periodos, comparacion });
   } catch (err) {
     console.error('stock general:', err);
     res.status(500).json({ error: 'No pude armar el general (¿corriste grupos_stock.sql?)' });
