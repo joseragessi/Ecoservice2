@@ -686,12 +686,62 @@ function capIr(sec){
    Es la salida del bloqueo: sin censo del mes no puede cargar combustible,
    así que la app le muestra lo del último censo para que confirme o corrija
    en dos toques, en vez de escribir todo de cero. */
+let capCambios=null;   // qué cambió desde el mes pasado y qué hay en el taller
 async function cargarCapStock(){
   try{
-    capStock=await api('/api/app/capataz/stock');
+    // Las dos juntas: son independientes y en el celular cada espera se nota.
+    const [st,cb]=await Promise.all([
+      api('/api/app/capataz/stock'),
+      api('/api/app/capataz/cambios').catch(()=>null),
+    ]);
+    capStock=st;capCambios=cb;
     capStockEdit=(capStock.items||[]).map(i=>({...i,numeros:(i.numeros||[]).slice()}));
   }catch(e){capStock={__error:e.message};}
   render();
+}
+
+/* Lo que cambió desde el mes pasado, en la app del capataz (14-sep).
+   Es la misma información que ve José en el panel, pero de SU objetivo.
+   Va arriba de la lista: lo primero que tiene que ver al entrar es qué le
+   falta y qué tiene en el taller. */
+function bloqueCambios(){
+  const c=capCambios;
+  if(!c||!c.hay)return '';
+  const fD=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${+m[3]}/${+m[2]}`:'';};
+  const mes=p=>{const M=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+    const [a,m]=String(p||'').split('-');return m?M[+m-1]:'';};
+  const bloques=[];
+  if((c.faltan||[]).length){
+    bloques.push(`<div style="background:#FCEBED;border:1px solid #F2C4CB;border-radius:12px;padding:12px 13px;margin-bottom:9px">
+      <div style="font-weight:700;font-size:13.5px;color:#A3253A;margin-bottom:3px">⚠ Faltan ${c.faltan.length} máquina${c.faltan.length===1?'':'s'}</div>
+      <div style="font-size:11.5px;color:#A3253A;margin-bottom:8px">Estaban en ${esc(mes(c.previo))} y no las cargaste ahora. Tampoco están en el taller.</div>
+      ${c.faltan.map(f=>`<div style="display:flex;gap:8px;padding:5px 0;font-size:12.5px;color:#7A1F2E">
+        <b style="font-family:ui-monospace,monospace;min-width:52px">${esc(f.numero)}</b><span>${esc(f.tipo)}</span></div>`).join('')}
+    </div>`);
+  }
+  if((c.en_taller||[]).length){
+    bloques.push(`<div style="background:#F1F4F0;border:1px solid #E0E5DE;border-radius:12px;padding:12px 13px;margin-bottom:9px">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:3px">🔧 ${c.en_taller.length} en el taller</div>
+      <div style="font-size:11.5px;color:#8C9B92;margin-bottom:8px">Están en reparación. No hace falta que las busques.</div>
+      ${c.en_taller.map(t=>`<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:12.5px;color:#586B60">
+        <b style="font-family:ui-monospace,monospace;min-width:52px">${esc(t.numero||'s/n')}</b>
+        <span style="flex:1">${esc(t.tipo||'')}${t.falla?` · ${esc(t.falla)}`:''}</span>
+        ${t.ingreso?`<span style="font-size:11px;color:#8C9B92">desde el ${fD(t.ingreso)}</span>`:''}</div>`).join('')}
+    </div>`);
+  }
+  if((c.nuevas||[]).length){
+    bloques.push(`<div style="background:#E5F5EC;border:1px solid #C9E7D6;border-radius:12px;padding:12px 13px;margin-bottom:9px">
+      <div style="font-weight:700;font-size:13.5px;color:#0F5C33;margin-bottom:3px">＋ ${c.nuevas.length} nueva${c.nuevas.length===1?'':'s'}</div>
+      <div style="font-size:11.5px;color:#0F5C33;margin-bottom:8px">No estaban en ${esc(mes(c.previo))}.</div>
+      ${c.nuevas.map(f=>`<div style="display:flex;gap:8px;padding:5px 0;font-size:12.5px;color:#0F5C33">
+        <b style="font-family:ui-monospace,monospace;min-width:52px">${esc(f.numero)}</b><span>${esc(f.tipo)}</span></div>`).join('')}
+    </div>`);
+  }
+  if(!bloques.length&&c.previo){
+    bloques.push(`<div style="background:#E5F5EC;border:1px solid #C9E7D6;border-radius:12px;padding:11px 13px;margin-bottom:9px;font-size:12.5px;color:#0F5C33">
+      ✓ Todo igual que en ${esc(mes(c.previo))}. No falta ninguna.</div>`);
+  }
+  return bloques.join('');
 }
 function renderCapStock(){
   if(!capStock)return $('lista').innerHTML='<div class="vacio">Cargando tus máquinas…</div>';
@@ -728,6 +778,7 @@ function renderCapStock(){
          Todavía no cargaste tus máquinas. Agregá las que tenés en el objetivo.</div>`;
   $('lista').innerHTML=`
     ${aviso}
+    ${bloqueCambios()}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:11px">
       <div style="font-size:12px;color:#586B60;min-width:0">${esc(capStock.objetivo.nombre||'tu objetivo')} · <b>${totM}</b> máquina${totM===1?'':'s'} con motor</div>
     </div>
