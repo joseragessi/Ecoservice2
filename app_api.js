@@ -1713,23 +1713,49 @@ router.post('/api/app/capataz/combustible/leer', authApp('capataz'), async (req,
     const buffer = Buffer.from(fileData, 'base64');
     const datos = await extraerComprobante(buffer, fileType || 'image/jpeg');
     const norm = s => String(s || '').toUpperCase();
-    const tipos = { gasoil: 0, super: 0 };
-    (datos.items || []).forEach(it => {
-      const p = norm(it.producto), l = Number(it.litros) || 0;
-      if (/SUPER|NAFTA/.test(p) && !/DIESEL|GASOIL/.test(p)) tipos.super += l;
-      else tipos.gasoil += l;
+    /* Qué combustible es cada producto.
+       Antes: "si dice SUPER o NAFTA es súper, si no es gasoil". Eso mandaba a
+       gasoil cualquier nombre raro, y al revés: un "NAFTA SUPER" con la
+       palabra DIESEL en el texto también caía en gasoil (14-sep, José: "el
+       ticket dice gasoil y lo carga como súper nafta").
+       No es cosmético: el capataz reparte por combustible, y a un tractor no
+       le aparece el bloque de súper. Si el producto está mal, se traba.
+       Ahora se mira primero el gasoil, que tiene nombres más distintivos, y
+       lo que no se reconoce queda como `desconocido` para que el capataz lo
+       corrija en la pantalla. */
+    const tipoDe = (producto) => {
+      const p = norm(producto);
+      if (/DIESEL|GASOIL|GAS\s*OIL|EVOLUX|INFINIA\s*D|D-?EURO|ULTRA\s*DIESEL|V-?POWER\s*D|ION\s*D/.test(p)) return 'gasoil';
+      if (/SUPER|NAFTA|PREMIUM|INFINIA(?!\s*D)|V-?POWER(?!\s*D)|ION(?!\s*D)/.test(p)) return 'super';
+      return 'desconocido';
+    };
+    const tipos = { gasoil: 0, super: 0, desconocido: 0 };
+    const productos = (datos.items || []).map(i => {
+      const l = Number(i.litros) || 0;
+      const t = tipoDe(i.producto);
+      tipos[t] += l;
+      return { producto: i.producto || null, litros: l, tipo: t };
     });
+    // Lo que no se reconoció se cuenta como gasoil para que los totales
+    // cierren, pero se marca: la app le pregunta al capataz cuál es.
+    const hayDudas = productos.some(p => p.tipo === 'desconocido');
     res.json({
       ok: true, proveedor: datos.proveedor || null, cuit: datos.cuit || null,
       numero: datos.numero || null, fecha: datos.fecha || null, tipo_doc: datos.tipo_doc || 'remito',
-      litros: { gasoil: Math.round(tipos.gasoil * 100) / 100, super: Math.round(tipos.super * 100) / 100 },
+      litros: { gasoil: Math.round((tipos.gasoil + tipos.desconocido) * 100) / 100,
+                super: Math.round(tipos.super * 100) / 100 },
       items_raw: datos.items || [],
       // El capataz ve a dónde va (su objetivo y unidad), no los elige
       objetivo_nombre: req.app_user.objetivo_nombre || null,
       patente: req.app_user.patente || null,
-      // Productos tal como los leyó el OCR, para poder filtrar los destinos
-      // por combustible en la pantalla de reparto.
-      productos: (datos.items || []).map(i => ({ producto: i.producto, litros: Number(i.litros) || 0 })),
+      // Productos con el combustible que se les asignó, para poder mostrarlos
+      // y que el capataz corrija el que esté mal.
+      productos, hay_dudas: hayDudas,
+      // Datos del comprobante, para que confirme antes de repartir (14-sep).
+      es_tarjeta: !!datos.es_tarjeta,
+      lote: datos.lote || null,
+      tarjeta: datos.tarjeta || null,
+      km_actual: datos.km_actual || null,
     });
   } catch (err) {
     console.error('capataz combustible leer:', err);
