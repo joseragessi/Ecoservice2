@@ -1567,6 +1567,90 @@ router.get('/api/app/capataz/stock', authApp('capataz'), async (req, res) => {
   }
 });
 
+/* Lo que el capataz ve de SU objetivo al entrar a "Mis máquinas": qué cambió
+   desde el mes pasado y qué tiene en el taller.
+   Es la misma información que ve José en el panel, pero de su objetivo solo
+   (decisión 14-sep: "todo esto tiene que salir en la app del capataz").
+   El taller es el de HOY, con la fecha de ingreso. */
+router.get('/api/app/capataz/cambios', authApp('capataz'), async (req, res) => {
+  try {
+    const objetivoId = req.app_user.objetivo_id || null;
+    if (!objetivoId) return res.json({ hay: false });
+    const EQC = require('./equipos_clasificacion');
+    const [censosRes, incRes] = await Promise.all([
+      supabase.from('censos_stock')
+        .select('periodo, respondido_at, censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
+        .eq('objetivo_id', objetivoId).eq('estado', 'respondido')
+        .order('periodo', { ascending: false }).limit(2),
+      supabase.from('incidencias')
+        .select('id, numero_unidad, tipo_equipo, tipo_falla, estado, fecha_ingreso_taller')
+        .eq('objetivo_id', objetivoId).neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
+    ]);
+    const censos = censosRes.data || [];
+    const actual = censos[0] || null, previo = censos[1] || null;
+
+    // El taller de hoy, por número.
+    const nA = v => String(v == null ? '' : v).trim().toUpperCase().replace(/[\s.\-_/]/g, '');
+    const sinPref = n => { const m = String(n || '').match(/^[A-Z](\d+)$/); return m ? m[1] : null; };
+    const taller = {};
+    (incRes.data || []).forEach(i => { const n = nA(i.numero_unidad); if (n && !taller[n]) taller[n] = i; });
+
+    const enTaller = (incRes.data || []).map(i => ({
+      numero: i.numero_unidad, tipo: i.tipo_equipo, falla: i.tipo_falla,
+      ingreso: i.fecha_ingreso_taller, estado: i.estado,
+    }));
+
+    if (!previo) {
+      return res.json({ hay: !!actual, periodo: actual ? actual.periodo : null,
+        previo: null, faltan: [], nuevas: [], en_taller: enTaller });
+    }
+
+    // Comparación por tipo canónico y número tolerante al prefijo.
+    const idx = (censo) => {
+      const m = {};
+      (censo.censos_stock_items || []).forEach(i => {
+        const sep = EQC.separarMarca(i.tipo_equipo);
+        const k = EQC.norm(sep.tipo);
+        const e = m[k] || (m[k] = { tipo: sep.tipo, nums: new Set(), etiquetas: {} });
+        (i.numeros || []).forEach(x => {
+          const n = nA(x);
+          if (!n || n === 'SN' || n === 'SIN' || n === '0') return;
+          e.nums.add(n); const sp = sinPref(n); if (sp) e.nums.add(sp);
+          e.etiquetas[n] = x;
+        });
+      });
+      return m;
+    };
+    const A = idx(previo), B = idx(actual);
+    const tiene = (e, n) => { if (!e) return false; const sp = sinPref(n); return e.nums.has(n) || (sp && e.nums.has(sp)); };
+
+    const faltan = [], nuevas = [];
+    Object.keys(A).forEach(k => {
+      Object.entries(A[k].etiquetas).forEach(([n, etiqueta]) => {
+        if (tiene(B[k], n)) return;
+        const inc = taller[n] || taller[sinPref(n) || ''] || null;
+        if (inc) return;                       // está en el taller: no falta
+        faltan.push({ numero: etiqueta, tipo: A[k].tipo });
+      });
+    });
+    Object.keys(B).forEach(k => {
+      Object.entries(B[k].etiquetas).forEach(([n, etiqueta]) => {
+        if (!tiene(A[k], n)) nuevas.push({ numero: etiqueta, tipo: B[k].tipo });
+      });
+    });
+
+    res.json({
+      hay: true, periodo: actual.periodo, previo: previo.periodo,
+      total: (actual.censos_stock_items || []).reduce((s2, i) => s2 + (Number(i.cantidad) || 0), 0),
+      total_previo: (previo.censos_stock_items || []).reduce((s2, i) => s2 + (Number(i.cantidad) || 0), 0),
+      faltan, nuevas, en_taller: enTaller,
+    });
+  } catch (err) {
+    console.error('capataz cambios:', err);
+    res.status(500).json({ error: 'No pude comparar tus máquinas' });
+  }
+});
+
 // El capataz confirma o corrige su stock desde la app. Guarda el censo del
 // período y la foto semanal, igual que si lo hubiera respondido por WhatsApp.
 router.post('/api/app/capataz/stock', authApp('capataz'), async (req, res) => {
