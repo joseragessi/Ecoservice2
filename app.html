@@ -674,6 +674,7 @@ function renderCombustibleCapataz(){
     +`<div class="tab" onclick="abrirPanol()">🧰 Pañol</div>`;
   if(capSec==='stock')return renderCapStock();
   if(capPaso==='foto')return renderCapFoto();
+  if(capPaso==='confirmar')return renderCapConfirmar();
   if(capPaso==='repartir')return renderCapRepartir();
 }
 function capIr(sec){
@@ -996,15 +997,99 @@ function capFoto(input){
       if(d.__error){$('cap-msg').textContent=d.__error;return;}
       capData=d;capObjNombre=d.objetivo_nombre||'tu objetivo';capPatente=d.patente||'';
       // Un renglón vacío por producto: el capataz elige la máquina.
-      capUnidad={gasoil:d.litros.gasoil>0?[{litros:'',ref:''}]:[],super:d.litros.super>0?[{litros:'',ref:''}]:[]};
+      // Los renglones se arman en capIrRepartir(), después de que el capataz
+      // confirme el comprobante: si corrige el combustible, los totales
+      // cambian y hay que rehacerlos.
+      capUnidad={gasoil:[],super:[]};
       if(!capDestinos)await cargarCapDestinos();
-      capPaso='repartir';render();
+      capPaso='confirmar';render();
     }catch(e){$('cap-msg').textContent='Error: '+e.message;}
   };
   img.src=URL.createObjectURL(f);input.value='';
 }
 function capSum(t){return capUnidad[t].reduce((a,r)=>a+(Number(r.litros)||0),0);}
 function capCuadra(t){return Math.abs(capSum(t)-(capData.litros[t]||0))<0.01;}
+/* Confirmar el comprobante antes de repartir (14-sep).
+   Antes, después de la foto aparecían solo los litros. Ahora se muestra lo
+   que se leyó —lote, tarjeta, unidad, km y productos— para que el capataz vea
+   que está bien. Y sobre todo: que pueda corregir el COMBUSTIBLE, porque si
+   el OCR lee gasoil como súper, después no le aparece el tractor al repartir
+   y se traba sin entender por qué. */
+function renderCapConfirmar(){
+  const d=capData;
+  const fD=s=>{const m=String(s||'').match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${+m[3]}/${+m[2]}/${m[1]}`:(s||'');};
+  const uni=capUnidadDeTarjeta();
+  const dato=(k,v,sub)=>`<div style="display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-bottom:1px solid #F2F5F0;gap:10px">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:#8C9B92;font-weight:700;flex-shrink:0">${k}</span>
+    <span style="font-size:14.5px;font-weight:700;text-align:right;font-family:ui-monospace,monospace">${v}
+      ${sub?`<span style="display:block;font-size:11px;color:#8C9B92;font-weight:400;font-family:system-ui">${sub}</span>`:''}</span></div>`;
+  // Cada producto con su combustible, corregible.
+  const prods=(d.productos||[]).map((p,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #F2F5F0">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(p.producto||'—')}</div>
+        <div style="font-size:11.5px;color:#8C9B92;font-family:ui-monospace,monospace">${p.litros} lt</div>
+      </div>
+      <select onchange="capTipoProd(${i},this.value)"
+        style="padding:8px 10px;border:1.5px solid ${p.tipo==='desconocido'?'#D98A1F':'#d8dcd8'};border-radius:9px;font-size:13px;font-family:inherit;background:${p.tipo==='desconocido'?'#FBF0DC':'#fff'};font-weight:600">
+        <option value="gasoil" ${p.tipo==='gasoil'?'selected':''}>🛢 Gasoil</option>
+        <option value="super" ${p.tipo==='super'?'selected':''}>⛽ Súper</option>
+        ${p.tipo==='desconocido'?'<option value="desconocido" selected>❓ ¿Cuál es?</option>':''}
+      </select>
+    </div>`).join('');
+  const dudas=(d.productos||[]).some(p=>p.tipo==='desconocido');
+  $('lista').innerHTML=`
+    <div style="font-size:12.5px;color:#586B60;margin-bottom:11px">Leí esto del comprobante. Fijate que esté bien antes de repartir.</div>
+    <div style="background:#fff;border-radius:14px;overflow:hidden;margin-bottom:12px;border:1px solid #E6EBE4">
+      <div style="background:${d.es_tarjeta?'#16221C':'#3B7DC4'};color:#fff;padding:9px 14px;display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:13px">${d.es_tarjeta?'💳 TARJETA':'🧾 REMITO'}</b>
+        <span style="font-size:10.5px;opacity:.8">${esc(d.proveedor||'')}</span></div>
+      <div style="padding:11px 14px">
+        ${d.es_tarjeta&&d.lote?dato('Lote',esc(d.lote)):''}
+        ${d.numero&&!d.es_tarjeta?dato('N° remito',esc(d.numero)):''}
+        ${d.tarjeta?dato('Tarjeta','···· '+esc(String(d.tarjeta).slice(-4)),uni?esc(uni):null):''}
+        ${dato('Unidad',uni?esc(uni):(capPatente?esc(capPatente):'<span style="color:#D98A1F;font-family:system-ui;font-size:13px">a completar</span>'))}
+        ${d.fecha?dato('Fecha',fD(d.fecha)):''}
+        ${d.km_actual?dato('Kilometraje',Number(d.km_actual).toLocaleString('es-AR')):''}
+      </div>
+      <div style="background:#E5F5EC;padding:11px 14px;border-top:1px solid #C9E7D6">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:#0F5C33;font-weight:700;margin-bottom:4px">Combustible</div>
+        ${prods||'<div style="font-size:12.5px;color:#8C9B92">Sin productos leídos</div>'}
+      </div>
+    </div>
+    ${dudas?`<div style="background:#FBF0DC;border:1px solid #EED9AE;border-radius:12px;padding:12px 13px;margin-bottom:11px;font-size:12.5px;color:#8A5A0B;line-height:1.45">
+      <b>⚠ No reconocí un combustible</b><br>Elegí si es gasoil o súper. Si te equivocás, después no te van a aparecer las máquinas que corresponden.</div>`:''}
+    ${(d.tarjeta&&!uni)?`<div style="background:#FBF0DC;border:1px solid #EED9AE;border-radius:12px;padding:12px 13px;margin-bottom:11px;font-size:12.5px;color:#8A5A0B;line-height:1.45">
+      <b>⚠ No sé de qué unidad es esta tarjeta</b><br>La ···${esc(String(d.tarjeta).slice(-4))} no está cargada. Avisale a Logística para que la asocien.</div>`:''}
+    <button onclick="capIrRepartir()" style="width:100%;padding:15px;border:none;border-radius:12px;background:${dudas?'#d8dcd8':'var(--brote,#159B51)'};color:${dudas?'#96a096':'#fff'};font-size:15.5px;font-weight:700;font-family:inherit;cursor:${dudas?'default':'pointer'}">Está bien → repartir</button>
+    <button onclick="capPaso='foto';capData=null;render()" style="width:100%;margin-top:8px;padding:12px;border:1px solid #d8dcd8;border-radius:11px;background:#fff;color:#586B60;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">📷 Sacar otra foto</button>`;
+}
+// La unidad que corresponde a la tarjeta del ticket, si está cargada.
+function capUnidadDeTarjeta(){
+  if(!capData||!capData.tarjeta)return null;
+  const t=String(capData.tarjeta).replace(/\D/g,'');
+  const d=(capDestinos&&capDestinos.destinos)||[];
+  const u=d.find(x=>x.ref_tipo==='unidad'&&(x.numeros||[]).some(n=>String(n).replace(/\D/g,'')===t));
+  return u?u.label:null;
+}
+// Corregir el combustible de un producto: recalcula los totales por tipo.
+function capTipoProd(ix,valor){
+  if(!capData||!capData.productos[ix])return;
+  capData.productos[ix].tipo=valor;
+  const t={gasoil:0,super:0};
+  capData.productos.forEach(p=>{const l=Number(p.litros)||0;
+    if(p.tipo==='super')t.super+=l;else t.gasoil+=l;});   // lo dudoso va a gasoil hasta que se elija
+  capData.litros={gasoil:Math.round(t.gasoil*100)/100,super:Math.round(t.super*100)/100};
+  render();
+}
+function capIrRepartir(){
+  if((capData.productos||[]).some(p=>p.tipo==='desconocido')){toast('Elegí si es gasoil o súper');return;}
+  // Los renglones se arman acá, ya con los totales corregidos.
+  capUnidad={gasoil:capData.litros.gasoil>0?[{litros:'',ref:''}]:[],
+             super:capData.litros.super>0?[{litros:'',ref:''}]:[]};
+  capPaso='repartir';render();
+}
+
 function renderCapRepartir(){
   const bloque=(tipo,label,emoji,color)=>{
     if(!(capData.litros[tipo]>0))return '';
