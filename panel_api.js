@@ -8133,31 +8133,51 @@ router.get('/api/stock/general', auth, async (req, res) => {
           const n = nA(i.numero_unidad);
           if (n && !tallerNum[n]) tallerNum[n] = i;
         });
+        /* Se agrupa por TIPO CANÓNICO, no por el texto que escribió el
+           capataz. Sin esto, "Motoguadaña 291" de agosto y "Motoguadaña" de
+           septiembre son dos tipos distintos: en Cosquin daba 17 faltantes y
+           1 nueva cuando es la misma máquina escrita distinto. El primer
+           reporte real dio 157 faltantes y casi todos eran esto. */
         const porTipo = {};
         const cargar = (censo, lado) => (censo ? censo.censos_stock_items || [] : []).forEach(i => {
-          const k = String(i.tipo_equipo || '').trim();
-          const e = porTipo[k] || (porTipo[k] = { tipo: k, a: 0, b: 0, numsA: [], numsB: [], obs: null });
+          const sep = EQC.separarMarca(i.tipo_equipo);
+          const k = EQC.norm(sep.tipo) || String(i.tipo_equipo || '').trim();
+          const e = porTipo[k] || (porTipo[k] = { tipo: sep.tipo || i.tipo_equipo, a: 0, b: 0, numsA: [], numsB: [], obs: null, marcas: new Set() });
+          if (sep.marca) e.marcas.add(sep.marca);
+          if (sep.modelo) e.marcas.add(sep.modelo);
           e[lado] += Number(i.cantidad) || 0;
           (i.numeros || []).forEach(x => e[lado === 'a' ? 'numsA' : 'numsB'].push(String(x)));
           if (i.observacion && !e.obs) e.obs = i.observacion;
         });
         cargar(ca, 'a'); cargar(cb, 'b');
 
+        /* Los números también se comparan tolerando un prefijo de UNA letra:
+           "E10" y "10" son la misma máquina (Fincas del Sur). Igual que en la
+           clasificación, solo dentro del mismo tipo, así "T22" (el
+           minitractor) nunca se confunde con la motoguadaña "22". */
+        const sinPref = n => { const m = String(n || '').match(/^[A-Z](\d+)$/); return m ? m[1] : null; };
+        const claves = n => { const x = nA(n); const y = sinPref(x); return y ? [x, y] : [x]; };
+        const enSet = (set, n) => claves(n).some(k => set.has(k));
+        const setDe = arr => { const s2 = new Set(); arr.forEach(n => claves(n).forEach(k => s2.add(k))); return s2; };
+
         const tipos = Object.values(porTipo).map(e => {
-          const setB = new Set(e.numsB.map(nA));
-          const setA = new Set(e.numsA.map(nA));
+          const setB = setDe(e.numsB);
+          const setA = setDe(e.numsA);
           const numeros = [];
           // Los del mes viejo: siguen, están en el taller, o faltan.
+          const vago = n => { const x = nA(n); return !x || x === 'SN' || x === 'SIN' || x === '0'; };
           e.numsA.forEach(x => {
+            if (vago(x)) return;                       // "sn" no identifica nada
             const n = nA(x);
-            if (!n) return;
-            if (setB.has(n)) { numeros.push({ n: x, estado: tallerNum[n] ? 'taller' : 'ok', ingreso: tallerNum[n] ? tallerNum[n].fecha_ingreso_taller : null }); return; }
-            if (tallerNum[n]) { numeros.push({ n: x, estado: 'taller', ingreso: tallerNum[n].fecha_ingreso_taller }); return; }
+            const inc = tallerNum[n] || tallerNum[sinPref(n)] || null;
+            if (enSet(setB, x)) { numeros.push({ n: x, estado: inc ? 'taller' : 'ok', ingreso: inc ? inc.fecha_ingreso_taller : null }); return; }
+            if (inc) { numeros.push({ n: x, estado: 'taller', ingreso: inc.fecha_ingreso_taller }); return; }
             numeros.push({ n: x, estado: 'falta' });
           });
           // Los que aparecieron en el mes nuevo.
-          e.numsB.forEach(x => { const n = nA(x); if (n && !setA.has(n)) numeros.push({ n: x, estado: 'nuevo' }); });
+          e.numsB.forEach(x => { if (!vago(x) && !enSet(setA, x)) numeros.push({ n: x, estado: 'nuevo' }); });
           return { tipo: e.tipo, a: e.a, b: e.b, dif: e.b - e.a, obs: e.obs, numeros,
+            marcas: [...e.marcas],
             faltan: numeros.filter(x => x.estado === 'falta').length,
             en_taller: numeros.filter(x => x.estado === 'taller').length,
             nuevos: numeros.filter(x => x.estado === 'nuevo').length };
