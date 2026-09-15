@@ -137,6 +137,45 @@ const est = (o, tipo, n) => { const x = numsDe(o, tipo).find(y => String(y.n) ==
   console.log('\n— Orden: lo que falta arriba —');
   eq('el primero es el que tiene faltantes', r.json.comparacion.objetivos[0].objetivo_id === 'caso', r.json.comparacion.objetivos[0].objetivo);
 
+  console.log('\n— Los 157 faltantes falsos del 14-sep —');
+  // COSQUIN: en agosto el capataz escribió "Motoguadaña 291" y en septiembre
+  // "Motoguadaña". Son la MISMA máquina: sin normalizar el tipo daban 17
+  // faltantes y 1 nueva.
+  CENSOS.push(censo('cosq', '2026-08', [it('Motoguadaña 291', 3, ['213', '211', '235'], 'Stihl 291')]));
+  CENSOS.push(censo('cosq', '2026-09', [it('Motoguadaña', 3, ['213', '211', '235'])]));
+  OBJ.push({ id: 'cosq', nombre: 'Caminos las sierras Cosquin', grupo_stock: 'deposito', activo: true, tipo: 'operativo' });
+  r = await pedir({ periodo: '2026-08', comparar: '2026-09' });
+  let co = objDe(r, 'cosq');
+  eq('COSQUIN · "Motoguadaña 291" y "Motoguadaña" son el mismo tipo', co.tipos.length === 1, JSON.stringify(co.tipos.map(t => t.tipo)));
+  eq('COSQUIN · sin faltantes (antes daba 3)', co.faltan === 0, String(co.faltan));
+  eq('COSQUIN · sin nuevas', co.nuevos === 0, String(co.nuevos));
+
+  // FINCAS: "E10" en agosto, "10" en septiembre. Misma máquina.
+  CENSOS.push(censo('fin', '2026-08', [it('Motoguadaña', 4, ['E10', 'E11', 'E12', 'E13'])]));
+  CENSOS.push(censo('fin', '2026-09', [it('Motoguadaña', 4, ['10', '11', '12', '13'])]));
+  OBJ.push({ id: 'fin', nombre: 'FINCAS DEL SUR', grupo_stock: 'privado', activo: true, tipo: 'operativo' });
+  r = await pedir({ periodo: '2026-08', comparar: '2026-09' });
+  const fi = objDe(r, 'fin');
+  eq('FINCAS · "E10" y "10" son la misma máquina', fi.faltan === 0 && fi.nuevos === 0, `faltan ${fi.faltan}, nuevas ${fi.nuevos}`);
+
+  // Los "sn" no identifican nada y no pueden faltar.
+  CENSOS.push(censo('sn1', '2026-08', [it('Motoguadaña', 3, ['sn', 'SN', '12'])]));
+  CENSOS.push(censo('sn1', '2026-09', [it('Motoguadaña', 2, ['12'])]));
+  OBJ.push({ id: 'sn1', nombre: 'Con SN', grupo_stock: 'privado', activo: true, tipo: 'operativo' });
+  r = await pedir({ periodo: '2026-08', comparar: '2026-09' });
+  const sn = objDe(r, 'sn1');
+  eq('los "sn" no cuentan como faltantes', sn.faltan === 0, JSON.stringify(sn.tipos[0] && sn.tipos[0].numeros));
+  eq('pero la diferencia de cantidad se ve igual', sn.total_b - sn.total_a === -1);
+
+  // Un T22 (minitractor) no se confunde con la motoguadaña 22.
+  CENSOS.push(censo('mix', '2026-08', [it('Minitractor', 1, ['T22']), it('Motoguadaña', 1, ['22'])]));
+  CENSOS.push(censo('mix', '2026-09', [it('Minitractor', 1, ['T22'])]));
+  OBJ.push({ id: 'mix', nombre: 'Mixto', grupo_stock: 'privado', activo: true, tipo: 'operativo' });
+  r = await pedir({ periodo: '2026-08', comparar: '2026-09' });
+  const mx = objDe(r, 'mix');
+  eq('la motoguadaña 22 falta y el T22 no la cubre', mx.faltan === 1, JSON.stringify(mx.tipos.map(t => [t.tipo, t.faltan])));
+  CENSOS.length -= 8; OBJ.length -= 4;
+
   console.log('\n— Bordes —');
   r = await pedir({ periodo: '2026-01', comparar: '2026-02' });
   eq('dos meses sin censos no rompen', r.code === 200 && (r.json.comparacion.objetivos || []).length === 0, JSON.stringify(r.json.comparacion && r.json.comparacion.totales));
