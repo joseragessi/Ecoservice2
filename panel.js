@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-14 · stock por mes y comparación; se saca Desvíos';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-14 · comparación por mes con detalle y tipos normalizados';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2923,11 +2923,11 @@ function pintarComparacion(view,selMes,selComp){
     <div class="tablewrap"><table>
       <thead><tr><th>Objetivo</th><th>Tipo</th><th class="num">${escStk(mesStk(C.desde||stkGen.periodo||''))}</th><th class="num">${escStk(mesStk(C.hasta))}</th><th class="num">Dif.</th><th>N° de máquina</th></tr></thead>
       <tbody>${vis.map(o=>{
-        if(!o.declaro_b)return `<tr><td><b>${escStk(o.objetivo)}</b> <span class="badge b-amber">sin declarar</span></td>
+        if(!o.declaro_b)return `<tr style="cursor:pointer" onclick="detalleComparacion('${o.objetivo_id}')"><td><b>${escStk(o.objetivo)}</b> <span class="badge b-amber">sin declarar</span></td>
           <td colspan="2" class="sub" style="font-style:italic">${o.total_a} equipos en ${escStk(mesStk(C.desde||''))}</td>
           <td class="num sub">—</td><td class="num sub">?</td><td class="sub">No declaró en ${escStk(mesStk(C.hasta))}</td></tr>`;
         const dif=o.total_b-o.total_a;
-        return o.tipos.map((t,ix)=>`<tr${t.faltan?' style="background:#FFF9F9"':''}>
+        return o.tipos.map((t,ix)=>`<tr${t.faltan?' style="background:#FFF9F9"':''} style="cursor:pointer" onclick="detalleComparacion('${o.objetivo_id}')">
           ${ix===0?`<td rowspan="${o.tipos.length}" style="vertical-align:top"><b>${escStk(o.objetivo)}</b>
             ${o.faltan?`<span class="badge b-red">${o.faltan} falta${o.faltan===1?'':'n'}</span>`:''}
             ${dif!==0?`<div class="sub mono" style="font-size:11px;margin-top:2px;color:${dif<0?'var(--rojo)':'var(--brote-2)'}">${dif>0?'+':''}${dif} en total</div>`:''}</td>`:''}
@@ -2943,6 +2943,56 @@ function pintarComparacion(view,selMes,selComp){
     <b>Cómo se lee.</b> <span class="nu">20</span> declarada y en el objetivo · <span class="nu t">31</span> <b>en el taller</b> (pasá el mouse para ver desde cuándo) · <span class="nu f">19</span> <b>falta</b>: no se declaró y el taller no la tiene · <span class="nu n">240</span> apareció en ${escStk(mesStk(C.hasta))}.
     <div style="margin-top:6px">El capataz declara todo lo que tiene en el momento del censo. Si una máquina está en el taller, la declare o no, se tacha: <b>no cuenta como faltante</b>. El taller es el de <b>hoy</b>, no el de ese mes — por eso va la fecha de ingreso.</div>
   </div>`;
+}
+
+/* Detalle de un objetivo al tocarlo en la comparación: máquina por máquina,
+   agrupadas por qué les pasó. Es para cuando ves "21 faltan" y querés saber
+   cuáles son sin leer la fila entera. */
+function detalleComparacion(objetivoId){
+  const C=stkGen&&stkGen.comparacion;if(!C)return;
+  const o=(C.objetivos||[]).find(x=>String(x.objetivo_id)===String(objetivoId));if(!o)return;
+  const fD=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${+m[3]}/${+m[2]}`:'';};
+  // Todas las máquinas de todos los tipos, con su tipo al lado.
+  const todas=[];
+  (o.tipos||[]).forEach(t=>(t.numeros||[]).forEach(x=>todas.push({...x,tipo:t.tipo,obs:t.obs})));
+  const grupo=(est,titulo,color,ayuda)=>{
+    const ms=todas.filter(x=>x.estado===est);
+    if(!ms.length)return '';
+    return `<div style="margin-bottom:14px">
+      <div style="font-weight:700;font-size:13px;color:${color};margin-bottom:3px">${titulo} · ${ms.length}</div>
+      <div class="sub" style="font-size:11px;margin-bottom:7px">${ayuda}</div>
+      ${ms.map(m=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 9px;background:var(--hueso);border-radius:8px;margin-bottom:4px;font-size:12.5px">
+        <span class="mono" style="min-width:58px;font-weight:600">${escStk(m.n)}</span>
+        <span style="flex:1">${escStk(m.tipo)}${m.obs?`<span class="sub"> · ${escStk(m.obs)}</span>`:''}</span>
+        ${m.ingreso?`<span class="sub" style="font-size:11px">ingresó el ${fD(m.ingreso)}</span>`:''}
+      </div>`).join('')}</div>`;
+  };
+  // Los tipos sin números: solo se puede comparar la cantidad.
+  const sinNum=(o.tipos||[]).filter(t=>!(t.numeros||[]).length&&t.dif!==0);
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='det-comp';
+  bg.innerHTML=`<div class="modal" style="max-width:560px">
+    <div class="modal-tit">${escStk(o.objetivo)}</div>
+    <div class="sub" style="margin:3px 0 14px">${escStk(mesStk(C.desde||stkGen.periodo||''))} → ${escStk(mesStk(C.hasta))} ·
+      ${o.declaro_b?`${o.total_a} → ${o.total_b} equipos${o.total_b!==o.total_a?` <b style="color:${o.total_b<o.total_a?'var(--rojo)':'var(--brote-2)'}">(${o.total_b>o.total_a?'+':''}${o.total_b-o.total_a})</b>`:''}`
+        :`<span style="color:var(--diesel)">no declaró en ${escStk(mesStk(C.hasta))}</span>`}</div>
+    ${grupo('falta','⚠ Faltan','var(--rojo)','No se declararon y el taller no las tiene.')}
+    ${grupo('taller','🔧 En el taller','var(--tinta-2)','Están en reparación: no faltan.')}
+    ${grupo('nuevo','＋ Aparecieron','var(--brote-2)',`No estaban en ${escStk(mesStk(C.desde||''))}.`)}
+    ${grupo('ok','✓ Sin cambios','var(--tinta-3)','Declaradas en los dos meses.')}
+    ${sinNum.length?`<div style="margin-bottom:14px">
+      <div style="font-weight:700;font-size:13px;color:var(--diesel);margin-bottom:3px">Sin números · ${sinNum.length} tipo${sinNum.length===1?'':'s'}</div>
+      <div class="sub" style="font-size:11px;margin-bottom:7px">Acá solo se puede comparar la cantidad: no se sabe cuál es cuál.</div>
+      ${sinNum.map(t=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 9px;background:var(--hueso);border-radius:8px;margin-bottom:4px;font-size:12.5px">
+        <span style="flex:1">${escStk(t.tipo)}</span>
+        <span class="mono">${t.a} → ${t.b}</span>
+        <span class="mono" style="font-weight:700;color:${t.dif<0?'var(--rojo)':'var(--brote-2)'}">${t.dif>0?'+':''}${t.dif}</span>
+      </div>`).join('')}</div>`:''}
+    ${(!todas.length&&!sinNum.length)?'<div class="sub">Sin cambios para mostrar.</div>':''}
+    <div class="modal-acciones">
+      <button class="btn-salir" onclick="document.getElementById('det-comp').remove()">Cerrar</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  bg.onclick=e=>{if(e.target===bg)bg.remove();};
 }
 
 /* ═══ Stock · Clasificación de equipos ═════════════════════════
@@ -3460,19 +3510,9 @@ async function vStockGeneral(view){
     </div>`;
   })()}
  
-  ${faltVis.length?`<div class="panel" style="border-left:3px solid var(--rojo);margin-bottom:14px">
-    <div class="panel-title" style="color:var(--rojo)">⚠ Faltantes sin resolver</div>
-    <table><thead><tr><th>Objetivo</th><th>Equipo</th><th>Visto por última vez</th><th>Detectado</th><th></th></tr></thead><tbody>
-    ${faltVis.map(fa=>{
-      const fila=filas.find(f=>f.objetivo_id===fa.objetivo_id);
-      const dias=Math.ceil((hoyMs-new Date(fa.created_at).getTime())/86400000);
-      return `<tr>
-        <td>${escStk(fila?fila.objetivo:'—')}</td>
-        <td><b>${escStk(fa.tipo_equipo||'')}</b> ${fa.numero?`<span class="uni-chip" style="background:var(--rojo-soft);color:var(--rojo)">N° ${escStk(fa.numero)}</span>`:`<span class="sub">(${escStk(fa.detalle||'')})</span>`}</td>
-        <td class="mono" style="font-size:12px">${fa.visto_en?fFecha(fa.visto_en):'—'}</td>
-        <td class="sub" style="font-size:12px">hace ${dias} d</td>
-        <td><button class="mini-btn" onclick="resolverFaltante('${fa.id}')">✓ Resolver</button></td></tr>`;}).join('')}
-    </tbody></table></div>`:''}
+  <!-- El recuadro "Faltantes sin resolver" se sacó el 14-sep: lo que mostraba
+       (diferencias de un censo a otro) ahora se ve en la comparación de dos
+       meses, con el cruce del taller. El endpoint los sigue devolviendo. -->
  
   <div class="panel">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
