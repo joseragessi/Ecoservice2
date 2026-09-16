@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-16 · descripciones editables en facturas; orden de compra oculta';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-16 · facturas: descripción, monto e IVA por ítem; el total sale de los ítems';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -11361,8 +11361,19 @@ function vComprasDetalle(view){
       <div class="mcard-row"><span>N° Factura</span>${campo('ec-num',inv.numero_factura)}</div>
       <div class="mcard-row"><span>Proveedor</span>${campo('ec-prov',inv.proveedor)}</div>
       <div class="mcard-row"><span>CUIT</span>${campo('ec-cuit',inv.cuit)}</div>
-      <div class="mcard-row"><span>Neto</span>${campo('ec-neto',inv.total_sin_iva,'num')}</div>
-      <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>
+      ${(ed&&(inv.items||[]).length)
+        // Con ítems, los totales SON su suma: se muestran calculados y no se
+        // editan a mano, para que el asiento de Flexxus y el reparto por
+        // centro de costo no puedan decir cosas distintas (16-sep).
+        ?`<div class="mcard-row"><span>Neto</span>
+            <input id="ec-neto" type="number" step="0.01" value="${inv.total_sin_iva||0}" readonly
+              style="background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;width:100%;color:var(--tinta-2)"></div>
+          <div class="mcard-row"><span>IVA</span>
+            <input id="ec-iva" type="number" step="0.01" value="${inv.total_iva||0}" readonly
+              style="background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;width:100%;color:var(--tinta-2)"></div>
+          <div class="sub" style="font-size:11px;margin-top:-2px">Se calculan solos con los ítems de abajo.</div>`
+        :`<div class="mcard-row"><span>Neto</span>${campo('ec-neto',inv.total_sin_iva,'num')}</div>
+          <div class="mcard-row"><span>IVA</span>${campo('ec-iva',inv.total_iva,'num')}</div>`}
       ${(()=>{const al=(inv.ivas||[]).filter(x=>Number(x.monto));
         if(!al.length)return '';
         const suma=Math.round(al.reduce((a,x)=>a+(Number(x.monto)||0),0)*100)/100;
@@ -11467,6 +11478,8 @@ function vComprasDetalle(view){
       const ivaItems=items.reduce((s,i)=>s+ivaBruto(i),0);
       const ivaFact=Number(inv.total_iva)||0;
       const netoItems=items.reduce((s,i)=>s+(Number(i.monto_sin_iva)||0),0);
+      // Se prorratea solo si NINGÚN ítem trae su IVA. Apenas se edita uno, los
+      // ítems mandan y el prorrateo deja de aplicar.
       const prorratear=ivaItems===0&&ivaFact>0&&netoItems>0;
       const ivaDe=i=>prorratear
         ?ivaFact*(Number(i.monto_sin_iva)||0)/netoItems
@@ -11495,15 +11508,22 @@ function vComprasDetalle(view){
           ?`<input id="ei-cant-${ix}" type="number" min="1" step="1" value="${cant}" style="width:58px;font-size:12px;padding:4px 6px;text-align:right">`
           :`<span class="mono">${cant}</span>`}</td>
         <td class="num money">${ed
-          ?`<input id="ei-neto-${ix}" type="number" step="0.01" value="${n}" style="width:110px;font-size:12px;padding:4px 6px;text-align:right" onchange="comprasItemCambio()">`
+          ?`<input id="ei-neto-${ix}" type="number" step="0.01" value="${n}" style="width:104px;font-size:12px;padding:4px 6px;text-align:right" oninput="comprasItemCambio()">`
           :money(n)}</td>
-        <td class="num money sub">${money(v)}</td>
-        <td class="num money">${money(n+v)}</td>
+        <td class="num money${ed?'':' sub'}">${ed
+          // IVA POR ÍTEM (16-sep): hay facturas con 21% y 10,5% mezclados y
+          // hasta ahora solo se podía editar el IVA total. Arranca con el
+          // valor que tenga el ítem, o con el prorrateo si la factura trae el
+          // IVA solo en el total.
+          ?`<input id="ei-iva-${ix}" type="number" step="0.01" value="${Math.round(v*100)/100}" style="width:96px;font-size:12px;padding:4px 6px;text-align:right" oninput="comprasItemCambio()">
+             <div class="sub" style="font-size:10px;margin-top:2px;white-space:nowrap">${n>0?Math.round(v/n*1000)/10:0}%</div>`
+          :money(v)}</td>
+        <td class="num money"><span id="ei-lin-tot-${ix}">${money(n+v)}</span></td>
         ${perItem?`<td>${selObj(ix)}${selUni(ix)}</td>`:''}</tr>`;}).join('')}
       <tr style="border-top:2px solid var(--linea)"><td><b>Total</b></td><td></td>
-        <td class="num money"><b>${money(inv.total_sin_iva||0)}</b></td>
-        <td class="num money"><b>${money(ivaFact)}</b></td>
-        <td class="num money"><b>${money(bruto)}</b></td>${perItem?'<td></td>':''}</tr></tbody></table>
+        <td class="num money"><b id="ei-tot-neto">${money(inv.total_sin_iva||0)}</b></td>
+        <td class="num money"><b id="ei-tot-iva">${money(ivaFact)}</b></td>
+        <td class="num money"><b id="ei-tot-total">${money(bruto)}</b></td>${perItem?'<td></td>':''}</tr></tbody></table>
       ${prorratear?'<div class="sub" style="margin-top:8px">ℹ️ La factura trae el IVA solo en el total, no por línea. Acá se muestra prorrateado según el neto de cada ítem.</div>':''}
       <div id="ec-aviso-items" style="margin-top:8px;font-size:12px">${(()=>{
         const dif=Math.round((netoItems-(Number(inv.total_sin_iva)||0))*100)/100;
@@ -11518,18 +11538,44 @@ function vComprasDetalle(view){
     if(!(inv.flexxus&&inv.flexxus.ok))precargarFlexxus(inv.id,String(inv.letra||'').toUpperCase()||null);}
 }
 /* Recalcula en vivo el aviso de "los ítems no cierran con el neto". */
+/* Los ÍTEMS MANDAN (16-sep, José): al editar el neto o el IVA de un ítem,
+   los totales de la factura se recalculan solos como la suma de todos.
+
+   Antes el total era independiente y solo se avisaba del descuadre. Eso deja
+   pasar facturas donde el asiento de Flexxus dice un importe y el reparto por
+   centro de costo dice otro — y a Flexxus le va el TOTAL, no los ítems.
+   Recalculando, lo que se edita es lo que se imputa.
+
+   Las facturas sin ítems siguen editándose por el total, como siempre. */
 function comprasItemCambio(){
   const inv=comprasVer;if(!inv)return;
   const g=id=>document.getElementById(id);
-  let suma=0;
-  (inv.items||[]).forEach((_,ix)=>{const n=g('ei-neto-'+ix);if(n)suma+=Number(n.value)||0;});
-  suma=Math.round(suma*100)/100;
-  const neto=Number((g('ec-neto')||{}).value||inv.total_sin_iva)||0;
-  const av=g('ec-aviso-items');if(!av)return;
-  const dif=Math.round((suma-neto)*100)/100;
-  av.innerHTML=Math.abs(dif)<0.02
-    ?'<span style="color:var(--brote)">✓ Los ítems cierran con el neto.</span>'
-    :`<span style="color:var(--rojo)">⚠ Los ítems suman ${money(suma)} y el neto dice ${money(neto)} (diferencia ${money(Math.abs(dif))}). Al imputar mando el NETO, reescalando los ítems.</span>`;
+  const items=inv.items||[];
+  if(!items.length)return;
+  let neto=0,iva=0;
+  items.forEach((it,ix)=>{
+    const n=g('ei-neto-'+ix), v=g('ei-iva-'+ix);
+    neto+=n?(Number(n.value)||0):(Number(it.monto_sin_iva)||0);
+    if(v)iva+=Number(v.value)||0;
+  });
+  neto=Math.round(neto*100)/100;
+  iva=Math.round(iva*100)/100;
+
+  const cn=g('ec-neto'); if(cn)cn.value=neto;
+  const ci=g('ec-iva');  if(ci)ci.value=iva;
+
+  // Los totales de la tabla, en vivo.
+  const tn=g('ei-tot-neto'); if(tn)tn.textContent=money(neto);
+  const ti=g('ei-tot-iva');  if(ti)ti.textContent=money(iva);
+  const tt=g('ei-tot-total');if(tt)tt.textContent=money(neto+iva);
+
+  const av=g('ec-aviso-items');
+  if(av)av.innerHTML=`<span style="color:var(--brote-2)">✓ Total recalculado: neto ${money(neto)} + IVA ${money(iva)} = <b>${money(neto+iva)}</b>. Es lo que se imputa en Flexxus.</span>`;
+  // El IVA de cada línea puede haber cambiado de prorrateado a propio.
+  items.forEach((_,ix)=>{
+    const v=g('ei-iva-'+ix), tot=g('ei-lin-tot-'+ix), n=g('ei-neto-'+ix);
+    if(tot)tot.textContent=money((n?Number(n.value)||0:0)+(v?Number(v.value)||0:0));
+  });
 }
  
 // Al cambiar de modo de imputación la vista se re-renderiza: capturamos primero
@@ -11712,17 +11758,30 @@ async function guardarEdicionCompra(){
     total_iva:Number(g('ec-iva').value)||0,
     assignmentMode:comprasEditMode,
   };
-  // Ítems editados: descripción, cantidad Y MONTO. El monto faltaba, así que
-  // una corrección del neto no llegaba al detalle y Flexxus imputaba el
+  // Ítems editados: descripción, cantidad, MONTO e IVA. El monto faltaba, así
+  // que una corrección del neto no llegaba al detalle y Flexxus imputaba el
   // importe viejo del OCR (caso RAGAGLIA: $27.722,02 en vez de $33.466,23).
+  //
+  // 16-sep: se agrega el IVA por ítem, y los TOTALES de la factura pasan a
+  // salir de la suma de los ítems. A Flexxus le va el total, así que esto es
+  // lo que hace que lo editado sea lo que se imputa.
   if((inv.items||[]).length){
     body.items=(inv.items||[]).map((it,ix)=>{
-      const c=g('ei-cant-'+ix),d=g('ei-desc-'+ix),n=g('ei-neto-'+ix);
+      const c=g('ei-cant-'+ix),d=g('ei-desc-'+ix),n=g('ei-neto-'+ix),v=g('ei-iva-'+ix);
+      const neto=(n&&n.value!=='')?Number(n.value)||0:(Number(it.monto_sin_iva)||0);
+      const iva=(v&&v.value!=='')?Number(v.value)||0:(Number(it.monto_iva!=null?it.monto_iva:it.iva)||0);
       return {...it,
         descripcion:d?(d.value.trim()||it.descripcion):it.descripcion,
         cantidad:c?Math.max(1,Math.round(Number(c.value)||1)):(Number(it.cantidad)||1),
-        monto_sin_iva:(n&&n.value!=='')?Number(n.value)||0:(Number(it.monto_sin_iva)||0)};
+        monto_sin_iva:neto,
+        monto_iva:iva};
     });
+    // Los totales SON la suma de los ítems: si no, el asiento de Flexxus y el
+    // reparto por centro de costo dirían cosas distintas.
+    const sNeto=body.items.reduce((s2,i)=>s2+(Number(i.monto_sin_iva)||0),0);
+    const sIva =body.items.reduce((s2,i)=>s2+(Number(i.monto_iva)||0),0);
+    body.total_sin_iva=Math.round(sNeto*100)/100;
+    body.total_iva    =Math.round(sIva*100)/100;
   }
   if(comprasEditMode==='per-item'){
     const asg={};
