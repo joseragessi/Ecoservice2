@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-14 · comparación por mes con detalle y tipos normalizados';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-16 · descripciones editables en facturas; orden de compra oculta';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -11482,8 +11482,14 @@ function vComprasDetalle(view){
       return `<table style="font-size:12.5px"><thead><tr><th>Descripción</th><th class="num">Cant.</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th>${perItem?'<th style="width:260px">Imputación</th>':''}</tr></thead>
       <tbody>${items.map((i,ix)=>{const n=Number(i.monto_sin_iva)||0,v=ivaDe(i);
         const cant=Number(i.cantidad)||1;
-        return `<tr><td>${ed
-          ?`<input id="ei-desc-${ix}" value="${String(i.descripcion||'').replace(/"/g,'&quot;')}" style="width:100%;font-size:12px;padding:4px 6px">`
+        return `<tr><td style="min-width:240px">${ed
+          // Un textarea y no un input: las descripciones largas (la factura de
+          // exámenes preocupacionales trae los 10 nombres en una sola línea)
+          // no se pueden corregir a ciegas en un campo de una línea.
+          // Crece solo con el contenido, hasta 6 renglones.
+          ?`<textarea id="ei-desc-${ix}" rows="${Math.min(6,Math.max(1,Math.ceil(String(i.descripcion||'').length/48)))}"
+              oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px'"
+              style="width:100%;font-size:12px;padding:5px 7px;font-family:inherit;line-height:1.45;border:1px solid var(--linea-2);border-radius:7px;resize:vertical;min-height:30px">${escStk(i.descripcion||'')}</textarea>`
           :(i.descripcion||'—')}</td>
         <td class="num">${ed
           ?`<input id="ei-cant-${ix}" type="number" min="1" step="1" value="${cant}" style="width:58px;font-size:12px;padding:4px 6px;text-align:right">`
@@ -12025,7 +12031,9 @@ async function comprasGuardar(){
   // Orden de compra: o está vinculada, o quien carga confirmó que esta
   // factura no lleva. Guardar sin ninguna de las dos es un olvido, y el
   // olvido es justamente lo que la orden viene a evitar.
-  if(!comprasOrden&&!comprasSinOrdenOk){
+  // Mientras el bloque esté oculto, no se puede exigir confirmarlo: sería
+  // pedir algo que la pantalla no muestra.
+  if(MOSTRAR_ORDEN_FACTURA&&!comprasOrden&&!comprasSinOrdenOk){
     toast('Vinculá una orden de compra, o confirmá que esta factura no lleva orden.','error');
     const b=document.querySelector('.panel[style*="var(--rojo)"],.panel[style*="var(--diesel)"]');
     if(b)b.scrollIntoView({behavior:'smooth',block:'center'});
@@ -12247,7 +12255,17 @@ let comprasOrden=null;        // {id, numero, ...} la orden vinculada a esta fac
 let comprasOrdenMatch=null;   // resultado de /emparejar: matches, assignments, diferencia
 let comprasSinOrdenOk=false;  // el usuario confirmó que esta factura no lleva orden
  
+/* El circuito de órdenes de compra se OCULTA por ahora (16-sep, José).
+   Sigue funcionando por detrás: las facturas se siguen vinculando solas
+   cuando el OCR lee el número de orden, y el submódulo Órdenes queda igual.
+   Lo que se oculta es el recuadro que pide confirmar "esta factura no lleva
+   orden" antes de guardar, que hoy frena la carga.
+
+   Para volver a mostrarlo: poner `MOSTRAR_ORDEN_FACTURA = true`. */
+const MOSTRAR_ORDEN_FACTURA=false;
+
 function bloqueOrdenFactura(){
+  if(!MOSTRAR_ORDEN_FACTURA)return '';
   const d=comprasExtracted||{};
   const o=d.__orden||{};
   const est=e=>e==='abierta'?'<span class="badge b-amber">abierta</span>':e==='borrador'?'<span class="badge b-gray">borrador</span>':e==='facturada'?'<span class="badge b-green">facturada</span>':'';
