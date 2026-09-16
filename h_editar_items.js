@@ -40,6 +40,54 @@ eq('y en el envío al backend', (src.match(/g\('ei-desc-'\+ix\)/g) || []).length
 eq('lee .value (funciona igual en textarea)', /d\.value\.trim\(\)/.test(src));
 eq('si queda vacía, conserva la anterior', /d\?\(d\.value\.trim\(\)\|\|it\.descripcion\):it\.descripcion/.test(src));
 
+console.log('\n— IVA por ítem (facturas con 21% y 10,5% mezclados) —');
+eq('cada ítem tiene su campo de IVA', /<input id="ei-iva-\$\{ix\}"/.test(src));
+eq('muestra el porcentaje debajo', /Math\.round\(v\/n\*1000\)\/10/.test(src));
+eq('recalcula al escribir, no al salir del campo', /id="ei-iva-\$\{ix\}"[\s\S]{0,220}oninput="comprasItemCambio\(\)"/.test(src));
+eq('el neto también recalcula al escribir', /id="ei-neto-\$\{ix\}"[\s\S]{0,180}oninput="comprasItemCambio\(\)"/.test(src));
+
+console.log('\n— Los ítems mandan: el total es su suma —');
+eq('al guardar, el total sale de los ítems', /body\.total_sin_iva=Math\.round\(sNeto\*100\)\/100/.test(src));
+eq('el IVA total también', /body\.total_iva\s*=Math\.round\(sIva\*100\)\/100/.test(src));
+eq('el IVA de cada ítem se guarda', /monto_iva:iva/.test(src));
+eq('con ítems, los totales no se editan a mano', /id="ec-neto"[^>]*readonly/.test(src));
+eq('sin ítems, los totales se siguen editando', /campo\('ec-neto',inv\.total_sin_iva,'num'\)/.test(src));
+eq('los totales de la tabla se actualizan en vivo', /id="ei-tot-neto"/.test(src) && /id="ei-tot-iva"/.test(src) && /id="ei-tot-total"/.test(src));
+eq('y el total de cada línea también', /id="ei-lin-tot-\$\{ix\}"/.test(src));
+
+// La aritmética real: se extrae la función y se corre.
+const ini = src.indexOf('function comprasItemCambio(){');
+const fin = src.indexOf('\n}', src.indexOf("av.innerHTML=`", ini)) + 2;
+const campos = {};
+const gMock = id => campos[id];
+const inp = (id, v) => { campos[id] = { value: String(v), textContent: '' }; };
+const out = (id) => { campos[id] = { textContent: '' }; };
+function correr(items) {
+  Object.keys(campos).forEach(k => delete campos[k]);
+  items.forEach((it, ix) => { inp('ei-neto-' + ix, it.neto); inp('ei-iva-' + ix, it.iva); out('ei-lin-tot-' + ix); });
+  inp('ec-neto', 0); inp('ec-iva', 0);
+  out('ei-tot-neto'); out('ei-tot-iva'); out('ei-tot-total'); out('ec-aviso-items');
+  const f = new Function('comprasVer', 'document', 'money',
+    src.slice(ini, fin) + '\nreturn comprasItemCambio;')(
+    { items: items.map(() => ({})) }, { getElementById: gMock }, n => '$' + n);
+  f();
+  return { neto: Number(campos['ec-neto'].value), iva: Number(campos['ec-iva'].value) };
+}
+
+console.log('\n— La cuenta que termina en el asiento de Flexxus —');
+let r = correr([{ neto: 1350000, iva: 283500 }]);
+eq('la factura de exámenes: 1.350.000 + 283.500', r.neto === 1350000 && r.iva === 283500, JSON.stringify(r));
+r = correr([{ neto: 100, iva: 21 }, { neto: 200, iva: 21 }]);
+eq('dos ítems se suman', r.neto === 300 && r.iva === 42, JSON.stringify(r));
+r = correr([{ neto: 1000, iva: 210 }, { neto: 1000, iva: 105 }]);
+eq('21% y 10,5% mezclados en la misma factura', r.neto === 2000 && r.iva === 315, JSON.stringify(r));
+r = correr([{ neto: 33.33, iva: 7 }, { neto: 33.33, iva: 7 }, { neto: 33.34, iva: 7 }]);
+eq('los centavos no se pierden', r.neto === 100 && r.iva === 21, JSON.stringify(r));
+r = correr([{ neto: 0, iva: 0 }]);
+eq('en cero no rompe', r.neto === 0 && r.iva === 0);
+r = correr([{ neto: 500, iva: 0 }]);
+eq('un ítem exento suma al neto y no al IVA', r.neto === 500 && r.iva === 0);
+
 console.log('\n— La orden de compra queda oculta —');
 eq('existe el interruptor', /const MOSTRAR_ORDEN_FACTURA=false/.test(src));
 eq('el bloque no se pinta', /if\(!MOSTRAR_ORDEN_FACTURA\)return ''/.test(src));
