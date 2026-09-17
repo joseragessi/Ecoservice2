@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-16 · facturas: descripción, monto e IVA por ítem; el total sale de los ítems';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-16 · stock: las máquinas sin número se muestran como chips s/n';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3552,7 +3552,18 @@ async function vStockGeneral(view){
             return `<span class="uni-chip" title="este número no identifica una máquina: está repetido en el censo o sin numerar" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">${escStk(n)}</span>`;
           }
           return id?`<span class="uni-chip" style="cursor:pointer" onclick="fichaMaquina('${id}')" title="ver ficha">${escStk(n)}</span>`
-                   :`<span class="uni-chip">${escStk(n)}</span>`;}).join('');
+                   :`<span class="uni-chip">${escStk(n)}</span>`;}).join('')
+          // Las que el capataz declaró SIN número también se muestran, una
+          // por una (16-sep, José). Antes la fila decía "5" con 4 chips y
+          // había que leer la observación para entender la diferencia.
+          // La cantidad es lo que hay; los números, los que se conocen.
+          +(function(){
+            const faltan=(Number(f.cantidad)||0)-(f.numeros||[]).length;
+            if(faltan<=0)return '';
+            return Array.from({length:Math.min(faltan,12)},()=>
+              `<span class="uni-chip" title="el capataz la declaró sin número" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">s/n</span>`).join('')
+              +(faltan>12?`<span class="sub" style="font-size:11px;margin-left:3px">+${faltan-12} s/n</span>`:'');
+          })();
         const nT=Number(f.en_taller)||0;
         const disp=f.disponibles==null?(Number(f.cantidad)||0):f.disponibles;
         // Reparaciones descontadas sin poder decir de qué máquina son.
