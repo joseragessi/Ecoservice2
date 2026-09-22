@@ -5576,6 +5576,18 @@ router.get('/api/compras/facturas/:id/centrocosto-preview', auth, async (req, re
     // códigos válidos (LA DESEADA 57, PROVINCIA 62) — falso positivo.
     try { centrosFlx = (await listarCentrosCostoTodos()).centros; }
     catch (e) { motivoFlx = e.message; }
+    // Si algún código del reparto NO está en la lista, puede ser que la lista
+    // esté vieja: se guarda 6 h. Un centro creado hoy en Flexxus (el 74 de
+    // O-TEK, 18-sep) aparecía como inexistente. Antes de decir "no existe"
+    // se relee Flexxus una vez, fresco.
+    if (centrosFlx) {
+      const r0 = repartoCentroCosto(f, objs || []);
+      const falta = (r0.reparto || []).some(x => x.codigocentrocosto != null &&
+        !centrosFlx.some(c => c.codigo === Number(x.codigocentrocosto)));
+      if (falta) {
+        try { centrosFlx = (await listarCentrosCostoTodos(true)).centros; } catch (e) { /* queda la lista que había */ }
+      }
+    }
     const total = (Number(f.total_sin_iva) || 0);
     const pesoTot = (r.reparto || []).reduce((s, x) => s + (Number(x.peso) || 0), 0) || 1;
     const filas = (r.reparto || []).map(x => {
