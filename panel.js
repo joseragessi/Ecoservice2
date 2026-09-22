@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-16 · stock: las máquinas sin número se muestran como chips s/n';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-21 · performance: descuento por antigüedad en el taller (10/20/30/35 días)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -6015,6 +6015,15 @@ const PERF_OBJETIVO_2T=110;
 const PERF_HAB_2T='motor_2t';
 const PERF_REINC_MAX=15;           // % de reincidencia del MES que bloquea (rebotes cuya vuelta fue en el mes / reparaciones que podían volver)
 const PERF_DORMIDA_DIAS=7;         // abierta sin justificar más de esto descuenta
+/* ANTIGÜEDAD EN EL TALLER (21-sep, José). Se SUMA a la dormida.
+   Cuenta desde el ingreso al taller, en CUALQUIER estado (también esperando
+   repuestos). Cada escalón es el TOTAL que resta la máquina, no se suman:
+     10 d → −2 · 20 d → −6 · 30 d → −10 · 35+ d → −14
+   (la primera versión sumaba los escalones y llegaba a −24: "es fulero"). */
+const PERF_ANTIG_ESCALONES=[[10,2],[20,6],[30,10],[35,14]];
+function perfAntigPts(dias){
+  return PERF_ANTIG_ESCALONES.reduce((s,[d,p])=>dias>=d?p:s,0);
+}
 /* ── Puntaje = horas de taller estimadas (matriz equipo × falla) ──────────
    Rediseño 13-ago: la escala vieja (pesado 5 / mediano 3 / liviano 1) no medía
    tiempo — una hidráulica de giro cero (una jornada) valía 3 y una motoguadaña
@@ -6109,6 +6118,7 @@ function informeMecanico(nombre){
     ['Preventivos realizados',M.prev],
     ['Services cargados',M.serv||0],
     ['Dormidas (en el taller >'+PERF_DORMIDA_DIAS+' días)',-(M.dormidas||0)],
+    ['Antigüedad en el taller (10/20/30/35 días)',-(M.antig||0)],
   ].filter(([,v])=>v);
  
   // ── Reparaciones del mes, compacto: una línea cada una ──
@@ -6463,6 +6473,20 @@ async function vRepPerf(view){
     }
   });
  
+  // Antigüedad en el taller: cualquier estado, desde el ingreso.
+  const antiguas={};
+  todas.filter(r=>!r.motivo_cierre&&r.fecha_ingreso_taller
+    &&new Date(r.fecha_ingreso_taller).getTime()<=corte
+    &&(r.estado!=='finalizado'||!r.fecha_finalizado||new Date(r.fecha_finalizado).getTime()>corte))
+    .forEach(r=>{
+      const d=diasEntre(r.fecha_ingreso_taller,new Date(corte).toISOString());
+      const pts=d!=null?perfAntigPts(d):0;
+      if(!pts)return;
+      const m=nomMec(r)||'Sin asignar';
+      (antiguas[m]=antiguas[m]||[]).push({eq:r.tipo_equipo||'—',uni:r.numero_unidad||'',
+        dias:Math.floor(d),pts,estado:r.estado});
+    });
+
   // Puntaje del mes, con el detalle línea por línea (el "por qué").
   // Arrancan TODOS los mecánicos que aparecen en el sistema (con abiertas o
   // finalizadas), aunque tengan 0 puntos: si no, el que no finalizó nada este
@@ -6545,6 +6569,13 @@ async function vRepPerf(view){
     ds.forEach(d=>{M.total-=2;M.dormidas=(M.dormidas||0)+2;M.lineas.push({tit:d.eq+' '+d.uni,det:'abierta hace '+d.dias+' d sin esperar repuestos',pts:'−2',mal:true});});
   });
  
+  // Descuento por antigüedad en el taller (se suma a la dormida)
+  Object.entries(antiguas).forEach(([m,as])=>{
+    const M=mecs[m];if(!M)return;
+    as.forEach(a=>{M.total-=a.pts;M.antig=(M.antig||0)+a.pts;
+      M.lineas.push({tit:a.eq+' '+a.uni,det:a.dias+' d en el taller'+(a.estado==='esperando_repuestos'?' (esperando repuestos)':''),pts:'−'+a.pts,mal:true});});
+  });
+
   // Objetivo por mecánico: el de 2T tiene el suyo. Las habilidades vienen del
   // join de cualquier incidencia suya (mecanicos(nombre,habilidades)).
   const habsPorMec={};
@@ -6563,7 +6594,7 @@ async function vRepPerf(view){
     return {n,M,pctR,nBase,nReb,pocaMuestra,habilitado,obj,es2T:obj===PERF_OBJETIVO_2T,
       cumple:M.total>=obj&&habilitado,
       rebotes:rebotes[n]||[],descartes:descartes[n]||[],anteriores:anteriores[n]||[],
-      dormidas:dormidas[n]||[],sin_ingresar:sinIngresar[n]||[]};
+      dormidas:dormidas[n]||[],sin_ingresar:sinIngresar[n]||[],antiguas:antiguas[n]||[]};
   }).sort((a,b)=>b.M.total-a.M.total);
   // El informe individual lee de acá: mismos números que el ranking, siempre.
   perfFilas=filas;
@@ -6638,7 +6669,7 @@ async function vRepPerf(view){
       </div>
       <div style="height:6px;background:var(--papel);border-radius:3px;margin:9px 0 6px"><div style="height:6px;width:${barra}%;background:${colBarra};border-radius:3px"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-2);flex-wrap:wrap;gap:4px">
-        <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}${f.M.serv?' · services +'+f.M.serv:''}${f.M.dormidas?` · <span style="color:var(--rojo)">dormidas −${f.M.dormidas}</span>`:''}</span>
+        <span>Trabajo ${f.M.trabajo} · urgencias +${f.M.urgencia} · preventivos +${f.M.prev}${f.M.serv?' · services +'+f.M.serv:''}${f.M.dormidas?` · <span style="color:var(--rojo)">dormidas −${f.M.dormidas}</span>`:''}${f.M.antig?` · <span style="color:var(--rojo)">antigüedad −${f.M.antig}</span>`:''}</span>
         <span>${calidad}</span>
       </div>${motivo}${detalle}</div>`;};
   const cobran=filas.filter(f=>f.cumple), noCobran=filas.filter(f=>!f.cumple);
