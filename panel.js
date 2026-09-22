@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-21 · performance: descuento por antigüedad en el taller (10/20/30/35 días)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-21 · performance: objetivo 60 pts + descuento por antigüedad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -6005,7 +6005,7 @@ function exportarIncidencias(){
    cada punto se muestra al expandir la card — el sistema tiene que poder
    explicarse solo, si no nadie le cree. Los pesos y umbrales están acá
    arriba para ajustarlos cuando haya 2-3 meses de datos reales. */
-const PERF_OBJETIVO=30;            // puntos del mes para cobrar (provisorio)
+const PERF_OBJETIVO=60;            // puntos del mes para cobrar (21-sep: era 30, se llegaba fácil)
 // El mecánico de 2 TIEMPOS tiene otro objetivo: su trabajo es de máquinas
 // chicas, que puntúan 1-2 cada una, así que con el objetivo general llegaba
 // sin esfuerzo. Calibración de José: 5 máquinas por día × 22 días = 110.
