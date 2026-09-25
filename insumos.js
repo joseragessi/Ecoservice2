@@ -32,14 +32,31 @@ async function resolverObjetivo(texto, capataz) {
   }
   const { data: objetivos } = await supabase
     .from('objetivos').select('id, nombre').eq('activo', true);
-  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
   const nt = norm(texto);
-  const match = (objetivos || []).find(o => {
+  let match = (objetivos || []).find(o => {
     const no = norm(o.nombre);
     return no.includes(nt) || nt.includes(no);
   });
-  // Si no matchea, devolvemos el texto igual (se guarda en objetivo_texto)
-  return match ? { id: match.id, nombre: match.nombre } : { id: null, nombre: texto };
+  // Por palabras: "universidad catolica" no matcheaba con "UNIVERSIDAD
+  // CATOLICA DE CORDOBA" si el capataz escribía algo distinto en el medio.
+  if (!match) {
+    const pal = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .split(/[^a-z0-9]+/).filter(w => w.length >= 4);
+    const pt = pal(texto);
+    if (pt.length) match = (objetivos || []).find(o => {
+      const po = pal(o.nombre);
+      return pt.some(w => po.includes(w));
+    });
+  }
+  /* Si NO matchea, se cae al objetivo del capataz en vez de guardar null
+     (25-sep). Hasta hoy, escribir un objetivo que el sistema no reconocía
+     dejaba el pedido sin objetivo: 26 de 84 pedidos quedaron así, entre
+     ellos todos los de UCC, y no aparecían al filtrar por objetivo.
+     El texto que escribió igual se guarda en objetivo_texto. */
+  if (match) return { id: match.id, nombre: match.nombre };
+  if (capataz && capataz.objetivo_id) return { id: capataz.objetivo_id, nombre: capataz.objetivo_nombre, texto };
+  return { id: null, nombre: texto };
 }
 
 function listado(items) {
