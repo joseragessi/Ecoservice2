@@ -1129,14 +1129,22 @@ router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (re
     if (!b.objetivo_id) return res.status(422).json({ error: 'Decí a qué objetivo va' });
     // La fecha de retorno es obligatoria para lo que vuelve: es el corazón
     // del control. Sin fecha no hay forma de saber que algo está vencido.
-    if (item.retornable && !b.retorno_previsto) {
+    /* Si vuelve o no lo decide quien registra la salida (25-sep): el maestro
+       dice lo habitual, pero en el momento puede ser distinto — un carretel
+       de tanza figura como retornable y no vuelve nunca.
+       Lo que NO se puede es marcar "no vuelve" en algo que es maquinaria:
+       eso lo sigue frenando validarSalidaPanol. */
+    const vuelve = b.vuelve === undefined ? !!item.retornable : b.vuelve === true;
+    if (vuelve && !b.retorno_previsto) {
       return res.status(422).json({ error: 'Poné cuándo vuelve' });
     }
     // Última barrera antes de descontar: un ítem no retornable se consume, y
     // si en realidad es una máquina desaparece del pañol sin dejar rastro
     // (pasó con 4 Motosierra T435 y 3 MS 250 en agosto de 2026). La regla
     // completa está en panol_reglas.js.
-    const malSalida = validarSalidaPanol(item);
+    // Se valida con lo ELEGIDO, no con el maestro: si no, marcar "no vuelve"
+    // en una motosierra la haría desaparecer del pañol sin que nada avise.
+    const malSalida = validarSalidaPanol({ ...item, retornable: vuelve });
     if (malSalida) return res.status(422).json(malSalida);
 
     const { data: obj } = await supabase.from('objetivos').select('nombre').eq('id', b.objetivo_id).maybeSingle();
@@ -1145,10 +1153,10 @@ router.post('/api/app/panol/salida', authApp(['panol', 'supervisor']), async (re
       objetivo_id: b.objetivo_id, objetivo_nombre: obj ? obj.nombre : null,
       retira: String(b.retira || '').trim() || null,
       entrego: req.app_user ? req.app_user.nombre : null,
-      retorno_previsto: item.retornable ? b.retorno_previsto : null,
-      // Un consumible sale y no vuelve: nace cerrado.
-      estado: item.retornable ? 'afuera' : 'consumido',
-      fecha_devolucion: item.retornable ? null : new Date().toISOString(),
+      retorno_previsto: vuelve ? b.retorno_previsto : null,
+      // Lo que no vuelve sale consumido: nace cerrado.
+      estado: vuelve ? 'afuera' : 'consumido',
+      fecha_devolucion: vuelve ? null : new Date().toISOString(),
       nota: String(b.nota || '').trim() || null,
     }).select().single();
     if (error) throw error;
@@ -1513,16 +1521,35 @@ router.get('/api/app/capataz/combustible/destinos', authApp('capataz'), async (r
   try {
     const objetivoId = req.app_user.objetivo_id || null;
     if (!objetivoId) return res.json({ ok: false, motivo: 'sin_objetivo', destinos: [], grupos: [] });
-    const [censo, invRes, uniRes] = await Promise.all([
+    const [censo, invRes, uniRes, objsRes] = await Promise.all([
       censoDeObjetivo(objetivoId),
       supabase.from('stock_objetivo').select('*').eq('objetivo_id', objetivoId),
       supabase.from('unidades').select('id, codigo, patente, marca_modelo, objetivo_id').eq('activo', true),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre'),
     ]);
-    // Unidades del objetivo + la del capataz, si tiene una asignada.
+    /* Unidades: las del objetivo, la del capataz, y TAMBIÉN las que no tienen
+       objetivo asignado (23-sep). La mayoría de la flota no tiene objetivo_id
+       cargado, así que al capataz no le aparecía ninguna camioneta y no podía
+       imputar la carga. */
     const unidades = (uniRes.data || []).filter(u => u.objetivo_id === objetivoId
+      || !u.objetivo_id
       || (req.app_user.unidad_id && u.id === req.app_user.unidad_id));
     const items = censo.hay ? (censo.actual.censos_stock_items || []) : [];
     const destinos = EQ.armarDestinos(items, invRes.data || [], unidades, { producto: req.query.producto || null });
+
+    /* Bidones a un OBJETIVO (23-sep). Al pasar a "elegí la máquina" se perdió
+       la opción de decir "fue a bidones de tal objetivo", que es lo que pasa
+       cuando el combustible no va a una máquina identificada o se llevó a
+       otro objetivo. Va al final, después de las máquinas. */
+    const propio = (objsRes.data || []).find(o => o.id === objetivoId);
+    if (propio) destinos.push({ ref_tipo: 'objetivo', ref_id: propio.id, tipo_equipo: 'Bidones',
+      familia: 'otro_motor', combustible: null, modo: 'grupo', cantidad: 1, numeros: [],
+      label: `Bidones · ${propio.nombre}`, emoji: '🛢' });
+    (objsRes.data || []).filter(o => o.id !== objetivoId).forEach(o => {
+      destinos.push({ ref_tipo: 'objetivo', ref_id: o.id, tipo_equipo: 'Bidones',
+        familia: 'otro_objetivo', combustible: null, modo: 'grupo', cantidad: 1, numeros: [],
+        label: `Bidones · ${o.nombre}`, emoji: '🛢', otro_objetivo: true });
+    });
     res.json({
       ok: true,
       objetivo: { id: objetivoId, nombre: req.app_user.objetivo_nombre || null },
@@ -1834,7 +1861,9 @@ router.post('/api/app/capataz/combustible', authApp('capataz'), async (req, res)
         // Compatibilidad: 'unidad' si va al tanque de un vehículo, 'bidon' si
         // va a máquinas del objetivo (que es como se cargaba antes).
         destino: esUnidad ? 'unidad' : 'bidon',
-        objetivo_id: esUnidad ? null : objetivoId,
+        // Si el capataz eligió "Bidones · <objetivo>", va a ESE objetivo:
+        // puede haber llevado combustible a otro (23-sep).
+        objetivo_id: esUnidad ? null : (r.objetivo_id || objetivoId),
         unidad_id: esUnidad ? (r.unidad_id || unidadId) : null,
         destino_detalle: esUnidad ? null : (r.destino_nombre || objetivoNom),
         // ── V4: el destino declarado ──
