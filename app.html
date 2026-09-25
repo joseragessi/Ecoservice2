@@ -1149,7 +1149,7 @@ function capOpciones(tipo){
   })||(tipo==='super'?'SUPER':'GASOIL');
   return todos.filter(d=>{
     const c=String(d.combustible||'').toLowerCase();
-    if(!c||c==='mixto')return true;
+    if(!c||c==='mixto')return true;   // sin combustible definido (bidones a un objetivo): siempre
     return tipo==='super'?c==='super':c==='gasoil';
   });
 }
@@ -1166,9 +1166,13 @@ async function capGuardar(){
     repartos.push({tipo:t,litros:l,
       // V4: se guarda la máquina declarada. `destino` (unidad/bidón) sale de
       // la familia, para que todo lo que ya lee combustible siga andando.
-      destino_tipo:d.ref_tipo==='unidad'?'unidad':(d.modo==='individual'?'maquina_individual':'grupo_maquinas'),
+      destino_tipo:d.ref_tipo==='unidad'?'unidad':d.ref_tipo==='objetivo'?'objetivo'
+        :(d.modo==='individual'?'maquina_individual':'grupo_maquinas'),
       destino_codigo:String(d.ref_id),destino_nombre:d.label,familia:d.familia,
       unidad_id:d.ref_tipo==='unidad'?d.ref_id:null,
+      // Bidones a un objetivo: se imputan a ESE objetivo, que puede no ser el
+      // del capataz (llevó combustible a otro).
+      objetivo_id:d.ref_tipo==='objetivo'?d.ref_id:null,
       destino:d.familia==='vehiculo'?'unidad':'bidon',
       patente:d.ref_tipo==='unidad'?(d.numeros||[])[0]||null:null});}));
   if(faltaDest){toast('Elegí a qué máquina fue cada litro');return;}
@@ -1337,7 +1341,13 @@ function pnAbrirSalida(itemId){
   if(!it)return;
   const hoy=new Date();hoy.setDate(hoy.getDate()+1);
   pnSalida={item:it,cantidad:1,objetivo_id:'',retira:'',
+    vuelve:!!it.retornable,                       // el maestro propone, el pañolero decide
     retorno_previsto:it.retornable?hoy.toISOString().slice(0,10):'',nota:''};
+  render();
+}
+function pnCant(d){
+  const s=pnSalida;if(!s)return;
+  s.cantidad=Math.max(1,Math.min(Number(s.item.disponible)||1,(Number(s.cantidad)||1)+d));
   render();
 }
 function renderPanolSalida(){
@@ -1353,25 +1363,53 @@ function renderPanolSalida(){
         ${it.retornable?'':' · <b>consumible: no vuelve</b>'}</div>
 
       <label style="${lbl}">¿Cuántas salen?</label>
-      <input id="pn-cant" type="number" min="1" max="${it.disponible}" value="${s.cantidad}" style="${inp}">
+      <div style="display:flex;align-items:center;gap:10px;background:var(--papel,#F1F4F0);border-radius:12px;padding:7px 10px">
+        <button onclick="pnCant(-1)" style="width:44px;height:44px;border:1px solid var(--linea);border-radius:11px;background:#fff;font-size:22px;font-weight:700;color:var(--tinta-2);font-family:inherit">−</button>
+        <input id="pn-cant" type="number" min="1" max="${it.disponible}" value="${s.cantidad}"
+          onchange="pnSalida.cantidad=Math.max(1,Math.min(${it.disponible},Number(this.value)||1));render()"
+          style="flex:1;text-align:center;font-size:26px;font-weight:700;font-family:ui-monospace,monospace;border:none;background:none;padding:0;min-width:0">
+        <button onclick="pnCant(1)" style="width:44px;height:44px;border:1px solid var(--linea);border-radius:11px;background:#fff;font-size:22px;font-weight:700;color:var(--tinta-2);font-family:inherit">＋</button>
+      </div>
+
+      <!-- ¿Vuelve o no? Lo decide quien entrega (25-sep): el maestro dice lo
+           habitual, pero un carretel de tanza figura retornable y no vuelve. -->
+      <label style="${lbl}">¿Vuelve al pañol?</label>
+      <div style="display:flex;gap:8px">
+        ${[[true,'🔄 Vuelve','se presta y hay que devolverla'],[false,'✓ No vuelve','se consume o se queda allá']]
+          .map(([v,t,d])=>`<button onclick="pnSalida.vuelve=${v};render()"
+            style="flex:1;padding:12px 10px;border:2px solid ${s.vuelve===v?'var(--brote)':'var(--linea)'};border-radius:12px;
+              background:${s.vuelve===v?'var(--brote-soft,#E5F5EC)':'#fff'};color:${s.vuelve===v?'var(--brote-2,#0F7E40)':'var(--tinta-2)'};
+              font-family:inherit;font-size:14px;font-weight:700;text-align:left;line-height:1.3">
+            ${t}<div style="font-size:10.5px;font-weight:400;margin-top:2px;opacity:.8">${d}</div></button>`).join('')}
+      </div>
+
+      ${s.vuelve?`
+      <label style="${lbl}">¿Cuándo vuelve? *</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:7px">
+        ${[[1,'Mañana'],[3,'En 3 días'],[7,'En 1 semana'],[15,'En 15 días']].map(([d,t])=>{
+          const f=new Date();f.setDate(f.getDate()+d);const iso=f.toISOString().slice(0,10);
+          return `<button onclick="pnSalida.retorno_previsto='${iso}';render()"
+            style="padding:8px 12px;border:1px solid ${s.retorno_previsto===iso?'var(--brote)':'var(--linea)'};border-radius:20px;
+              background:${s.retorno_previsto===iso?'var(--brote-soft,#E5F5EC)':'#fff'};color:${s.retorno_previsto===iso?'var(--brote-2,#0F7E40)':'var(--tinta-2)'};
+              font-family:inherit;font-size:13px;font-weight:600">${t}</button>`;}).join('')}
+      </div>
+      <input id="pn-retorno" type="date" value="${s.retorno_previsto}" min="${new Date().toISOString().slice(0,10)}"
+        onchange="pnSalida.retorno_previsto=this.value;render()" style="${inp}">
+      `:`<div style="background:var(--papel,#F1F4F0);border-radius:11px;padding:11px 13px;margin-top:10px;font-size:12.5px;color:var(--tinta-2)">
+        Sale del stock y no queda pendiente de devolución.</div>`}
 
       <label style="${lbl}">¿A qué objetivo va? *</label>
-      <select id="pn-obj" style="${inp}">
+      <select id="pn-obj" onchange="pnSalida.objetivo_id=this.value"
+        style="${inp};${s.objetivo_id?'':'border-color:#D98A1F;background:#FBF0DC'}">
         <option value="">— elegí el objetivo —</option>
-        ${pnObjetivos.map(o=>`<option value="${o.id}">${pnEsc(o.nombre)}</option>`).join('')}
+        ${pnObjetivos.map(o=>`<option value="${o.id}" ${s.objetivo_id===o.id?'selected':''}>${pnEsc(o.nombre)}</option>`).join('')}
       </select>
 
       <label style="${lbl}">¿Quién se la lleva?</label>
-      <input id="pn-retira" placeholder="Nombre del que retira" style="${inp}">
-
-      ${it.retornable?`
-      <label style="${lbl}">¿Cuándo vuelve? *</label>
-      <input id="pn-retorno" type="date" value="${s.retorno_previsto}" min="${new Date().toISOString().slice(0,10)}" style="${inp}">
-      <div style="font-size:11.5px;color:var(--tinta-3);margin-top:4px">Sin esta fecha no se puede registrar la salida.</div>
-      `:''}
+      <input id="pn-retira" value="${pnEsc(s.retira||'')}" oninput="pnSalida.retira=this.value" placeholder="Nombre del que retira" style="${inp}">
 
       <label style="${lbl}">Nota (opcional)</label>
-      <input id="pn-nota" placeholder="Para qué, detalle…" style="${inp}">
+      <input id="pn-nota" value="${pnEsc(s.nota||'')}" oninput="pnSalida.nota=this.value" placeholder="Para qué, detalle…" style="${inp}">
 
       <button onclick="pnGuardarSalida()" id="pn-btn"
         style="width:100%;margin-top:16px;padding:14px;border:none;border-radius:12px;background:var(--brote);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">
@@ -1383,10 +1421,11 @@ async function pnGuardarSalida(){
   const s=pnSalida;if(!s)return;
   const body={item_id:s.item.id,cantidad:Number(g('pn-cant').value)||1,
     objetivo_id:g('pn-obj').value,retira:g('pn-retira').value.trim(),
-    retorno_previsto:g('pn-retorno')?g('pn-retorno').value:null,
+    vuelve:s.vuelve,
+    retorno_previsto:s.vuelve?(g('pn-retorno')?g('pn-retorno').value:null):null,
     nota:g('pn-nota').value.trim()};
   if(!body.objetivo_id)return alert('Elegí a qué objetivo va.');
-  if(s.item.retornable&&!body.retorno_previsto)return alert('Poné cuándo vuelve.');
+  if(s.vuelve&&!body.retorno_previsto)return alert('Poné cuándo vuelve.');
   const btn=g('pn-btn');btn.disabled=true;btn.textContent='Registrando…';
   try{
     await api('/api/app/panol/salida',{method:'POST',body:JSON.stringify(body)});
