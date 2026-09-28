@@ -1474,5 +1474,87 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
+// ── VENTAS: facturación desde el panel (28-sep) ──────────────
+// Emite facturas reales ante ARCA. Por eso hay un candado: si FACTURACION_VENTAS
+// no dice "produccion", solo se permite contra el Flexxus de PRUEBA. Una factura
+// con CAE mal hecha solo se arregla con nota de crédito.
+function entornoVentas() {
+  const url = String(process.env.FLEXXUS_URL || '');
+  const esPrueba = /prueba/i.test(url);
+  const modo = String(process.env.FACTURACION_VENTAS || 'prueba').toLowerCase();
+  return { esPrueba, modo, habilitado: modo === 'produccion' ? true : (modo === 'prueba' && esPrueba),
+    host: url.replace(/^https?:\/\//, '') };
+}
+function exigirVentas() {
+  const e = entornoVentas();
+  if (!e.habilitado) {
+    const err = new Error(e.modo === 'off'
+      ? 'La facturación de ventas está apagada (FACTURACION_VENTAS=off).'
+      : `Flexxus apunta a ${e.host}, que NO es el entorno de prueba. Para facturar en producción hay que poner FACTURACION_VENTAS=produccion en Railway.`);
+    err.status = 423; throw err;
+  }
+  return e;
+}
+
+/** Crea la factura en Flexxus. Devuelve { tipocomprobante, numerocomprobante, mensaje, advertencia }. */
+async function crearFacturaVenta(body) {
+  exigirVentas();
+  const d = await flx('/ordenmanual', { method: 'POST', body: JSON.stringify(body) });
+  if (d && d.error === true) { const e = new Error(d.mensaje || 'Flexxus rechazó la factura'); e.data = d; throw e; }
+  return d;
+}
+
+/** Pide el CAE a ARCA a través de Flexxus. Devuelve el CAE. */
+async function pedirCAE(tipocomprobante, numerocomprobante) {
+  exigirVentas();
+  const d = await flx('/facturacionelectronica', { method: 'POST',
+    body: JSON.stringify({ tipocomprobante, numerocomprobante: Number(numerocomprobante) }) });
+  const cae = d && (d.CAE || d.cae);
+  if (!cae) { const e = new Error('Flexxus no devolvió CAE: ' + JSON.stringify(d).slice(0, 200)); e.data = d; throw e; }
+  return { cae: String(cae), respuesta: d };
+}
+
+/** Relee la factura en Flexxus (para traer vencimiento del CAE, total final, etc.). */
+async function leerFacturaVenta(tipo, numero) {
+  return flx('/comprobantesventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero));
+}
+
+/**
+ * El PDF con el modelo de EcoService. Si se pasa email, Flexxus lo manda él
+ * mismo al cliente (parámetro email del endpoint) — no hace falta servidor de
+ * correo propio. Devuelve el PDF como Buffer cuando viene binario.
+ */
+async function pdfFacturaVenta(tipo, numero, email) {
+  if (email) exigirVentas();
+  const t = await token();
+  const q = email ? '?email=' + encodeURIComponent(email) : '';
+  const r = await fetch(base() + '/ventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero) + '/pdf' + q,
+    { headers: { authorization: 'Bearer ' + t } });
+  if (!r.ok) { const txt = await r.text(); const e = new Error('No pude bajar el PDF: ' + txt.slice(0, 200)); e.status = r.status; throw e; }
+  const tipoCont = r.headers.get('content-type') || '';
+  if (/json/.test(tipoCont)) return { json: await r.json() };
+  return { pdf: Buffer.from(await r.arrayBuffer()), contentType: tipoCont || 'application/pdf' };
+}
+
+/** Clientes y puntos de venta, para configurar sin tipear códigos a mano. */
+// Caché de 10 min, igual que proveedores: al configurar clientes se busca el
+// mismo nombre varias veces seguidas.
+const _cliCache = new Map();
+async function buscarClientesFlexxus(busqueda) {
+  const k = String(busqueda || '').trim().toLowerCase();
+  const ya = _cliCache.get(k);
+  if (ya && Date.now() - ya.t < PROV_TTL) return ya.v;
+  const d = await flx('/clientes/busquedavariada/' + encodeURIComponent(busqueda));
+  const v = Array.isArray(d) ? d : (d && (d.data || d.clientes)) || [];
+  _cliCache.set(k, { t: Date.now(), v });
+  if (_cliCache.size > 200) _cliCache.delete(_cliCache.keys().next().value);
+  return v;
+}
+async function listarPuntosVenta() {
+  const d = await flx('/puntosdeventa?facturaelectronica=true');
+  return Array.isArray(d) ? d : (d && d.data) || [];
+}
+
 module.exports = {
+  entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
