@@ -8525,12 +8525,22 @@ const cfgVentas = () => ({
 const LOTE_PASO = 5;   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
 
 async function cargarConfigFact() {
-  const [c, k] = await Promise.all([
+  const [c, k, cc] = await Promise.all([
     supabase.from('fact_clientes').select('*').order('nombre'),
     supabase.from('fact_conceptos').select('*').order('nombre'),
+    supabase.from('centros_costo').select('id, nombre, codigo_flexxus, activo').order('nombre'),
   ]);
   if (c.error) throw c.error; if (k.error) throw k.error;
-  return { clientes: c.data || [], conceptos: k.data || [] };
+  return { clientes: c.data || [], conceptos: k.data || [],
+    centros: (cc.data || []).filter(x => x.activo !== false) };
+}
+
+// Lo que Flexxus sabe de un cliente, en el formato de fact_clientes.
+function datosDeFlexxus(c) {
+  return { codigo_cliente: c.codigocliente, cuit: c.cuit || null,
+    email: c.email || c.emaillaboral || null, condicion_iva: c.condicioniva || null,
+    tipo_comprobante: FV.tipoPorCondicionIva(c.condicioniva) || undefined,
+    codigo_multiplazo: c.codigomultiplazo ?? null, codigo_vendedor: c.codigovendedor || null };
 }
 
 router.get('/api/facturacion/config', auth, async (req, res) => {
@@ -8562,7 +8572,53 @@ function abmFact(tabla, campos) {
 }
 abmFact('conceptos', ['nombre', 'plantilla', 'codigo_articulo', 'usa_cantidad', 'activo']);
 abmFact('clientes', ['nombre', 'alias_planilla', 'codigo_cliente', 'cuit', 'tipo_comprobante', 'porcentaje_iva',
-  'codigo_multiplazo', 'concepto_id', 'centro_costo', 'email', 'email_cc', 'activo']);
+  'codigo_multiplazo', 'concepto_id', 'centro_costo', 'email', 'email_cc', 'activo',
+  'centro_costo_id', 'clase_comprobante', 'condicion_iva', 'codigo_vendedor']);
+
+/* Traer los centros de costo como clientes (29-sep, José: "el cliente son los
+   mismos centros de costo que ya tenemos dados de alta"). Crea los que faltan
+   con nombre y centro; los datos fiscales se completan después desde Flexxus.
+   No llama a Flexxus: es solo la base. */
+router.post('/api/facturacion/clientes/importar-centros', auth, async (req, res) => {
+  try {
+    const { clientes, centros } = await cargarConfigFact();
+    const ya = new Set(clientes.map(c => c.centro_costo_id).filter(Boolean));
+    const nuevos = centros.filter(c => !ya.has(c.id)).map(c => ({
+      nombre: c.nombre, alias_planilla: c.nombre, centro_costo_id: c.id,
+      centro_costo: c.codigo_flexxus != null ? String(c.codigo_flexxus) : null,
+      tipo_comprobante: 'FA', porcentaje_iva: 21, clase_comprobante: 2 }));
+    if (nuevos.length) { const { error } = await supabase.from('fact_clientes').insert(nuevos); if (error) throw error; }
+    res.json({ ok: true, creados: nuevos.length });
+  } catch (err) { console.error('fact importar:', err); res.status(500).json({ error: err.message }); }
+});
+
+/* Completar desde Flexxus los que no tienen código. De a pocos por llamada
+   (Railway corta a los 30 s) y UNA búsqueda por cliente, con caché. Si la
+   búsqueda da uno solo, se completa; si da varios o ninguno, queda para que
+   lo elija una persona — no adivina. */
+router.post('/api/facturacion/clientes/completar', auth, async (req, res) => {
+  try {
+    const { buscarClientesFlexxus } = require('./flexxus');
+    const { data, error } = await supabase.from('fact_clientes').select('*')
+      .is('codigo_cliente', null).eq('activo', true).order('nombre');
+    if (error) throw error;
+    const saltar = new Set((req.body && req.body.saltar) || []);
+    const lote = (data || []).filter(c => !saltar.has(c.id)).slice(0, 6);
+    const dudosos = [];
+    let completos = 0;
+    for (const c of lote) {
+      let r = [];
+      try { r = await buscarClientesFlexxus(c.nombre); } catch (e) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: e.message }); continue; }
+      if (r.length !== 1) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: r.length ? `${r.length} coincidencias` : 'no está en Flexxus' }); continue; }
+      const f = datosDeFlexxus(r[0]);
+      Object.keys(f).forEach(k => f[k] === undefined && delete f[k]);
+      await supabase.from('fact_clientes').update(f).eq('id', c.id);
+      completos++;
+    }
+    const quedan = (data || []).filter(c => !saltar.has(c.id)).length - lote.length;
+    res.json({ completos, dudosos, quedan: Math.max(0, quedan) });
+  } catch (err) { console.error('fact completar:', err); res.status(err.status || 500).json({ error: err.message }); }
+});
 
 // Buscar un cliente en Flexxus, para no tipear el código a mano.
 router.get('/api/facturacion/flexxus/clientes', auth, async (req, res) => {
@@ -8571,8 +8627,7 @@ router.get('/api/facturacion/flexxus/clientes', auth, async (req, res) => {
     if (q.length < 3) return res.json([]);
     const { buscarClientesFlexxus } = require('./flexxus');
     const d = await buscarClientesFlexxus(q);
-    res.json(d.slice(0, 20).map(c => ({ codigo: c.codigocliente, razonsocial: c.razonsocial, cuit: c.cuit,
-      email: c.email || c.emaillaboral || null, multiplazo: c.codigomultiplazo ?? null, condicioniva: c.condicioniva || null })));
+    res.json(d.slice(0, 20).map(c => ({ razonsocial: c.razonsocial, fantasia: c.nombrefantasia || null, ...datosDeFlexxus(c) })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
