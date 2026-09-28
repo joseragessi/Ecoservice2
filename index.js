@@ -111,7 +111,7 @@ const CACHE_GET_MS = 20 * 1000;
 // módulo funciona en producción con la integración contable y no se toca por
 // ganar unos segundos. Imputar una factura mal es un problema de otra escala.
 // Tampoco: el aviso de cambios, la versión del panel y el login.
-const NO_CACHEAR = /^\/api\/(compras|flexxus|cambios|panel-version|login)/;
+const NO_CACHEAR = /^\/api\/(compras|flexxus|facturacion|cambios|panel-version|login)/;
 
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/')) return next();
