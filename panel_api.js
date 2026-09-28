@@ -8506,5 +8506,234 @@ setTimeout(() => {
   try { require('./flexxus').precalentarFlexxus().catch(() => {}); } catch (e) { /* ignorar */ }
 }, 1000).unref?.();
  
+// ══════════════════════════════════════════════════════════════
+// ADMINISTRACIÓN · Facturación de ventas por Flexxus (28-sep)
+// Planilla → revisar → generar (POST /ordenmanual) → CAE → mail (Flexxus).
+// Emite comprobantes REALES ante ARCA: flexxus.js tiene un candado que solo
+// deja facturar contra el entorno de prueba salvo FACTURACION_VENTAS=produccion.
+// ══════════════════════════════════════════════════════════════
+const FV = require('./facturacion_ventas');
+const cfgVentas = () => ({
+  puntoVenta: Number(process.env.FLEXXUS_VENTAS_PUNTOVENTA || 3),
+  usuario: process.env.FLEXXUS_VENTAS_USUARIO || process.env.FLEXXUS_USUARIO || '',
+  vendedor: process.env.FLEXXUS_VENTAS_VENDEDOR || undefined,
+  deposito: process.env.FLEXXUS_DEPOSITO || '001',
+});
+const LOTE_PASO = 5;   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
+
+async function cargarConfigFact() {
+  const [c, k] = await Promise.all([
+    supabase.from('fact_clientes').select('*').order('nombre'),
+    supabase.from('fact_conceptos').select('*').order('nombre'),
+  ]);
+  if (c.error) throw c.error; if (k.error) throw k.error;
+  return { clientes: c.data || [], conceptos: k.data || [] };
+}
+
+router.get('/api/facturacion/config', auth, async (req, res) => {
+  try {
+    const { entornoVentas } = require('./flexxus');
+    res.json({ ...(await cargarConfigFact()), entorno: entornoVentas(), cfg: cfgVentas() });
+  } catch (err) { console.error('fact config:', err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Conceptos y clientes (ABM) ──
+function abmFact(tabla, campos) {
+  router.post(`/api/facturacion/${tabla}`, auth, async (req, res) => {
+    try {
+      const b = req.body || {}; const fila = {};
+      campos.forEach(k => { if (b[k] !== undefined) fila[k] = b[k] === '' ? null : b[k]; });
+      const q = b.id ? supabase.from('fact_' + tabla).update(fila).eq('id', b.id).select().single()
+                     : supabase.from('fact_' + tabla).insert(fila).select().single();
+      const { data, error } = await q; if (error) throw error;
+      res.json(data);
+    } catch (err) { console.error('fact abm', tabla, err); res.status(500).json({ error: err.message }); }
+  });
+  router.delete(`/api/facturacion/${tabla}/:id`, auth, async (req, res) => {
+    try {
+      // Baja lógica: los lotes viejos siguen apuntando a este registro.
+      const { error } = await supabase.from('fact_' + tabla).update({ activo: false }).eq('id', req.params.id);
+      if (error) throw error; res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+}
+abmFact('conceptos', ['nombre', 'plantilla', 'codigo_articulo', 'usa_cantidad', 'activo']);
+abmFact('clientes', ['nombre', 'alias_planilla', 'codigo_cliente', 'cuit', 'tipo_comprobante', 'porcentaje_iva',
+  'codigo_multiplazo', 'concepto_id', 'centro_costo', 'email', 'email_cc', 'activo']);
+
+// Buscar un cliente en Flexxus, para no tipear el código a mano.
+router.get('/api/facturacion/flexxus/clientes', auth, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json([]);
+    const { buscarClientesFlexxus } = require('./flexxus');
+    const d = await buscarClientesFlexxus(q);
+    res.json(d.slice(0, 20).map(c => ({ codigo: c.codigocliente, razonsocial: c.razonsocial, cuit: c.cuit,
+      email: c.email || c.emaillaboral || null, multiplazo: c.codigomultiplazo ?? null, condicioniva: c.condicioniva || null })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── 1-2 · Leer la planilla y armar la vista previa (no graba nada) ──
+router.post('/api/facturacion/preview', auth, async (req, res) => {
+  try {
+    const { periodo, fecha, filas } = req.body || {};
+    if (!/^\d{4}-\d{2}$/.test(periodo || '')) return res.status(400).json({ error: 'Falta el mes a facturar' });
+    const errFecha = FV.validarFecha(fecha);
+    const { clientes, conceptos } = await cargarConfigFact();
+    const leidos = FV.leerPlanilla(filas || [], periodo);
+    const usados = new Set();
+    const items = leidos.map(l => {
+      const cli = FV.reconocerCliente(l.nombre, clientes);
+      if (cli) usados.add(cli.id);
+      const conc = cli && conceptos.find(k => k.id === cli.concepto_id);
+      const problemas = [];
+      if (!cli) problemas.push('no está configurado como cliente');
+      else problemas.push(...FV.problemasCliente(cli, conc));
+      if (l.importe == null) problemas.push(l.aviso || 'sin importe');
+      const montos = l.importe != null && cli ? FV.calcularIva(l.importe, cli.porcentaje_iva) : null;
+      return { nombre_planilla: l.nombre, detalle: l.detalle, cliente_id: cli ? cli.id : null,
+        cliente: cli ? cli.nombre : null, tipo: cli ? cli.tipo_comprobante : null,
+        email: cli ? cli.email : null, concepto_id: conc ? conc.id : null,
+        descripcion: conc ? FV.textoConcepto(conc.plantilla, periodo, 1) : null,
+        cantidad: 1, usa_cantidad: !!(conc && conc.usa_cantidad),
+        neto: montos ? montos.neto : l.importe, iva: montos ? montos.iva : null, total: montos ? montos.total : null,
+        problemas };
+    });
+    // Clientes configurados que NO aparecen en la planilla: para que no se olviden.
+    const faltan = clientes.filter(c => c.activo !== false && !usados.has(c.id))
+      .map(c => ({ cliente_id: c.id, cliente: c.nombre }));
+    res.json({ periodo, fecha, error_fecha: errFecha, items, faltan });
+  } catch (err) { console.error('fact preview:', err); res.status(500).json({ error: err.message }); }
+});
+
+// ── 3 · Crear el lote con lo revisado ──
+router.post('/api/facturacion/lotes', auth, async (req, res) => {
+  try {
+    const { periodo, fecha, items } = req.body || {};
+    const errFecha = FV.validarFecha(fecha);
+    if (errFecha) return res.status(400).json({ error: errFecha });
+    const { clientes, conceptos } = await cargarConfigFact();
+    const ok = [];
+    for (const it of (items || [])) {
+      const cli = clientes.find(c => c.id === it.cliente_id);
+      const conc = cli && conceptos.find(k => k.id === (it.concepto_id || cli.concepto_id));
+      if (!cli || FV.problemasCliente(cli, conc).length || !(Number(it.neto) > 0)) continue;
+      const cant = Number(it.cantidad) || 1;
+      const m = FV.calcularIva(it.neto, cli.porcentaje_iva);
+      ok.push({ cliente_id: cli.id, concepto_id: conc.id,
+        descripcion: (it.descripcion || FV.textoConcepto(conc.plantilla, periodo, cant)).toUpperCase(),
+        cantidad: cant, neto: m.neto, iva: m.iva, total: m.total, tipo_comprobante: cli.tipo_comprobante });
+    }
+    if (!ok.length) return res.status(400).json({ error: 'No hay ninguna factura lista para generar' });
+    const { entornoVentas } = require('./flexxus');
+    const { data: lote, error } = await supabase.from('fact_lotes')
+      .insert({ periodo, fecha_comprobante: fecha, entorno: entornoVentas().esPrueba ? 'prueba' : 'produccion', creado_por: req.usuario || null })
+      .select().single();
+    if (error) throw error;
+    const { error: e2 } = await supabase.from('fact_items').insert(ok.map(x => ({ ...x, lote_id: lote.id })));
+    if (e2) throw e2;
+    res.json({ ok: true, lote_id: lote.id, facturas: ok.length });
+  } catch (err) { console.error('fact lote:', err); res.status(500).json({ error: err.message }); }
+});
+
+router.get('/api/facturacion/lotes', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('fact_lotes')
+      .select('*, fact_items(*, fact_clientes(nombre, email, codigo_cliente))')
+      .order('created_at', { ascending: false }).limit(24);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/api/facturacion/items/:id', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items').select('estado').eq('id', req.params.id).single();
+    if (!it || !['borrador', 'error'].includes(it.estado)) return res.status(409).json({ error: 'Solo se puede sacar una factura que todavía no se generó' });
+    await supabase.from('fact_items').delete().eq('id', req.params.id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Procesa hasta LOTE_PASO items de un estado y devuelve cuántos quedan.
+async function pasoLote(loteId, estados, fn) {
+  const { data, error } = await supabase.from('fact_items')
+    .select('*, fact_clientes(*), fact_conceptos(*), fact_lotes(fecha_comprobante)')
+    .eq('lote_id', loteId).in('estado', estados).order('updated_at').limit(LOTE_PASO);
+  if (error) throw error;
+  let hechas = 0, fallaron = 0;
+  for (const it of (data || [])) {
+    try { await fn(it); hechas++; }
+    catch (e) {
+      fallaron++;
+      await supabase.from('fact_items').update({ error: String(e.message || e).slice(0, 500),
+        respuesta: e.data || null, updated_at: new Date().toISOString() }).eq('id', it.id);
+    }
+  }
+  const { count } = await supabase.from('fact_items').select('id', { count: 'exact', head: true })
+    .eq('lote_id', loteId).in('estado', estados);
+  return { hechas, fallaron, quedan: count || 0 };
+}
+
+// ── 4 · Generar en Flexxus ──
+router.post('/api/facturacion/lotes/:id/generar', auth, async (req, res) => {
+  try {
+    const { crearFacturaVenta } = require('./flexxus');
+    const r = await pasoLote(req.params.id, ['borrador'], async (it) => {
+      const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfgVentas());
+      const d = await crearFacturaVenta(body);
+      await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: d.tipocomprobante || it.tipo_comprobante,
+        numero_comprobante: d.numerocomprobante, error: d.advertencia || null, respuesta: d,
+        updated_at: new Date().toISOString() }).eq('id', it.id);
+    });
+    // Los que fallaron quedan en borrador con el error: se corrigen y se reintentan.
+    res.json(r);
+  } catch (err) { console.error('fact generar:', err); res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// ── 5 · Pedir el CAE ──
+router.post('/api/facturacion/lotes/:id/cae', auth, async (req, res) => {
+  try {
+    const { pedirCAE } = require('./flexxus');
+    const r = await pasoLote(req.params.id, ['generada'], async (it) => {
+      // UNA llamada por factura. Antes se releía la factura para traer el
+      // vencimiento del CAE: una segunda llamada por cada una solo para un
+      // dato que no se usa (29-sep, optimización de llamadas a Flexxus).
+      const { cae, respuesta } = await pedirCAE(it.tipo_comprobante, it.numero_comprobante);
+      await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta,
+        updated_at: new Date().toISOString() }).eq('id', it.id);
+    });
+    res.json(r);
+  } catch (err) { console.error('fact cae:', err); res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// ── 6 · Enviar por mail (lo manda Flexxus con su modelo) ──
+router.post('/api/facturacion/lotes/:id/enviar', auth, async (req, res) => {
+  try {
+    const { pdfFacturaVenta } = require('./flexxus');
+    const r = await pasoLote(req.params.id, ['cae'], async (it) => {
+      const cli = it.fact_clientes || {};
+      const destino = [cli.email, cli.email_cc].filter(Boolean).join(',');
+      if (!cli.email) throw new Error('El cliente no tiene email cargado');
+      await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante, destino);
+      await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
+        error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+    });
+    res.json(r);
+  } catch (err) { console.error('fact enviar:', err); res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// El PDF para verlo o descargarlo.
+router.get('/api/facturacion/items/:id/pdf', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items').select('tipo_comprobante, numero_comprobante').eq('id', req.params.id).single();
+    if (!it || !it.numero_comprobante) return res.status(404).json({ error: 'Esa factura todavía no está en Flexxus' });
+    const { pdfFacturaVenta } = require('./flexxus');
+    const r = await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante);
+    if (r.pdf) { res.set('Content-Type', r.contentType); res.set('Content-Disposition', `inline; filename="${it.tipo_comprobante}-${it.numero_comprobante}.pdf"`); return res.send(r.pdf); }
+    res.json(r.json);
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 module.exports = router;
 module.exports.pedirStockObjetivos = pedirStockObjetivos;
