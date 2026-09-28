@@ -1474,12 +1474,78 @@ async function actualizarClaseProveedorFlexxus(cuit, codigoClase) {
   return { ok: false, motivo: 'El API de Flexxus no permitió actualizar la ficha. La clase igual se aplica en cada imputación desde el panel; para unificar del todo, corregila una vez a mano en Flexxus.', intentos };
 }
 
+// ── VENTAS: conexión PROPIA (29-sep) ─────────────────────────
+// Compras ya está en producción y no se puede cortar. Ventas se prueba en el
+// Flexxus de PRUEBA, así que tiene su propia URL, credenciales y token:
+//   FLEXXUS_VENTAS_URL    (si no está, usa FLEXXUS_URL)
+//   FLEXXUS_VENTAS_USER / FLEXXUS_VENTAS_PASS   (si no están, las de compras)
+// Cuando ventas pase a producción, se borra FLEXXUS_VENTAS_URL y listo.
+function ventasUrl() { return String(process.env.FLEXXUS_VENTAS_URL || process.env.FLEXXUS_URL || '').replace(/\/$/, ''); }
+function ventasMismaConexion() {
+  // Mismo host que compras → se usa el MISMO token: no duplica logins.
+  try { return new URL(ventasUrl()).host === new URL(process.env.FLEXXUS_URL).host; } catch (e) { return !process.env.FLEXXUS_VENTAS_URL; }
+}
+let _tokV = null, _loginV = null;
+async function tokenVentas() {
+  if (_tokV && Date.now() < _tokV.vence) return _tokV.token;
+  let host = 'sin-url'; try { host = new URL(ventasUrl()).host; } catch (e) {}
+  const clave = host + '::token';
+  // Token guardado en la base (sobrevive reinicios), con la clave de SU host.
+  if (!_tokV) {
+    try {
+      const { data } = await supabase.from('flexxus_cache').select('valor').eq('clave', clave).maybeSingle();
+      const g = data && data.valor;
+      if (g && g.token && g.vence > Date.now()) { _tokV = g; return g.token; }
+    } catch (e) { /* sin tabla: se sigue */ }
+  }
+  if (_loginV) return _loginV;
+  _loginV = (async () => {
+    console.log(`[flexxus-ventas] pidiendo token en ${host}`);
+    const r = await fetch(ventasUrl() + '/v5/auth/login', { method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: process.env.FLEXXUS_VENTAS_USER || process.env.FLEXXUS_USER || '',
+        password: process.env.FLEXXUS_VENTAS_PASS || process.env.FLEXXUS_PASS || '', deviceinfo: DEVICEINFO }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.token) throw new Error(`Login Flexxus de ventas (${host}) falló (${r.status}): ` + (d.message || d.error || 'revisá FLEXXUS_VENTAS_USER/PASS'));
+    const exp = Number(d.expireIn) || 0;
+    const venceSeg = exp > Date.now() / 1000 ? exp : (Date.now() / 1000 + 3600);
+    _tokV = { token: d.token, vence: venceSeg * 1000 - 5 * 60 * 1000 };
+    try { await supabase.from('flexxus_cache').upsert({ clave, valor: _tokV, vence: new Date(_tokV.vence).toISOString(),
+      actualizado: new Date().toISOString() }, { onConflict: 'clave' }); } catch (e) {}
+    return _tokV.token;
+  })().finally(() => { _loginV = null; });
+  return _loginV;
+}
+/** fetch autenticado contra el Flexxus de VENTAS. `crudo` devuelve el Response. */
+async function flxV(path, opts = {}, crudo = false, reint = true) {
+  if (ventasMismaConexion()) {
+    if (!crudo) return flx(path, opts);
+    const t = await token();
+    return fetch(base() + path, { ...opts, headers: { authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
+  }
+  const t = await tokenVentas();
+  const r = await fetch(ventasUrl() + '/v5' + path, { ...opts,
+    headers: { authorization: 'Bearer ' + t, 'content-type': 'application/json', ...(opts.headers || {}) } });
+  if (r.status === 401 && reint) { _tokV = null; return flxV(path, opts, crudo, false); }
+  if (crudo) return r;
+  const texto = await r.text();
+  let d; try { d = JSON.parse(texto); } catch (e) { d = { raw: texto }; }
+  if (!r.ok) {
+    let m = d && (d.message ?? d.error ?? d.errors);
+    if (Array.isArray(m)) m = m.map(x => typeof x === 'string' ? x : (x && (x.message || x.msg)) || JSON.stringify(x)).join('\n· ');
+    else if (m && typeof m === 'object') m = m.message || JSON.stringify(m);
+    const err = new Error(traducirErrorFlexxus(String(m || texto.slice(0, 300) || 'HTTP ' + r.status)));
+    err.status = r.status; err.data = d; throw err;
+  }
+  return d;
+}
+
 // ── VENTAS: facturación desde el panel (28-sep) ──────────────
 // Emite facturas reales ante ARCA. Por eso hay un candado: si FACTURACION_VENTAS
 // no dice "produccion", solo se permite contra el Flexxus de PRUEBA. Una factura
 // con CAE mal hecha solo se arregla con nota de crédito.
 function entornoVentas() {
-  const url = String(process.env.FLEXXUS_URL || '');
+  const url = ventasUrl();
   const esPrueba = /prueba/i.test(url);
   const modo = String(process.env.FACTURACION_VENTAS || 'prueba').toLowerCase();
   return { esPrueba, modo, habilitado: modo === 'produccion' ? true : (modo === 'prueba' && esPrueba),
@@ -1490,7 +1556,7 @@ function exigirVentas() {
   if (!e.habilitado) {
     const err = new Error(e.modo === 'off'
       ? 'La facturación de ventas está apagada (FACTURACION_VENTAS=off).'
-      : `Flexxus apunta a ${e.host}, que NO es el entorno de prueba. Para facturar en producción hay que poner FACTURACION_VENTAS=produccion en Railway.`);
+      : `Ventas apunta a ${e.host}, que NO es el entorno de prueba. Para probar, poné FLEXXUS_VENTAS_URL con la URL de prueba; para facturar de verdad, FACTURACION_VENTAS=produccion.`);
     err.status = 423; throw err;
   }
   return e;
@@ -1499,7 +1565,7 @@ function exigirVentas() {
 /** Crea la factura en Flexxus. Devuelve { tipocomprobante, numerocomprobante, mensaje, advertencia }. */
 async function crearFacturaVenta(body) {
   exigirVentas();
-  const d = await flx('/ordenmanual', { method: 'POST', body: JSON.stringify(body) });
+  const d = await flxV('/ordenmanual', { method: 'POST', body: JSON.stringify(body) });
   if (d && d.error === true) { const e = new Error(d.mensaje || 'Flexxus rechazó la factura'); e.data = d; throw e; }
   return d;
 }
@@ -1507,7 +1573,7 @@ async function crearFacturaVenta(body) {
 /** Pide el CAE a ARCA a través de Flexxus. Devuelve el CAE. */
 async function pedirCAE(tipocomprobante, numerocomprobante) {
   exigirVentas();
-  const d = await flx('/facturacionelectronica', { method: 'POST',
+  const d = await flxV('/facturacionelectronica', { method: 'POST',
     body: JSON.stringify({ tipocomprobante, numerocomprobante: Number(numerocomprobante) }) });
   const cae = d && (d.CAE || d.cae);
   if (!cae) { const e = new Error('Flexxus no devolvió CAE: ' + JSON.stringify(d).slice(0, 200)); e.data = d; throw e; }
@@ -1516,7 +1582,7 @@ async function pedirCAE(tipocomprobante, numerocomprobante) {
 
 /** Relee la factura en Flexxus (para traer vencimiento del CAE, total final, etc.). */
 async function leerFacturaVenta(tipo, numero) {
-  return flx('/comprobantesventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero));
+  return flxV('/comprobantesventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero));
 }
 
 /**
@@ -1526,10 +1592,8 @@ async function leerFacturaVenta(tipo, numero) {
  */
 async function pdfFacturaVenta(tipo, numero, email) {
   if (email) exigirVentas();
-  const t = await token();
   const q = email ? '?email=' + encodeURIComponent(email) : '';
-  const r = await fetch(base() + '/ventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero) + '/pdf' + q,
-    { headers: { authorization: 'Bearer ' + t } });
+  const r = await flxV('/ventas/' + encodeURIComponent(tipo) + '/' + encodeURIComponent(numero) + '/pdf' + q, {}, true);
   if (!r.ok) { const txt = await r.text(); const e = new Error('No pude bajar el PDF: ' + txt.slice(0, 200)); e.status = r.status; throw e; }
   const tipoCont = r.headers.get('content-type') || '';
   if (/json/.test(tipoCont)) return { json: await r.json() };
@@ -1541,17 +1605,17 @@ async function pdfFacturaVenta(tipo, numero, email) {
 // mismo nombre varias veces seguidas.
 const _cliCache = new Map();
 async function buscarClientesFlexxus(busqueda) {
-  const k = String(busqueda || '').trim().toLowerCase();
+  const k = ventasUrl() + '::' + String(busqueda || '').trim().toLowerCase();   // por entorno
   const ya = _cliCache.get(k);
   if (ya && Date.now() - ya.t < PROV_TTL) return ya.v;
-  const d = await flx('/clientes/busquedavariada/' + encodeURIComponent(busqueda));
+  const d = await flxV('/clientes/busquedavariada/' + encodeURIComponent(busqueda));
   const v = Array.isArray(d) ? d : (d && (d.data || d.clientes)) || [];
   _cliCache.set(k, { t: Date.now(), v });
   if (_cliCache.size > 200) _cliCache.delete(_cliCache.keys().next().value);
   return v;
 }
 async function listarPuntosVenta() {
-  const d = await flx('/puntosdeventa?facturaelectronica=true');
+  const d = await flxV('/puntosdeventa?facturaelectronica=true');
   return Array.isArray(d) ? d : (d && d.data) || [];
 }
 
