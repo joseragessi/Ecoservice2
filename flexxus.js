@@ -1486,6 +1486,22 @@ function ventasMismaConexion() {
   try { return new URL(ventasUrl()).host === new URL(process.env.FLEXXUS_URL).host; } catch (e) { return !process.env.FLEXXUS_VENTAS_URL; }
 }
 let _tokV = null, _loginV = null;
+// Tiempo máximo por llamada (29-sep): sin esto, si el Flexxus de prueba no
+// respondía, el pedido quedaba colgado hasta que Railway lo cortaba y el panel
+// mostraba "Failed to fetch" sin decir por qué.
+const VENTAS_TIMEOUT_MS = 12000;
+async function fetchV(url, opts) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), VENTAS_TIMEOUT_MS);
+  let host = url; try { host = new URL(url).host; } catch (e) {}
+  try { return await fetch(url, { ...opts, signal: ctl.signal }); }
+  catch (e) {
+    const err = new Error(e.name === 'AbortError'
+      ? `Flexxus (${host}) no respondió en ${VENTAS_TIMEOUT_MS / 1000} s. ¿La URL de FLEXXUS_VENTAS_URL es correcta y el servidor está en línea?`
+      : `No pude conectar con Flexxus (${host}): ${e.message}`);
+    err.status = 504; throw err;
+  } finally { clearTimeout(t); }
+}
 async function tokenVentas() {
   if (_tokV && Date.now() < _tokV.vence) return _tokV.token;
   let host = 'sin-url'; try { host = new URL(ventasUrl()).host; } catch (e) {}
@@ -1501,7 +1517,7 @@ async function tokenVentas() {
   if (_loginV) return _loginV;
   _loginV = (async () => {
     console.log(`[flexxus-ventas] pidiendo token en ${host}`);
-    const r = await fetch(ventasUrl() + '/v5/auth/login', { method: 'POST',
+    const r = await fetchV(ventasUrl() + '/v5/auth/login', { method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ username: process.env.FLEXXUS_VENTAS_USER || process.env.FLEXXUS_USER || '',
         password: process.env.FLEXXUS_VENTAS_PASS || process.env.FLEXXUS_PASS || '', deviceinfo: DEVICEINFO }) });
@@ -1521,10 +1537,10 @@ async function flxV(path, opts = {}, crudo = false, reint = true) {
   if (ventasMismaConexion()) {
     if (!crudo) return flx(path, opts);
     const t = await token();
-    return fetch(base() + path, { ...opts, headers: { authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
+    return fetchV(base() + path, { ...opts, headers: { authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
   }
   const t = await tokenVentas();
-  const r = await fetch(ventasUrl() + '/v5' + path, { ...opts,
+  const r = await fetchV(ventasUrl() + '/v5' + path, { ...opts,
     headers: { authorization: 'Bearer ' + t, 'content-type': 'application/json', ...(opts.headers || {}) } });
   if (r.status === 401 && reint) { _tokV = null; return flxV(path, opts, crudo, false); }
   if (crudo) return r;
@@ -1538,6 +1554,15 @@ async function flxV(path, opts = {}, crudo = false, reint = true) {
     err.status = r.status; err.data = d; throw err;
   }
   return d;
+}
+
+/** Prueba la conexión de ventas: login y una lectura liviana. */
+async function probarConexionVentas() {
+  const t0 = Date.now();
+  let host = ''; try { host = new URL(ventasUrl()).host; } catch (e) {}
+  _tokV = null;                                   // fuerza un login real
+  await flxV('/puntosdeventa?facturaelectronica=true');
+  return { ok: true, host, ms: Date.now() - t0 };
 }
 
 // ── VENTAS: facturación desde el panel (28-sep) ──────────────
@@ -1620,5 +1645,5 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
+  probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
