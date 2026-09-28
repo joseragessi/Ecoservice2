@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-21 · performance: objetivo 60 pts + descuento por antigüedad';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-28 · planilla de control físico agrupada por tipo, con cantidades';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -4859,22 +4859,32 @@ async function imprimirPlanillaStock(objetivoId,periodo){
   (window._maqPadron||[]).forEach(m=>{if(m.codigo_interno)marcaDe[norm(m.codigo_interno)]=[m.marca,m.modelo].filter(Boolean).join(' ');});
   const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const hoy=new Date().toLocaleDateString('es-AR');
+  /* Una fila POR TIPO, con la cantidad y un casillero por unidad (28-sep).
+     Antes se imprimía una fila por unidad: TGN salía con 8 renglones
+     seguidos de "lentes oscuros S/N" y la hoja tenía 51 líneas repetidas.
+     Ahora se ve igual que en el panel: el tipo, cuántos hay, y tantos
+     casilleros como unidades para ir tildando lo que se encuentra. */
   let renglones='';
   filas.forEach(f=>{
-    if(f.numeros&&f.numeros.length){
-      f.numeros.forEach(n=>{renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">${esc(n)}</td><td class="sub">${esc(marcaDe[norm(n)]||f.observacion||'')}</td><td class="raya"></td></tr>`;});
-      const sinNum=(Number(f.cantidad)||0)-f.numeros.length;
-      for(let i=0;i<sinNum;i++)renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">S/N</td><td class="sub">${esc(f.observacion||'')}</td><td class="raya"></td></tr>`;
-    }else{
-      for(let i=0;i<(Number(f.cantidad)||0);i++)renglones+=`<tr><td class="cas"><span class="c"></span></td><td>${esc(f.tipo)}</td><td class="mono">S/N</td><td class="sub">${esc(f.observacion||'')}</td><td class="raya"></td></tr>`;
-    }
+    const cant=Math.max(Number(f.cantidad)||0,(f.numeros||[]).length);
+    if(!cant)return;
+    const cas=Array.from({length:Math.min(cant,14)},()=>'<span class="c"></span>').join('')
+      +(cant>14?`<span class="mas">+${cant-14}</span>`:'');
+    // Los números, como chips; las que no tienen, como "s/n".
+    const nums=(f.numeros||[]).map(n=>`<b>${esc(n)}</b>`)
+      .concat(Array.from({length:Math.max(0,cant-(f.numeros||[]).length)},()=>'<i>s/n</i>')).join(' · ');
+    // La marca: la del número si está, si no la observación del tipo.
+    const marca=(f.numeros||[]).map(n=>marcaDe[norm(n)]).find(Boolean)||f.observacion||'';
+    renglones+=`<tr><td class="cas">${cas}</td><td>${esc(f.tipo)}</td>`
+      +`<td class="cant">${cant}</td><td class="mono nums">${nums}</td>`
+      +`<td class="sub">${esc(marca)}</td><td class="raya"></td></tr>`;
   });
   // Una hoja siempre: hasta 28 máquinas va cómodo; hasta 60 se achica la
   // letra; más de eso, la tabla se parte en dos columnas lado a lado.
   const nFilas=(renglones.match(/<tr>/g)||[]).length;
   const compacta=nFilas>28, dosCols=nFilas>60;
   let cuerpo;
-  const cab='<thead><tr><th></th><th>Tipo</th><th>N°</th><th>Marca / obs.</th><th>No está → ¿dónde?</th></tr></thead>';
+  const cab='<thead><tr><th>Encontrado</th><th>Tipo</th><th class="cant">Cant.</th><th>N°</th><th>Marca / obs.</th><th>Falta → ¿dónde?</th></tr></thead>';
   if(dosCols){
     const trs=renglones.match(/<tr>[\s\S]*?<\/tr>/g)||[];
     const mitad=Math.ceil(trs.length/2);
@@ -4892,7 +4902,11 @@ async function imprimirPlanillaStock(objetivoId,periodo){
     tr{page-break-inside:avoid}
     .mono{font-family:ui-monospace,monospace}
     .sub{color:#4A5A51;font-size:${compacta?'9px':'11px'}}
-    .cas{width:20px}.c{display:inline-block;width:${compacta?'11px':'13px'};height:${compacta?'11px':'13px'};border:1.5px solid #4A5A51;border-radius:3px}
+    .cas{white-space:nowrap;line-height:1}
+    .c{display:inline-block;width:${compacta?'11px':'13px'};height:${compacta?'11px':'13px'};border:1.5px solid #4A5A51;border-radius:3px;margin:1px 2px 1px 0;vertical-align:middle}
+    .mas{font-size:${compacta?'8px':'9px'};color:#8A968E;vertical-align:middle}
+    .cant{text-align:center;font-family:ui-monospace,monospace;font-weight:700;width:38px}
+    .nums b{font-weight:600}.nums i{font-style:normal;color:#8A968E}
     .raya{width:${dosCols?'70px':compacta?'100px':'130px'};border-bottom:1px dotted #B8C2BA!important}
     .dos{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start}
     .extra{margin-top:${compacta?'8px':'12px'};font-size:${compacta?'10px':'11px'};color:#4A5A51}
