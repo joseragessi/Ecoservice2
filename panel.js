@@ -4868,8 +4868,9 @@ async function imprimirPlanillaStock(objetivoId,periodo){
   filas.forEach(f=>{
     const cant=Math.max(Number(f.cantidad)||0,(f.numeros||[]).length);
     if(!cant)return;
-    const cas=Array.from({length:Math.min(cant,14)},()=>'<span class="c"></span>').join('')
-      +(cant>14?`<span class="mas">+${cant-14}</span>`:'');
+    // Un solo casillero por fila: se tilda si están todas (28-sep). Uno por
+    // unidad cargaba demasiado la hoja.
+    const cas='<span class="c"></span>';
     // Los números, como chips; las que no tienen, como "s/n".
     const nums=(f.numeros||[]).map(n=>`<b>${esc(n)}</b>`)
       .concat(Array.from({length:Math.max(0,cant-(f.numeros||[]).length)},()=>'<i>s/n</i>')).join(' · ');
@@ -4884,7 +4885,7 @@ async function imprimirPlanillaStock(objetivoId,periodo){
   const nFilas=(renglones.match(/<tr>/g)||[]).length;
   const compacta=nFilas>28, dosCols=nFilas>60;
   let cuerpo;
-  const cab='<thead><tr><th>Encontrado</th><th>Tipo</th><th class="cant">Cant.</th><th>N°</th><th>Marca / obs.</th><th>Falta → ¿dónde?</th></tr></thead>';
+  const cab='<thead><tr><th>✓</th><th>Tipo</th><th class="cant">Cant.</th><th>N°</th><th>Marca / obs.</th><th>Falta → ¿dónde?</th></tr></thead>';
   if(dosCols){
     const trs=renglones.match(/<tr>[\s\S]*?<\/tr>/g)||[];
     const mitad=Math.ceil(trs.length/2);
@@ -4902,9 +4903,8 @@ async function imprimirPlanillaStock(objetivoId,periodo){
     tr{page-break-inside:avoid}
     .mono{font-family:ui-monospace,monospace}
     .sub{color:#4A5A51;font-size:${compacta?'9px':'11px'}}
-    .cas{white-space:nowrap;line-height:1}
-    .c{display:inline-block;width:${compacta?'11px':'13px'};height:${compacta?'11px':'13px'};border:1.5px solid #4A5A51;border-radius:3px;margin:1px 2px 1px 0;vertical-align:middle}
-    .mas{font-size:${compacta?'8px':'9px'};color:#8A968E;vertical-align:middle}
+    .cas{width:26px;text-align:center;line-height:1}
+    .c{display:inline-block;width:${compacta?'12px':'14px'};height:${compacta?'12px':'14px'};border:1.5px solid #4A5A51;border-radius:3px;vertical-align:middle}
     .cant{text-align:center;font-family:ui-monospace,monospace;font-weight:700;width:38px}
     .nums b{font-weight:600}.nums i{font-style:normal;color:#8A968E}
     .raya{width:${dosCols?'70px':compacta?'100px':'130px'};border-bottom:1px dotted #B8C2BA!important}
