@@ -8513,11 +8513,14 @@ setTimeout(() => {
 // deja facturar contra el entorno de prueba salvo FACTURACION_VENTAS=produccion.
 // ══════════════════════════════════════════════════════════════
 const FV = require('./facturacion_ventas');
+// Lo que depende de la instalación. Cada uno tiene su versión _VENTAS_ porque
+// el entorno de prueba puede tener códigos distintos que producción.
 const cfgVentas = () => ({
   puntoVenta: Number(process.env.FLEXXUS_VENTAS_PUNTOVENTA || 3),
-  usuario: process.env.FLEXXUS_VENTAS_USUARIO || process.env.FLEXXUS_USUARIO || '',
+  usuario: process.env.FLEXXUS_VENTAS_CODIGO_USUARIO || process.env.FLEXXUS_VENTAS_USER
+    || process.env.FLEXXUS_CODIGO_USUARIO || process.env.FLEXXUS_USER || '',
   vendedor: process.env.FLEXXUS_VENTAS_VENDEDOR || undefined,
-  deposito: process.env.FLEXXUS_DEPOSITO || '001',
+  deposito: process.env.FLEXXUS_VENTAS_DEPOSITO || process.env.FLEXXUS_DEPOSITO || '001',
 });
 const LOTE_PASO = 5;   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
 
