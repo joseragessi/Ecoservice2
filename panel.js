@@ -12527,7 +12527,7 @@ function admTabs(){
   return `<div class="tabs-sub" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
     ${[['facturar','Facturar'],['emitidas','Emitidas'],['conceptos','Conceptos'],['clientes','Clientes']].map(([k,t])=>{
       const n=k==='facturar'&&admLotes?admPend().length:0;
-      return `<button class="${admTab===k?'btn':'btn-salir'}" style="padding:6px 14px;font-size:12.5px" onclick="admTab='${k}';admLoteVer=null;admPrev=admTab===k?admPrev:null;admPasoF=1;go('administracion')">${t}${n?` <span style="background:#D98A1F;color:#fff;border-radius:10px;font-size:10.5px;padding:1px 7px;margin-left:3px">${n}</span>`:''}</button>`;}).join('')}</div>`;
+      return `<button class="${admTab===k?'btn':'btn-salir'}" style="padding:6px 14px;font-size:12.5px" onclick="admTab='${k}';admLoteVer=null;admPasoF=1;go('administracion')">${t}${n?` <span style="background:#D98A1F;color:#fff;border-radius:10px;font-size:10.5px;padding:1px 7px;margin-left:3px">${n}</span>`:''}</button>`;}).join('')}</div>`;
 }
 function admBanner(){
   const e=admCfg&&admCfg.entorno;if(!e)return '';
@@ -12643,7 +12643,7 @@ function admCard(x){
     <div class="pie">${gen?`<button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
       :`<button class="btn-salir" onclick="admEditarItem('${x.id}')">✎ Editar</button>
         <button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">🔑 Emitir</button>
-        <button class="btn-salir adm-del" title="eliminar" onclick="admSacar('${x.id}')">🗑</button>`}</div></div>`;
+        <button class="btn-salir adm-del" title="Eliminar esta factura" onclick="admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>`}</div></div>`;
 }
 function admDetalle(id){
   const x=admItem(id);if(!x)return;
@@ -12669,7 +12669,7 @@ function admDetalle(id){
     <div style="padding:0 22px 14px"><div class="lbl">${x.email_enviado?'Enviada a':'Se envía a'}</div>
       <div style="font-size:13px">${escStk(x.email_enviado||[c.email,c.email_cc].filter(Boolean).join(' · ')||'sin email')}</div>
       ${x.error?`<div class="err" style="margin-top:8px">✕ ${escStk(x.error)}</div>`:''}</div>
-    <div class="f">${x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')">🗑 Eliminar</button>`:'<span></span>'}
+    <div class="f">${x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg> Eliminar</button>`:'<span></span>'}
       <div style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-det').remove()">Cerrar</button>
         ${x.numero_comprobante?`<button class="btn-salir" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="document.getElementById('adm-det').remove();admEditarItem('${x.id}')">✎ Editar</button>`:''}
@@ -12826,7 +12826,9 @@ const ADM_CSS=`<style>
 .adm-fac .monto.tot{background:var(--tinta);color:#fff}.adm-fac .monto.tot .l{color:rgba(255,255,255,.6)}.adm-fac .monto.tot .v{font-size:14.5px;font-weight:700}
 .adm-fac .pie{display:flex;gap:6px;padding:0 16px 14px}.adm-fac .pie .btn,.adm-fac .pie .btn-salir{padding:9px 12px}
 .adm-fac .pie .btn{flex:1}
-.adm-del{color:var(--rojo)!important;border-color:#F2C4CB!important}
+.adm-del{color:#C93E51!important;background:#FCEBED!important;border:1.5px solid #E8A5B0!important;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-weight:600}
+.adm-del:hover{background:#F8D7DC!important}
+.adm-del svg{width:17px;height:17px;flex-shrink:0}
 .err{font-size:11.5px;color:#A3253A;background:#FCEBED;border-radius:8px;padding:7px 9px;margin-top:8px}
 .adm-chip{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}.adm-chip.gen{background:#FCEBED;color:#A3253A}
 .adm-aprox{font-size:10px;background:#FBF0DC;color:#854F0B;padding:1px 6px;border-radius:5px;margin-left:4px;font-weight:700}
