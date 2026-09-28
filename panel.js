@@ -12530,8 +12530,9 @@ function admTabs(){
 }
 function admBanner(){
   const e=admCfg&&admCfg.entorno;if(!e)return '';
-  if(!e.habilitado)return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
-    <b>La facturación está bloqueada.</b> Ventas apunta a <span class="mono">${escStk(e.host)}</span>. Para probar, poné <span class="mono">FLEXXUS_VENTAS_URL</span> con la URL de prueba en Railway (Compras no se toca). Para facturar de verdad, <span class="mono">FACTURACION_VENTAS=produccion</span>.</div>`;
+  if(!e.habilitado)return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px;display:flex;gap:10px;align-items:center">
+    <div style="flex:1"><b>Emisión bloqueada.</b> Ventas apunta a <span class="mono">${escStk(e.host)}</span>. Podés configurar clientes y conceptos y revisar la planilla: nada de eso emite. Para generar facturas reales, <span class="mono">FACTURACION_VENTAS=produccion</span> en Railway.</div>
+    <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="admProbarConexion(this)">🔌 Probar conexión</button></div>`;
   if(e.esPrueba)return `<div class="panel" style="background:#FBF0DC;border:1px solid #EED9AE;color:#854F0B;font-size:12.5px;margin-bottom:12px;display:flex;gap:10px;align-items:center">
     <div style="flex:1"><b>Modo prueba.</b> Las facturas se generan en <span class="mono">${escStk(e.host)}</span>: no son reales ni van a ARCA de verdad.</div>
     <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="admProbarConexion(this)">🔌 Probar conexión</button></div>`;
