@@ -12532,8 +12532,9 @@ function admBanner(){
   const e=admCfg&&admCfg.entorno;if(!e)return '';
   if(!e.habilitado)return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
     <b>La facturación está bloqueada.</b> Ventas apunta a <span class="mono">${escStk(e.host)}</span>. Para probar, poné <span class="mono">FLEXXUS_VENTAS_URL</span> con la URL de prueba en Railway (Compras no se toca). Para facturar de verdad, <span class="mono">FACTURACION_VENTAS=produccion</span>.</div>`;
-  if(e.esPrueba)return `<div class="panel" style="background:#FBF0DC;border:1px solid #EED9AE;color:#854F0B;font-size:12.5px;margin-bottom:12px">
-    <b>Modo prueba.</b> Las facturas se generan en <span class="mono">${escStk(e.host)}</span>: no son reales ni van a ARCA de verdad.</div>`;
+  if(e.esPrueba)return `<div class="panel" style="background:#FBF0DC;border:1px solid #EED9AE;color:#854F0B;font-size:12.5px;margin-bottom:12px;display:flex;gap:10px;align-items:center">
+    <div style="flex:1"><b>Modo prueba.</b> Las facturas se generan en <span class="mono">${escStk(e.host)}</span>: no son reales ni van a ARCA de verdad.</div>
+    <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="admProbarConexion(this)">🔌 Probar conexión</button></div>`;
   return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
     <b>PRODUCCIÓN.</b> Las facturas son reales y se informan a ARCA. Un error solo se corrige con nota de crédito.</div>`;
 }
@@ -12756,6 +12757,15 @@ function admVerClientes(view){
         :`<tr><td colspan="9" class="sub" style="padding:18px">Todavía no hay clientes. ${faltanCC?'Empezá con <b>Traer centros de costo</b>.':''}</td></tr>`}
       </tbody></table></div></div>`;
 }
+async function admProbarConexion(btn){
+  btn.disabled=true;btn.textContent='Probando…';
+  try{
+    const r=await api('/api/facturacion/probar',{method:'POST',body:'{}'});
+    if(r.ok)toast(`✓ Conectado a ${r.host} en ${(r.ms/1000).toFixed(1)} s`);
+    else alert('No conecta con Flexxus:\n\n'+r.error);
+  }catch(e){alert('No conecta con Flexxus:\n\n'+(e.message==='Failed to fetch'?'el servidor no respondió a tiempo':e.message));}
+  btn.disabled=false;btn.textContent='🔌 Probar conexión';
+}
 async function admImportarCentros(){
   try{const r=await api('/api/facturacion/clientes/importar-centros',{method:'POST',body:'{}'});
     toast(`✓ ${r.creados} clientes creados. Ahora completalos desde Flexxus.`);admCfg=null;go('administracion');}
@@ -12765,7 +12775,7 @@ async function admCompletarFlx(){
   const bg=document.createElement('div');bg.className='modal-bg abierto';
   bg.innerHTML=`<div class="modal" style="max-width:460px"><div class="modal-tit">Completando desde Flexxus</div><div class="sub" id="adm-cmsg" style="margin:10px 0">Buscando…</div></div>`;
   document.body.appendChild(bg);
-  let comp=0;const dud=[];const saltar=[];
+  let comp=0;const dud=[];const saltar=[];let falla=null;
   try{
     for(let v=0;v<40;v++){
       const r=await api('/api/facturacion/clientes/completar',{method:'POST',body:JSON.stringify({saltar})});
@@ -12773,8 +12783,9 @@ async function admCompletarFlx(){
       const m=document.getElementById('adm-cmsg');if(m)m.innerHTML=`<b>${comp}</b> completos · ${dud.length} para elegir a mano · quedan ${r.quedan}`;
       if(!r.quedan)break;
     }
-  }catch(e){toast(e.message,'error');}
-  bg.innerHTML=`<div class="modal" style="max-width:460px"><div class="modal-tit">Listo</div>
+  }catch(e){falla=e.message==='Failed to fetch'?'El servidor no respondió a tiempo. Probá la conexión con Flexxus.':e.message;}
+  bg.innerHTML=`<div class="modal" style="max-width:460px"><div class="modal-tit">${falla?'Se cortó':'Listo'}</div>
+    ${falla?`<div style="margin:10px 0;background:#FCEBED;border-radius:9px;padding:10px 12px;font-size:12.5px;color:#A3253A">${escStk(falla)}</div>`:''}
     <div style="margin:10px 0;font-size:13px"><b>${comp}</b> clientes completados con los datos de Flexxus.</div>
     ${dud.length?`<div class="sub" style="margin-bottom:6px">Estos no se pudieron completar solos — editalos y buscalos a mano:</div>
       <div style="max-height:220px;overflow:auto">${dud.map(d=>`<div style="font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--linea)"><b>${escStk(d.nombre)}</b> <span class="sub">· ${escStk(d.motivo)}</span></div>`).join('')}</div>`:''}
