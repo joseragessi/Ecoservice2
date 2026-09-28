@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-28 · planilla de control físico agrupada por tipo, con cantidades';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-28 · módulo Administración: facturación de ventas por Flexxus';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -200,7 +200,7 @@ const RUTAS_SIN_CACHE=[/^\/api\/cambios/,/^\/api\/panel-version/,/^\/api\/login/
   // no se toca por ganar unos segundos: imputar una factura mal es un
   // problema de otra escala que un panel lento. Si algún día se quiere
   // acelerar, se hace aparte y con su propia prueba.
-  /^\/api\/compras/,/^\/api\/flexxus/,/flexxus/];
+  /^\/api\/compras/,/^\/api\/flexxus/,/flexxus/,/^\/api\/facturacion/];
 
 const _cacheApi=new Map();      // ruta -> {t, data}
 const _enVuelo=new Map();       // ruta -> Promise (deduplicación)
@@ -537,6 +537,7 @@ async function iniciar(){
   document.getElementById('user-name').textContent=localStorage.getItem('eco_user')||'';
   document.getElementById('hoy').textContent=new Date().toLocaleDateString('es-AR',{month:'short',year:'numeric'});
   asegurarNavCostos();
+  asegurarNavAdmin();
   aplicarPermisosNav();
   // En paralelo: son independientes, y esperar una detrás de otra duplicaba
   // el tiempo hasta ver la primera pantalla (~1 s en vez de ~0,5).
@@ -575,7 +576,7 @@ async function refrescarContadores(){
 }
  
 /* ===== Navegación ===== */
-const CRUMB={dashboard:'Dashboard',costos:'Cost Intelligence',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock',movimientos:'Movimientos'};
+const CRUMB={administracion:'Administración',dashboard:'Dashboard',costos:'Cost Intelligence',bateas:'Bateas',insumos:'Insumos',combustible:'Combustible',reparaciones:'Reparaciones',maestros:'Maestros',compras:'Compras',stock:'Stock',movimientos:'Movimientos'};
 let _vistaActual=null;
 // AJUSTE 11-ago (pedido de José): la pantalla se recargaba sola cada 5 minutos
 // y era molesto. Ahora cada 4 horas — alcanza de sobra, y si querés datos
@@ -651,6 +652,7 @@ function go(v){
   if(v==='reparaciones')vReparaciones(view);
   if(v==='maestros')vMaestros(view);
   if(v==='compras')vCompras(view);
+  if(v==='administracion')vAdministracion(view);
   if(v==='stock')vStock(view);
   if(v==='movimientos')vMovimientos(view);
   if(v==='reportes')vReportes(view);
@@ -12501,3 +12503,305 @@ function mostrarAvisoPin(dias){
   if(bloqueado)return;   // no arrancamos nada si está vencido
   if(token){document.getElementById('login').classList.remove('show');iniciar();}
 })();
+
+/* ══════════════════════════════════════════════════════════════
+   ADMINISTRACIÓN · Facturación de ventas por Flexxus (28-sep)
+   Planilla de incrementos → revisar → generar → CAE → mail.
+   Emite comprobantes REALES ante ARCA; el backend solo deja facturar
+   contra el Flexxus de prueba salvo FACTURACION_VENTAS=produccion.
+   ══════════════════════════════════════════════════════════════ */
+let admTab='facturar', admCfg=null, admPrev=null, admLotes=null, admLoteVer=null;
+const ADM_EST={borrador:['b-gray','por generar'],generada:['b-amber','sin CAE'],cae:['b-blue','con CAE'],enviada:['b-green','enviada'],error:['b-red','error']};
+
+function asegurarNavAdmin(){
+  if(document.querySelector('.nav-item[data-v="administracion"]'))return;
+  const nav=document.getElementById('nav');if(!nav)return;
+  const ref=nav.querySelector('.nav-item[data-v="compras"]');
+  const el=document.createElement('div');
+  el.className='nav-item';el.dataset.v='administracion';el.onclick=()=>go('administracion');
+  el.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 13h8M9 17h6"/></svg>Administración`;
+  if(ref&&ref.nextSibling)nav.insertBefore(el,ref.nextSibling);else nav.appendChild(el);
+}
+
+function admTabs(){
+  return `<div class="tabs-sub" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+    ${[['facturar','Facturar'],['emitidas','Emitidas'],['conceptos','Conceptos'],['clientes','Clientes']].map(([k,t])=>
+      `<button class="${admTab===k?'btn':'btn-salir'}" style="padding:6px 14px;font-size:12.5px" onclick="admTab='${k}';admLoteVer=null;go('administracion')">${t}</button>`).join('')}</div>`;
+}
+function admBanner(){
+  const e=admCfg&&admCfg.entorno;if(!e)return '';
+  if(!e.habilitado)return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
+    <b>La facturación está bloqueada.</b> Flexxus apunta a <span class="mono">${escStk(e.host)}</span>. Para facturar en producción hay que poner <span class="mono">FACTURACION_VENTAS=produccion</span> en Railway.</div>`;
+  if(e.esPrueba)return `<div class="panel" style="background:#FBF0DC;border:1px solid #EED9AE;color:#854F0B;font-size:12.5px;margin-bottom:12px">
+    <b>Modo prueba.</b> Las facturas se generan en <span class="mono">${escStk(e.host)}</span>: no son reales ni van a ARCA de verdad.</div>`;
+  return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
+    <b>PRODUCCIÓN.</b> Las facturas son reales y se informan a ARCA. Un error solo se corrige con nota de crédito.</div>`;
+}
+
+async function vAdministracion(view){
+  // La configuración se lee una vez; se vuelve a pedir solo después de guardar
+  // un concepto o cliente (admModal pone admCfg=null). Antes se releía en cada
+  // click de la vista previa.
+  try{if(!admCfg)admCfg=await api('/api/facturacion/config');}
+  catch(e){view.innerHTML=`<div class="cargando-v">${escStk(e.message)}<br><span class="sub">¿Corriste el SQL 09_facturacion_ventas.sql?</span></div>`;return;}
+  if(admTab==='conceptos')return admVerConceptos(view);
+  if(admTab==='clientes')return admVerClientes(view);
+  if(admTab==='emitidas')return admVerEmitidas(view);
+  return admVerFacturar(view);
+}
+function admHead(t,d){return `<div class="view-head"><div><div class="view-title">${t}</div><div class="view-desc">${d}</div></div></div>`;}
+
+// ── Facturar: 1 planilla · 2 revisar ──
+function admVerFacturar(view){
+  const hoy=new Date().toISOString().slice(0,10);
+  const per=admPrev?admPrev.periodo:hoy.slice(0,7);
+  const fecha=admPrev?admPrev.fecha:hoy;
+  const min=new Date(Date.now()-10*864e5).toISOString().slice(0,10);
+  let cuerpo='';
+  if(!admPrev){
+    cuerpo=`<div class="panel" style="text-align:center;padding:30px 20px;border:2px dashed var(--linea-2)">
+      <div style="font-size:32px;margin-bottom:6px">📄</div>
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px">Subí la planilla de incrementos</div>
+      <div class="sub" style="margin-bottom:14px">Se lee cada cliente y el importe del mes elegido.</div>
+      <input type="file" id="adm-file" accept=".xlsx,.xls" style="display:none" onchange="admLeerExcel(this.files[0])">
+      <button class="btn" onclick="document.getElementById('adm-file').click()">Elegir archivo</button>
+      <div class="sub" id="adm-msg" style="margin-top:10px"></div></div>`;
+  }else{
+    const it=admPrev.items;
+    const listas=it.filter(x=>!x.problemas.length&&x.sel!==false);
+    const tot=listas.reduce((s,x)=>s+(Number(x.total)||0),0);
+    cuerpo=`
+    ${admPrev.error_fecha?`<div class="panel" style="background:#FCEBED;color:#A3253A;font-size:12.5px;margin-bottom:12px">⚠ ${escStk(admPrev.error_fecha)}</div>`:''}
+    <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:12px">
+      <div class="kpi"><div class="kpi-label">Listas</div><div class="kpi-val" style="color:var(--brote-2)">${listas.length}</div><div class="kpi-sub">${money(tot)}</div></div>
+      <div class="kpi"><div class="kpi-label">Con problemas</div><div class="kpi-val" style="color:${it.some(x=>x.problemas.length)?'var(--rojo)':'inherit'}">${it.filter(x=>x.problemas.length).length}</div><div class="kpi-sub">no se generan</div></div>
+      <div class="kpi"><div class="kpi-label">No están en la planilla</div><div class="kpi-val" style="color:${admPrev.faltan.length?'var(--diesel)':'inherit'}">${admPrev.faltan.length}</div><div class="kpi-sub">clientes configurados</div></div>
+    </div>
+    <div class="panel" style="padding:0;overflow:hidden"><div class="tablewrap"><table>
+      <thead><tr><th style="width:30px"></th><th>Cliente</th><th>Concepto</th><th>Tipo</th><th class="num">Cant.</th><th class="num">Neto</th><th class="num">IVA</th><th class="num">Total</th></tr></thead>
+      <tbody>${it.map((x,i)=>{const mal=x.problemas.length;return `<tr${mal?' style="background:#FFF9F9"':''}>
+        <td>${mal?'':`<input type="checkbox" ${x.sel!==false?'checked':''} onchange="admPrev.items[${i}].sel=this.checked;go('administracion')" style="accent-color:var(--brote)">`}</td>
+        <td><b>${escStk(x.cliente||x.nombre_planilla)}</b>${x.cliente&&x.cliente!==x.nombre_planilla?`<div class="sub" style="font-size:10.5px">en la planilla: ${escStk(x.nombre_planilla)}</div>`:''}
+          ${mal?`<div style="font-size:11px;color:#A3253A">✕ ${x.problemas.map(escStk).join(' · ')}</div>`:''}
+          ${!mal&&!x.email?`<div style="font-size:11px;color:#854F0B">sin email: se genera pero no se envía</div>`:''}</td>
+        <td>${mal?'<span class="sub">—</span>':`<input value="${escStk(x.descripcion||'')}" onchange="admPrev.items[${i}].descripcion=this.value" style="width:100%;min-width:220px;font-size:12px;padding:5px 7px;border:1px solid var(--linea);border-radius:7px">`}</td>
+        <td>${x.tipo?`<span class="badge b-gray">${x.tipo==='FB'?'B':'A'}</span>`:''}</td>
+        <td class="num">${x.usa_cantidad&&!mal?`<input type="number" min="1" value="${x.cantidad||1}" onchange="admPrev.items[${i}].cantidad=Number(this.value)||1" style="width:56px;font-size:12px;padding:4px;text-align:right">`:(x.cantidad||1)}</td>
+        <td class="num">${mal?(x.neto!=null?money(x.neto):'—'):`<input type="number" step="0.01" value="${x.neto}" onchange="admCambiarNeto(${i},this.value)" style="width:120px;font-size:12px;padding:4px;text-align:right">`}</td>
+        <td class="num money">${x.iva!=null?money(x.iva):'—'}</td>
+        <td class="num money"><b>${x.total!=null?money(x.total):'—'}</b></td></tr>`;}).join('')}</tbody></table></div></div>
+    ${admPrev.faltan.length?`<div class="panel" style="margin-top:12px;font-size:12.5px"><b>Configurados que no aparecen en la planilla:</b>
+      <span class="sub">${admPrev.faltan.map(f=>escStk(f.cliente)).join(' · ')}</span></div>`:''}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-salir" onclick="admPrev=null;go('administracion')">Empezar de nuevo</button>
+      <button class="btn" ${!listas.length||admPrev.error_fecha||!(admCfg.entorno&&admCfg.entorno.habilitado)?'disabled style="opacity:.5"':''} onclick="admCrearLote()">Crear ${listas.length} factura${listas.length===1?'':'s'} →</button>
+    </div>`;
+  }
+  view.innerHTML=admHead('Administración','Facturación de ventas · de la planilla a la factura con CAE')+admTabs()+admBanner()+`
+    <div class="panel" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
+      <div><label class="sub" style="display:block;font-size:11px;margin-bottom:3px">Mes a facturar</label>
+        <input type="month" id="adm-per" value="${per}" ${admPrev?'disabled':''} style="padding:7px 10px;border:1px solid var(--linea-2);border-radius:8px"></div>
+      <div><label class="sub" style="display:block;font-size:11px;margin-bottom:3px">Fecha de la factura</label>
+        <input type="date" id="adm-fecha" value="${fecha}" min="${min}" max="${hoy}" ${admPrev?`onchange="admPrev.fecha=this.value;admPrev.error_fecha=null"`:''} style="padding:7px 10px;border:1px solid var(--linea-2);border-radius:8px"></div>
+      <div class="sub" style="font-size:11.5px;padding-bottom:8px">Hasta 10 días atrás (${new Date(min+'T12:00').toLocaleDateString('es-AR')}).</div>
+    </div>${cuerpo}`;
+}
+function admCambiarNeto(i,v){
+  const x=admPrev.items[i];const cli=(admCfg.clientes||[]).find(c=>c.id===x.cliente_id);
+  const n=Math.round((Number(v)||0)*100)/100, p=cli?Number(cli.porcentaje_iva)||0:21;
+  x.neto=n;x.iva=Math.round(n*p)/100;x.total=Math.round((n+x.iva)*100)/100;go('administracion');
+}
+function admCargarXLSX(){
+  if(window.XLSX)return Promise.resolve();
+  return new Promise((ok,mal)=>{const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=ok;s.onerror=()=>mal(new Error('No pude cargar el lector de Excel'));document.head.appendChild(s);});
+}
+async function admLeerExcel(file){
+  if(!file)return;
+  const msg=document.getElementById('adm-msg');if(msg)msg.textContent='Leyendo…';
+  try{
+    await admCargarXLSX();
+    const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+    // Todas las hojas juntas: la planilla a veces separa clientes en pestañas.
+    let filas=[];wb.SheetNames.forEach(n=>{filas=filas.concat(XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:''}));});
+    const periodo=document.getElementById('adm-per').value, fecha=document.getElementById('adm-fecha').value;
+    admPrev=await api('/api/facturacion/preview',{method:'POST',body:JSON.stringify({periodo,fecha,filas})});
+    if(!admPrev.items.length){admPrev=null;if(msg)msg.textContent='No encontré clientes con el formato de la planilla de incrementos.';return;}
+    go('administracion');
+  }catch(e){if(msg)msg.textContent='Error: '+e.message;}
+}
+async function admCrearLote(){
+  const items=admPrev.items.filter(x=>!x.problemas.length&&x.sel!==false);
+  if(!confirm(`Se van a crear ${items.length} facturas con fecha ${new Date(admPrev.fecha+'T12:00').toLocaleDateString('es-AR')}.\n\nDespués se generan en Flexxus desde la pestaña Emitidas.`))return;
+  try{
+    const r=await api('/api/facturacion/lotes',{method:'POST',body:JSON.stringify({periodo:admPrev.periodo,fecha:admPrev.fecha,items})});
+    admPrev=null;admTab='emitidas';admLoteVer=r.lote_id;toast(`✓ ${r.facturas} facturas listas para generar`);go('administracion');
+  }catch(e){toast(e.message,'error');}
+}
+
+// ── Emitidas: 3 generar · 4 CAE · 5 enviar ──
+async function admVerEmitidas(view){
+  try{admLotes=await api('/api/facturacion/lotes');}catch(e){admLotes=[];}
+  const lote=admLoteVer?admLotes.find(l=>l.id===admLoteVer):admLotes[0];
+  if(!lote){view.innerHTML=admHead('Administración','Facturas emitidas')+admTabs()+admBanner()+'<div class="panel sub">Todavía no hay facturas. Empezá en Facturar.</div>';return;}
+  const it=lote.fact_items||[];
+  const cuenta=e=>it.filter(x=>x.estado===e).length;
+  const pasos=[['Generar',cuenta('borrador'),'generar','⚙'],['Pedir CAE',cuenta('generada'),'cae','🔑'],['Enviar por mail',cuenta('cae'),'enviar','📧']];
+  view.innerHTML=admHead('Administración','Facturas emitidas')+admTabs()+admBanner()+`
+    <div class="panel" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <select class="busca" style="width:auto" onchange="admLoteVer=this.value;go('administracion')">
+        ${admLotes.map(l=>`<option value="${l.id}" ${l.id===lote.id?'selected':''}>${escStk(l.periodo)} · ${new Date(l.created_at).toLocaleDateString('es-AR')} · ${(l.fact_items||[]).length} fact.${l.entorno==='prueba'?' · PRUEBA':''}</option>`).join('')}</select>
+      <span class="sub">Fecha de factura: <b>${new Date(lote.fecha_comprobante+'T12:00').toLocaleDateString('es-AR')}</b></span>
+      <span style="flex:1"></span>
+      ${pasos.map(([t,n,acc,ic])=>`<button class="${n?'btn':'btn-salir'}" ${n?'':'disabled style="opacity:.5"'} onclick="admPaso('${lote.id}','${acc}')">${ic} ${t}${n?' ('+n+')':''}</button>`).join('')}
+    </div>
+    <div class="panel" style="padding:0;overflow:hidden"><div class="tablewrap"><table>
+      <thead><tr><th>Cliente</th><th>Concepto</th><th>N°</th><th class="num">Total</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${it.sort((a,b)=>String((a.fact_clientes||{}).nombre).localeCompare(String((b.fact_clientes||{}).nombre))).map(x=>{
+        const [cl,tx]=ADM_EST[x.estado]||['b-gray',x.estado];
+        return `<tr${x.error?' style="background:#FFF9F9"':''}>
+          <td><b>${escStk((x.fact_clientes||{}).nombre||'—')}</b><div class="sub" style="font-size:10.5px">${escStk((x.fact_clientes||{}).email||'sin email')}</div></td>
+          <td class="sub" style="font-size:11.5px">${escStk(x.descripcion||'')}</td>
+          <td class="mono">${x.numero_comprobante?escStk(x.tipo_comprobante+' '+x.numero_comprobante):'—'}</td>
+          <td class="num money"><b>${money(x.total)}</b></td>
+          <td><span class="badge ${cl}">${tx}</span>${x.cae?`<div class="mono sub" style="font-size:10.5px">CAE ${escStk(x.cae)}</div>`:''}
+            ${x.error?`<div style="font-size:11px;color:#A3253A;max-width:260px">✕ ${escStk(x.error)}</div>`:''}</td>
+          <td style="white-space:nowrap">${x.numero_comprobante?`<button class="mini-btn" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
+            ${['borrador','error'].includes(x.estado)?`<button class="mini-btn" onclick="admSacar('${x.id}')">Sacar</button>`:''}</td></tr>`;}).join('')}</tbody></table></div></div>`;
+}
+async function admPaso(loteId,acc){
+  const nombre={generar:'Generando en Flexxus',cae:'Pidiendo CAE',enviar:'Enviando por mail'}[acc];
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-prog';
+  bg.innerHTML=`<div class="modal" style="max-width:420px"><div class="modal-tit">${nombre}</div><div class="sub" id="adm-pmsg" style="margin:10px 0">Arrancando…</div></div>`;
+  document.body.appendChild(bg);
+  let hechas=0,fallaron=0,ultimo=null;
+  try{
+    for(let v=0;v<60;v++){
+      const r=await api(`/api/facturacion/lotes/${loteId}/${acc}`,{method:'POST',body:'{}'});
+      hechas+=r.hechas;fallaron+=r.fallaron;
+      const m=document.getElementById('adm-pmsg');if(m)m.innerHTML=`<b>${hechas}</b> listas${fallaron?` · <span style="color:var(--rojo)">${fallaron} con error</span>`:''} · quedan ${r.quedan}`;
+      // Si en una vuelta no avanzó ninguna, las que quedan son errores: cortar.
+      if(!r.quedan||!r.hechas)break;
+    }
+  }catch(e){ultimo=e.message;}
+  const el=document.getElementById('adm-prog');if(el)el.remove();
+  if(ultimo)toast(ultimo,'error');else toast(`✓ ${hechas} listas${fallaron?' · '+fallaron+' con error (mirá la tabla)':''}`);
+  admLoteVer=loteId;go('administracion');
+}
+async function admPdf(id){
+  try{
+    const r=await fetch('/api/facturacion/items/'+id+'/pdf',{headers:{Authorization:'Bearer '+token}});
+    if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||'No pude bajar el PDF');
+    window.open(URL.createObjectURL(await r.blob()),'_blank');
+  }catch(e){toast(e.message,'error');}
+}
+async function admSacar(id){
+  if(!confirm('¿Sacar esta factura del lote?'))return;
+  try{await api('/api/facturacion/items/'+id,{method:'DELETE'});go('administracion');}catch(e){toast(e.message,'error');}
+}
+
+// ── Conceptos ──
+function admVerConceptos(view){
+  const cs=(admCfg.conceptos||[]).filter(c=>c.activo!==false);
+  view.innerHTML=admHead('Administración','Conceptos · el texto que sale en la factura')+admTabs()+`
+    <div class="panel" style="padding:0;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--linea)">
+        <span class="sub">Usá <span class="mono">{mes}</span>, <span class="mono">{anio}</span> y <span class="mono">{cantidad}</span> en el texto.</span>
+        <button class="btn" onclick="admEditConcepto()">＋ Nuevo concepto</button></div>
+      <table><thead><tr><th>Concepto</th><th>Cómo sale</th><th>Artículo Flexxus</th><th></th></tr></thead><tbody>
+      ${cs.length?cs.map(c=>`<tr><td><b>${escStk(c.nombre)}</b>${c.usa_cantidad?' <span class="badge b-violet">con cantidad</span>':''}</td>
+        <td class="mono sub" style="font-size:11.5px">${escStk(c.plantilla)}</td>
+        <td class="mono">${c.codigo_articulo?escStk(c.codigo_articulo):'<span style="color:var(--rojo)">falta</span>'}</td>
+        <td><button class="mini-btn" onclick="admEditConcepto('${c.id}')">Editar</button></td></tr>`).join('')
+        :'<tr><td colspan="4" class="sub" style="padding:18px">Todavía no hay conceptos.</td></tr>'}
+      </tbody></table></div>
+    <div class="panel sub" style="margin-top:12px;font-size:12px">Cada concepto necesita un <b>artículo de servicio creado en Flexxus</b>: la API exige un código de artículo en cada renglón. El texto se reescribe en cada factura.</div>`;
+}
+function admEditConcepto(id){
+  const c=(admCfg.conceptos||[]).find(x=>x.id===id)||{usa_cantidad:false};
+  admModal('Concepto',`
+    ${admCampo('Nombre','ac-nombre',c.nombre,'Mantenimiento de espacios verdes')}
+    ${admCampo('Cómo sale en la factura','ac-plant',c.plantilla,'Mantenimiento de espacios verdes del mes {mes}-{anio}')}
+    ${admCampo('Código de artículo en Flexxus','ac-art',c.codigo_articulo,'ej: SERV01')}
+    <label style="display:flex;gap:7px;align-items:center;margin-top:10px;font-size:13px"><input type="checkbox" id="ac-cant" ${c.usa_cantidad?'checked':''}> Lleva cantidad (ej: viajes de bateas)</label>`,
+    async()=>{await api('/api/facturacion/conceptos',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('ac-nombre'),plantilla:admV('ac-plant'),codigo_articulo:admV('ac-art'),usa_cantidad:document.getElementById('ac-cant').checked})});},
+    c.id?async()=>{await api('/api/facturacion/conceptos/'+c.id,{method:'DELETE'});}:null);
+}
+
+// ── Clientes ──
+function admVerClientes(view){
+  const cs=(admCfg.clientes||[]).filter(c=>c.activo!==false);
+  const conc=id=>((admCfg.conceptos||[]).find(k=>k.id===id)||{}).nombre;
+  view.innerHTML=admHead('Administración','Clientes · lo que se usa al facturar')+admTabs()+`
+    <div class="panel" style="padding:0;overflow:hidden">
+      <div style="display:flex;justify-content:flex-end;padding:12px 16px;border-bottom:1px solid var(--linea)"><button class="btn" onclick="admEditCliente()">＋ Nuevo cliente</button></div>
+      <div class="tablewrap"><table><thead><tr><th>Cliente</th><th>En la planilla</th><th>Flexxus</th><th>Tipo</th><th>IVA</th><th>Concepto</th><th>Email</th><th></th></tr></thead><tbody>
+      ${cs.length?cs.map(c=>`<tr><td><b>${escStk(c.nombre)}</b><div class="sub mono" style="font-size:10.5px">${escStk(c.cuit||'')}</div></td>
+        <td class="sub">${escStk(c.alias_planilla||'—')}</td>
+        <td class="mono">${c.codigo_cliente?escStk(c.codigo_cliente):'<span style="color:var(--rojo)">falta</span>'}</td>
+        <td><span class="badge b-gray">${c.tipo_comprobante==='FB'?'B':'A'}</span></td>
+        <td class="mono">${c.porcentaje_iva}%</td>
+        <td class="sub" style="font-size:11.5px">${escStk(conc(c.concepto_id)||'—')}</td>
+        <td class="sub" style="font-size:11.5px">${c.email?escStk(c.email):'<span style="color:#854F0B">sin email</span>'}</td>
+        <td><button class="mini-btn" onclick="admEditCliente('${c.id}')">Editar</button></td></tr>`).join('')
+        :'<tr><td colspan="8" class="sub" style="padding:18px">Todavía no hay clientes.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+function admEditCliente(id){
+  const c=(admCfg.clientes||[]).find(x=>x.id===id)||{tipo_comprobante:'FA',porcentaje_iva:21};
+  admModal('Cliente',`
+    <div style="display:flex;gap:6px;margin-bottom:6px"><input id="acl-busca" placeholder="Buscar en Flexxus por nombre o CUIT…" style="flex:1;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px">
+      <button class="btn-salir" onclick="admBuscarFlx()">🔍</button></div>
+    <div id="acl-res" style="max-height:140px;overflow:auto;margin-bottom:6px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+    ${admCampo('Razón social','acl-nombre',c.nombre)}${admCampo('Cómo aparece en la planilla','acl-alias',c.alias_planilla,'4 HOJAS')}
+    ${admCampo('Código de cliente en Flexxus','acl-cod',c.codigo_cliente,'00005')}${admCampo('CUIT','acl-cuit',c.cuit)}
+    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Tipo de factura</label>
+      <select id="acl-tipo" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px"><option value="FA" ${c.tipo_comprobante!=='FB'?'selected':''}>A</option><option value="FB" ${c.tipo_comprobante==='FB'?'selected':''}>B</option></select></div>
+    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">IVA</label>
+      <select id="acl-iva" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px">${[21,10.5,27,0].map(v=>`<option value="${v}" ${Number(c.porcentaje_iva)===v?'selected':''}>${v?v+'%':'Exento'}</option>`).join('')}</select></div>
+    ${admCampo('Condición de venta (código multiplazo)','acl-mp',c.codigo_multiplazo,'ej: 60')}
+    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Concepto habitual</label>
+      <select id="acl-conc" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px"><option value="">—</option>
+      ${(admCfg.conceptos||[]).filter(k=>k.activo!==false).map(k=>`<option value="${k.id}" ${c.concepto_id===k.id?'selected':''}>${escStk(k.nombre)}</option>`).join('')}</select></div>
+    ${admCampo('Email para la factura','acl-mail',c.email)}${admCampo('Copia a','acl-cc',c.email_cc,'opcional')}
+    ${admCampo('Centro de costo','acl-cc2',c.centro_costo,'opcional')}
+    </div>`,
+    async()=>{await api('/api/facturacion/clientes',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('acl-nombre'),alias_planilla:admV('acl-alias'),
+      codigo_cliente:admV('acl-cod'),cuit:admV('acl-cuit'),tipo_comprobante:admV('acl-tipo'),porcentaje_iva:Number(admV('acl-iva')),
+      codigo_multiplazo:admV('acl-mp')?Number(admV('acl-mp')):null,concepto_id:admV('acl-conc')||null,email:admV('acl-mail'),email_cc:admV('acl-cc'),centro_costo:admV('acl-cc2')})});},
+    c.id?async()=>{await api('/api/facturacion/clientes/'+c.id,{method:'DELETE'});}:null);
+}
+async function admBuscarFlx(){
+  const q=admV('acl-busca'), box=document.getElementById('acl-res');
+  if(q.length<3){box.innerHTML='<div class="sub">Escribí al menos 3 letras.</div>';return;}
+  box.innerHTML='<div class="sub">Buscando…</div>';
+  try{
+    const r=await api('/api/facturacion/flexxus/clientes?q='+encodeURIComponent(q));
+    window._admFlx=r;
+    box.innerHTML=r.length?r.map((c,i)=>`<div onclick="admUsarFlx(${i})" style="padding:6px 9px;border-radius:7px;cursor:pointer;font-size:12.5px;background:var(--hueso);margin-bottom:3px">
+      <b>${escStk(c.razonsocial)}</b> <span class="mono sub">${escStk(c.codigo)} · ${escStk(c.cuit||'')}</span></div>`).join(''):'<div class="sub">No encontré nada.</div>';
+  }catch(e){box.innerHTML=`<div style="color:var(--rojo);font-size:12px">${escStk(e.message)}</div>`;}
+}
+function admUsarFlx(i){
+  const c=window._admFlx[i];const s=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
+  s('acl-nombre',c.razonsocial);s('acl-cod',c.codigo);s('acl-cuit',c.cuit);s('acl-mail',c.email);s('acl-mp',c.multiplazo);
+  document.getElementById('acl-res').innerHTML='<div class="sub" style="color:var(--brote-2)">✓ Datos cargados desde Flexxus</div>';
+}
+
+// ── utilidades del módulo ──
+function admV(id){const e=document.getElementById(id);return e?String(e.value).trim():'';}
+function admCampo(l,id,v,ph){return `<div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">${l}</label>
+  <input id="${id}" value="${escStk(v==null?'':v)}" placeholder="${escStk(ph||'')}" style="width:100%;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px"></div>`;}
+function admModal(tit,html,guardar,borrar){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';
+  bg.innerHTML=`<div class="modal" style="max-width:600px"><div class="modal-tit">${tit}</div>${html}
+    <div class="modal-acciones" style="display:flex;gap:8px;margin-top:16px">
+      ${borrar?'<button class="btn-salir" data-b style="color:var(--rojo)">Dar de baja</button>':''}<span style="flex:1"></span>
+      <button class="btn-salir" data-c>Cancelar</button><button class="btn" data-g>Guardar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar=()=>bg.remove();
+  bg.querySelector('[data-c]').onclick=cerrar;
+  bg.querySelector('[data-g]').onclick=async()=>{try{await guardar();cerrar();admCfg=null;toast('✓ Guardado');go('administracion');}catch(e){toast(e.message,'error');}};
+  if(borrar)bg.querySelector('[data-b]').onclick=async()=>{if(!confirm('¿Dar de baja?'))return;try{await borrar();cerrar();admCfg=null;go('administracion');}catch(e){toast(e.message,'error');}};
+}
