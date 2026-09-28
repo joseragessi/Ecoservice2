@@ -1,0 +1,198 @@
+// Facturación de ventas por Flexxus — lógica pura, sin base ni red.
+//
+// Circuito (pedido de José, 28-sep): la planilla de incrementos → revisar →
+// generar las facturas en Flexxus (POST /ordenmanual) → pedir el CAE
+// (POST /facturacionelectronica) → mandar el PDF por mail (el propio Flexxus
+// lo envía con GET /ventas/{tipo}/{nro}/pdf?email=).
+//
+// Todo lo que decide importes y textos está acá para poder probarlo: una
+// factura mal armada sale con CAE ante ARCA y solo se arregla con nota de
+// crédito.
+
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+function norm(s) {
+  return String(s == null ? '' : s).toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Una celda de encabezado de mes → 'YYYY-MM', o null.
+ *  La planilla trae "jul-26", "sept-26", fechas de Excel (número) o Date. */
+function mesDeCelda(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}`;
+  if (typeof v === 'number' && v > 40000 && v < 60000) {        // serial de Excel
+    const d = new Date(Math.round((v - 25569) * 86400000));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  }
+  const m = norm(v).match(/^([a-z]{3,4})\w*\s*(\d{2,4})$/);
+  if (!m) return null;
+  const ix = MESES.indexOf(m[1].slice(0, 3));
+  if (ix < 0) return null;
+  const anio = m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2]);
+  return `${anio}-${String(ix + 1).padStart(2, '0')}`;
+}
+
+/** Un número de celda, aceptando "$ 19.742.301,1" o 19742301.1. */
+function numero(v) {
+  if (typeof v === 'number') return v;
+  const s = String(v == null ? '' : v).replace(/[^\d,.-]/g, '');
+  if (!s) return NaN;
+  // Formato argentino: puntos de miles, coma decimal.
+  if (/,\d{1,2}$/.test(s)) return Number(s.replace(/\./g, '').replace(',', '.'));
+  return Number(s.replace(/,/g, ''));
+}
+
+/**
+ * Lee la planilla de incrementos (como matriz de filas, la que devuelve
+ * SheetJS con header:1) y devuelve, por cliente, el importe del mes pedido.
+ *
+ * Cómo está armada: cada cliente es un bloque. La fila de encabezado tiene el
+ * nombre a la izquierda y los meses a la derecha. Abajo vienen Mano de Obra,
+ * Insumos, a veces Descuento, y el TOTAL (la fila en negrita, sin etiqueta).
+ * El total es el número más grande de la columna del mes dentro del bloque:
+ * mano de obra, insumos y descuento siempre son menores.
+ */
+function leerPlanilla(filas, periodo) {
+  const out = [];
+  const rows = (filas || []).map(f => Array.isArray(f) ? f : []);
+  for (let i = 0; i < rows.length; i++) {
+    const fila = rows[i];
+    // ¿Es un encabezado de bloque? Tiene al menos dos meses reconocibles.
+    const colsMes = fila.map((v, j) => [j, mesDeCelda(v)]).filter(([, m]) => m);
+    if (colsMes.length < 2) continue;
+    const col = (colsMes.find(([, m]) => m === periodo) || [])[0];
+    // El nombre: la primera celda de texto de la fila que no sea un mes.
+    const nombre = fila.slice(0, colsMes[0][0]).map(v => String(v == null ? '' : v).trim())
+      .filter(v => v && !mesDeCelda(v)).pop() || '';
+    if (!nombre) continue;
+    if (col == null) { out.push({ nombre, importe: null, detalle: [], aviso: 'el mes no está en la planilla' }); continue; }
+    // El bloque sigue hasta el próximo encabezado.
+    let fin = i + 1;
+    while (fin < rows.length && rows[fin].filter(v => mesDeCelda(v)).length < 2) fin++;
+    const detalle = [];
+    let mayor = null;
+    for (let k = i + 1; k < fin; k++) {
+      const n = numero(rows[k][col]);
+      if (!isFinite(n) || n < 1) continue;             // porcentajes (0,021) y vacíos afuera
+      // La etiqueta es la celda de TEXTO de la izquierda, no los importes de
+      // los meses anteriores.
+      const etiqueta = rows[k].slice(0, col).filter(v => typeof v === 'string' && /[a-záéíóúñ]/i.test(v))
+        .map(v => v.trim()).shift() || '';
+      detalle.push({ etiqueta, importe: r2(n) });
+      if (mayor == null || n > mayor) mayor = n;
+    }
+    out.push({ nombre, importe: mayor == null ? null : r2(mayor), detalle,
+      aviso: mayor == null ? 'no encontré el importe del mes' : null });
+    i = fin - 1;
+  }
+  return out;
+}
+
+/** Busca el cliente configurado que corresponde a un nombre de la planilla. */
+function reconocerCliente(nombrePlanilla, clientes) {
+  const n = norm(nombrePlanilla);
+  if (!n) return null;
+  const lista = (clientes || []).filter(c => c.activo !== false);
+  // 1) Alias exacto (lo que José cargó como "cómo aparece en el Excel").
+  let c = lista.find(x => x.alias_planilla && norm(x.alias_planilla) === n);
+  if (c) return c;
+  // 2) Nombre exacto.
+  c = lista.find(x => norm(x.nombre) === n);
+  if (c) return c;
+  // 3) Uno contiene al otro ("4 HOJAS" dentro de "ASOCIACION CIVIL CUATRO HOJAS" no,
+  //    pero "PRITTY" dentro de "PRITTY SA" sí).
+  const cands = lista.filter(x => {
+    const a = norm(x.alias_planilla || ''), b = norm(x.nombre);
+    return (a && (a.includes(n) || n.includes(a))) || b.includes(n) || n.includes(b);
+  });
+  return cands.length === 1 ? cands[0] : null;       // ambiguo → no adivina
+}
+
+/** El texto del renglón, a partir de la plantilla del concepto. */
+function textoConcepto(plantilla, periodo, cantidad) {
+  const [anio, mes] = String(periodo || '').split('-');
+  return String(plantilla || '')
+    .replace(/\{mes\}/gi, mes || '')
+    .replace(/\{anio\}|\{año\}/gi, anio || '')
+    .replace(/\{cantidad\}/gi, cantidad != null ? String(cantidad) : '')
+    .replace(/\s+/g, ' ').trim()
+    .toUpperCase();
+}
+
+/** Neto → IVA y total, redondeados como los calcula Flexxus. */
+function calcularIva(neto, porcentaje) {
+  const n = r2(neto);
+  const iva = r2(n * (Number(porcentaje) || 0) / 100);
+  return { neto: n, iva, total: r2(n + iva) };
+}
+
+/**
+ * Hasta dónde se puede retroceder la fecha. ARCA admite servicios hasta 10
+ * días antes de la fecha de emisión, y es la regla que dio Administración.
+ */
+function validarFecha(fecha, hoy) {
+  const h = hoy ? new Date(hoy) : new Date();
+  const f = new Date(String(fecha) + 'T12:00:00');
+  if (isNaN(f)) return 'Fecha inválida';
+  const d = Math.round((new Date(h.toISOString().slice(0, 10) + 'T12:00:00') - f) / 86400000);
+  if (d < 0) return 'La fecha no puede ser futura';
+  if (d > 10) return 'La fecha no puede ser de más de 10 días atrás';
+  return null;
+}
+
+/** Qué le falta a un cliente para poder facturarse. */
+function problemasCliente(c, concepto) {
+  const p = [];
+  if (!c) return ['no está configurado'];
+  if (!c.codigo_cliente) p.push('sin código de cliente de Flexxus');
+  if (!['FA', 'FB'].includes(c.tipo_comprobante)) p.push('sin tipo de factura');
+  if (!concepto) p.push('sin concepto');
+  else if (!concepto.codigo_articulo) p.push('el concepto no tiene artículo de Flexxus');
+  return p;
+}
+
+/**
+ * El cuerpo para POST /ordenmanual.
+ * `cfg` trae lo que depende de la instalación y todavía hay que confirmar en
+ * prueba: punto de venta, usuario, depósito, vendedor.
+ */
+function armarComprobante(item, cliente, concepto, fecha, cfg) {
+  const c = cfg || {};
+  const { neto, total } = calcularIva(item.neto, cliente.porcentaje_iva);
+  const cant = Number(item.cantidad) || 1;
+  return {
+    carrito: {
+      numeracionpuntoventa: Number(c.puntoVenta) || 3,
+      tipocomprobante: cliente.tipo_comprobante,
+      numerocomprobante: 0,                          // lo asigna Flexxus
+      total,
+      codigousuario: c.usuario || '',
+      codigovendedor: c.vendedor || undefined,
+      descuentoporcentaje: 0,
+      codigodeposito: c.deposito || '001',
+      clasecomprobante: 2,                           // servicios
+      tipofactura: 1,                                // cuenta corriente
+      validacuentacorriente: false,
+      calculaiva: true,
+      fechacomprobante: fecha,
+      codigomultiplazo: cliente.codigo_multiplazo != null ? Number(cliente.codigo_multiplazo) : undefined,
+      cliente: { codigocliente: cliente.codigo_cliente },
+      productos: [{
+        codigoarticulo: concepto.codigo_articulo,
+        cantidad: cant,
+        preciounitario: r2(neto / cant),
+        preciototal: neto,
+        descuento: 0,
+        producto_descripcion: {
+          sobrescribir_descripcion: 1,
+          descripciones: [{ descripcion: item.descripcion }],
+        },
+      }],
+    },
+  };
+}
+
+module.exports = { MESES, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
+  textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante };
