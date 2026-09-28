@@ -142,6 +142,19 @@ function validarFecha(fecha, hoy) {
   return null;
 }
 
+/**
+ * Factura A o B según la condición de IVA del cliente en Flexxus.
+ * A: responsable inscripto. B: consumidor final, exento, monotributo, no
+ * categorizado. Si no se reconoce, null: que lo elija una persona.
+ */
+function tipoPorCondicionIva(cond) {
+  const c = norm(cond);
+  if (!c) return null;
+  if (/^ri$|inscrip/.test(c)) return 'FA';
+  if (/^(cf|ex|mt|m|nc)$|consumidor|exent|monotrib|no categ|no resp/.test(c)) return 'FB';
+  return null;
+}
+
 /** Qué le falta a un cliente para poder facturarse. */
 function problemasCliente(c, concepto) {
   const p = [];
@@ -169,10 +182,10 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
       numerocomprobante: 0,                          // lo asigna Flexxus
       total,
       codigousuario: c.usuario || '',
-      codigovendedor: c.vendedor || undefined,
+      codigovendedor: cliente.codigo_vendedor || c.vendedor || undefined,
       descuentoporcentaje: 0,
       codigodeposito: c.deposito || '001',
-      clasecomprobante: 2,                           // servicios
+      clasecomprobante: cliente.clase_comprobante === 0 ? 0 : 2,   // 2 servicios · 0 bienes de cambio
       tipofactura: 1,                                // cuenta corriente
       validacuentacorriente: false,
       calculaiva: true,
@@ -195,4 +208,4 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
 }
 
 module.exports = { MESES, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
-  textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante };
+  textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante, tipoPorCondicionIva };
