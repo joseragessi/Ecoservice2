@@ -155,6 +155,83 @@ function tipoPorCondicionIva(cond) {
   return null;
 }
 
+/**
+ * PASO 1 · Armar (29-sep). Una fila por concepto de cada cliente; cada fila es
+ * UNA factura. El importe sale según el modo del concepto:
+ *   planilla → de la planilla de incrementos (si el cliente está)
+ *   cantidad → cantidad × precio unitario (bateas; los dos se pueden editar)
+ *   fijo     → el importe fijo guardado (el del último mes)
+ * Los clientes con el concepto único viejo (sin lista) se tratan como
+ * "planilla", para no romper lo que ya estaba cargado.
+ */
+function armarFilas({ clientes, clienteConceptos, conceptos, leidos, periodo }) {
+  const activos = (clientes || []).filter(c => c.activo !== false && c.codigo_cliente);
+  const porPlanilla = {};                 // cliente_id → importe de la planilla
+  const sinCliente = [];
+  (leidos || []).forEach(l => {
+    const cli = reconocerCliente(l.nombre, activos);
+    if (cli) porPlanilla[cli.id] = l;
+    else sinCliente.push(l);
+  });
+  const filas = [];
+  activos.forEach(cli => {
+    let lista = (clienteConceptos || []).filter(x => x.cliente_id === cli.id && x.activo !== false)
+      .sort((a, b) => (a.orden || 0) - (b.orden || 0));
+    if (!lista.length && cli.concepto_id) lista = [{ id: null, concepto_id: cli.concepto_id, modo: 'planilla' }];
+    lista.forEach(cc => {
+      const conc = (conceptos || []).find(k => k.id === cc.concepto_id);
+      if (!conc || conc.activo === false) return;
+      let cantidad = 1, precio = null, neto = null, origen = cc.modo, aviso = null;
+      if (cc.modo === 'cantidad') {
+        precio = cc.precio_unitario != null ? r2(cc.precio_unitario) : null;
+        cantidad = 0;                                   // la cantidad del mes la pone quien factura
+        neto = 0;
+        if (precio == null) aviso = 'sin precio unitario';
+      } else if (cc.modo === 'fijo') {
+        neto = cc.importe_fijo != null ? r2(cc.importe_fijo) : null;
+        if (neto == null) aviso = 'sin importe';
+      } else {
+        const l = porPlanilla[cli.id];
+        neto = l && l.importe != null ? l.importe : null;
+        if (neto == null) aviso = l ? (l.aviso || 'sin importe en la planilla') : 'no está en la planilla';
+      }
+      const problemas = problemasCliente(cli, conc);
+      filas.push({
+        cliente_id: cli.id, cliente: cli.nombre, tipo: cli.tipo_comprobante, iva_pct: Number(cli.porcentaje_iva) || 0,
+        email: cli.email || null, cliente_concepto_id: cc.id || null, concepto_id: conc.id, concepto: conc.nombre,
+        plantilla: conc.plantilla, modo: cc.modo, origen, cantidad, precio_unitario: precio, neto,
+        precio_habitual: cc.modo === 'cantidad' ? precio : null,     // para avisar si se cambia
+        descripcion: textoConcepto(conc.plantilla, periodo, cc.modo === 'cantidad' ? cantidad : 1),
+        // Tildada por defecto solo si tiene todo y un importe > 0.
+        sel: !problemas.length && !aviso && Number(neto) > 0,
+        aviso, problemas,
+      });
+    });
+  });
+  return { filas, sinCliente };
+}
+
+/** El neto de una fila según su modo (cantidad × precio o el importe cargado). */
+function netoDeFila(f) {
+  if (f.modo === 'cantidad') return r2((Number(f.cantidad) || 0) * (Number(f.precio_unitario) || 0));
+  return r2(f.neto);
+}
+
+/**
+ * Número de factura ESTIMADO para la vista previa. Flexxus lo asigna al crear
+ * y la API no tiene cómo pedirlo antes: se parte del último que conocemos por
+ * tipo (A y B numeran aparte) y se suma de a uno. Es aproximado.
+ */
+function numerosEstimados(items, ultimos) {
+  const sig = { ...(ultimos || {}) };
+  return (items || []).map(it => {
+    const t = it.tipo_comprobante || it.tipo;
+    if (sig[t] == null) return null;
+    sig[t] = Number(sig[t]) + 1;
+    return sig[t];
+  });
+}
+
 /** Qué le falta a un cliente para poder facturarse. */
 function problemasCliente(c, concepto) {
   const p = [];
@@ -175,6 +252,8 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
   const c = cfg || {};
   const { neto, total } = calcularIva(item.neto, cliente.porcentaje_iva);
   const cant = Number(item.cantidad) || 1;
+  // Con precio unitario cargado (bateas) va ese; si no, el neto repartido.
+  const unit = item.precio_unitario != null && Number(item.precio_unitario) > 0 ? r2(item.precio_unitario) : r2(neto / cant);
   return {
     carrito: {
       numeracionpuntoventa: Number(c.puntoVenta) || 3,
@@ -195,7 +274,7 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
       productos: [{
         codigoarticulo: concepto.codigo_articulo,
         cantidad: cant,
-        preciounitario: r2(neto / cant),
+        preciounitario: unit,
         preciototal: neto,
         descuento: 0,
         producto_descripcion: {
@@ -208,4 +287,5 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
 }
 
 module.exports = { MESES, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
-  textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante, tipoPorCondicionIva };
+  textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante, tipoPorCondicionIva,
+  armarFilas, netoDeFila, numerosEstimados };
