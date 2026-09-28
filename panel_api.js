@@ -8543,6 +8543,11 @@ function datosDeFlexxus(c) {
     codigo_multiplazo: c.codigomultiplazo ?? null, codigo_vendedor: c.codigovendedor || null };
 }
 
+router.post('/api/facturacion/probar', auth, async (req, res) => {
+  try { const { probarConexionVentas } = require('./flexxus'); res.json(await probarConexionVentas()); }
+  catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
 router.get('/api/facturacion/config', auth, async (req, res) => {
   try {
     const { entornoVentas } = require('./flexxus');
@@ -8603,12 +8608,20 @@ router.post('/api/facturacion/clientes/completar', auth, async (req, res) => {
       .is('codigo_cliente', null).eq('activo', true).order('nombre');
     if (error) throw error;
     const saltar = new Set((req.body && req.body.saltar) || []);
-    const lote = (data || []).filter(c => !saltar.has(c.id)).slice(0, 6);
+    // De a DOS por pedido: cada búsqueda puede tardar hasta 12 s y Railway
+    // corta a los 30. Con 6 se colgaba (29-sep).
+    const lote = (data || []).filter(c => !saltar.has(c.id)).slice(0, 2);
     const dudosos = [];
     let completos = 0;
     for (const c of lote) {
       let r = [];
-      try { r = await buscarClientesFlexxus(c.nombre); } catch (e) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: e.message }); continue; }
+      try { r = await buscarClientesFlexxus(c.nombre); }
+      catch (e) {
+        // Si es la CONEXIÓN la que falla, no tiene sentido seguir con los
+        // demás: se corta y se avisa el motivo real.
+        if (e.status === 504 || /login|conectar|respondió/i.test(e.message)) return res.status(502).json({ error: e.message });
+        dudosos.push({ id: c.id, nombre: c.nombre, motivo: e.message }); continue;
+      }
       if (r.length !== 1) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: r.length ? `${r.length} coincidencias` : 'no está en Flexxus' }); continue; }
       const f = datosDeFlexxus(r[0]);
       Object.keys(f).forEach(k => f[k] === undefined && delete f[k]);
