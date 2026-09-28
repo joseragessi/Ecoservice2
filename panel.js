@@ -12928,10 +12928,18 @@ function admVerConceptos(view){
       ${cs.length?cs.map(c=>`<tr><td><b>${escStk(c.nombre)}</b>${c.usa_cantidad?' <span class="badge b-violet">con cantidad</span>':''}</td>
         <td class="mono sub" style="font-size:11.5px">${escStk(c.plantilla)}</td>
         <td class="mono">${c.codigo_articulo?escStk(c.codigo_articulo):'<span style="color:var(--rojo)">falta</span>'}</td>
-        <td><button class="mini-btn" onclick="admEditConcepto('${c.id}')">Editar</button></td></tr>`).join('')
+        <td style="white-space:nowrap"><button class="mini-btn" onclick="admEditConcepto('${c.id}')">Editar</button>
+          <button class="mini-btn" title="eliminar" style="color:var(--rojo)" onclick="admBorrarConcepto('${c.id}')">✕</button></td></tr>`).join('')
         :'<tr><td colspan="4" class="sub" style="padding:18px">Todavía no hay conceptos.</td></tr>'}
       </tbody></table></div>
     <div class="panel sub" style="margin-top:12px;font-size:12px">Cada concepto necesita un <b>artículo de servicio creado en Flexxus</b>: la API exige un código de artículo en cada renglón. El texto se reescribe en cada factura.</div>`;
+}
+async function admBorrarConcepto(id){
+  const c=(admCfg.conceptos||[]).find(x=>x.id===id);if(!c)return;
+  const usan=(admCfg.clienteConceptos||[]).filter(x=>x.concepto_id===id).length;
+  if(!confirm(`¿Eliminar "${c.nombre}"?`+(usan?`\n\nLo tienen ${usan} cliente${usan===1?'':'s'}: dejan de facturarlo.`:'')+'\n\nLas facturas ya emitidas no cambian.'))return;
+  try{await api('/api/facturacion/conceptos/'+id,{method:'DELETE'});admCfg=null;go('administracion');}
+  catch(e){toast(e.message,'error');}
 }
 function admEditConcepto(id){
   const c=(admCfg.conceptos||[]).find(x=>x.id===id)||{usa_cantidad:false};
