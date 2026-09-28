@@ -39,7 +39,7 @@ const filasDe = h => (h.match(/<tr>/g) || []).length - (h.match(/<thead>/g) || [
   let h = await correr([fila('lentes oscuros', 8, [])]);
   eq('8 lentes oscuros son UNA fila, no ocho', filasDe(h) === 1, String(filasDe(h)));
   eq('y dice la cantidad', /class="cant">8</.test(h));
-  eq('con 8 casilleros para ir tildando', (h.match(/<span class="c">/g) || []).length === 8,
+  eq('con UN casillero, no ocho', (h.match(/<span class="c">/g) || []).length === 1,
     String((h.match(/<span class="c">/g) || []).length));
 
   h = await correr([
@@ -56,13 +56,13 @@ const filasDe = h => (h.match(/<tr>/g) || []).length - (h.match(/<thead>/g) || [
   eq('los mamelucos: 2 números + 2 s/n', (h.match(/<i>s\/n<\/i>/g) || []).length >= 2);
   eq('la observación se mantiene', /latex y moteados/.test(h) && /con sordinas y cobertor/.test(h));
   eq('la columna se llama Cant.', /<th class="cant">Cant\.<\/th>/.test(h));
+  eq('hay un casillero por fila', (h.match(/<span class="c">/g) || []).length === filasDe(h));
   eq('hay columna para anotar lo que falta', /Falta → ¿dónde\?/.test(h));
 
   console.log('— Muchas unidades del mismo tipo —');
   h = await correr([fila('conos', 30, [])]);
   eq('30 conos siguen siendo una fila', filasDe(h) === 1);
-  eq('muestra 14 casilleros y el resto como "+16"', /\+16/.test(h),
-    (h.match(/<span class="c">/g) || []).length + ' casilleros');
+  eq('sigue con un solo casillero', (h.match(/<span class="c">/g) || []).length === 1);
 
   console.log('— La hoja se adapta —');
   const muchas = n => Array.from({ length: n }, (_, i) => fila('Equipo ' + i, 1, []));
@@ -90,7 +90,7 @@ const filasDe = h => (h.match(/<tr>/g) || []).length - (h.match(/<thead>/g) || [
   h = await correr([fila('Pala', 0, []), fila('Machete', 1, [])]);
   eq('un tipo en cero no imprime fila', filasDe(h) === 1);
   h = await correr([fila('Motosierra', 1, ['11', '14'])]);
-  eq('más números que cantidad: manda la cantidad de números', (h.match(/<span class="c">/g) || []).length === 2);
+  eq('más números que cantidad: manda la cantidad de números', /class="cant">2</.test(h));
 
   console.log(`\n${ok} ok · ${mal} mal`);
   process.exit(mal ? 1 : 0);
