@@ -8814,14 +8814,53 @@ router.delete('/api/facturacion/lotes/:id', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Todo lo que muestra la pantalla de Facturar (29-sep): cada factura con los
+// datos completos del cliente y del concepto, y el número ESTIMADO de las que
+// faltan emitir. Solo base de datos: cero llamadas a Flexxus.
 router.get('/api/facturacion/lotes', auth, async (req, res) => {
   try {
     const { data, error } = await supabase.from('fact_lotes')
-      .select('*, fact_items(*, fact_clientes(nombre, email, codigo_cliente))')
-      .order('created_at', { ascending: false }).limit(24);
+      .select('*, fact_items(*, fact_clientes(nombre, email, email_cc, codigo_cliente, cuit, condicion_iva, codigo_multiplazo, centro_costo, clase_comprobante, porcentaje_iva), fact_conceptos(nombre, codigo_articulo))')
+      .order('created_at', { ascending: false }).limit(40);
     if (error) throw error;
-    res.json(data || []);
+    const lotes = data || [];
+    const todos = lotes.flatMap(l => (l.fact_items || []).map(it => ({ it, l })));
+    const ultimos = {};
+    todos.forEach(({ it }) => { const n = Number(it.numero_comprobante); if (it.numero_comprobante && !(ultimos[it.tipo_comprobante] >= n)) ultimos[it.tipo_comprobante] = n; });
+    const pend = todos.filter(x => x.it.estado === 'borrador').sort((a, b) => String(a.l.created_at).localeCompare(String(b.l.created_at)));
+    const est = FV.numerosEstimados(pend.map(x => x.it), ultimos);
+    pend.forEach((x, i) => { x.it.numero_estimado = est[i]; });
+    res.json(lotes);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Emitir UNA factura: generarla y pedir el CAE (o solo el CAE si ya estaba en
+// Flexxus). Dos llamadas como máximo. Nunca la crea dos veces.
+router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
+  try {
+    const { crearFacturaVenta, pedirCAE } = require('./flexxus');
+    const { data: it, error } = await supabase.from('fact_items')
+      .select('*, fact_clientes(*), fact_conceptos(*), fact_lotes(fecha_comprobante)').eq('id', req.params.id).single();
+    if (error || !it) return res.status(404).json({ error: 'No encontré la factura' });
+    if (!['borrador', 'generada'].includes(it.estado)) return res.json({ ok: true, ya: true, estado: it.estado });
+    let tipo = it.tipo_comprobante, nro = it.numero_comprobante;
+    try {
+      if (it.estado === 'borrador') {
+        const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfgVentas());
+        const d = await crearFacturaVenta(body);
+        tipo = d.tipocomprobante || tipo; nro = d.numerocomprobante;
+        await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: tipo, numero_comprobante: nro,
+          respuesta: d, updated_at: new Date().toISOString() }).eq('id', it.id);
+      }
+      const { cae, respuesta } = await pedirCAE(tipo, nro);
+      await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta, updated_at: new Date().toISOString() }).eq('id', it.id);
+      res.json({ ok: true, estado: 'cae', cae, numero: nro });
+    } catch (e) {
+      await supabase.from('fact_items').update({ error: String(e.message || e).slice(0, 500), respuesta: e.data || null,
+        updated_at: new Date().toISOString() }).eq('id', it.id);
+      res.status(e.status === 423 ? 423 : 502).json({ error: e.message });
+    }
+  } catch (err) { console.error('fact emitir uno:', err); res.status(500).json({ error: err.message }); }
 });
 
 router.delete('/api/facturacion/items/:id', auth, async (req, res) => {
@@ -8916,6 +8955,33 @@ router.post('/api/facturacion/lotes/:id/enviar-sel', auth, async (req, res) => {
     let hechas = 0, fallaron = 0;
     for (const x of lista) {
       const { data: it } = await supabase.from('fact_items').select('*').eq('id', x.id).eq('lote_id', req.params.id).single();
+      try {
+        if (!it || !['cae', 'enviada'].includes(it.estado)) throw new Error('La factura no tiene CAE todavía');
+        const email = String(x.email || '').trim();
+        if (!/^\S+@\S+\.\S+/.test(email)) throw new Error('Falta un email válido');
+        const destino = [email, String(x.cc || '').trim()].filter(Boolean).join(',');
+        await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante, destino);
+        await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
+          error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+        if (x.guardar) await supabase.from('fact_clientes').update({ email, email_cc: String(x.cc || '').trim() || null }).eq('id', it.cliente_id);
+        hechas++;
+      } catch (e) {
+        fallaron++;
+        if (it) await supabase.from('fact_items').update({ error: String(e.message).slice(0, 500) }).eq('id', it.id);
+      }
+    }
+    res.json({ hechas, fallaron });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// Enviar facturas de cualquier lote (la pantalla de envío junta todas las del mes).
+router.post('/api/facturacion/enviar', auth, async (req, res) => {
+  try {
+    const { pdfFacturaVenta } = require('./flexxus');
+    const lista = ((req.body || {}).items || []).slice(0, 3);
+    let hechas = 0, fallaron = 0;
+    for (const x of lista) {
+      const { data: it } = await supabase.from('fact_items').select('*').eq('id', x.id).single();
       try {
         if (!it || !['cae', 'enviada'].includes(it.estado)) throw new Error('La factura no tiene CAE todavía');
         const email = String(x.email || '').trim();
