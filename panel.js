@@ -12729,64 +12729,133 @@ function admEditConcepto(id){
 }
 
 // ── Clientes ──
+// Los clientes SON los centros de costo (29-sep): se traen de ahí y los datos
+// fiscales se completan desde Flexxus. A mano solo queda lo que Flexxus no sabe.
 function admVerClientes(view){
   const cs=(admCfg.clientes||[]).filter(c=>c.activo!==false);
   const conc=id=>((admCfg.conceptos||[]).find(k=>k.id===id)||{}).nombre;
-  view.innerHTML=admHead('Administración','Clientes · lo que se usa al facturar')+admTabs()+`
+  const usados=new Set(cs.map(c=>c.centro_costo_id).filter(Boolean));
+  const faltanCC=(admCfg.centros||[]).filter(c=>!usados.has(c.id)).length;
+  const sinCod=cs.filter(c=>!c.codigo_cliente).length;
+  view.innerHTML=admHead('Administración','Clientes · son los centros de costo, completados con los datos de Flexxus')+admTabs()+`
     <div class="panel" style="padding:0;overflow:hidden">
-      <div style="display:flex;justify-content:flex-end;padding:12px 16px;border-bottom:1px solid var(--linea)"><button class="btn" onclick="admEditCliente()">＋ Nuevo cliente</button></div>
-      <div class="tablewrap"><table><thead><tr><th>Cliente</th><th>En la planilla</th><th>Flexxus</th><th>Tipo</th><th>IVA</th><th>Concepto</th><th>Email</th><th></th></tr></thead><tbody>
-      ${cs.length?cs.map(c=>`<tr><td><b>${escStk(c.nombre)}</b><div class="sub mono" style="font-size:10.5px">${escStk(c.cuit||'')}</div></td>
-        <td class="sub">${escStk(c.alias_planilla||'—')}</td>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--linea)">
+        ${faltanCC?`<button class="btn" onclick="admImportarCentros()">⬇ Traer ${faltanCC} centro${faltanCC===1?'':'s'} de costo</button>`:''}
+        ${sinCod?`<button class="btn" onclick="admCompletarFlx()">🔍 Completar ${sinCod} desde Flexxus</button>`:''}
+        <button class="btn-salir" onclick="admEditCliente()">＋ Otro cliente</button></div>
+      <div class="tablewrap"><table><thead><tr><th>Cliente</th><th>Centro</th><th>Flexxus</th><th>IVA</th><th>Fact.</th><th>Clase</th><th>Concepto</th><th>Email</th><th></th></tr></thead><tbody>
+      ${cs.length?cs.map(c=>`<tr${!c.codigo_cliente?' style="background:#FFF9F9"':''}><td><b>${escStk(c.nombre)}</b><div class="sub mono" style="font-size:10.5px">${escStk(c.cuit||'')}</div></td>
+        <td class="mono sub">${escStk(c.centro_costo||'—')}</td>
         <td class="mono">${c.codigo_cliente?escStk(c.codigo_cliente):'<span style="color:var(--rojo)">falta</span>'}</td>
+        <td class="sub" style="font-size:11px">${escStk(c.condicion_iva||'—')} · ${c.porcentaje_iva}%</td>
         <td><span class="badge b-gray">${c.tipo_comprobante==='FB'?'B':'A'}</span></td>
-        <td class="mono">${c.porcentaje_iva}%</td>
+        <td class="sub" style="font-size:11px">${c.clase_comprobante===0?'Bienes de cambio':'Servicios'}</td>
         <td class="sub" style="font-size:11.5px">${escStk(conc(c.concepto_id)||'—')}</td>
         <td class="sub" style="font-size:11.5px">${c.email?escStk(c.email):'<span style="color:#854F0B">sin email</span>'}</td>
         <td><button class="mini-btn" onclick="admEditCliente('${c.id}')">Editar</button></td></tr>`).join('')
-        :'<tr><td colspan="8" class="sub" style="padding:18px">Todavía no hay clientes.</td></tr>'}
+        :`<tr><td colspan="9" class="sub" style="padding:18px">Todavía no hay clientes. ${faltanCC?'Empezá con <b>Traer centros de costo</b>.':''}</td></tr>`}
       </tbody></table></div></div>`;
 }
-function admEditCliente(id){
-  const c=(admCfg.clientes||[]).find(x=>x.id===id)||{tipo_comprobante:'FA',porcentaje_iva:21};
-  admModal('Cliente',`
-    <div style="display:flex;gap:6px;margin-bottom:6px"><input id="acl-busca" placeholder="Buscar en Flexxus por nombre o CUIT…" style="flex:1;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px">
-      <button class="btn-salir" onclick="admBuscarFlx()">🔍</button></div>
-    <div id="acl-res" style="max-height:140px;overflow:auto;margin-bottom:6px"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
-    ${admCampo('Razón social','acl-nombre',c.nombre)}${admCampo('Cómo aparece en la planilla','acl-alias',c.alias_planilla,'4 HOJAS')}
-    ${admCampo('Código de cliente en Flexxus','acl-cod',c.codigo_cliente,'00005')}${admCampo('CUIT','acl-cuit',c.cuit)}
-    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Tipo de factura</label>
-      <select id="acl-tipo" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px"><option value="FA" ${c.tipo_comprobante!=='FB'?'selected':''}>A</option><option value="FB" ${c.tipo_comprobante==='FB'?'selected':''}>B</option></select></div>
-    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">IVA</label>
-      <select id="acl-iva" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px">${[21,10.5,27,0].map(v=>`<option value="${v}" ${Number(c.porcentaje_iva)===v?'selected':''}>${v?v+'%':'Exento'}</option>`).join('')}</select></div>
-    ${admCampo('Condición de venta (código multiplazo)','acl-mp',c.codigo_multiplazo,'ej: 60')}
-    <div><label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Concepto habitual</label>
-      <select id="acl-conc" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px"><option value="">—</option>
-      ${(admCfg.conceptos||[]).filter(k=>k.activo!==false).map(k=>`<option value="${k.id}" ${c.concepto_id===k.id?'selected':''}>${escStk(k.nombre)}</option>`).join('')}</select></div>
-    ${admCampo('Email para la factura','acl-mail',c.email)}${admCampo('Copia a','acl-cc',c.email_cc,'opcional')}
-    ${admCampo('Centro de costo','acl-cc2',c.centro_costo,'opcional')}
-    </div>`,
-    async()=>{await api('/api/facturacion/clientes',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('acl-nombre'),alias_planilla:admV('acl-alias'),
-      codigo_cliente:admV('acl-cod'),cuit:admV('acl-cuit'),tipo_comprobante:admV('acl-tipo'),porcentaje_iva:Number(admV('acl-iva')),
-      codigo_multiplazo:admV('acl-mp')?Number(admV('acl-mp')):null,concepto_id:admV('acl-conc')||null,email:admV('acl-mail'),email_cc:admV('acl-cc'),centro_costo:admV('acl-cc2')})});},
-    c.id?async()=>{await api('/api/facturacion/clientes/'+c.id,{method:'DELETE'});}:null);
+async function admImportarCentros(){
+  try{const r=await api('/api/facturacion/clientes/importar-centros',{method:'POST',body:'{}'});
+    toast(`✓ ${r.creados} clientes creados. Ahora completalos desde Flexxus.`);admCfg=null;go('administracion');}
+  catch(e){toast(e.message,'error');}
 }
-async function admBuscarFlx(){
+async function admCompletarFlx(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';
+  bg.innerHTML=`<div class="modal" style="max-width:460px"><div class="modal-tit">Completando desde Flexxus</div><div class="sub" id="adm-cmsg" style="margin:10px 0">Buscando…</div></div>`;
+  document.body.appendChild(bg);
+  let comp=0;const dud=[];const saltar=[];
+  try{
+    for(let v=0;v<40;v++){
+      const r=await api('/api/facturacion/clientes/completar',{method:'POST',body:JSON.stringify({saltar})});
+      comp+=r.completos;r.dudosos.forEach(d=>{dud.push(d);saltar.push(d.id);});
+      const m=document.getElementById('adm-cmsg');if(m)m.innerHTML=`<b>${comp}</b> completos · ${dud.length} para elegir a mano · quedan ${r.quedan}`;
+      if(!r.quedan)break;
+    }
+  }catch(e){toast(e.message,'error');}
+  bg.innerHTML=`<div class="modal" style="max-width:460px"><div class="modal-tit">Listo</div>
+    <div style="margin:10px 0;font-size:13px"><b>${comp}</b> clientes completados con los datos de Flexxus.</div>
+    ${dud.length?`<div class="sub" style="margin-bottom:6px">Estos no se pudieron completar solos — editalos y buscalos a mano:</div>
+      <div style="max-height:220px;overflow:auto">${dud.map(d=>`<div style="font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--linea)"><b>${escStk(d.nombre)}</b> <span class="sub">· ${escStk(d.motivo)}</span></div>`).join('')}</div>`:''}
+    <div class="modal-acciones" style="margin-top:14px;text-align:right"><button class="btn" onclick="this.closest('.modal-bg').remove();admCfg=null;go('administracion')">Cerrar</button></div></div>`;
+}
+function admEditCliente(id){
+  const c=(admCfg.clientes||[]).find(x=>x.id===id)||{tipo_comprobante:'FA',porcentaje_iva:21,clase_comprobante:2};
+  const sel=(idd,opts,val)=>`<select id="${idd}" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px">${opts.map(([v,t])=>`<option value="${v}" ${String(val)===String(v)?'selected':''}>${t}</option>`).join('')}</select>`;
+  const lbl=t=>`<label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">${t}</label>`;
+  const usados=new Set((admCfg.clientes||[]).filter(x=>x.id!==c.id).map(x=>x.centro_costo_id).filter(Boolean));
+  window._admCC=c.centro_costo_id||'';window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null};
+  admModal('Cliente',`
+    ${lbl('1 · Centro de costo')}
+    <select id="acl-cc-sel" onchange="admElegirCentro(this.value)" style="width:100%;padding:9px;border:1.5px solid var(--brote);border-radius:8px;font-weight:600">
+      <option value="">— elegí el centro de costo —</option>
+      ${(admCfg.centros||[]).filter(x=>!usados.has(x.id)).map(x=>`<option value="${x.id}" ${c.centro_costo_id===x.id?'selected':''}>${escStk(x.nombre)}${x.codigo_flexxus!=null?' ('+x.codigo_flexxus+')':''}</option>`).join('')}</select>
+    ${lbl('2 · Cliente en Flexxus')}
+    <div style="display:flex;gap:6px"><input id="acl-busca" value="${escStk(c.nombre||'')}" placeholder="Nombre o CUIT…" style="flex:1;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px">
+      <button class="btn-salir" onclick="admBuscarFlx()">🔍</button></div>
+    <div id="acl-res" style="max-height:150px;overflow:auto;margin-top:6px"></div>
+    <div id="acl-datos" style="margin-top:4px">${c.codigo_cliente?admResumenFlx(c):''}</div>
+    <input type="hidden" id="acl-nombre" value="${escStk(c.nombre||'')}"><input type="hidden" id="acl-cod" value="${escStk(c.codigo_cliente||'')}">
+    <input type="hidden" id="acl-cuit" value="${escStk(c.cuit||'')}"><input type="hidden" id="acl-mp" value="${c.codigo_multiplazo??''}">
+    <input type="hidden" id="acl-cc2" value="${escStk(c.centro_costo||'')}">
+    ${lbl('3 · Lo que Flexxus no sabe')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div>${lbl('Clase')}${sel('acl-clase',[[2,'Servicios'],[0,'Bienes de cambio']],c.clase_comprobante??2)}</div>
+      <div>${lbl('IVA')}${sel('acl-iva',[[21,'21%'],[10.5,'10,5%'],[27,'27%'],[0,'Exento']],c.porcentaje_iva??21)}</div>
+      <div>${lbl('Tipo de factura')}${sel('acl-tipo',[['FA','A'],['FB','B']],c.tipo_comprobante||'FA')}</div>
+      <div>${lbl('Concepto habitual')}${sel('acl-conc',[['','—'],...(admCfg.conceptos||[]).filter(k=>k.activo!==false).map(k=>[k.id,escStk(k.nombre)])],c.concepto_id||'')}</div>
+      ${admCampo('Cómo aparece en la planilla','acl-alias',c.alias_planilla,'4 HOJAS')}
+      ${admCampo('Email para la factura','acl-mail',c.email)}
+      ${admCampo('Copia a','acl-cc',c.email_cc,'opcional')}
+    </div>`,
+    async()=>{
+      if(!admV('acl-cod'))throw new Error('Falta el cliente de Flexxus: buscalo en el paso 2.');
+      await api('/api/facturacion/clientes',{method:'POST',body:JSON.stringify({id:c.id,
+        centro_costo_id:window._admCC||null,centro_costo:admV('acl-cc2')||null,
+        nombre:admV('acl-nombre'),alias_planilla:admV('acl-alias'),codigo_cliente:admV('acl-cod'),cuit:admV('acl-cuit'),
+        tipo_comprobante:admV('acl-tipo'),porcentaje_iva:Number(admV('acl-iva')),clase_comprobante:Number(admV('acl-clase')),
+        codigo_multiplazo:admV('acl-mp')?Number(admV('acl-mp')):null,concepto_id:admV('acl-conc')||null,
+        email:admV('acl-mail'),email_cc:admV('acl-cc'),...window._admExtra})});},
+    c.id?async()=>{await api('/api/facturacion/clientes/'+c.id,{method:'DELETE'});}:null);
+  if(!c.id&&!c.codigo_cliente)setTimeout(()=>{const s=document.getElementById('acl-cc-sel');if(s)s.focus();},50);
+}
+// Al elegir el centro: nombre, código de centro y búsqueda en Flexxus, solos.
+function admElegirCentro(id){
+  const cc=(admCfg.centros||[]).find(x=>x.id===id);window._admCC=id||'';
+  if(!cc)return;
+  const set=(i,v)=>{const e=document.getElementById(i);if(e)e.value=v==null?'':v;};
+  set('acl-cc2',cc.codigo_flexxus);set('acl-nombre',cc.nombre);set('acl-busca',cc.nombre);
+  const al=document.getElementById('acl-alias');if(al&&!al.value)al.value=cc.nombre;
+  admBuscarFlx(true);
+}
+function admResumenFlx(c){
+  return `<div style="background:var(--brote-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:#0F5C33;line-height:1.55">
+    ✓ <b>${escStk(c.nombre||c.razonsocial||'')}</b> · código <span class="mono">${escStk(c.codigo_cliente)}</span><br>
+    CUIT <span class="mono">${escStk(c.cuit||'—')}</span> · IVA ${escStk(c.condicion_iva||'—')} · condición de venta ${escStk(c.codigo_multiplazo??'—')}</div>`;
+}
+async function admBuscarFlx(auto){
   const q=admV('acl-busca'), box=document.getElementById('acl-res');
   if(q.length<3){box.innerHTML='<div class="sub">Escribí al menos 3 letras.</div>';return;}
-  box.innerHTML='<div class="sub">Buscando…</div>';
+  box.innerHTML='<div class="sub">Buscando en Flexxus…</div>';
   try{
     const r=await api('/api/facturacion/flexxus/clientes?q='+encodeURIComponent(q));
     window._admFlx=r;
-    box.innerHTML=r.length?r.map((c,i)=>`<div onclick="admUsarFlx(${i})" style="padding:6px 9px;border-radius:7px;cursor:pointer;font-size:12.5px;background:var(--hueso);margin-bottom:3px">
-      <b>${escStk(c.razonsocial)}</b> <span class="mono sub">${escStk(c.codigo)} · ${escStk(c.cuit||'')}</span></div>`).join(''):'<div class="sub">No encontré nada.</div>';
+    // Uno solo: se usa directo. Varios: que elija.
+    if(auto&&r.length===1)return admUsarFlx(0);
+    box.innerHTML=r.length?r.map((c,i)=>`<div onclick="admUsarFlx(${i})" style="padding:7px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;background:var(--hueso);margin-bottom:3px">
+      <b>${escStk(c.razonsocial)}</b>${c.fantasia&&c.fantasia!==c.razonsocial?` <span class="sub">(${escStk(c.fantasia)})</span>`:''}
+      <div class="mono sub" style="font-size:11px">${escStk(c.codigo_cliente)} · ${escStk(c.cuit||'sin CUIT')} · ${escStk(c.condicion_iva||'')}</div></div>`).join('')
+      :'<div class="sub">No lo encontré en Flexxus. Probá con otra parte del nombre o el CUIT.</div>';
   }catch(e){box.innerHTML=`<div style="color:var(--rojo);font-size:12px">${escStk(e.message)}</div>`;}
 }
 function admUsarFlx(i){
-  const c=window._admFlx[i];const s=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
-  s('acl-nombre',c.razonsocial);s('acl-cod',c.codigo);s('acl-cuit',c.cuit);s('acl-mail',c.email);s('acl-mp',c.multiplazo);
-  document.getElementById('acl-res').innerHTML='<div class="sub" style="color:var(--brote-2)">✓ Datos cargados desde Flexxus</div>';
+  const c=window._admFlx[i];const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
+  set('acl-nombre',c.razonsocial);set('acl-cod',c.codigo_cliente);set('acl-cuit',c.cuit);set('acl-mp',c.codigo_multiplazo);
+  set('acl-mail',c.email);if(c.tipo_comprobante)set('acl-tipo',c.tipo_comprobante);
+  window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null};
+  document.getElementById('acl-res').innerHTML='';
+  document.getElementById('acl-datos').innerHTML=admResumenFlx({...c,nombre:c.razonsocial});
 }
 
 // ── utilidades del módulo ──
