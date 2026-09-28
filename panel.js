@@ -12536,8 +12536,7 @@ function admBanner(){
   if(e.esPrueba)return `<div class="panel" style="background:#FBF0DC;border:1px solid #EED9AE;color:#854F0B;font-size:12.5px;margin-bottom:12px;display:flex;gap:10px;align-items:center">
     <div style="flex:1"><b>Modo prueba.</b> Las facturas se generan en <span class="mono">${escStk(e.host)}</span>: no son reales ni van a ARCA de verdad.</div>
     <button class="btn-salir" style="padding:5px 11px;font-size:12px" onclick="admProbarConexion(this)">🔌 Probar conexión</button></div>`;
-  return `<div class="panel" style="background:#FCEBED;border:1px solid #F2C4CB;color:#A3253A;font-size:12.5px;margin-bottom:12px">
-    <b>PRODUCCIÓN.</b> Las facturas son reales y se informan a ARCA. Un error solo se corrige con nota de crédito.</div>`;
+  return '';   // producción: sin cartel (29-sep). La confirmación al emitir ya lo avisa.
 }
 
 async function vAdministracion(view){
@@ -12568,11 +12567,42 @@ function admPasos(){
 async function admVerFacturar(view){
   if(admPasoF>=2&&admLoteId){
     try{admLote=await api('/api/facturacion/lotes/'+admLoteId);}catch(e){admLoteId=null;admPasoF=1;}
+    // Si se sacaron todas las facturas, el lote vacío no sirve: se borra.
+    if(admLote&&!(admLote.fact_items||[]).length){
+      try{await api('/api/facturacion/lotes/'+admLoteId,{method:'DELETE'});}catch(e){}
+      admLoteId=null;admLote=null;admPasoF=1;
+    }
   }
+  if(admPasoF===1){try{admLotes=await api('/api/facturacion/lotes');}catch(e){admLotes=[];}}
   const head=admHead('Administración','Facturación de ventas en 3 pasos')+admTabs()+admBanner()+admPasos();
   if(admPasoF===2&&admLote)return view.innerHTML=head+admHtmlPaso2();
   if(admPasoF===3&&admLote)return view.innerHTML=head+admHtmlPaso3();
   view.innerHTML=head+admHtmlPaso1();
+}
+
+// Lotes armados que todavía tienen facturas SIN EMITIR (29-sep): quedan acá,
+// no en Emitidas, hasta que se emiten o se eliminan.
+function admHtmlPendientes(){
+  const pend=(admLotes||[]).map(l=>({l,it:(l.fact_items||[]).filter(x=>['borrador','generada'].includes(x.estado))})).filter(x=>x.it.length);
+  if(!pend.length)return '';
+  return `<div class="panel" style="padding:0;overflow:hidden;margin-bottom:12px;border:1px solid #EED9AE">
+    <div style="padding:11px 16px;background:#FBF0DC;color:#854F0B;font-size:13px"><b>Pendientes de emitir · ${pend.length}</b> <span style="font-size:12px">· armadas y todavía sin CAE</span></div>
+    <table><tbody>${pend.map(({l,it})=>{const tot=it.reduce((s,x)=>s+Number(x.total||0),0);
+      const soloB=it.every(x=>x.estado==='borrador');
+      const quien=it.length===1?escStk((it[0].fact_clientes||{}).nombre||''):`${it.length} facturas`;
+      return `<tr><td><b>${quien}</b> <span class="sub">· ${escStk(l.periodo)} · fecha ${new Date(l.fecha_comprobante+'T12:00').toLocaleDateString('es-AR')}</span>
+          ${it.some(x=>x.estado==='generada')?'<div style="font-size:11px;color:#854F0B">ya está en Flexxus, falta el CAE</div>':''}</td>
+        <td class="num money"><b>${money(tot)}</b></td>
+        <td style="text-align:right;white-space:nowrap"><button class="mini-btn" onclick="admAbrirLote('${l.id}')">Abrir</button>
+          ${soloB?`<button class="mini-btn" style="color:var(--rojo)" onclick="admEliminarLote('${l.id}')">🗑 Eliminar</button>`:''}</td></tr>`;}).join('')}
+    </tbody></table></div>`;
+}
+async function admEliminarLote(id){
+  if(!confirm('¿Eliminar estas facturas sin emitir?\n\nNo se generó nada en Flexxus: se borran del panel y listo.'))return;
+  try{await api('/api/facturacion/lotes/'+id,{method:'DELETE'});
+    if(admLoteId===id){admLoteId=null;admLote=null;admPasoF=1;}
+    toast('✓ Eliminadas');go('administracion');}
+  catch(e){toast(e.message,'error');}
 }
 
 // ── PASO 1 ──
@@ -12590,14 +12620,14 @@ function admHtmlPaso1(){
     <button class="${admPrev?'btn-salir':'btn'}" onclick="document.getElementById('adm-file').click()">📄 ${admPrev&&admPrev.leidos?'Cambiar planilla':'Subir planilla'}</button>
     ${admPrev?'':`<button class="btn-salir" onclick="admArmar([])">Armar sin planilla</button>`}
   </div><div class="sub" id="adm-msg" style="margin:-4px 0 10px"></div>`;
-  if(!admPrev)return barra+`<div class="panel sub" style="text-align:center;padding:26px">Subí la planilla de incrementos: se arma una fila por cada concepto de cada cliente.<br>Sin planilla también se pueden armar las de bateas y las de importe fijo.</div>`;
+  if(!admPrev)return barra+admHtmlPendientes()+`<div class="panel sub" style="text-align:center;padding:26px">Subí la planilla de incrementos: se arma una fila por cada concepto de cada cliente.<br>Sin planilla también se pueden armar las de bateas y las de importe fijo.</div>`;
   const F=admPrev.filas, sel=F.filter(f=>f.sel);
   const tot=sel.reduce((s,f)=>s+admTot(f),0);
   const grupos={};F.forEach((f,i)=>{(grupos[f.cliente_id]=grupos[f.cliente_id]||[]).push([f,i]);});
   const inp=(i,k,v,w,dis)=>`<input type="number" step="0.01" value="${v==null?'':v}" ${dis?'disabled':''} onchange="admSetFila(${i},'${k}',this.value)"
     style="width:${w}px;font-size:12px;padding:5px 6px;text-align:right;border:1px solid var(--linea-2);border-radius:7px;font-family:ui-monospace,monospace;${dis?'background:var(--papel);color:var(--tinta-3)':''}">`;
   const ORIG={planilla:['b-green','planilla'],cantidad:['b-violet','cant. × precio'],fijo:['b-gray','importe fijo']};
-  return barra+`
+  return barra+admHtmlPendientes()+`
     ${admPrev.error_fecha?`<div class="panel" style="background:#FCEBED;color:#A3253A;font-size:12.5px;margin-bottom:10px">⚠ ${escStk(admPrev.error_fecha)}</div>`:''}
     ${admPrev.sin_cliente.length?`<div class="panel" style="background:#FBF0DC;color:#854F0B;font-size:12.5px;margin-bottom:10px">
       <b>En la planilla pero sin cliente configurado:</b> ${admPrev.sin_cliente.map(x=>escStk(x.nombre)).join(' · ')}. Cargá su "cómo aparece en la planilla" en Clientes.</div>`:''}
@@ -12756,7 +12786,8 @@ function admHtmlPaso2(){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--linea)">
       <span><b>${it.length} facturas · ${money(tot)}</b> <span class="sub">· fecha ${fch} · así van a salir</span></span>
       <div style="display:flex;gap:8px">
-        ${it.every(x=>x.estado==='borrador')?`<button class="btn-salir" onclick="admVolverArmar()">← Volver a armar</button>`:''}
+        <button class="btn-salir" onclick="admIrPaso1()">← Facturar</button>
+        ${it.every(x=>x.estado==='borrador')?`<button class="btn-salir" style="color:var(--rojo)" onclick="admEliminarLote('${admLoteId}')">🗑 Eliminar</button>`:''}
         ${pend.length?`<button class="btn" ${admCfg.entorno&&admCfg.entorno.habilitado?'':'disabled style="opacity:.5"'} onclick="admEmitir()">🔑 Emitir ${pend.length===it.length?'las':'las'} ${pend.length} con CAE</button>`
           :`<button class="btn" onclick="admPasoF=3;go('administracion')">Enviar por mail →</button>`}
       </div></div>
@@ -12774,13 +12805,16 @@ function admHtmlPaso2(){
         <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--linea);font-size:12px">
           <span class="sub">Neto ${money(x.neto)} · IVA ${money(x.iva)}</span><b class="mono">${money(x.total)}</b></div>
         <div style="padding:0 12px 10px">
-          ${x.estado==='borrador'?`<button class="btn-salir" style="width:100%" onclick="admEditarItem('${x.id}')">✎ Editar</button>`
+          ${x.estado==='borrador'?`<div style="display:flex;gap:6px"><button class="btn-salir" style="flex:1" onclick="admEditarItem('${x.id}')">✎ Editar</button>
+            <button class="btn-salir" title="sacar esta factura" style="color:var(--rojo)" onclick="admSacar('${x.id}')">🗑</button></div>`
             :x.cae?`<div style="font-size:11px;color:var(--brote-2)">✓ CAE <span class="mono">${escStk(x.cae)}</span></div>`
             :`<div style="font-size:11px;color:#854F0B">generada, falta el CAE</div>`}
           ${x.error?`<div style="font-size:11px;color:#A3253A;margin-top:5px">✕ ${escStk(x.error)}</div>`:''}</div></div>`;}).join('')}
     </div></div>
     <div class="sub" style="margin-top:8px;font-size:11.5px">El número es aproximado: Flexxus lo asigna al emitir. Si alguien factura desde Flexxus en el medio, se corre.</div>`;
 }
+// Volver al paso 1 SIN borrar: lo armado queda como pendiente.
+function admIrPaso1(){admLoteId=null;admLote=null;admPrev=null;admPasoF=1;go('administracion');}
 async function admVolverArmar(){
   try{await api('/api/facturacion/lotes/'+admLoteId,{method:'DELETE'});}catch(e){}
   admLoteId=null;admLote=null;admPasoF=1;go('administracion');
@@ -12878,17 +12912,20 @@ async function admEnviar(){
 // ── Emitidas: los lotes anteriores; abrir uno lleva al paso que corresponde ──
 async function admVerEmitidas(view){
   try{admLotes=await api('/api/facturacion/lotes');}catch(e){admLotes=[];}
-  const est=l=>{const it=l.fact_items||[];const n=e=>it.filter(x=>x.estado===e).length;
-    return n('borrador')+n('generada')?['b-amber',`${n('borrador')+n('generada')} sin emitir`]:n('cae')?['b-blue',`${n('cae')} sin enviar`]:['b-green','completo'];};
+  // Solo lo EMITIDO (con CAE). Lo que falta emitir está en Facturar → Pendientes.
+  const emit=x=>['cae','enviada'].includes(x.estado);
+  const lotes=admLotes.map(l=>({...l,fact_items:(l.fact_items||[]).filter(emit)})).filter(l=>l.fact_items.length);
+  const est=l=>{const n=(l.fact_items||[]).filter(x=>x.estado==='cae').length;
+    return n?['b-blue',`${n} sin enviar`]:['b-green','enviadas'];};
   view.innerHTML=admHead('Administración','Facturas emitidas')+admTabs()+admBanner()+
-    (admLotes.length?`<div class="panel" style="padding:0;overflow:hidden"><table><thead><tr><th>Mes</th><th>Creado</th><th class="num">Facturas</th><th class="num">Total</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${admLotes.map(l=>{const it=l.fact_items||[];const [c,t]=est(l);return `<tr>
+    (lotes.length?`<div class="panel" style="padding:0;overflow:hidden"><table><thead><tr><th>Mes</th><th>Emitidas</th><th class="num">Facturas</th><th class="num">Total</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${lotes.map(l=>{const it=l.fact_items||[];const [c,t]=est(l);return `<tr>
       <td><b>${escStk(l.periodo)}</b>${l.entorno==='prueba'?' <span class="badge b-amber">prueba</span>':''}</td>
       <td class="sub">${new Date(l.created_at).toLocaleDateString('es-AR')} · ${escStk(l.creado_por||'')}</td>
       <td class="num">${it.length}</td><td class="num money">${money(it.reduce((s,x)=>s+Number(x.total||0),0))}</td>
       <td><span class="badge ${c}">${t}</span></td>
       <td><button class="mini-btn" onclick="admAbrirLote('${l.id}')">Abrir</button></td></tr>`;}).join('')}</tbody></table></div>`
-    :'<div class="panel sub">Todavía no hay facturas.</div>');
+    :'<div class="panel sub">Todavía no hay facturas emitidas.</div>');
 }
 async function admAbrirLote(id){
   admLoteId=id;admEnvio={};
@@ -12912,7 +12949,7 @@ async function admPdf(id){
 }
 
 async function admSacar(id){
-  if(!confirm('¿Sacar esta factura del lote?'))return;
+  if(!confirm('¿Sacar esta factura? No se emitió: se borra del panel y listo.'))return;
   try{await api('/api/facturacion/items/'+id,{method:'DELETE'});go('administracion');}catch(e){toast(e.message,'error');}
 }
 
