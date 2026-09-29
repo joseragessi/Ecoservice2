@@ -8696,7 +8696,25 @@ function abmFact(tabla, campos) {
 }
 abmFact('conceptos', ['nombre', 'plantilla', 'codigo_articulo', 'usa_cantidad', 'activo']);
 abmFact('cliente_conceptos', ['cliente_id', 'concepto_id', 'modo', 'precio_unitario', 'importe_fijo', 'orden', 'activo',
-  'codigo_articulo', 'articulo_particular', 'articulo_descripcion']);
+  'codigo_articulo', 'articulo_particular', 'articulo_descripcion', 'pct_mano_obra']);
+
+// ── Facturar clonando el mes anterior (29-sep). Solo lee: no toca Flexxus. ──
+router.get('/api/facturacion/clonar', auth, async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '');
+    if (!/^\d{4}-\d{2}$/.test(periodo)) return res.status(400).json({ error: 'Falta el mes' });
+    const origen = FV.mesAnterior(periodo);
+    const cfg = await cargarConfigFact();
+    const cols = 'id, cliente_id, concepto_id, cliente_concepto_id, neto, cantidad, precio_unitario, estado, created_at, fact_lotes!inner(periodo)';
+    const [p, d] = await Promise.all([
+      supabase.from('fact_items').select(cols).eq('fact_lotes.periodo', origen).order('created_at'),
+      supabase.from('fact_items').select(cols).eq('fact_lotes.periodo', periodo),
+    ]);
+    if (p.error) throw p.error; if (d.error) throw d.error;
+    const filas = FV.armarClon({ ...cfg, itemsPrev: p.data || [], itemsDest: d.data || [], periodo });
+    res.json({ periodo, origen, filas });
+  } catch (err) { console.error('fact clonar:', err); res.status(500).json({ error: err.message }); }
+});
 abmFact('clientes', ['nombre', 'alias_planilla', 'codigo_cliente', 'cuit', 'tipo_comprobante', 'porcentaje_iva',
   'codigo_multiplazo', 'concepto_id', 'centro_costo', 'email', 'email_cc', 'activo',
   'centro_costo_id', 'clase_comprobante', 'condicion_iva', 'codigo_vendedor', 'datos_flexxus']);
