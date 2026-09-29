@@ -1669,6 +1669,21 @@ async function proximoNumeroVenta(tipo, pv, piso) {
 function numeroVentaUsado(tipo, pv, n) { _numVenta[tipo + '|' + pv] = { ultimo: Number(n), t: Date.now() }; }
 function numeroVentaOlvidar(tipo, pv) { delete _numVenta[tipo + '|' + pv]; }
 
+/** La ficha completa del cliente en Flexxus (una llamada; se guarda en la base). */
+async function leerClienteVenta(codigo) {
+  const d = await flxV('/clientes/' + encodeURIComponent(codigo));
+  const c = Array.isArray(d) ? d[0] : (d && Array.isArray(d.data) ? d.data[0] : (d && d.data) || d);
+  if (!c || !c.razonsocial) { const e = new Error(`No encontré el cliente ${codigo} en Flexxus`); e.status = 404; throw e; }
+  // Solo lo que se usa al facturar: no hace falta guardar la ficha entera.
+  const pick = ['codigocliente', 'razonsocial', 'direccion', 'codigoprovincia', 'codigolocalidad', 'localidad', 'cp', 'telefono',
+    'telefonolaboral', 'telefonoempresa1', 'condicioniva', 'codigozona', 'cuit', 'email', 'codigomultiplazo'];
+  const o = {}; pick.forEach(k => { if (c[k] != null) o[k] = c[k]; });
+  if (o.codigoprovincia == null && c.provincia) o.codigoprovincia = c.provincia.codigoprovincia;
+  if (o.codigozona == null && c.zona) o.codigozona = c.zona.codigozona;
+  if (o.codigolocalidad == null && c.localidades) o.codigolocalidad = c.localidades.codigolocalidad;
+  return o;
+}
+
 /** Crea la factura en Flexxus. Devuelve { tipocomprobante, numerocomprobante, mensaje, advertencia }. */
 async function crearFacturaVenta(body) {
   exigirVentas();
@@ -1727,6 +1742,6 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
+  leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
   diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
