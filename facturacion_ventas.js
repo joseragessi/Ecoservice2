@@ -232,6 +232,39 @@ function numerosEstimados(items, ultimos) {
   });
 }
 
+/**
+ * El bloque "cliente" que exige /ordenmanual (29-sep): Flexxus rechaza la
+ * factura si falta razón social, dirección, provincia, localidad, teléfono,
+ * condición de IVA o zona. Sale de la ficha del cliente en Flexxus.
+ * Los campos obligatorios vacíos van con "-" (Flexxus pide que no estén
+ * vacíos, no que tengan un valor en particular) y se recortan al largo máximo.
+ */
+function clienteParaFlexxus(f, cliente) {
+  const d = f || {};
+  const txt = (v, max, def) => { const x = String(v == null ? '' : v).trim(); return (x || def || '-').slice(0, max); };
+  const prov = d.codigoprovincia ?? (d.provincia && d.provincia.codigoprovincia);
+  const zona = d.codigozona ?? (d.zona && d.zona.codigozona);
+  const loc = d.codigolocalidad ?? (d.localidades && d.localidades.codigolocalidad) ?? (d.localidad && d.localidad.codigolocalidad);
+  const o = {
+    codigocliente: String(d.codigocliente || cliente.codigo_cliente),
+    razonsocial: txt(d.razonsocial || cliente.nombre, 50),
+    direccion: txt(d.direccion, 50),
+    codigoprovincia: txt(prov, 15),
+    codigolocalidad: loc != null && loc !== '' ? (isNaN(Number(loc)) ? loc : Number(loc)) : undefined,
+    telefono: txt(d.telefono || d.telefonolaboral || d.telefonoempresa1, 50),
+    condicioniva: txt(d.condicioniva || cliente.condicion_iva, 15),
+    codigozona: Number(zona) || 0,
+    cuit: d.cuit || cliente.cuit || undefined,
+    email: d.email || cliente.email || undefined,
+    cp: d.cp || undefined,
+    localidad: typeof d.localidad === 'string' ? d.localidad.slice(0, 50) : undefined,
+    codigomultiplazo: cliente.codigo_multiplazo != null ? Number(cliente.codigo_multiplazo) : (d.codigomultiplazo ?? undefined),
+    cuentacorriente: true,
+  };
+  Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  return o;
+}
+
 /** Qué le falta a un cliente para poder facturarse. */
 function problemasCliente(c, concepto) {
   const p = [];
@@ -288,4 +321,4 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
 
 module.exports = { MESES, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
   textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante, tipoPorCondicionIva,
-  armarFilas, netoDeFila, numerosEstimados };
+  armarFilas, netoDeFila, numerosEstimados, clienteParaFlexxus };
