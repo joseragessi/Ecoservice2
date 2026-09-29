@@ -9265,15 +9265,27 @@ async function enviarItem(it, email, cc) {
   if (!para.length || !para.every(m => /^\S+@\S+\.\S+$/.test(m))) throw new Error('Falta un email válido');
   const copia = String(cc || '').split(/[,;\s]+/).filter(Boolean);
   const pdf = await bajarPdfVenta(it.pdf_ruta);
-  let cli = it.fact_clientes, fch = it.fact_lotes && it.fact_lotes.fecha_comprobante;
-  if (!cli || fch === undefined) {
-    const { data } = await supabase.from('fact_items').select('fact_clientes(nombre), fact_lotes(fecha_comprobante)').eq('id', it.id).single();
-    cli = cli || (data && data.fact_clientes) || {}; fch = data && data.fact_lotes && data.fact_lotes.fecha_comprobante;
-  }
-  await FM.enviarFactura({ it: { ...it, _fecha: fch }, cliente: cli, para: para.join(','), cc: copia.join(',') || null, pdf, nombrePdf: it.pdf_nombre });
+  const extra = await datosMail(it);
+  await FM.enviarFactura({ it: { ...it, ...extra }, cliente: extra.cliente, para: para.join(','), cc: copia.join(',') || null, pdf, nombrePdf: it.pdf_nombre });
   const destino = [...para, ...copia].join(',');
   await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
     error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+}
+/* Lo que el mail muestra además de la factura (mockup_email_factura_v2):
+   mes, concepto, y de Flexxus el vencimiento y la condición de venta (una
+   lectura; si falla, el mail sale igual sin esos dos datos). */
+async function datosMail(it) {
+  const { data } = await supabase.from('fact_items').select('fact_clientes(nombre), fact_conceptos(nombre), fact_lotes(periodo, fecha_comprobante)').eq('id', it.id).single();
+  const d = data || {};
+  const o = { cliente: d.fact_clientes || it.fact_clientes || {}, _concepto: (d.fact_conceptos || {}).nombre,
+    _periodo: (d.fact_lotes || {}).periodo, _fecha: (d.fact_lotes || {}).fecha_comprobante };
+  try {
+    const r = await require('./flexxus').leerFacturaVenta(it.tipo_comprobante, it.numero_comprobante);
+    const f = (r && r.data) || r || {};
+    if (f.fechavencimiento) o._vence = String(f.fechavencimiento).slice(0, 10);
+    if (f.multiplazo && f.multiplazo.descripcion) o._condicion = 'Cuenta corriente · ' + String(f.multiplazo.descripcion).replace(/^cta\.?\s*cte\.?\s*/i, '').trim();
+  } catch (e) { /* sin vencimiento: el mail sale igual */ }
+  return o;
 }
 async function enviarLista(lista, loteId) {
   let hechas = 0, fallaron = 0; const errores = [];
@@ -9304,7 +9316,8 @@ router.post('/api/facturacion/mail/prueba', auth, async (req, res) => {
       .not('pdf_ruta', 'is', null).order('pdf_subido_at', { ascending: false }).limit(1).single();
     if (!it) return res.status(404).json({ error: 'Subí al menos un PDF para probar el mail' });
     const pdf = await bajarPdfVenta(it.pdf_ruta);
-    await require('./facturacion_mail').enviarFactura({ it: { ...it, _fecha: it.fact_lotes && it.fact_lotes.fecha_comprobante }, cliente: it.fact_clientes, para, pdf, nombrePdf: it.pdf_nombre });
+    const extra = await datosMail(it);
+    await require('./facturacion_mail').enviarFactura({ it: { ...it, ...extra }, cliente: extra.cliente, para, pdf, nombrePdf: it.pdf_nombre });
     res.json({ ok: true });
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
