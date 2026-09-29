@@ -8565,7 +8565,10 @@ async function armarEnvio(it) {
   const flx = require('./flexxus');
   const cfg = cfgVentas();
   const tipo = it.tipo_comprobante;
-  const art = await articuloDelItem(it);
+  // Reintento de una que Flexxus anuló: el artículo se toma de la ficha ACTUAL del
+  // cliente (si se cambió después del rechazo, va el nuevo), no de la foto vieja.
+  const esReintento = it.estado === 'borrador' && it.numero_comprobante && puntoDeNumero(it.numero_comprobante) === Number(cfg.puntoVenta);
+  const art = await articuloDelItem(esReintento ? { ...it, codigo_articulo: null } : it);
   // Antes de llamar a Flexxus: si al cliente le falta algo, se avisa claro acá.
   const falta = FV.problemasCliente(it.fact_clientes, it.fact_conceptos, art && art.codigo);
   if (falta.length) { const e = new Error(`${it.fact_clientes.nombre}: ${falta.join(' · ')}. Completalo en Clientes → Editar.`); e.status = 422; throw e; }
@@ -8586,8 +8589,7 @@ async function armarEnvio(it) {
   /* Reintento (29-sep): si ARCA no dio el CAE, Flexxus la anula sola y el
      número queda libre para ARCA. Se vuelve a mandar EL MISMO número: Flexxus
      reemplaza la anulada. Con uno nuevo ARCA la rechazaría por salto de número. */
-  const reusar = it.estado === 'borrador' && it.numero_comprobante && puntoDeNumero(it.numero_comprobante) === Number(cfg.puntoVenta);
-  const nro = reusar ? Number(it.numero_comprobante) : await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
+  const nro = esReintento ? Number(it.numero_comprobante) : await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
   const body = FV.armarComprobante({ ...it, codigo_articulo: art.codigo }, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
   /* 29-sep, la causa del punto 0006: a Flexxus va el número SOLO (1081), no
      codificado (300001081). Flexxus le suma él mismo el punto: 3×100.000.000 +
@@ -9187,79 +9189,133 @@ router.post('/api/facturacion/lotes/:id/emitir', auth, async (req, res) => {
 
 // ── PASO 3 · Enviar las tildadas, con el mail que se ve en pantalla ──
 router.post('/api/facturacion/lotes/:id/enviar-sel', auth, async (req, res) => {
-  try {
-    const { pdfFacturaVenta } = require('./flexxus');
-    const lista = ((req.body || {}).items || []).slice(0, 3);   // de a 3 por pedido
-    let hechas = 0, fallaron = 0;
-    for (const x of lista) {
-      const { data: it } = await supabase.from('fact_items').select('*').eq('id', x.id).eq('lote_id', req.params.id).single();
-      try {
-        if (!it || !['cae', 'enviada'].includes(it.estado)) throw new Error('La factura no tiene CAE todavía');
-        const email = String(x.email || '').trim();
-        if (!/^\S+@\S+\.\S+/.test(email)) throw new Error('Falta un email válido');
-        const destino = [email, String(x.cc || '').trim()].filter(Boolean).join(',');
-        await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante, destino);
-        await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
-          error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
-        if (x.guardar) await supabase.from('fact_clientes').update({ email, email_cc: String(x.cc || '').trim() || null }).eq('id', it.cliente_id);
-        hechas++;
-      } catch (e) {
-        fallaron++;
-        if (it) await supabase.from('fact_items').update({ error: String(e.message).slice(0, 500) }).eq('id', it.id);
-      }
-    }
-    res.json({ hechas, fallaron });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+  try { res.json(await enviarLista(((req.body || {}).items || []).slice(0, 3), req.params.id)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // Enviar facturas de cualquier lote (la pantalla de envío junta todas las del mes).
 router.post('/api/facturacion/enviar', auth, async (req, res) => {
-  try {
-    const { pdfFacturaVenta } = require('./flexxus');
-    const lista = ((req.body || {}).items || []).slice(0, 3);
-    let hechas = 0, fallaron = 0;
-    for (const x of lista) {
-      const { data: it } = await supabase.from('fact_items').select('*').eq('id', x.id).single();
-      try {
-        if (!it || !['cae', 'enviada'].includes(it.estado)) throw new Error('La factura no tiene CAE todavía');
-        const email = String(x.email || '').trim();
-        if (!/^\S+@\S+\.\S+/.test(email)) throw new Error('Falta un email válido');
-        const destino = [email, String(x.cc || '').trim()].filter(Boolean).join(',');
-        await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante, destino);
-        await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
-          error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
-        if (x.guardar) await supabase.from('fact_clientes').update({ email, email_cc: String(x.cc || '').trim() || null }).eq('id', it.cliente_id);
-        hechas++;
-      } catch (e) {
-        fallaron++;
-        if (it) await supabase.from('fact_items').update({ error: String(e.message).slice(0, 500) }).eq('id', it.id);
-      }
-    }
-    res.json({ hechas, fallaron });
-  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+  try { res.json(await enviarLista(((req.body || {}).items || []).slice(0, 3))); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-// ── 6 · Enviar por mail (lo manda Flexxus con su modelo) ──
+// ── 6 · Enviar por mail todo un lote (con el mail guardado en cada cliente) ──
 router.post('/api/facturacion/lotes/:id/enviar', auth, async (req, res) => {
   try {
-    const { pdfFacturaVenta } = require('./flexxus');
     const r = await pasoLote(req.params.id, ['cae'], async (it) => {
       const cli = it.fact_clientes || {};
-      const destino = [cli.email, cli.email_cc].filter(Boolean).join(',');
-      if (!cli.email) throw new Error('El cliente no tiene email cargado');
-      await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante, destino);
-      await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
-        error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+      await enviarItem(it, cli.email, cli.email_cc);
     });
     res.json(r);
   } catch (err) { console.error('fact enviar:', err); res.status(err.status || 500).json({ error: err.message }); }
 });
 
+/* ── PDFs de las facturas (29-sep) ──
+   Se suben en tanda desde Facturar → "Subir PDFs": el navegador lee cada PDF,
+   lo concilia por número (nombre del archivo o texto de adentro) y controla
+   CUIT, total y CAE. Acá solo se guarda, en el bucket privado facturas-venta
+   de la base del bot, con nombre fijo por factura (si se vuelve a subir, se
+   reemplaza). */
+const BUCKET_VENTAS = 'facturas-venta';
+async function bajarPdfVenta(ruta) {
+  const { data, error } = await supabase.storage.from(BUCKET_VENTAS).download(ruta);
+  if (error || !data) { const e = new Error('No encontré el PDF guardado: ' + ((error && error.message) || '')); e.status = 404; throw e; }
+  return Buffer.from(await data.arrayBuffer());
+}
+router.post('/api/facturacion/items/:id/pdf-adjunto', auth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const { data: it } = await supabase.from('fact_items').select('id, estado, tipo_comprobante, numero_comprobante').eq('id', req.params.id).single();
+    if (!it || !it.numero_comprobante) return res.status(404).json({ error: 'Esa factura todavía no tiene número' });
+    if (!['generada', 'cae', 'enviada'].includes(it.estado)) return res.status(409).json({ error: 'Solo se adjunta a facturas que ya están en Flexxus' });
+    const buf = Buffer.from(String(b.data || ''), 'base64');
+    if (buf.length < 500 || buf.slice(0, 4).toString() !== '%PDF') return res.status(400).json({ error: 'El archivo no es un PDF' });
+    if (buf.length > 8 * 1024 * 1024) return res.status(400).json({ error: 'El PDF pesa más de 8 MB' });
+    const ruta = `${it.tipo_comprobante}-${it.numero_comprobante}.pdf`;
+    const { error } = await supabase.storage.from(BUCKET_VENTAS).upload(ruta, buf, { contentType: 'application/pdf', upsert: true });
+    if (error) throw new Error('No pude guardar el PDF: ' + error.message + (/bucket/i.test(error.message) ? ' (¿corriste el SQL 14?)' : ''));
+    const upd = { pdf_ruta: ruta, pdf_nombre: String(b.nombre || ruta).slice(0, 200), pdf_subido_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    await supabase.from('fact_items').update(upd).eq('id', it.id);
+    res.json({ ok: true, ...upd });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+router.delete('/api/facturacion/items/:id/pdf-adjunto', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items').select('id, estado, pdf_ruta').eq('id', req.params.id).single();
+    if (!it) return res.status(404).json({ error: 'No encontré la factura' });
+    if (it.estado === 'enviada') return res.status(409).json({ error: 'Ya se envió con ese PDF' });
+    if (it.pdf_ruta) await supabase.storage.from(BUCKET_VENTAS).remove([it.pdf_ruta]).catch(() => {});
+    await supabase.from('fact_items').update({ pdf_ruta: null, pdf_nombre: null, pdf_subido_at: null }).eq('id', it.id);
+    res.json({ ok: true });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+/* ── Enviar por mail (29-sep): lo manda el PANEL con el PDF adjunto ──
+   Sin PDF subido no se envía (decisión: bloquear). */
+async function enviarItem(it, email, cc) {
+  const FM = require('./facturacion_mail');
+  if (!it || !['cae', 'enviada'].includes(it.estado)) throw new Error('La factura no tiene CAE todavía');
+  if (!it.pdf_ruta) throw new Error('Falta el PDF: subilo con "Subir PDFs" antes de enviar');
+  const para = String(email || '').split(/[,;\s]+/).filter(Boolean);
+  if (!para.length || !para.every(m => /^\S+@\S+\.\S+$/.test(m))) throw new Error('Falta un email válido');
+  const copia = String(cc || '').split(/[,;\s]+/).filter(Boolean);
+  const pdf = await bajarPdfVenta(it.pdf_ruta);
+  let cli = it.fact_clientes, fch = it.fact_lotes && it.fact_lotes.fecha_comprobante;
+  if (!cli || fch === undefined) {
+    const { data } = await supabase.from('fact_items').select('fact_clientes(nombre), fact_lotes(fecha_comprobante)').eq('id', it.id).single();
+    cli = cli || (data && data.fact_clientes) || {}; fch = data && data.fact_lotes && data.fact_lotes.fecha_comprobante;
+  }
+  await FM.enviarFactura({ it: { ...it, _fecha: fch }, cliente: cli, para: para.join(','), cc: copia.join(',') || null, pdf, nombrePdf: it.pdf_nombre });
+  const destino = [...para, ...copia].join(',');
+  await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
+    error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+}
+async function enviarLista(lista, loteId) {
+  let hechas = 0, fallaron = 0; const errores = [];
+  for (const x of lista) {
+    let q = supabase.from('fact_items').select('*, fact_clientes(nombre), fact_lotes(fecha_comprobante)').eq('id', x.id);
+    if (loteId) q = q.eq('lote_id', loteId);
+    const { data: it } = await q.single();
+    try {
+      await enviarItem(it, x.email, x.cc);
+      if (x.guardar) await supabase.from('fact_clientes').update({ email: String(x.email || '').trim(), email_cc: String(x.cc || '').trim() || null }).eq('id', it.cliente_id);
+      hechas++;
+    } catch (e) {
+      fallaron++; errores.push(String(e.message));
+      if (it) await supabase.from('fact_items').update({ error: String(e.message).slice(0, 500) }).eq('id', it.id);
+      if (e.status === 503) break;                       // correo sin configurar: no seguir probando
+    }
+  }
+  return { hechas, fallaron, errores };
+}
+router.get('/api/facturacion/mail/estado', auth, (req, res) => {
+  res.json({ configurado: require('./facturacion_mail').configurado(), casilla: process.env.SMTP_USER || null });
+});
+router.post('/api/facturacion/mail/prueba', auth, async (req, res) => {
+  try {
+    const para = String((req.body || {}).email || '').trim();
+    if (!/^\S+@\S+\.\S+$/.test(para)) return res.status(400).json({ error: 'Poné un email válido' });
+    const { data: it } = await supabase.from('fact_items').select('*, fact_clientes(nombre), fact_lotes(fecha_comprobante)')
+      .not('pdf_ruta', 'is', null).order('pdf_subido_at', { ascending: false }).limit(1).single();
+    if (!it) return res.status(404).json({ error: 'Subí al menos un PDF para probar el mail' });
+    const pdf = await bajarPdfVenta(it.pdf_ruta);
+    await require('./facturacion_mail').enviarFactura({ it: { ...it, _fecha: it.fact_lotes && it.fact_lotes.fecha_comprobante }, cliente: it.fact_clientes, para, pdf, nombrePdf: it.pdf_nombre });
+    res.json({ ok: true });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 // El PDF para verlo o descargarlo.
 router.get('/api/facturacion/items/:id/pdf', auth, async (req, res) => {
   try {
-    const { data: it } = await supabase.from('fact_items').select('tipo_comprobante, numero_comprobante').eq('id', req.params.id).single();
+    const { data: it } = await supabase.from('fact_items').select('tipo_comprobante, numero_comprobante, pdf_ruta, pdf_nombre').eq('id', req.params.id).single();
     if (!it || !it.numero_comprobante) return res.status(404).json({ error: 'Esa factura todavía no está en Flexxus' });
+    // El PDF subido y conciliado (29-sep) manda; si no hay, el de Flexxus.
+    if (it.pdf_ruta) {
+      const buf = await bajarPdfVenta(it.pdf_ruta);
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', `inline; filename="${String(it.pdf_nombre || 'factura.pdf').replace(/"/g, '')}"`);
+      return res.send(buf);
+    }
     const { pdfFacturaVenta } = require('./flexxus');
     const r = await pdfFacturaVenta(it.tipo_comprobante, it.numero_comprobante);
     if (r.pdf) { res.set('Content-Type', r.contentType); res.set('Content-Disposition', `inline; filename="${it.tipo_comprobante}-${it.numero_comprobante}.pdf"`); return res.send(r.pdf); }
