@@ -8682,6 +8682,12 @@ router.post('/api/facturacion/clientes/completar', auth, async (req, res) => {
   } catch (err) { console.error('fact completar:', err); res.status(err.status || 500).json({ error: err.message }); }
 });
 
+// Condiciones de venta de Flexxus (para elegirla en la ficha del cliente).
+router.get('/api/facturacion/flexxus/multiplazos', auth, async (req, res) => {
+  try { const { listarMultiplazosVenta } = require('./flexxus'); res.json(await listarMultiplazosVenta()); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 // Buscar artículos en Flexxus (para el código de artículo de cada concepto).
 router.get('/api/facturacion/flexxus/articulos', auth, async (req, res) => {
   try {
@@ -8787,13 +8793,16 @@ router.post('/api/facturacion/suelta', auth, async (req, res) => {
       if (!f.codigo_cliente) return res.status(400).json({ error: 'Buscá el cliente en Flexxus' });
       const tipo = ['FA', 'FB'].includes(b.tipo_comprobante) ? b.tipo_comprobante : (FV.tipoPorCondicionIva(f.condicion_iva) || 'FA');
       const datos = { nombre: f.razonsocial || f.codigo_cliente, codigo_cliente: f.codigo_cliente, cuit: f.cuit || null,
-        condicion_iva: f.condicion_iva || null, codigo_multiplazo: f.codigo_multiplazo ?? null, codigo_vendedor: f.codigo_vendedor || null,
+        condicion_iva: f.condicion_iva || null,
+        codigo_multiplazo: Number(b.codigo_multiplazo) > 0 ? Number(b.codigo_multiplazo) : (f.codigo_multiplazo ?? null),
+        codigo_vendedor: f.codigo_vendedor || null,
         email: b.email || f.email || null, tipo_comprobante: tipo, porcentaje_iva: Number(b.porcentaje_iva ?? 21), clase_comprobante: 2,
         activo: !!b.guardar };
       // Si ya existe (activo o no) por su código de Flexxus, se reutiliza.
       cli = clientes.find(c => c.codigo_cliente === f.codigo_cliente);
       if (cli) {
         const upd = { email: datos.email || cli.email, porcentaje_iva: datos.porcentaje_iva, tipo_comprobante: datos.tipo_comprobante };
+        if (Number(b.codigo_multiplazo) > 0) upd.codigo_multiplazo = Number(b.codigo_multiplazo);
         if (b.guardar) upd.activo = true;
         await supabase.from('fact_clientes').update(upd).eq('id', cli.id);
         cli = { ...cli, ...upd };
