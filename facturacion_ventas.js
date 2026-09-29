@@ -327,6 +327,48 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
   };
 }
 
-module.exports = { MESES, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
+/* ── Facturar clonando el mes anterior (29-sep, mockup_clonar_mes v2) ──
+   Una fila por concepto de cada cliente activo (cada una es una factura
+   distinta: CAÑUELAS mantenimiento, lotes y bateas van separadas). Trae lo
+   que se facturó el mes anterior; el aumento lo calcula el navegador:
+   aumento del mes (paritaria) × % de mano de obra del concepto. */
+function mesAnterior(periodo) {
+  const [a, m] = String(periodo).split('-').map(Number);
+  const d = new Date(a, m - 2, 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+function armarClon({ clientes, clienteConceptos, conceptos, itemsPrev, itemsDest, periodo }) {
+  const activos = (clientes || []).filter(c => c.activo !== false && c.codigo_cliente);
+  const vivos = x => !['anular'].includes(x.estado);
+  const prev = (itemsPrev || []).filter(vivos), dest = (itemsDest || []).filter(vivos);
+  const filas = [];
+  activos.forEach(cli => {
+    let lista = (clienteConceptos || []).filter(x => x.cliente_id === cli.id && x.activo !== false)
+      .sort((a, b) => (a.orden || 0) - (b.orden || 0));
+    lista.forEach(cc => {
+      const conc = (conceptos || []).find(k => k.id === cc.concepto_id);
+      if (!conc || conc.activo === false) return;
+      const deEste = x => x.cliente_id === cli.id && (x.cliente_concepto_id ? x.cliente_concepto_id === cc.id : x.concepto_id === cc.concepto_id);
+      const ant = prev.filter(deEste).pop() || null;
+      const ya = dest.filter(deEste).length;
+      const problemas = problemasCliente(cli, conc, cc.codigo_articulo);
+      const esCant = cc.modo === 'cantidad';
+      filas.push({
+        cliente_id: cli.id, cliente: cli.nombre, tipo: cli.tipo_comprobante, iva_pct: Number(cli.porcentaje_iva) || 0,
+        cliente_concepto_id: cc.id, concepto_id: conc.id, concepto: conc.nombre, plantilla: conc.plantilla, modo: cc.modo || 'planilla',
+        pct_mano_obra: cc.pct_mano_obra != null ? Number(cc.pct_mano_obra) : null,
+        prev_neto: ant ? Number(ant.neto) : null,
+        prev_cantidad: ant ? Number(ant.cantidad) || 1 : null,
+        // Bateas: el precio por viaje es lo que sube; si no hubo mes anterior, el habitual del cliente.
+        prev_precio: esCant ? (ant && ant.precio_unitario != null ? Number(ant.precio_unitario) : (cc.precio_unitario != null ? Number(cc.precio_unitario) : null)) : null,
+        ya_facturada: ya, problemas,
+        sel: !problemas.length && !ya && !!ant,
+      });
+    });
+  });
+  return filas;
+}
+
+module.exports = { MESES, mesAnterior, armarClon, norm, mesDeCelda, numero, leerPlanilla, reconocerCliente,
   textoConcepto, calcularIva, validarFecha, problemasCliente, armarComprobante, tipoPorCondicionIva,
   armarFilas, netoDeFila, numerosEstimados, clienteParaFlexxus };
