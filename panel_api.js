@@ -8522,7 +8522,28 @@ const cfgVentas = () => ({
   vendedor: process.env.FLEXXUS_VENTAS_VENDEDOR || undefined,
   deposito: process.env.FLEXXUS_VENTAS_DEPOSITO || process.env.FLEXXUS_DEPOSITO || '001',
 });
-const LOTE_PASO = 5;   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
+const LOTE_PASO = 5;
+
+/* Crea la factura en Flexxus con el número REAL (el próximo del punto de
+   venta). Lo usan los tres caminos de emisión. Devuelve { tipo, nro, d }. */
+async function crearConNumero(it) {
+  const flx = require('./flexxus');
+  const cfg = cfgVentas();
+  const tipo = it.tipo_comprobante;
+  // Piso: la última que emitimos nosotros de ese tipo (por si el listado de Flexxus demora).
+  const { data: u } = await supabase.from('fact_items').select('numero_comprobante')
+    .eq('tipo_comprobante', tipo).not('numero_comprobante', 'is', null).order('numero_comprobante', { ascending: false }).limit(1);
+  const piso = u && u[0] ? Number(u[0].numero_comprobante) : null;
+  const nro = await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
+  const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
+  body.carrito.numerocomprobante = nro;
+  try {
+    const d = await flx.crearFacturaVenta(body);
+    const real = Number(d.numerocomprobante) || nro;
+    flx.numeroVentaUsado(tipo, cfg.puntoVenta, real);
+    return { tipo: d.tipocomprobante || tipo, nro: real, d };
+  } catch (e) { flx.numeroVentaOlvidar(tipo, cfg.puntoVenta); throw e; }
+}   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
 
 async function cargarConfigFact() {
   const [c, k, cc, fcc] = await Promise.all([
@@ -8852,11 +8873,10 @@ router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
     let tipo = it.tipo_comprobante, nro = it.numero_comprobante;
     try {
       if (it.estado === 'borrador') {
-        const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfgVentas());
-        const d = await crearFacturaVenta(body);
-        tipo = d.tipocomprobante || tipo; nro = d.numerocomprobante;
+        const r0 = await crearConNumero(it);
+        tipo = r0.tipo; nro = r0.nro;
         await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: tipo, numero_comprobante: nro,
-          respuesta: d, updated_at: new Date().toISOString() }).eq('id', it.id);
+          respuesta: r0.d, updated_at: new Date().toISOString() }).eq('id', it.id);
       }
       const { cae, respuesta } = await pedirCAE(tipo, nro);
       await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta, updated_at: new Date().toISOString() }).eq('id', it.id);
@@ -8903,10 +8923,9 @@ router.post('/api/facturacion/lotes/:id/generar', auth, async (req, res) => {
   try {
     const { crearFacturaVenta } = require('./flexxus');
     const r = await pasoLote(req.params.id, ['borrador'], async (it) => {
-      const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfgVentas());
-      const d = await crearFacturaVenta(body);
-      await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: d.tipocomprobante || it.tipo_comprobante,
-        numero_comprobante: d.numerocomprobante, error: d.advertencia || null, respuesta: d,
+      const { tipo: tp, nro: nr, d } = await crearConNumero(it);
+      await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: tp,
+        numero_comprobante: nr, error: d.advertencia || null, respuesta: d,
         updated_at: new Date().toISOString() }).eq('id', it.id);
     });
     // Los que fallaron quedan en borrador con el error: se corrigen y se reintentan.
@@ -8939,11 +8958,10 @@ router.post('/api/facturacion/lotes/:id/emitir', auth, async (req, res) => {
     const r = await pasoLote(req.params.id, ['borrador', 'generada'], async (it) => {
       let tipo = it.tipo_comprobante, nro = it.numero_comprobante;
       if (it.estado === 'borrador') {
-        const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfgVentas());
-        const d = await crearFacturaVenta(body);
-        tipo = d.tipocomprobante || tipo; nro = d.numerocomprobante;
+        const r0 = await crearConNumero(it);
+        tipo = r0.tipo; nro = r0.nro;
         await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: tipo, numero_comprobante: nro,
-          respuesta: d, updated_at: new Date().toISOString() }).eq('id', it.id);
+          respuesta: r0.d, updated_at: new Date().toISOString() }).eq('id', it.id);
       }
       const { cae, respuesta } = await pedirCAE(tipo, nro);
       await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta,
