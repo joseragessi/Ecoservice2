@@ -9038,6 +9038,11 @@ router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
       await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta, updated_at: new Date().toISOString() }).eq('id', it.id);
       res.json({ ok: true, estado: 'cae', cae, numero: nro });
     } catch (e) {
+      // CAE por API apagado (29-sep): no es un error, queda "en Flexxus" esperando que Sole lo pida.
+      if (e.sinRuta && nro) {
+        await supabase.from('fact_items').update({ error: null, updated_at: new Date().toISOString() }).eq('id', it.id);
+        return res.json({ ok: true, estado: 'generada', numero: nro });
+      }
       // La respuesta de la creación NO se pisa si después falla el CAE (29-sep:
       // se perdió la de la 0006-1081, que era justo la que había que mirar).
       const upd = { error: String(e.message || e).slice(0, 500), updated_at: new Date().toISOString() };
@@ -9179,7 +9184,7 @@ router.post('/api/facturacion/lotes/:id/emitir', auth, async (req, res) => {
       }
       let rc;
       try { rc = await pedirCAE(tipo, nro); }
-      catch (e) { await volverSiAnulada(it, tipo, nro, e.message); throw e; }
+      catch (e) { if (e.sinRuta) return; await volverSiAnulada(it, tipo, nro, e.message); throw e; }
       await supabase.from('fact_items').update({ estado: 'cae', cae: rc.cae, error: null, respuesta: rc.respuesta,
         updated_at: new Date().toISOString() }).eq('id', it.id);
     }, 3);   // 2 llamadas por factura: de a 3 para no pasar los 30 s de Railway
