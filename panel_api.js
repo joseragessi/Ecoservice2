@@ -8705,9 +8705,10 @@ router.get('/api/facturacion/clonar', auth, async (req, res) => {
     if (!/^\d{4}-\d{2}$/.test(periodo)) return res.status(400).json({ error: 'Falta el mes' });
     const origen = FV.mesAnterior(periodo);
     const cfg = await cargarConfigFact();
-    const cols = 'id, cliente_id, concepto_id, cliente_concepto_id, neto, cantidad, precio_unitario, estado, created_at, fact_lotes!inner(periodo)';
+    // fact_items no tiene created_at: se ordena por updated_at (la última que quedó es la que vale).
+    const cols = 'id, cliente_id, concepto_id, cliente_concepto_id, neto, cantidad, precio_unitario, estado, updated_at, fact_lotes!inner(periodo)';
     const [p, d] = await Promise.all([
-      supabase.from('fact_items').select(cols).eq('fact_lotes.periodo', origen).order('created_at'),
+      supabase.from('fact_items').select(cols).eq('fact_lotes.periodo', origen).order('updated_at'),
       supabase.from('fact_items').select(cols).eq('fact_lotes.periodo', periodo),
     ]);
     if (p.error) throw p.error; if (d.error) throw d.error;
