@@ -12640,7 +12640,7 @@ function admCard(x){
         <div class="monto tot"><div class="l">Total</div><div class="v">${money(x.total)}</div></div></div>
       <div class="fila" style="margin-top:8px"><span>Se envía a</span><b style="font-size:11.5px;${c.email?'':'color:#854F0B'}">${escStk(c.email||'sin email')}</b></div>
       ${x.error?`<div class="err">✕ ${escStk(x.error)}</div>`:''}</div>
-    <div class="pie">${gen?`<button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
+    <div class="pie">${gen?`<button class="btn-salir" style="flex:1" onclick="admTraerCAE()">↻ Traer CAE de Flexxus</button><button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
       :`<button class="btn-salir" onclick="admEditarItem('${x.id}')">✎ Editar</button>
         <button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">🔑 Emitir</button>
         <button class="btn-salir adm-del" title="Eliminar esta factura" onclick="admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>`}</div></div>`;
@@ -12681,6 +12681,12 @@ function admVerSinFacturar(){
   const tienen=new Set((admCfg.clienteConceptos||[]).map(x=>x.cliente_id));
   const L=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente&&(tienen.has(c.id)||c.concepto_id)&&!delMes.has(c.id));
   alert(`Sin factura en ${admMesTxt(admMes)} (${L.length}):\n\n`+L.map(c=>'· '+c.nombre).join('\n'));
+}
+async function admTraerCAE(){
+  try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});
+    toast(r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con?undefined:'error');}
+  catch(e){toast(e.message,'error');}
+  go('administracion');
 }
 async function admEmitirUno(id){
   const x=admItem(id);if(!x)return;
