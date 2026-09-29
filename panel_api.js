@@ -8524,18 +8524,41 @@ const cfgVentas = () => ({
 });
 const LOTE_PASO = 5;
 
-/* Crea la factura en Flexxus con el número REAL (el próximo del punto de
-   venta). Lo usan los tres caminos de emisión. Devuelve { tipo, nro, d }. */
-async function crearConNumero(it) {
+/* El artículo de Flexxus de la factura (29-sep). Es el del CLIENTE: en Flexxus
+   cada uno tiene el suyo (FADEA 000001, AYRES M 000015…). Primero la foto que
+   quedó en la factura; si no (facturas armadas antes del cambio), el del
+   concepto de ese cliente. Nunca el de fact_conceptos: por ese la primera
+   factura de AYRES salió como FADEA. */
+async function articuloDelItem(it) {
+  if (it.codigo_articulo) return { codigo: it.codigo_articulo, particular: it.articulo_particular || null };
+  const { data } = await supabase.from('fact_cliente_conceptos').select('id, concepto_id, codigo_articulo, articulo_particular, activo')
+    .eq('cliente_id', it.cliente_id);
+  const L = (data || []).filter(x => x.codigo_articulo);
+  const cc = (it.cliente_concepto_id && L.find(x => x.id === it.cliente_concepto_id))
+    || L.find(x => x.concepto_id === it.concepto_id && x.activo !== false);
+  return cc ? { codigo: cc.codigo_articulo, particular: cc.articulo_particular || null } : null;
+}
+
+/* El punto de venta de un número de Flexxus (punto × 100.000.000 + número). */
+const puntoDeNumero = n => (Number(n) >= 1e8 ? Math.floor(Number(n) / 1e8) : null);
+
+/* Arma TODO lo que se le manda a /ordenmanual, sin mandarlo. Lo usan la
+   emisión y la vista previa "Ver lo que se envía" (29-sep: la FB 1081 salió
+   en el punto 0006 y con artículo FADEA; hay que poder ver el cuerpo exacto). */
+async function armarEnvio(it) {
   const flx = require('./flexxus');
   const cfg = cfgVentas();
   const tipo = it.tipo_comprobante;
+  const art = await articuloDelItem(it);
   // Antes de llamar a Flexxus: si al cliente le falta algo, se avisa claro acá.
-  const falta = FV.problemasCliente(it.fact_clientes, it.fact_conceptos);
+  const falta = FV.problemasCliente(it.fact_clientes, it.fact_conceptos, art && art.codigo);
   if (falta.length) { const e = new Error(`${it.fact_clientes.nombre}: ${falta.join(' · ')}. Completalo en Clientes → Editar.`); e.status = 422; throw e; }
-  // Piso: la última que emitimos nosotros de ese tipo (por si el listado de Flexxus demora).
+  // Piso: la última que emitimos nosotros de ese tipo EN ESTE PUNTO (por si el
+  // listado de Flexxus demora). Las de otro punto (la 0006-1081) no cuentan.
   const { data: u } = await supabase.from('fact_items').select('numero_comprobante')
-    .eq('tipo_comprobante', tipo).not('numero_comprobante', 'is', null).order('numero_comprobante', { ascending: false }).limit(1);
+    .eq('tipo_comprobante', tipo).not('numero_comprobante', 'is', null)
+    .gte('numero_comprobante', cfg.puntoVenta * 1e8).lt('numero_comprobante', (cfg.puntoVenta + 1) * 1e8)
+    .order('numero_comprobante', { ascending: false }).limit(1);
   const piso = u && u[0] ? Number(u[0].numero_comprobante) : null;
   // Los datos completos del cliente: se traen de Flexxus la PRIMERA vez y se
   // guardan; las facturas siguientes a ese cliente no vuelven a consultar.
@@ -8545,15 +8568,36 @@ async function crearConNumero(it) {
     await supabase.from('fact_clientes').update({ datos_flexxus: datos }).eq('id', it.cliente_id);
   }
   const nro = await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
-  const body = FV.armarComprobante(it, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
+  const body = FV.armarComprobante({ ...it, codigo_articulo: art.codigo }, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
   body.carrito.numerocomprobante = nro;
   body.carrito.cliente = FV.clienteParaFlexxus(datos, it.fact_clientes);
-  try {
-    const d = await flx.crearFacturaVenta(body);
-    const real = Number(d.numerocomprobante) || nro;
-    flx.numeroVentaUsado(tipo, cfg.puntoVenta, real);
-    return { tipo: d.tipocomprobante || tipo, nro: real, d };
-  } catch (e) { flx.numeroVentaOlvidar(tipo, cfg.puntoVenta); throw e; }
+  return { cfg, tipo, nro, art, body };
+}
+
+/* Crea la factura en Flexxus con el número REAL (el próximo del punto de
+   venta). Lo usan los tres caminos de emisión. Devuelve { tipo, nro, d }.
+   `d` guarda la respuesta de Flexxus Y lo que se le mandó (_enviado). */
+async function crearConNumero(it) {
+  const flx = require('./flexxus');
+  const { cfg, tipo, nro, art, body } = await armarEnvio(it);
+  await supabase.from('fact_items').update({ codigo_articulo: art.codigo, articulo_particular: art.particular }).eq('id', it.id);
+  let d;
+  try { d = await flx.crearFacturaVenta(body); }
+  catch (e) { flx.numeroVentaOlvidar(tipo, cfg.puntoVenta); e.data = { ...(e.data || {}), _enviado: body }; throw e; }
+  const real = Number(d.numerocomprobante) || nro;
+  const guardar = { ...d, _enviado: body };
+  // Control (29-sep): si Flexxus la creó en OTRO punto de venta, no se le pide
+  // el CAE, queda marcada para anular y se frena la tanda.
+  const pv = puntoDeNumero(real);
+  if (pv != null && pv !== Number(cfg.puntoVenta)) {
+    flx.numeroVentaOlvidar(tipo, cfg.puntoVenta);
+    const alerta = `Flexxus la creó en el punto ${String(pv).padStart(4, '0')} y no en el ${String(cfg.puntoVenta).padStart(4, '0')}. Anulala en Flexxus y avisá antes de seguir.`;
+    await supabase.from('fact_items').update({ estado: 'anular', tipo_comprobante: d.tipocomprobante || tipo, numero_comprobante: real,
+      respuesta: guardar, error: alerta, updated_at: new Date().toISOString() }).eq('id', it.id);
+    const e = new Error(alerta); e.status = 409; e.data = guardar; e.frenar = true; throw e;
+  }
+  flx.numeroVentaUsado(tipo, cfg.puntoVenta, real);
+  return { tipo: d.tipocomprobante || tipo, nro: real, d: guardar };
 }   // facturas por llamada: Flexxus tarda y Railway corta a los 30 s
 
 async function cargarConfigFact() {
@@ -8622,7 +8666,8 @@ function abmFact(tabla, campos) {
   });
 }
 abmFact('conceptos', ['nombre', 'plantilla', 'codigo_articulo', 'usa_cantidad', 'activo']);
-abmFact('cliente_conceptos', ['cliente_id', 'concepto_id', 'modo', 'precio_unitario', 'importe_fijo', 'orden', 'activo']);
+abmFact('cliente_conceptos', ['cliente_id', 'concepto_id', 'modo', 'precio_unitario', 'importe_fijo', 'orden', 'activo',
+  'codigo_articulo', 'articulo_particular', 'articulo_descripcion']);
 abmFact('clientes', ['nombre', 'alias_planilla', 'codigo_cliente', 'cuit', 'tipo_comprobante', 'porcentaje_iva',
   'codigo_multiplazo', 'concepto_id', 'centro_costo', 'email', 'email_cc', 'activo',
   'centro_costo_id', 'clase_comprobante', 'condicion_iva', 'codigo_vendedor', 'datos_flexxus']);
@@ -8739,12 +8784,15 @@ router.post('/api/facturacion/lotes', auth, async (req, res) => {
     const { periodo, fecha, filas } = req.body || {};
     const errFecha = FV.validarFecha(fecha);
     if (errFecha) return res.status(400).json({ error: errFecha });
-    const { clientes, conceptos } = await cargarConfigFact();
+    const { clientes, conceptos, clienteConceptos } = await cargarConfigFact();
     const ok = [], fijos = [];
     for (const f of (filas || [])) {
       const cli = clientes.find(c => c.id === f.cliente_id);
       const conc = cli && conceptos.find(k => k.id === f.concepto_id);
-      if (!cli || FV.problemasCliente(cli, conc).length) continue;
+      // El artículo sale de la base (el del cliente), no de lo que manda el navegador.
+      const cc = cli && ((f.cliente_concepto_id && clienteConceptos.find(x => x.id === f.cliente_concepto_id))
+        || clienteConceptos.find(x => x.cliente_id === cli.id && x.concepto_id === f.concepto_id));
+      if (!cli || FV.problemasCliente(cli, conc, cc && cc.codigo_articulo).length) continue;
       const neto = FV.netoDeFila(f);
       if (!(neto > 0)) continue;
       const cant = f.modo === 'cantidad' ? Number(f.cantidad) || 0 : 1;
@@ -8753,7 +8801,8 @@ router.post('/api/facturacion/lotes', auth, async (req, res) => {
       // con la cantidad real. Si alguien lo escribió a mano, se respeta.
       let desc = f.descripcion;
       if (f.modo === 'cantidad' && (!desc || desc === FV.textoConcepto(conc.plantilla, periodo, 0))) desc = FV.textoConcepto(conc.plantilla, periodo, cant);
-      ok.push({ cliente_id: cli.id, concepto_id: conc.id, cliente_concepto_id: f.cliente_concepto_id || null,
+      ok.push({ cliente_id: cli.id, concepto_id: conc.id, cliente_concepto_id: (cc && cc.id) || null,
+        codigo_articulo: cc.codigo_articulo, articulo_particular: cc.articulo_particular || null,
         descripcion: String(desc || FV.textoConcepto(conc.plantilla, periodo, cant)).toUpperCase(),
         cantidad: cant || 1, precio_unitario: f.modo === 'cantidad' ? Number(f.precio_unitario) || null : null,
         neto: m.neto, iva: m.iva, total: m.total, tipo_comprobante: cli.tipo_comprobante });
@@ -8786,7 +8835,6 @@ router.post('/api/facturacion/suelta', auth, async (req, res) => {
     const { clientes, conceptos } = await cargarConfigFact();
     const conc = conceptos.find(k => k.id === b.concepto_id && k.activo !== false);
     if (!conc) return res.status(400).json({ error: 'Elegí un concepto' });
-    if (!conc.codigo_articulo) return res.status(400).json({ error: 'Ese concepto no tiene artículo de Flexxus' });
     let cli;
     if (b.cliente_id) {
       cli = clientes.find(c => c.id === b.cliente_id);
@@ -8815,7 +8863,13 @@ router.post('/api/facturacion/suelta', auth, async (req, res) => {
         cli = data;
       }
     }
-    if (FV.problemasCliente(cli, conc).length) return res.status(400).json({ error: FV.problemasCliente(cli, conc).join(' · ') });
+    // Artículo: el elegido en el formulario o, si no, el que el cliente tiene para ese concepto.
+    const { clienteConceptos } = await cargarConfigFact();
+    const ccArt = clienteConceptos.find(x => x.cliente_id === cli.id && x.concepto_id === conc.id && x.codigo_articulo);
+    const art = b.codigo_articulo ? { codigo: String(b.codigo_articulo), particular: b.articulo_particular || null }
+      : ccArt ? { codigo: ccArt.codigo_articulo, particular: ccArt.articulo_particular || null } : null;
+    const probs = FV.problemasCliente(cli, conc, art && art.codigo);
+    if (probs.length) return res.status(400).json({ error: probs.join(' · ') });
     const cant = Number(b.cantidad) || 1;
     const precio = Number(b.precio_unitario) || 0;
     const m = FV.calcularIva(cant * precio, cli.porcentaje_iva);
@@ -8827,6 +8881,7 @@ router.post('/api/facturacion/suelta', auth, async (req, res) => {
       .select().single();
     if (error) throw error;
     const { error: e2 } = await supabase.from('fact_items').insert({ lote_id: lote.id, cliente_id: cli.id, concepto_id: conc.id,
+      codigo_articulo: art.codigo, articulo_particular: art.particular,
       descripcion: String(b.descripcion || FV.textoConcepto(conc.plantilla, periodo, cant)).toUpperCase().slice(0, 2000),
       cantidad: cant, precio_unitario: precio, neto: m.neto, iva: m.iva, total: m.total, tipo_comprobante: cli.tipo_comprobante });
     if (e2) throw e2;
@@ -8937,6 +8992,9 @@ router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
       .select('*, fact_clientes(*), fact_conceptos(*), fact_lotes(fecha_comprobante)').eq('id', req.params.id).single();
     if (error || !it) return res.status(404).json({ error: 'No encontré la factura' });
     if (!['borrador', 'generada'].includes(it.estado)) return res.json({ ok: true, ya: true, estado: it.estado });
+    const pvIt = puntoDeNumero(it.numero_comprobante);
+    if (pvIt != null && pvIt !== Number(cfgVentas().puntoVenta))
+      return res.status(409).json({ error: `Está en el punto ${String(pvIt).padStart(4, '0')}: no se le pide CAE. Anulala en Flexxus y sacala del panel.` });
     let tipo = it.tipo_comprobante, nro = it.numero_comprobante;
     try {
       if (it.estado === 'borrador') {
@@ -8949,17 +9007,46 @@ router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
       await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta, updated_at: new Date().toISOString() }).eq('id', it.id);
       res.json({ ok: true, estado: 'cae', cae, numero: nro });
     } catch (e) {
-      await supabase.from('fact_items').update({ error: String(e.message || e).slice(0, 500), respuesta: e.data || null,
-        updated_at: new Date().toISOString() }).eq('id', it.id);
+      // La respuesta de la creación NO se pisa si después falla el CAE (29-sep:
+      // se perdió la de la 0006-1081, que era justo la que había que mirar).
+      const upd = { error: String(e.message || e).slice(0, 500), updated_at: new Date().toISOString() };
+      if (e.data) upd.respuesta = e.data;
+      await supabase.from('fact_items').update(upd).eq('id', it.id);
       res.status(e.status === 423 ? 423 : 502).json({ error: e.message });
     }
   } catch (err) { console.error('fact emitir uno:', err); res.status(500).json({ error: err.message }); }
 });
 
+/* Diagnóstico (29-sep), SOLO LECTURA. "Ver lo que se envía": el cuerpo exacto
+   de /ordenmanual para una pendiente, sin mandarlo. Lee el próximo número y,
+   si falta, la ficha del cliente; no crea nada. */
+router.get('/api/facturacion/items/:id/envio', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items')
+      .select('*, fact_clientes(*), fact_conceptos(*), fact_lotes(fecha_comprobante)').eq('id', req.params.id).single();
+    if (!it) return res.status(404).json({ error: 'No encontré la factura' });
+    const { nro, art, body } = await armarEnvio(it);
+    res.json({ numero: nro, numero_texto: require('./flexxus').formatearNumeroFlexxus(nro), articulo: art, body,
+      enviado_antes: (it.respuesta && it.respuesta._enviado) || null });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+/* "Leer de Flexxus": la factura tal como quedó guardada allá (solo lectura). */
+router.get('/api/facturacion/items/:id/flexxus', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items').select('tipo_comprobante, numero_comprobante, respuesta').eq('id', req.params.id).single();
+    if (!it || !it.numero_comprobante) return res.status(404).json({ error: 'Esa factura todavía no está en Flexxus' });
+    const { leerFacturaVenta } = require('./flexxus');
+    res.json({ en_flexxus: await leerFacturaVenta(it.tipo_comprobante, it.numero_comprobante), guardado_en_panel: it.respuesta || null });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 router.delete('/api/facturacion/items/:id', auth, async (req, res) => {
   try {
-    const { data: it } = await supabase.from('fact_items').select('estado').eq('id', req.params.id).single();
-    if (!it || !['borrador', 'error'].includes(it.estado)) return res.status(409).json({ error: 'Solo se puede sacar una factura que todavía no se generó' });
+    const { data: it } = await supabase.from('fact_items').select('estado, numero_comprobante').eq('id', req.params.id).single();
+    // También las creadas en otro punto de venta (hay que anularlas en Flexxus; acá solo se sacan).
+    const pvIt = it && puntoDeNumero(it.numero_comprobante);
+    const otroPunto = it && it.estado !== 'cae' && it.estado !== 'enviada' && pvIt != null && pvIt !== Number(cfgVentas().puntoVenta);
+    if (!it || !(['borrador', 'error', 'anular'].includes(it.estado) || otroPunto)) return res.status(409).json({ error: 'Solo se puede sacar una factura que todavía no se generó' });
     await supabase.from('fact_items').delete().eq('id', req.params.id);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -8971,18 +9058,20 @@ async function pasoLote(loteId, estados, fn, limite) {
     .select('*, fact_clientes(*), fact_conceptos(*), fact_lotes(fecha_comprobante)')
     .eq('lote_id', loteId).in('estado', estados).order('updated_at').limit(limite || LOTE_PASO);
   if (error) throw error;
-  let hechas = 0, fallaron = 0;
+  let hechas = 0, fallaron = 0, frenado = null;
   for (const it of (data || [])) {
     try { await fn(it); hechas++; }
     catch (e) {
       fallaron++;
-      await supabase.from('fact_items').update({ error: String(e.message || e).slice(0, 500),
-        respuesta: e.data || null, updated_at: new Date().toISOString() }).eq('id', it.id);
+      const upd = { error: String(e.message || e).slice(0, 500), updated_at: new Date().toISOString() };
+      if (e.data) upd.respuesta = e.data;               // no pisar la respuesta de la creación
+      await supabase.from('fact_items').update(upd).eq('id', it.id);
+      if (e.frenar) { frenado = String(e.message); break; }   // otro punto de venta: se frena la tanda
     }
   }
   const { count } = await supabase.from('fact_items').select('id', { count: 'exact', head: true })
     .eq('lote_id', loteId).in('estado', estados);
-  return { hechas, fallaron, quedan: count || 0 };
+  return { hechas, fallaron, quedan: frenado ? 0 : (count || 0), frenado };
 }
 
 // ── 4 · Generar en Flexxus ──
