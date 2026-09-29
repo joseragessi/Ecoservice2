@@ -1556,6 +1556,38 @@ async function flxV(path, opts = {}, crudo = false, reint = true) {
   return d;
 }
 
+/**
+ * DIAGNÓSTICO de numeración (29-sep). Flexxus rechazó numerocomprobante: 0
+ * ("El numero de comprobante es requerido"), así que hay que mandarle el
+ * número real. Antes de elegir la fuente, se miran las dos que ofrece la API:
+ *   · el contador del punto de venta (parametrospuntodeventa: valor por tipo)
+ *   · la última factura emitida de cada tipo (/ventas)
+ * Solo lecturas: no emite nada.
+ */
+async function diagnosticoNumeracion(pv) {
+  const out = { punto_venta: pv, contador: null, ultimas: {}, errores: [] };
+  try {
+    const d = await flxV('/puntosdeventa?facturaelectronica=true');
+    const lista = Array.isArray(d) ? d : (d && d.data) || [];
+    const p = lista.find(x => Number(x.codigopuntoventa) === Number(pv) || Number(x.numeracion) === Number(pv)) || null;
+    out.punto_venta_flexxus = p ? { codigopuntoventa: p.codigopuntoventa, numeracion: p.numeracion, descripcion: p.descripcion } : null;
+    out.contador = p ? (p.parametrospuntodeventa || []).filter(x => /^F[AB]$|^N[CD][AB]$/i.test(String(x.tipodocumento || '')))
+      .map(x => ({ tipo: x.tipodocumento, letra: x.letra, valor: x.valor, bloqueado: x.bloqueado })) : null;
+    out.puntos_disponibles = lista.map(x => ({ codigo: x.codigopuntoventa, numeracion: x.numeracion, descripcion: x.descripcion }));
+  } catch (e) { out.errores.push('puntosdeventa: ' + e.message); }
+  const desde = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
+  for (const tipo of ['FA', 'FB']) {
+    try {
+      const d = await flxV(`/ventas?tipocomprobante=${tipo}&fechadesde=${desde}`);
+      const lista = Array.isArray(d) ? d : (d && d.data) || [];
+      const nums = lista.map(x => Number(x.numerocomprobante)).filter(n => n > 0);
+      const max = nums.length ? Math.max(...nums) : null;
+      out.ultimas[tipo] = { cantidad: nums.length, ultima: max, ultima_texto: max ? formatearNumeroFlexxus(max) : null };
+    } catch (e) { out.errores.push(tipo + ': ' + e.message); }
+  }
+  return out;
+}
+
 /** Prueba la conexión de ventas: login y una lectura liviana. */
 async function probarConexionVentas() {
   const t0 = Date.now();
@@ -1645,5 +1677,5 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
+  diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
