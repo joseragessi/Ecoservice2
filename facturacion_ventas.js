@@ -272,6 +272,9 @@ function problemasCliente(c, concepto) {
   if (!c) return ['no está configurado'];
   if (!c.codigo_cliente) p.push('sin código de cliente de Flexxus');
   if (!['FA', 'FB'].includes(c.tipo_comprobante)) p.push('sin tipo de factura');
+  // Cuenta corriente exige una condición de venta válida: 0 o vacío Flexxus
+  // lo rechaza ("el multiplazo no existe o no está habilitado", 29-sep).
+  if (!(Number(c.codigo_multiplazo) > 0)) p.push('sin condición de venta');
   if (!concepto) p.push('sin concepto');
   else if (!concepto.codigo_articulo) p.push('el concepto no tiene artículo de Flexxus');
   return p;
