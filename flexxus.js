@@ -1803,15 +1803,50 @@ async function pdfFacturaVenta(tipo, numero, email) {
 // Caché de 10 min, igual que proveedores: al configurar clientes se busca el
 // mismo nombre varias veces seguidas.
 const _cliCache = new Map();
-async function buscarClientesFlexxus(busqueda) {
-  const k = ventasUrl() + '::' + String(busqueda || '').trim().toLowerCase();   // por entorno
+/* Buscar clientes de ventas (29-sep, mejorado): la búsqueda de Flexxus es por
+   texto CORRIDO, así que "universidad catolica cordoba" no encuentra
+   "UNIVERSIDAD CATOLICA DE CORDOBA" y "4 HOJAS" no encuentra "CUATRO HOJAS".
+   Si la frase entera no trae nada, se busca palabra por palabra (la más larga
+   primero) y se quedan los que tienen TODAS las palabras, sin tildes ni
+   mayúsculas. Un CUIT se prueba con y sin guiones. Solo facturación de ventas. */
+const _normCli = t => String(t || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const _NUM = { 1: 'UNO', 2: 'DOS', 3: 'TRES', 4: 'CUATRO', 5: 'CINCO', 6: 'SEIS', 7: 'SIETE', 8: 'OCHO', 9: 'NUEVE', 10: 'DIEZ' };
+const _VACIAS = new Set(['DE', 'DEL', 'LA', 'LAS', 'EL', 'LOS', 'Y', 'SA', 'SRL', 'SAS', 'S', 'A', 'R', 'L', 'C']);
+async function _buscarCli1(q) {
+  const k = ventasUrl() + '::' + String(q || '').trim().toLowerCase();   // por entorno
   const ya = _cliCache.get(k);
   if (ya && Date.now() - ya.t < PROV_TTL) return ya.v;
-  const d = await flxV('/clientes/busquedavariada/' + encodeURIComponent(busqueda));
-  const v = Array.isArray(d) ? d : (d && (d.data || d.clientes)) || [];
+  let v = [];
+  try { const d = await flxV('/clientes/busquedavariada/' + encodeURIComponent(q)); v = Array.isArray(d) ? d : (d && (d.data || d.clientes)) || []; }
+  catch (e) { v = []; }
   _cliCache.set(k, { t: Date.now(), v });
   if (_cliCache.size > 200) _cliCache.delete(_cliCache.keys().next().value);
   return v;
+}
+async function buscarClientesFlexxus(busqueda) {
+  const q = String(busqueda || '').trim();
+  let r = await _buscarCli1(q);
+  if (r.length) return r;
+  const dig = q.replace(/\D/g, '');
+  if (dig.length === 11) {                                    // CUIT con y sin guiones
+    r = await _buscarCli1(dig); if (r.length) return r;
+    r = await _buscarCli1(`${dig.slice(0, 2)}-${dig.slice(2, 10)}-${dig.slice(10)}`); if (r.length) return r;
+  }
+  const pal = _normCli(q).split(' ').map(w => _NUM[w] || w).filter(w => w.length >= 3 && !_VACIAS.has(w));
+  if (!pal.length) return [];
+  const orden = [...pal].sort((a, b) => b.length - a.length).slice(0, 3);
+  const vistos = new Map();
+  for (const w of orden) {
+    for (const c of await _buscarCli1(w)) { const id = String(c.codigocliente); if (!vistos.has(id)) vistos.set(id, c); }
+  }
+  const texto = c => _normCli([c.razonsocial, c.nombrefantasia, c.codigoparticular].filter(Boolean).join(' '));
+  const todas = [...vistos.values()].filter(c => pal.every(w => texto(c).includes(w)));
+  if (todas.length) return todas;
+  // Si ninguna tiene todas las palabras, las que tienen más (útil para elegir a mano).
+  const puntaje = c => pal.filter(w => texto(c).includes(w)).length;
+  const parc = [...vistos.values()].filter(c => puntaje(c) >= Math.max(1, pal.length - 1)).sort((a, b) => puntaje(b) - puntaje(a)).slice(0, 20);
+  parc.parcial = true;                      // "Completar" automático no las toma: solo para elegir a mano
+  return parc;
 }
 async function listarPuntosVenta() {
   const d = await flxV('/puntosdeventa?facturaelectronica=true');
