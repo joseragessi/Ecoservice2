@@ -1719,13 +1719,44 @@ async function crearFacturaVenta(body) {
 }
 
 /** Pide el CAE a ARCA a través de Flexxus. Devuelve el CAE. */
+/* Pedir el CAE (29-sep). La documentación dice POST /facturacionelectronica,
+   pero la instalación de EcoService responde "la ruta no existe": la API de
+   ellos es anterior. Se prueba esa y la variante /facturaelectronica; si
+   ninguna existe, el CAE se pide desde Flexxus (Ventas → Facturación
+   electrónica → Solicitar CAE) y el panel lo lee con leerCAE(). */
+let _sinRutaCAE = false;
 async function pedirCAE(tipocomprobante, numerocomprobante) {
   exigirVentas();
-  const d = await flxV('/facturacionelectronica', { method: 'POST',
-    body: JSON.stringify({ tipocomprobante, numerocomprobante: Number(numerocomprobante) }) });
-  const cae = d && (d.CAE || d.cae);
-  if (!cae) { const e = new Error('Flexxus no devolvió CAE: ' + JSON.stringify(d).slice(0, 200)); e.data = d; throw e; }
-  return { cae: String(cae), respuesta: d };
+  // Si ya tiene CAE (porque lo pidieron desde Flexxus), no se vuelve a pedir.
+  try { const ya = await leerCAE(tipocomprobante, numerocomprobante); if (ya) return ya; } catch (e) { /* se sigue */ }
+  if (!_sinRutaCAE) {
+    const body = JSON.stringify({ tipocomprobante, numerocomprobante: Number(numerocomprobante) });
+    for (const ruta of ['/facturacionelectronica', '/facturaelectronica']) {
+      try {
+        const d = await flxV(ruta, { method: 'POST', body });
+        const cae = d && (d.CAE || d.cae || (d.data && (d.data.CAE || d.data.cae)));
+        if (cae) return { cae: String(typeof cae === 'object' ? cae.cae : cae), respuesta: d };
+        const e = new Error('Flexxus no devolvió CAE: ' + JSON.stringify(d).slice(0, 200)); e.data = d; throw e;
+      } catch (e) {
+        if (/no existe en el api|cannot post|not found/i.test(e.message) || e.status === 404) continue;
+        throw e;
+      }
+    }
+    _sinRutaCAE = true;   // no volver a probar hasta el próximo reinicio
+  }
+  const e = new Error('La factura ya está en Flexxus, pero esta versión de Flexxus no deja pedir el CAE por la API. '
+    + 'Pedilo desde Flexxus (Ventas → Facturación electrónica → Solicitar CAE) y después tocá "Traer CAE de Flexxus".');
+  e.status = 409; e.sinRuta = true; throw e;
+}
+
+/** Lee el CAE de una factura ya creada (null si todavía no tiene). */
+async function leerCAE(tipocomprobante, numerocomprobante) {
+  const d = await flxV('/comprobantesventas/' + encodeURIComponent(tipocomprobante) + '/' + encodeURIComponent(numerocomprobante));
+  const f = Array.isArray(d) ? d[0] : (d && Array.isArray(d.data) ? d.data[0] : (d && d.data) || d);
+  const c = f && f.cae;
+  const cae = c && (typeof c === 'object' ? c.cae : c);
+  if (!cae || !String(cae).trim() || /^0+$/.test(String(cae))) return null;
+  return { cae: String(cae).trim(), vencimiento: c && c.vencimientocae || null, respuesta: { leido: true } };
 }
 
 /** Relee la factura en Flexxus (para traer vencimiento del CAE, total final, etc.). */
@@ -1768,6 +1799,6 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  listarMultiplazosVenta, buscarArticulosFlexxus, leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
+  leerCAE, listarMultiplazosVenta, buscarArticulosFlexxus, leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
   diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
