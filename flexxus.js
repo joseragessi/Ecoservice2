@@ -1565,25 +1565,36 @@ async function flxV(path, opts = {}, crudo = false, reint = true) {
  * Solo lecturas: no emite nada.
  */
 async function diagnosticoNumeracion(pv) {
-  const out = { punto_venta: pv, contador: null, ultimas: {}, errores: [] };
+  const out = { punto_venta_config: pv, puntos: [], facturas_electronicas: {}, errores: [] };
+  // Los contadores de TODOS los puntos, tal cual vienen (sin filtrar por nombre).
   try {
-    const d = await flxV('/puntosdeventa?facturaelectronica=true');
+    const d = await flxV('/puntosdeventa');
     const lista = Array.isArray(d) ? d : (d && d.data) || [];
-    const p = lista.find(x => Number(x.codigopuntoventa) === Number(pv) || Number(x.numeracion) === Number(pv)) || null;
-    out.punto_venta_flexxus = p ? { codigopuntoventa: p.codigopuntoventa, numeracion: p.numeracion, descripcion: p.descripcion } : null;
-    out.contador = p ? (p.parametrospuntodeventa || []).filter(x => /^F[AB]$|^N[CD][AB]$/i.test(String(x.tipodocumento || '')))
-      .map(x => ({ tipo: x.tipodocumento, letra: x.letra, valor: x.valor, bloqueado: x.bloqueado })) : null;
-    out.puntos_disponibles = lista.map(x => ({ codigo: x.codigopuntoventa, numeracion: x.numeracion, descripcion: x.descripcion }));
+    out.puntos = lista.map(p => ({ codigo: p.codigopuntoventa, numeracion: p.numeracion, descripcion: p.descripcion,
+      electronica: p.facturaelectronica, contadores: (p.parametrospuntodeventa || [])
+        .map(x => ({ tipo: x.tipodocumento, letra: x.letra, valor: x.valor, desc: x.descripcion })) }));
   } catch (e) { out.errores.push('puntosdeventa: ' + e.message); }
-  const desde = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
-  for (const tipo of ['FA', 'FB']) {
-    try {
-      const d = await flxV(`/ventas?tipocomprobante=${tipo}&fechadesde=${desde}`);
-      const lista = Array.isArray(d) ? d : (d && d.data) || [];
-      const nums = lista.map(x => Number(x.numerocomprobante)).filter(n => n > 0);
-      const max = nums.length ? Math.max(...nums) : null;
-      out.ultimas[tipo] = { cantidad: nums.length, ultima: max, ultima_texto: max ? formatearNumeroFlexxus(max) : null };
-    } catch (e) { out.errores.push(tipo + ': ' + e.message); }
+  // Las últimas facturas electrónicas de los puntos electrónicos, probando formatos de fecha.
+  const h = new Date(Date.now() - 45 * 864e5);
+  const fechas = [h.toISOString().slice(0, 10),
+    `${String(h.getDate()).padStart(2, '0')}/${String(h.getMonth() + 1).padStart(2, '0')}/${h.getFullYear()}`,
+    `${String(h.getDate()).padStart(2, '0')}-${String(h.getMonth() + 1).padStart(2, '0')}-${h.getFullYear()}`];
+  for (const cp of ['002', '003']) {
+    for (const f of fechas) {
+      try {
+        const d = await flxV(`/ventas/facturaselectronicas?fechacomprobantedesde=${encodeURIComponent(f)}&codigospuntodeventa=${cp}&limit=500`);
+        const lista = Array.isArray(d) ? d : (d && d.data) || [];
+        const porTipo = {};
+        lista.forEach(x => {
+          const t = x.tipocomprobante || (x.tiposcomprobantes && x.tiposcomprobantes.codigotipocomprobante) || '?';
+          const n = Number(x.numerocomprobante);
+          if (n > 0 && !(porTipo[t] && porTipo[t].num >= n)) porTipo[t] = { num: n, texto: formatearNumeroFlexxus(n), fecha: x.fechacomprobante, cae: !!(x.cae && x.cae.cae) };
+        });
+        out.facturas_electronicas[cp] = { formato_fecha: f, cantidad: lista.length, ultima_por_tipo: porTipo,
+          ejemplo: lista[0] ? { tipocomprobante: lista[0].tipocomprobante, numerocomprobante: lista[0].numerocomprobante } : null };
+        break;
+      } catch (e) { out.errores.push(`facturaselectronicas ${cp} (${f}): ${e.message.slice(0, 120)}`); }
+    }
   }
   return out;
 }
