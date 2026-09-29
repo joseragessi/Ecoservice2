@@ -8682,6 +8682,16 @@ router.post('/api/facturacion/clientes/completar', auth, async (req, res) => {
   } catch (err) { console.error('fact completar:', err); res.status(err.status || 500).json({ error: err.message }); }
 });
 
+// Buscar artículos en Flexxus (para el código de artículo de cada concepto).
+router.get('/api/facturacion/flexxus/articulos', auth, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json([]);
+    const { buscarArticulosFlexxus } = require('./flexxus');
+    res.json(await buscarArticulosFlexxus(q));
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 // La ficha completa de un cliente de Flexxus (al elegirlo en el formulario).
 router.get('/api/facturacion/flexxus/cliente/:codigo', auth, async (req, res) => {
   try { const { leerClienteVenta } = require('./flexxus'); res.json(await leerClienteVenta(req.params.codigo)); }
