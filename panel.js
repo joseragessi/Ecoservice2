@@ -12697,7 +12697,8 @@ function admClonSet(i,k,v){
 function admClonAumento(v){_clon.aumento=v;try{localStorage.setItem('adm_aumento',v);}catch(e){}admClonCalc();admClonPintar(true);}
 function admClonPintar(soloFilas){
   const bg=document.getElementById('adm-clon');if(!bg||!_clon)return;
-  const C=_clon,F=C.filas,sel=F.filter(f=>f.sel&&Number(f.neto)>0);
+  const C=_clon,F=C.filas,sel=F.filter(f=>f.sel&&Number(f.neto)>0),sinImp=F.filter(f=>f.sel&&!(Number(f.neto)>0)).length;
+  const avisoSin=sinImp?` · <span style="color:#854F0B">${sinImp} tildada${sinImp===1?'':'s'} sin importe</span>`:'';
   const tot=sel.reduce((s,f)=>s+Number(f.neto)*(1+f.iva_pct/100),0);
   const pctTxt=n=>(Math.round(n*100000)/1000).toLocaleString('es-AR',{maximumFractionDigits:3});
   const inp=(i,k,v,w,extra)=>`<input type="number" step="0.01" value="${v==null?'':v}" onchange="admClonSet(${i},'${k}',this.value)" style="width:${w}px" class="${extra||''}">`;
@@ -12714,7 +12715,7 @@ function admClonPintar(soloFilas){
       <td class="r mono hm">${Number(f.neto)>0?money(f.neto*(1+f.iva_pct/100)):'—'}</td></tr>`;}).join('');
   if(soloFilas&&document.getElementById('clon-body')){
     document.getElementById('clon-body').innerHTML=filas;
-    document.getElementById('clon-tot').innerHTML=`<b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span>`;
+    document.getElementById('clon-tot').innerHTML=`<b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span>${avisoSin}`;
     const b=document.getElementById('clon-ok');if(b){b.disabled=!sel.length;b.textContent=`Armar ${sel.length} factura${sel.length===1?'':'s'} →`;}
     return;
   }
@@ -12730,13 +12731,13 @@ function admClonPintar(soloFilas){
       <div><label>Fecha de las facturas</label><input type="date" value="${C.fecha}" min="${min}" max="${hoy}" onchange="_clon.fecha=this.value" class="in"></div>
     </div>
     <div style="padding:8px 22px;display:flex;gap:6px;align-items:center">
-      <button class="btn-salir" onclick="_clon.filas.forEach(f=>{if(!f.problemas.length&&Number(f.neto)>0)f.sel=true});admClonPintar()">Marcar todas</button>
+      <button class="btn-salir" onclick="_clon.filas.forEach(f=>{if(!f.problemas.length)f.sel=true});admClonPintar()">Marcar todas</button>
       <button class="btn-salir" onclick="_clon.filas.forEach(f=>f.sel=false);admClonPintar()">Desmarcar todas</button>
       <span class="sub" style="margin-left:auto;font-size:11.5px">Lo que cambies a mano queda en ámbar y el aumento ya no lo toca.</span></div>
     <div class="adm-concs" style="padding:0 12px"><table class="clon-t"><thead><tr><th style="width:26px"></th><th>Cliente · concepto</th><th class="r hm">${escStk(ADM_MES[+C.origen.split('-')[1]-1])}</th><th class="hm">% mano de obra ✎</th><th class="r">Aumento</th><th class="r">${escStk(ADM_MES[+C.periodo.split('-')[1]-1])} (neto)</th><th class="r hm">Total c/IVA</th></tr></thead>
       <tbody id="clon-body">${filas}</tbody></table></div>
     <div style="padding:10px 22px;border-top:1px solid var(--linea)"><label style="font-size:12.5px;display:flex;gap:7px;align-items:center"><input type="checkbox" ${C.guardarPct?'checked':''} onchange="_clon.guardarPct=this.checked"> Guardar los % que cambié en la ficha de cada cliente (para los próximos meses)</label></div>
-    <div class="mf"><span id="clon-tot"><b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span></span>
+    <div class="mf"><span id="clon-tot"><b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span>${avisoSin}</span>
       <span style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-clon').remove()">Cancelar</button>
       <button class="btn" id="clon-ok" ${sel.length?'':'disabled'} onclick="admClonArmar()">Armar ${sel.length} factura${sel.length===1?'':'s'} →</button></span></div></div>`;
 }
