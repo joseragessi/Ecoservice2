@@ -13163,7 +13163,7 @@ const ADM_CSS=`<style>
 .adm-chipf.on{background:var(--tinta);color:#fff;border-color:var(--tinta)}.adm-chipf.on small{color:rgba(255,255,255,.65)}
 .adm-lista{background:#fff;border-radius:16px;box-shadow:0 1px 2px rgba(22,40,30,.05),0 4px 14px rgba(22,40,30,.06);overflow:hidden;border:1px solid var(--linea)}
 .adm-row{display:grid;grid-template-columns:44px minmax(180px,1.7fr) 1fr .9fr 1.3fr .9fr 150px;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--linea);cursor:pointer}
-.adm-row:hover{background:var(--hueso)}.adm-row.h{border-top:0;background:var(--hueso);cursor:default;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tinta-3);font-weight:700;padding:9px 16px}
+.adm-row:hover{background:var(--hueso)}.adm-row .r .btn,.adm-row .r .btn-salir{white-space:nowrap}.adm-row.h{border-top:0;background:var(--hueso);cursor:default;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tinta-3);font-weight:700;padding:9px 16px}
 .adm-row .r{text-align:right}.adm-row.err-row{background:#FFFBFB}
 .adm-row .cli b{display:block;font-size:13.5px}.adm-row .cli span{display:block;font-size:11.5px;color:var(--tinta-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .adm-row .cli .e{color:#A3253A;white-space:normal}
