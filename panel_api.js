@@ -8530,6 +8530,9 @@ async function crearConNumero(it) {
   const flx = require('./flexxus');
   const cfg = cfgVentas();
   const tipo = it.tipo_comprobante;
+  // Antes de llamar a Flexxus: si al cliente le falta algo, se avisa claro acá.
+  const falta = FV.problemasCliente(it.fact_clientes, it.fact_conceptos);
+  if (falta.length) { const e = new Error(`${it.fact_clientes.nombre}: ${falta.join(' · ')}. Completalo en Clientes → Editar.`); e.status = 422; throw e; }
   // Piso: la última que emitimos nosotros de ese tipo (por si el listado de Flexxus demora).
   const { data: u } = await supabase.from('fact_items').select('numero_comprobante')
     .eq('tipo_comprobante', tipo).not('numero_comprobante', 'is', null).order('numero_comprobante', { ascending: false }).limit(1);
