@@ -11733,7 +11733,12 @@ async function cargarDestinoContable(id){
       if(esBU)h+=fila('Rubro',d.rubro?((d.rubro_desc?d.rubro_desc+' · ':'')+d.rubro):'⚠ sin definir (cae en Hardware y software)',d.rubro?'':'#854F0B');
       else if(/BIENES DE CAMBIO/i.test(d.clase))h+=`<div class="sub" style="font-size:11.5px;margin-top:2px">Va a <b>MERCADERIAS</b>. Si no es mercadería, cambiale la clase acá abajo.</div>`;
       // Desplegables de clase/rubro a mano, sin tener que entrar a imputar
+      // En una ya imputada también se puede (29-sep): cambia la ficha del
+      // PROVEEDOR en Flexxus, no esta factura. Sirve para que las próximas
+      // vayan a la cuenta correcta; esta se corrige en Flexxus.
       if(!d.imputada)h+=`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;font-size:12px" onclick="abrirClaseDesdeDetalle('${id}')">✏️ Cambiar clase de comprobante / rubro</button>`;
+      else h+=`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;font-size:12px" onclick="abrirClaseDesdeDetalle('${id}')">✏️ Cambiar la clase del proveedor (para las próximas)</button>
+        <div class="sub" style="font-size:11px;margin-top:4px;line-height:1.4">Esta factura ya está imputada y no cambia: si quedó en una cuenta equivocada, la corrige Sole en Flexxus.</div>`;
     }else{
       h+=`<div class="sub" style="font-size:11.5px">No pude leer la clase de comprobante del proveedor${d.motivo_ficha?' ('+d.motivo_ficha+')':''}.</div>`;
       if(!d.imputada)h+=`<button class="btn ghost" style="width:100%;justify-content:center;margin-top:7px;font-size:12px" onclick="abrirClaseDesdeDetalle('${id}')">✏️ Elegir clase de comprobante / rubro</button>`;
