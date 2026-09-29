@@ -9040,6 +9040,31 @@ router.get('/api/facturacion/items/:id/flexxus', auth, async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
+/* Comparar dos comprobantes de venta de Flexxus (29-sep, SOLO LECTURA): una
+   buena de Sole (FB 0003-1080) contra la que salió mal (FB 0006-1081), campo
+   por campo, para ver de dónde saca Flexxus el punto de venta.
+   Uso desde la consola: api('/api/facturacion/flexxus/comparar?tipo=FB&a=300001080&b=600001081') */
+router.get('/api/facturacion/flexxus/comparar', auth, async (req, res) => {
+  try {
+    const { leerFacturaVenta } = require('./flexxus');
+    const tipo = String(req.query.tipo || 'FB'), a = String(req.query.a || ''), b = String(req.query.b || '');
+    if (!/^\d+$/.test(a) || !/^\d+$/.test(b)) return res.status(400).json({ error: 'Pasá a y b con el número completo (ej. 300001080)' });
+    const uno = x => (x && x.data) || x;
+    const [A, B] = [uno(await leerFacturaVenta(tipo, a)), uno(await leerFacturaVenta(tipo, b))];
+    const plano = (o, p = '', out = {}) => {
+      if (o && typeof o === 'object') Object.keys(o).forEach(k => plano(o[k], p ? p + '.' + k : k, out)); else out[p] = o;
+      return out; };
+    const pa = plano(A), pb = plano(B);
+    const distintos = {};
+    // Se ignoran los que obviamente cambian entre facturas (montos, fechas, textos del renglón).
+    const ignorar = /fecha|total|iva|monto|precio|descripcion|deuda|numerocomprobante|recargo|base|razonsocial|cuit|direccion|email|telefono|localidad|codigocliente|codigoparticular$/i;
+    new Set([...Object.keys(pa), ...Object.keys(pb)]).forEach(k => {
+      if (String(pa[k]) !== String(pb[k]) && !ignorar.test(k)) distintos[k] = { buena: pa[k], mala: pb[k] };
+    });
+    res.json({ distintos, buena: A, mala: B });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 router.delete('/api/facturacion/items/:id', auth, async (req, res) => {
   try {
     const { data: it } = await supabase.from('fact_items').select('estado, numero_comprobante').eq('id', req.params.id).single();
