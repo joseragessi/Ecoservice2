@@ -1669,6 +1669,20 @@ async function proximoNumeroVenta(tipo, pv, piso) {
 function numeroVentaUsado(tipo, pv, n) { _numVenta[tipo + '|' + pv] = { ultimo: Number(n), t: Date.now() }; }
 function numeroVentaOlvidar(tipo, pv) { delete _numVenta[tipo + '|' + pv]; }
 
+/** Buscar artículos en Flexxus por nombre (para elegir el del concepto). Caché 10 min. */
+const _artCache = new Map();
+async function buscarArticulosFlexxus(q) {
+  const k = ventasUrl() + '::' + String(q || '').trim().toLowerCase();
+  const ya = _artCache.get(k);
+  if (ya && Date.now() - ya.t < PROV_TTL) return ya.v;
+  const d = await flxV('/articulos?busqueda=' + encodeURIComponent(q));
+  const lista = (Array.isArray(d) ? d : (d && d.data) || []).slice(0, 30).map(a => ({
+    codigo: a.codigoarticulo, particular: a.codigoparticular || null, descripcion: a.descripcion || a.descripcionarticulo || '',
+    activo: a.activo !== false && a.inactivo !== true }));
+  _artCache.set(k, { t: Date.now(), v: lista });
+  return lista;
+}
+
 /** La ficha completa del cliente en Flexxus (una llamada; se guarda en la base). */
 async function leerClienteVenta(codigo) {
   const d = await flxV('/clientes/' + encodeURIComponent(codigo));
@@ -1742,6 +1756,6 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
+  buscarArticulosFlexxus, leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
   diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
