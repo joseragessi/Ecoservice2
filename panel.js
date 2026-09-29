@@ -13075,12 +13075,33 @@ async function admBorrarConcepto(id){
   try{await api('/api/facturacion/conceptos/'+id,{method:'DELETE'});admCfg=null;go('administracion');}
   catch(e){toast(e.message,'error');}
 }
+async function admBuscarArt(){
+  const q=admV('ac-art-q'),box=document.getElementById('ac-art-res');
+  if(q.length<3){box.innerHTML='<div class="sub">Escribí al menos 3 letras.</div>';return;}
+  box.innerHTML='<div class="sub">Buscando en Flexxus…</div>';
+  try{
+    const r=await api('/api/facturacion/flexxus/articulos?q='+encodeURIComponent(q));
+    box.innerHTML=r.length?r.map(a=>`<div onclick="admElegirArt('${escStk(a.codigo)}','${escStk(a.descripcion).replace(/'/g,'')}')" style="padding:6px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;background:var(--hueso);margin-bottom:3px;${a.activo?'':'opacity:.5'}">
+      <b class="mono">${escStk(a.codigo)}</b>${a.particular&&a.particular!==a.codigo?` <span class="sub">(${escStk(a.particular)})</span>`:''} · ${escStk(a.descripcion)}${a.activo?'':' <span class="sub">· inactivo</span>'}</div>`).join('')
+      :'<div class="sub">No encontré artículos con ese nombre.</div>';
+  }catch(e){box.innerHTML=`<div style="color:var(--rojo);font-size:12px">${escStk(e.message)}</div>`;}
+}
+function admElegirArt(cod,desc){
+  document.getElementById('ac-art').value=cod;
+  document.getElementById('ac-art-res').innerHTML='';
+  document.getElementById('ac-art-sel').innerHTML=`Elegido: <b class="mono">${escStk(cod)}</b> · ${escStk(desc)}`;
+}
 function admEditConcepto(id){
   const c=(admCfg.conceptos||[]).find(x=>x.id===id)||{usa_cantidad:false};
   admModal('Concepto',`
     ${admCampo('Nombre','ac-nombre',c.nombre,'Mantenimiento de espacios verdes')}
     ${admCampo('Cómo sale en la factura','ac-plant',c.plantilla,'Mantenimiento de espacios verdes del mes {mes}-{anio}')}
-    ${admCampo('Código de artículo en Flexxus','ac-art',c.codigo_articulo,'ej: SERV01')}
+    <label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Artículo de Flexxus</label>
+    <div style="display:flex;gap:6px"><input id="ac-art-q" placeholder="Buscalo por nombre: mantenimiento, bateas…" style="flex:1;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px" onkeydown="if(event.key==='Enter')admBuscarArt()">
+      <button class="btn-salir" onclick="admBuscarArt()">🔍</button></div>
+    <div id="ac-art-res" style="max-height:170px;overflow:auto;margin-top:6px"></div>
+    <input type="hidden" id="ac-art" value="${escStk(c.codigo_articulo||'')}">
+    <div id="ac-art-sel" style="margin-top:6px;font-size:12.5px">${c.codigo_articulo?`Elegido: <b class="mono">${escStk(c.codigo_articulo)}</b>`:'<span style="color:#854F0B">Todavía sin artículo</span>'}</div>
     <label style="display:flex;gap:7px;align-items:center;margin-top:10px;font-size:13px"><input type="checkbox" id="ac-cant" ${c.usa_cantidad?'checked':''}> Lleva cantidad (ej: viajes de bateas)</label>`,
     async()=>{await api('/api/facturacion/conceptos',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('ac-nombre'),plantilla:admV('ac-plant'),codigo_articulo:admV('ac-art'),usa_cantidad:document.getElementById('ac-cant').checked})});},
     c.id?async()=>{await api('/api/facturacion/conceptos/'+c.id,{method:'DELETE'});}:null);
