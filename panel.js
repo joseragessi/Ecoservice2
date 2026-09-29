@@ -12618,7 +12618,7 @@ function admNro(x){
   if(x.numero_estimado)return `<b class="mono">0003-${String(x.numero_estimado).padStart(8,'0')}<span class="adm-aprox">aprox.</span></b>`;
   return '<span class="sub">se asigna al emitir</span>';
 }
-function admCondVta(c){return c.codigo_multiplazo!=null?`cond. de venta ${escStk(c.codigo_multiplazo)}`:'contado';}
+function admCondVta(c){const t=admMPTxt(c.codigo_multiplazo);return t?escStk(t):'<span style="color:#854F0B">sin condición de venta</span>';}
 function admCard(x){
   const c=x.fact_clientes||{},k=x.fact_conceptos||{},[L,cod]=admLetra(x.tipo_comprobante);
   const gen=x.estado==='generada',hab=admCfg.entorno&&admCfg.entorno.habilitado;
@@ -12878,7 +12878,7 @@ function admNvRender(){
   const st='width:100%;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:13px';
   const segB=(v,t)=>`<button onclick="_nv.modo='${v}';admNvRender()" style="flex:1;padding:9px;border:2px solid ${_nv.modo===v?'var(--brote)':'var(--linea)'};border-radius:10px;background:${_nv.modo===v?'var(--brote-soft)':'#fff'};color:${_nv.modo===v?'var(--brote-2)':'var(--tinta-2)'};font-weight:700;font-family:inherit">${t}</button>`;
   const clientes=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente);
-  const listo=cli&&neto>0&&_nv.concepto_id;
+  const listo=cli&&neto>0&&_nv.concepto_id&&(_nv.modo==='mis'||_nv.mp);
   bg.innerHTML=`<div class="modal" style="max-width:600px;max-height:92vh;overflow:auto">
     <div class="modal-tit">Factura nueva</div><div class="sub">Una sola factura, fuera de la tanda del mes</div>
     ${L('Cliente')}<div style="display:flex;gap:6px">${segB('mis','De mis clientes')}${segB('otro','Otro (buscar en Flexxus)')}</div>
@@ -12901,7 +12901,10 @@ function admNvRender(){
       <div>${L('Cantidad')}<input type="number" min="1" value="${_nv.cantidad}" onchange="_nv.cantidad=Number(this.value)||1;admNvRender()" style="${st};text-align:right"></div>
       <div>${L('Precio unitario')}<input type="number" step="0.01" value="${_nv.precio}" onchange="_nv.precio=this.value;admNvRender()" style="${st};text-align:right"></div>
       ${_nv.modo==='otro'?`<div>${L('IVA')}<select onchange="_nv.iva=Number(this.value);admNvRender()" style="${st}">${[21,10.5,27,0].map(v=>`<option value="${v}" ${_nv.iva===v?'selected':''}>${v?v+'%':'Exento'}</option>`).join('')}</select></div>`:''}</div>
-    ${_nv.modo==='otro'?`${L('Email')}<input value="${escStk(_nv.email||'')}" oninput="_nv.email=this.value" placeholder="para mandarle la factura" style="${st}">`:''}
+    ${_nv.modo==='otro'&&_nv.flx?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div>${L('Condición de venta')}<select onchange="_nv.mp=Number(this.value)||null;admNvRender()" style="${st};${_nv.mp?'':'border-color:#D98A1F;background:#FBF0DC'}">
+        <option value="">— elegila —</option>${(window._admMP||[]).map(m=>`<option value="${m.codigo}" ${m.codigo===_nv.mp?'selected':''}>${escStk(m.descripcion)}</option>`).join('')}</select></div>
+      <div>${L('Email')}<input value="${escStk(_nv.email||'')}" oninput="_nv.email=this.value" placeholder="para mandarle la factura" style="${st}"></div></div>`:''}
     <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--hueso);border:1px solid var(--linea);border-radius:10px;padding:11px 13px;margin-top:14px">
       <span class="sub">Neto ${money(neto)} · IVA ${iva}% ${money(iv)}</span><b class="mono" style="font-size:18px">${money(neto+iv)}</b></div>
     <div class="modal-acciones" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -12920,11 +12923,16 @@ async function admNvBuscar(){
       :'<div class="sub">No está en Flexxus. Si es nuevo, primero hay que darlo de alta allá.</div>';
   }catch(e){box.innerHTML=`<div style="color:var(--rojo);font-size:12px">${escStk(e.message)}</div>`;}
 }
-function admNvElegir(i){const c=window._nvRes[i];_nv.flx=c;if(c.email&&!_nv.email)_nv.email=c.email;admNvRender();}
+async function admNvElegir(i){
+  const c=window._nvRes[i];_nv.flx=c;if(c.email&&!_nv.email)_nv.email=c.email;
+  _nv.mp=Number(c.codigo_multiplazo)>0?Number(c.codigo_multiplazo):null;
+  try{if(!window._admMP)window._admMP=await api('/api/facturacion/flexxus/multiplazos');}catch(e){}
+  admNvRender();
+}
 async function admNvCrear(){
   const b={fecha:_nv.fecha,concepto_id:_nv.concepto_id,descripcion:_nv.descripcion,cantidad:_nv.cantidad,precio_unitario:Number(_nv.precio)};
   if(_nv.modo==='mis')b.cliente_id=_nv.cliente_id;
-  else Object.assign(b,{cliente_flexxus:_nv.flx,tipo_comprobante:_nv.flx.tipo_comprobante,porcentaje_iva:_nv.iva,email:_nv.email,guardar:_nv.guardar});
+  else Object.assign(b,{cliente_flexxus:_nv.flx,tipo_comprobante:_nv.flx.tipo_comprobante,porcentaje_iva:_nv.iva,email:_nv.email,guardar:_nv.guardar,codigo_multiplazo:_nv.mp});
   try{
     const r=await api('/api/facturacion/suelta',{method:'POST',body:JSON.stringify(b)});
     document.getElementById('adm-nv').remove();
@@ -13194,6 +13202,8 @@ function admEditCliente(id){
       <div>${lbl('Clase')}${sel('acl-clase',[[2,'Servicios'],[0,'Bienes de cambio']],c.clase_comprobante??2)}</div>
       <div>${lbl('IVA')}${sel('acl-iva',[[21,'21%'],[10.5,'10,5%'],[27,'27%'],[0,'Exento']],c.porcentaje_iva??21)}</div>
       <div>${lbl('Tipo de factura')}${sel('acl-tipo',[['FA','A'],['FB','B']],c.tipo_comprobante||'FA')}</div>
+      <div>${lbl('Condición de venta')}<select id="acl-mp-sel" onchange="document.getElementById('acl-mp').value=this.value;this.style.borderColor=this.value?'var(--linea-2)':'#D98A1F'"
+        style="width:100%;padding:8px;border:1px solid ${Number(c.codigo_multiplazo)>0?'var(--linea-2)':'#D98A1F'};border-radius:8px"><option value="">Cargando…</option></select></div>
       ${admCampo('Cómo aparece en la planilla','acl-alias',c.alias_planilla,'4 HOJAS')}
       ${admCampo('Email para la factura','acl-mail',c.email)}
       ${admCampo('Copia a','acl-cc',c.email_cc,'opcional')}
@@ -13210,6 +13220,7 @@ function admEditCliente(id){
         email:admV('acl-mail'),email_cc:admV('acl-cc'),...window._admExtra})});},
     c.id?async()=>{await api('/api/facturacion/clientes/'+c.id,{method:'DELETE'});}:null);
   if(!c.id&&!c.codigo_cliente)setTimeout(()=>{const s=document.getElementById('acl-cc-sel');if(s)s.focus();},50);
+  admCargarMP(c.codigo_multiplazo);
 }
 // Los conceptos del cliente (29-sep): cada uno es una factura por mes.
 // Se guardan al momento, sin esperar al botón Guardar.
@@ -13262,6 +13273,18 @@ function admResumenFlx(c){
       :`<br><span style="color:#854F0B">Falta la ficha completa de Flexxus (dirección, zona…)</span>`}
     ${c.codigo_cliente?`<button class="mini-btn" style="position:absolute;top:7px;right:8px" onclick="admActualizarFicha('${escStk(c.codigo_cliente)}')">🔄 Actualizar desde Flexxus</button>`:''}</div>`;
 }
+// Condiciones de venta de Flexxus en el desplegable (se piden una vez por sesión).
+async function admCargarMP(actual){
+  const sel=document.getElementById('acl-mp-sel');if(!sel)return;
+  try{if(!window._admMP)window._admMP=await api('/api/facturacion/flexxus/multiplazos');}
+  catch(e){sel.innerHTML=`<option value="">No pude traerlas: ${escStk(e.message)}</option>`;return;}
+  const v=Number(actual)>0?Number(actual):'';
+  sel.innerHTML=`<option value="">— elegí la condición de venta —</option>`+
+    window._admMP.map(m=>`<option value="${m.codigo}" ${m.codigo===v?'selected':''}>${escStk(m.descripcion)} (${m.codigo})</option>`).join('');
+  document.getElementById('acl-mp').value=v;
+}
+function admMPTxt(cod){const m=(window._admMP||[]).find(x=>x.codigo===Number(cod));return m?m.descripcion:(Number(cod)>0?'cond. '+cod:null);}
+
 // Trae la ficha completa (dirección, provincia, zona, teléfono…) y la deja lista para guardar.
 async function admActualizarFicha(codigo){
   const box=document.getElementById('acl-datos');if(box)box.style.opacity='.5';
@@ -13292,6 +13315,7 @@ function admUsarFlx(i){
   const c=window._admFlx[i];const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
   set('acl-nombre',c.razonsocial);set('acl-cod',c.codigo_cliente);set('acl-cuit',c.cuit);set('acl-mp',c.codigo_multiplazo);
   set('acl-mail',c.email);if(c.tipo_comprobante)set('acl-tipo',c.tipo_comprobante);
+  admCargarMP(c.codigo_multiplazo);
   window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null,datos_flexxus:null};
   document.getElementById('acl-res').innerHTML='';
   document.getElementById('acl-datos').innerHTML=admResumenFlx({...c,nombre:c.razonsocial});
