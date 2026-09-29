@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturar: botón Mandar a Flexxus (el CAE lo pide Sole)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-29 · facturar: clonar el mes anterior con aumento × % mano de obra';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12619,16 +12619,9 @@ function admHtmlInicio(tabs){
   <div class="adm-hero"><div><h1>Facturación</h1><div class="d">Armar, emitir, adjuntar el PDF y enviar. Todo el mes acá.</div></div>
     <div class="adm-mes"><button onclick="admMover(-1)">‹</button><b>${admMesTxt(admMes)}</b><button onclick="admMover(1)">›</button></div></div>
   ${tabs||''}
-  <div class="adm-flujo">
-    ${paso('pend',cnt('pend'),'1 · Pendientes',`${money(suma(T.filter(x=>admEnFiltro(x,'pend'))))} · sin mandar a Flexxus`,'#D98A1F')}
-    ${paso('flx',cnt('flx'),'2 · En Flexxus','falta el CAE (lo pide Sole)','#3B7DC4')}
-    ${paso('emit',emit.length,'3 · Emitidas',emit.length?`con CAE · <b>${conPdf} con PDF</b>${emit.length-conPdf?`, ${emit.length-conPdf} sin PDF`:''}`:'con CAE','#159B51')}
-    ${paso('env',env.length,'4 · Enviadas',`${money(suma(env))} en ${ADM_MES[+admMes.split('-')[1]-1]}`,'#7C5CD6')}
-  </div>
-  <input type="file" id="adm-file" accept=".xlsx,.xls" style="display:none" onchange="admLeerExcel(this.files[0])">
   <input type="file" id="adm-pdfs" accept="application/pdf,.pdf" multiple style="display:none" onchange="admPdfsAbrir([...this.files]);this.value=''">
   <div class="adm-accs4">
-    ${acc(1,'📄','Facturar el mes','Subí la planilla de incrementos',"document.getElementById('adm-file').click()")}
+    ${acc(1,'🧾','Facturar',`Clona ${ADM_MES[(+admMes.split('-')[1]+10)%12]} con el aumento`,'admClonar()')}
     ${acc(0,'＋','Factura nueva','Una sola','admNueva()')}
     ${acc(0,'↻','Traer CAE',cnt('flx')?`${cnt('flx')} esperando el CAE de Sole`:'Nada esperando CAE','admTraerCAE()',!cnt('flx'))}
     ${acc(0,'📎','Subir PDFs','Todos juntos: se concilian solos',"document.getElementById('adm-pdfs').click()")}
@@ -12662,6 +12655,105 @@ function admRow(x){
     <div class="cli"><b>${escStk(c.nombre||'')}</b><span>${escStk(x.descripcion||'')}</span>${x.error&&x.estado!=='enviada'?`<span class="e">✕ ${escStk(String(x.error).slice(0,120))}</span>`:''}</div>
     <span>${admNro(x)}</span><span class="mono r"><b>${money(x.total)}</b></span>
     <span><span class="adm-est ${cls}">● ${estTxt}</span></span><span>${pdf}</span><span class="r">${b}</span></div>`;
+}
+/* ── Facturar clonando el mes anterior (29-sep, mockup_clonar_mes v2) ──
+   Trae una fila por concepto de cada cliente con lo del mes anterior y aplica
+   el aumento: paritaria del mes × % de mano de obra del concepto (editable por
+   fila). Lo tocado a mano queda en ámbar y el aumento ya no lo pisa. */
+let _clon=null;
+function admR2(n){return Math.round(Number(n)*100)/100;}
+async function admClonar(){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-clon';
+  bg.innerHTML=`${ADM_CSS}<div class="adm-pdfm"><div class="mh"><h3>Facturar</h3><div class="sub">Trayendo el mes anterior…</div></div></div>`;
+  document.body.appendChild(bg);
+  try{
+    const r=await api('/api/facturacion/clonar?periodo='+admMes);
+    let aum='';try{aum=localStorage.getItem('adm_aumento')||'';}catch(e){}
+    _clon={periodo:r.periodo,origen:r.origen,aumento:aum,fecha:new Date().toISOString().slice(0,10),guardarPct:true,
+      filas:r.filas.map(f=>({...f,pct0:f.pct_mano_obra,pct:f.pct_mano_obra!=null?f.pct_mano_obra:100,manual:false,neto:null,
+        cantidad:f.modo==='cantidad'?null:1,precio:null}))};
+    admClonCalc();admClonPintar();
+  }catch(e){bg.remove();toast(e.message,'error');}
+}
+function admClonCalc(){
+  const A=(Number(String(_clon.aumento).replace(',','.'))||0)/100;
+  _clon.filas.forEach(f=>{
+    f.inc=A*(Number(f.pct)||0)/100;
+    if(f.modo==='cantidad'){if(!f.manualPrecio&&f.prev_precio!=null)f.precio=admR2(f.prev_precio*(1+f.inc));
+      f.neto=f.cantidad&&f.precio?admR2(f.cantidad*f.precio):null;}
+    else if(!f.manual)f.neto=f.prev_neto!=null?admR2(f.prev_neto*(1+f.inc)):null;
+  });
+}
+function admClonSet(i,k,v){
+  const f=_clon.filas[i];
+  if(k==='neto'){f.neto=v===''?null:Number(v);f.manual=v!=='';if(f.neto>0&&!f.problemas.length)f.sel=true;}
+  else if(k==='cantidad'){f.cantidad=v===''?null:Number(v);if(Number(v)>0&&!f.problemas.length)f.sel=true;}
+  else if(k==='precio'){f.precio=v===''?null:Number(v);f.manualPrecio=v!=='';}
+  else if(k==='pct'){f.pct=v===''?100:Number(v);}
+  else if(k==='sel')f.sel=v;
+  admClonCalc();admClonPintar();
+}
+function admClonAumento(v){_clon.aumento=v;try{localStorage.setItem('adm_aumento',v);}catch(e){}admClonCalc();admClonPintar(true);}
+function admClonPintar(soloFilas){
+  const bg=document.getElementById('adm-clon');if(!bg||!_clon)return;
+  const C=_clon,F=C.filas,sel=F.filter(f=>f.sel&&Number(f.neto)>0);
+  const tot=sel.reduce((s,f)=>s+Number(f.neto)*(1+f.iva_pct/100),0);
+  const pctTxt=n=>(Math.round(n*100000)/1000).toLocaleString('es-AR',{maximumFractionDigits:3});
+  const inp=(i,k,v,w,extra)=>`<input type="number" step="0.01" value="${v==null?'':v}" onchange="admClonSet(${i},'${k}',this.value)" style="width:${w}px" class="${extra||''}">`;
+  const filas=F.map((f,i)=>{const mal=f.problemas.length,cant=f.modo==='cantidad';
+    return `<tr class="${f.sel?'':'off'}${mal?' mal':''}">
+      <td><input type="checkbox" ${f.sel?'checked':''} ${mal?'disabled':''} onchange="admClonSet(${i},'sel',this.checked)"></td>
+      <td><b>${escStk(f.cliente)}</b><div class="sub">${escStk(f.concepto)}${cant?' · por cantidad':''}${f.ya_facturada?' · <span style="color:#854F0B">ya tiene factura este mes</span>':''}${f.prev_neto==null&&!cant?' · <span style="color:#854F0B">no se facturó el mes anterior</span>':''}</div>
+        ${mal?`<div style="color:#A3253A;font-size:11px">✕ ${f.problemas.map(escStk).join(' · ')}</div>`:''}</td>
+      <td class="r mono hm">${cant?(f.prev_precio!=null?'× '+money(f.prev_precio):'—'):(f.prev_neto!=null?money(f.prev_neto):'—')}</td>
+      <td class="hm"><span style="white-space:nowrap">${inp(i,'pct',f.pct,56,'pmo'+(f.pct0!=null&&Number(f.pct)!==Number(f.pct0)||f.pct0==null&&Number(f.pct)!==100?' cambio':''))} %</span></td>
+      <td class="r inc">${f.inc?'+'+pctTxt(f.inc)+' %':'—'}</td>
+      <td class="r">${cant?`<span class="sub">cant.</span> ${inp(i,'cantidad',f.cantidad,56,'nv')}<div class="sub" style="margin-top:3px">× ${inp(i,'precio',f.precio,100,'nv sm'+(f.manualPrecio?' man':''))}</div>`
+        :inp(i,'neto',f.neto,140,'nv'+(f.manual?' man':''))}</td>
+      <td class="r mono hm">${Number(f.neto)>0?money(f.neto*(1+f.iva_pct/100)):'—'}</td></tr>`;}).join('');
+  if(soloFilas&&document.getElementById('clon-body')){
+    document.getElementById('clon-body').innerHTML=filas;
+    document.getElementById('clon-tot').innerHTML=`<b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span>`;
+    const b=document.getElementById('clon-ok');if(b){b.disabled=!sel.length;b.textContent=`Armar ${sel.length} factura${sel.length===1?'':'s'} →`;}
+    return;
+  }
+  const hoy=new Date().toISOString().slice(0,10),min=new Date(Date.now()-10*864e5).toISOString().slice(0,10);
+  bg.innerHTML=`${ADM_CSS}<div class="adm-pdfm adm-clon">
+    <div class="mh" style="display:flex;justify-content:space-between"><div><h3>Facturar ${admMesTxt(C.periodo)} clonando ${admMesTxt(C.origen)}</h3>
+      <div class="sub">Cada factura del mes anterior se copia con el aumento. Revisá, corregí lo que haga falta y armá.</div></div>
+      <button class="btn-salir" onclick="document.getElementById('adm-clon').remove()">✕</button></div>
+    <div class="clon-barra">
+      <div><label>Aumento del mes (paritaria)</label><div class="coef"><input type="number" step="0.01" value="${escStk(C.aumento)}" placeholder="0,00" oninput="admClonAumento(this.value)"><b>%</b></div></div>
+      <div class="sub" style="max-width:360px;font-size:12px">Se aplica sobre la <b>mano de obra</b> de cada concepto: con 2,1 % y 70 % de MO, sube 1,47 %. El % se edita en cada fila.</div>
+      <span style="flex:1"></span>
+      <div><label>Fecha de las facturas</label><input type="date" value="${C.fecha}" min="${min}" max="${hoy}" onchange="_clon.fecha=this.value" class="in"></div>
+    </div>
+    <div style="padding:8px 22px;display:flex;gap:6px;align-items:center">
+      <button class="btn-salir" onclick="_clon.filas.forEach(f=>{if(!f.problemas.length&&Number(f.neto)>0)f.sel=true});admClonPintar()">Marcar todas</button>
+      <button class="btn-salir" onclick="_clon.filas.forEach(f=>f.sel=false);admClonPintar()">Desmarcar todas</button>
+      <span class="sub" style="margin-left:auto;font-size:11.5px">Lo que cambies a mano queda en ámbar y el aumento ya no lo toca.</span></div>
+    <div class="adm-concs" style="padding:0 12px"><table class="clon-t"><thead><tr><th style="width:26px"></th><th>Cliente · concepto</th><th class="r hm">${escStk(ADM_MES[+C.origen.split('-')[1]-1])}</th><th class="hm">% mano de obra ✎</th><th class="r">Aumento</th><th class="r">${escStk(ADM_MES[+C.periodo.split('-')[1]-1])} (neto)</th><th class="r hm">Total c/IVA</th></tr></thead>
+      <tbody id="clon-body">${filas}</tbody></table></div>
+    <div style="padding:10px 22px;border-top:1px solid var(--linea)"><label style="font-size:12.5px;display:flex;gap:7px;align-items:center"><input type="checkbox" ${C.guardarPct?'checked':''} onchange="_clon.guardarPct=this.checked"> Guardar los % que cambié en la ficha de cada cliente (para los próximos meses)</label></div>
+    <div class="mf"><span id="clon-tot"><b>${sel.length} factura${sel.length===1?'':'s'}</b> · <span class="mono">${money(tot)}</span> <span class="sub">con IVA</span></span>
+      <span style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-clon').remove()">Cancelar</button>
+      <button class="btn" id="clon-ok" ${sel.length?'':'disabled'} onclick="admClonArmar()">Armar ${sel.length} factura${sel.length===1?'':'s'} →</button></span></div></div>`;
+}
+async function admClonArmar(){
+  const C=_clon,sel=C.filas.filter(f=>f.sel&&Number(f.neto)>0);if(!sel.length)return;
+  const b=document.getElementById('clon-ok');if(b){b.disabled=true;b.textContent='Armando…';}
+  try{
+    if(C.guardarPct){for(const f of C.filas.filter(f=>f.cliente_concepto_id&&Number(f.pct)!==Number(f.pct0!=null?f.pct0:100)))
+      await api('/api/facturacion/cliente_conceptos',{method:'POST',body:JSON.stringify({id:f.cliente_concepto_id,pct_mano_obra:Number(f.pct)})});
+      admCfg=null;}
+    const filas=sel.map(f=>{const cant=f.modo==='cantidad'?Number(f.cantidad):1;
+      return {cliente_id:f.cliente_id,concepto_id:f.concepto_id,cliente_concepto_id:f.cliente_concepto_id,modo:f.modo,
+        cantidad:cant,precio_unitario:f.modo==='cantidad'?f.precio:null,neto:f.neto,
+        descripcion:String(f.plantilla||'').replace(/\{mes\}/gi,C.periodo.slice(5)).replace(/\{anio\}|\{año\}/gi,C.periodo.slice(0,4)).replace(/\{cantidad\}/gi,cant).replace(/\s+/g,' ').trim().toUpperCase()};});
+    const r=await api('/api/facturacion/lotes',{method:'POST',body:JSON.stringify({periodo:C.periodo,fecha:C.fecha,filas})});
+    document.getElementById('adm-clon').remove();_clon=null;admFiltro='pend';
+    toast(`✓ ${r.facturas} factura${r.facturas===1?'':'s'} armada${r.facturas===1?'':'s'}. Revisalas y mandalas a Flexxus.`);go('administracion');
+  }catch(e){toast(e.message,'error');if(b){b.disabled=false;b.textContent='Reintentar';}}
 }
 function admIrEnviar(id){
   admEnvio={};
@@ -13040,6 +13132,20 @@ const ADM_CSS=`<style>
 .adm-det td{padding:12px 22px;border-bottom:1px solid #F2F5F0}.adm-det .num{text-align:right;font-family:ui-monospace,monospace}
 .adm-det .tots{padding:12px 22px;display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-size:13px}.adm-det .tots .big{font-size:22px;font-weight:700;font-family:ui-monospace,monospace}
 .adm-det .f{padding:14px 22px;display:flex;gap:8px;justify-content:space-between;background:var(--hueso);border-top:1px solid var(--linea)}
+/* clonar mes anterior (29-sep) */
+.adm-clon{max-width:1080px}.clon-barra{display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:12px 22px;background:var(--hueso);border-bottom:1px solid var(--linea)}
+.clon-barra label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tinta-3);font-weight:700;margin-bottom:4px}
+.clon-barra .in{border:1px solid var(--linea-2);border-radius:8px;padding:7px 10px;font-family:inherit}
+.coef{display:flex;align-items:center;gap:6px;background:#fff;border:2px solid var(--brote);border-radius:10px;padding:5px 10px}
+.coef input{border:0;width:72px;font:700 18px ui-monospace,monospace;text-align:right;outline:0}
+.clon-t{width:100%;border-collapse:collapse;font-size:12.5px}.clon-t th{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--tinta-3);text-align:left;padding:8px 10px;border-bottom:1px solid var(--linea);position:sticky;top:0;background:#fff}
+.clon-t td{padding:8px 10px;border-bottom:1px solid #F0F3EE;vertical-align:middle}.clon-t .r{text-align:right}.clon-t tr.off td{opacity:.5}.clon-t tr.mal td{background:#FFFAFA}
+.clon-t .inc{color:#0F7E40;font-weight:700}.clon-t .sub{font-size:11px}
+.clon-t input.pmo{border:1px solid #BFD6EE;background:#E8F1FA;color:#245C94;border-radius:7px;padding:4px 6px;font:600 12px ui-monospace,monospace;text-align:right}
+.clon-t input.pmo.cambio{border-color:#3B7DC4;background:#fff}
+.clon-t input.nv{border:1px solid var(--linea-2);border-radius:8px;padding:6px 8px;font:600 12.5px ui-monospace,monospace;text-align:right}
+.clon-t input.nv.sm{font-size:11.5px;padding:4px 6px}.clon-t input.nv.man{border-color:#D98A1F;background:#FBF0DC}
+@media(max-width:900px){.clon-t .hm{display:none}}
 /* rediseño 29-sep: circuito + lista + PDFs */
 .adm-flujo{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
 .adm-paso{background:#fff;border-radius:14px;box-shadow:0 1px 2px rgba(22,40,30,.05),0 4px 14px rgba(22,40,30,.06);padding:14px 16px 12px;position:relative;cursor:pointer;transition:transform .12s}
@@ -13511,6 +13617,7 @@ function admHtmlConcCliente(cid){
       ${x.modo==='cantidad'?`<input type="number" step="0.01" placeholder="precio unit." value="${x.precio_unitario??''}" onchange="admGuardarCC('${cid}','${x.id}',{precio_unitario:this.value===''?null:Number(this.value)})" style="width:110px;${selSt};text-align:right">`
         :x.modo==='fijo'?`<input type="number" step="0.01" placeholder="importe" value="${x.importe_fijo??''}" onchange="admGuardarCC('${cid}','${x.id}',{importe_fijo:this.value===''?null:Number(this.value)})" style="width:110px;${selSt};text-align:right">`
         :'<span style="width:110px"></span>'}
+      <span title="% de mano de obra: el aumento del mes se aplica sobre esta parte" style="display:flex;align-items:center;gap:3px;white-space:nowrap"><input type="number" step="1" min="0" max="100" placeholder="100" value="${x.pct_mano_obra??''}" onchange="admGuardarCC('${cid}','${x.id}',{pct_mano_obra:this.value===''?null:Number(this.value)})" style="width:52px;${selSt};text-align:right"><span class="sub" style="font-size:11px">% MO</span></span>
       <button class="mini-btn" title="sacar" onclick="admBorrarCC('${cid}','${x.id}')">✕</button></div>
       <div style="margin:-2px 0 10px">${admArtInit('cc-'+x.id,{
         sel:x.codigo_articulo?{codigo:x.codigo_articulo,particular:x.articulo_particular,descripcion:x.articulo_descripcion}:null,
