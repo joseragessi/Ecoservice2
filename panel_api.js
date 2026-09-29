@@ -8545,6 +8545,12 @@ function datosDeFlexxus(c) {
     codigo_multiplazo: c.codigomultiplazo ?? null, codigo_vendedor: c.codigovendedor || null };
 }
 
+// Diagnóstico de numeración: solo lectura, no emite nada.
+router.get('/api/facturacion/numeracion', auth, async (req, res) => {
+  try { const { diagnosticoNumeracion } = require('./flexxus'); res.json(await diagnosticoNumeracion(cfgVentas().puntoVenta)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.post('/api/facturacion/probar', auth, async (req, res) => {
   try { const { probarConexionVentas } = require('./flexxus'); res.json(await probarConexionVentas()); }
   catch (err) { res.json({ ok: false, error: err.message }); }
