@@ -338,13 +338,23 @@ function mesAnterior(periodo) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 }
 function armarClon({ clientes, clienteConceptos, conceptos, itemsPrev, itemsDest, periodo }) {
-  const activos = (clientes || []).filter(c => c.activo !== false && c.codigo_cliente);
+  // Todos los clientes activos: los incompletos también aparecen (destildados y
+  // con lo que les falta) para que se vea quién queda afuera y por qué (29-sep).
+  const activos = (clientes || []).filter(c => c.activo !== false);
   const vivos = x => !['anular'].includes(x.estado);
   const prev = (itemsPrev || []).filter(vivos), dest = (itemsDest || []).filter(vivos);
   const filas = [];
   activos.forEach(cli => {
     let lista = (clienteConceptos || []).filter(x => x.cliente_id === cli.id && x.activo !== false)
       .sort((a, b) => (a.orden || 0) - (b.orden || 0));
+    if (!lista.length || !cli.codigo_cliente) {
+      const p = [];
+      if (!cli.codigo_cliente) p.push('sin cliente de Flexxus');
+      if (!lista.length) p.push('sin conceptos');
+      filas.push({ cliente_id: cli.id, cliente: cli.nombre, concepto: '—', modo: 'planilla', iva_pct: Number(cli.porcentaje_iva) || 0,
+        pct_mano_obra: null, prev_neto: null, problemas: [p.join(' · ') + ' (Clientes → Editar)'], incompleto: true, sel: false });
+      return;
+    }
     lista.forEach(cc => {
       const conc = (conceptos || []).find(k => k.id === cc.concepto_id);
       if (!conc || conc.activo === false) return;
