@@ -12903,7 +12903,7 @@ function admNvRender(){
       ${_nv.modo==='otro'?`<div>${L('IVA')}<select onchange="_nv.iva=Number(this.value);admNvRender()" style="${st}">${[21,10.5,27,0].map(v=>`<option value="${v}" ${_nv.iva===v?'selected':''}>${v?v+'%':'Exento'}</option>`).join('')}</select></div>`:''}</div>
     ${_nv.modo==='otro'&&_nv.flx?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
       <div>${L('Condición de venta')}<select onchange="_nv.mp=Number(this.value)||null;admNvRender()" style="${st};${_nv.mp?'':'border-color:#D98A1F;background:#FBF0DC'}">
-        <option value="">— elegila —</option>${(window._admMP||[]).map(m=>`<option value="${m.codigo}" ${m.codigo===_nv.mp?'selected':''}>${escStk(m.descripcion)}</option>`).join('')}</select></div>
+        <option value="">— elegila —</option>${(window._admMP||[]).filter(m=>m.ctacte).map(m=>`<option value="${m.codigo}" ${m.codigo===_nv.mp?'selected':''}>${escStk(m.descripcion)}</option>`).join('')}</select></div>
       <div>${L('Email')}<input value="${escStk(_nv.email||'')}" oninput="_nv.email=this.value" placeholder="para mandarle la factura" style="${st}"></div></div>`:''}
     <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--hueso);border:1px solid var(--linea);border-radius:10px;padding:11px 13px;margin-top:14px">
       <span class="sub">Neto ${money(neto)} · IVA ${iva}% ${money(iv)}</span><b class="mono" style="font-size:18px">${money(neto+iv)}</b></div>
@@ -13279,8 +13279,13 @@ async function admCargarMP(actual){
   try{if(!window._admMP)window._admMP=await api('/api/facturacion/flexxus/multiplazos');}
   catch(e){sel.innerHTML=`<option value="">No pude traerlas: ${escStk(e.message)}</option>`;return;}
   const v=Number(actual)>0?Number(actual):'';
+  // Separadas: las facturas van a CUENTA CORRIENTE, así que la condición tiene
+  // que ser de ese grupo (Flexxus rechaza una de contado).
+  const op=m=>`<option value="${m.codigo}" ${m.codigo===v?'selected':''}>${escStk(m.descripcion)} (${m.codigo})</option>`;
+  const cc=window._admMP.filter(m=>m.ctacte), co=window._admMP.filter(m=>!m.ctacte);
   sel.innerHTML=`<option value="">— elegí la condición de venta —</option>`+
-    window._admMP.map(m=>`<option value="${m.codigo}" ${m.codigo===v?'selected':''}>${escStk(m.descripcion)} (${m.codigo})</option>`).join('');
+    (cc.length?`<optgroup label="Cuenta corriente (usar estas)">${cc.map(op).join('')}</optgroup>`:'')+
+    (co.length?`<optgroup label="Contado">${co.map(op).join('')}</optgroup>`:'');
   document.getElementById('acl-mp').value=v;
 }
 function admMPTxt(cod){const m=(window._admMP||[]).find(x=>x.codigo===Number(cod));return m?m.descripcion:(Number(cod)>0?'cond. '+cod:null);}
