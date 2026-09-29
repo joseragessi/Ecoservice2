@@ -12612,7 +12612,7 @@ function admHtmlInicio(tabs){
   </div>
   <div class="sub" id="adm-msg" style="margin:-10px 0 12px"></div>
   ${P.length?`<div class="adm-sech"><h2>Pendientes de emitir <small>armadas, todavía sin CAE</small></h2>
-      <button class="btn" ${admCfg.entorno&&admCfg.entorno.habilitado?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">🔑 Emitir ${P.length===1?'la':'las'} ${P.length}</button></div>
+      <button class="btn" ${admCfg.entorno&&admCfg.entorno.habilitado?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">🔑 Emitir ${(n=>(n===1?'la':'las')+' '+n)(P.filter(x=>!admMalPunto(x)&&admArtItem(x)).length)}</button></div>
     <div class="adm-facs">${P.map(admCard).join('')}</div>`
   :`<div class="adm-vacio"><div class="ic">✅</div><div style="font-size:16px;font-weight:700">No hay facturas pendientes</div>
       <div class="sub" style="font-size:13px;margin-top:4px">Para empezar, usá los botones de arriba.</div></div>`}`;
@@ -12699,7 +12699,7 @@ function admDetalle(id){
         ${x.numero_comprobante?`<button class="btn-salir" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button>`:''}
         ${x.numero_comprobante&&!admMalPunto(x)?`<button class="btn-salir" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="document.getElementById('adm-det').remove();admEditarItem('${x.id}')">✎ Editar</button>`:''}
-        ${pend?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="document.getElementById('adm-det').remove();admEmitirUno('${x.id}')">🔑 ${x.estado==='generada'?'Pedir CAE':'Emitir con CAE'}</button>`:''}</div></div></div>`;
+        ${pend&&!admMalPunto(x)?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="document.getElementById('adm-det').remove();admEmitirUno('${x.id}')">🔑 ${x.estado==='generada'?'Pedir CAE':'Emitir con CAE'}</button>`:''}</div></div></div>`;
   document.body.appendChild(bg);bg.onclick=e=>{if(e.target===bg)bg.remove();};
 }
 function admVerSinFacturar(){
