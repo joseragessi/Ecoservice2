@@ -8901,7 +8901,8 @@ router.get('/api/facturacion/lotes/:id', auth, async (req, res) => {
     ]);
     if (l.error) throw l.error;
     const ultimos = {};
-    (u.data || []).forEach(x => { const n = Number(x.numero_comprobante); if (!(ultimos[x.tipo_comprobante] >= n)) ultimos[x.tipo_comprobante] = n; });
+    (u.data || []).forEach(x => { const n = Number(x.numero_comprobante); if (puntoDeNumero(n) !== cfgVentas().puntoVenta) return;   // la 0006-1081 no cuenta
+      if (!(ultimos[x.tipo_comprobante] >= n)) ultimos[x.tipo_comprobante] = n; });
     const items = (l.data.fact_items || []).sort((a, b) => String((a.fact_clientes || {}).nombre).localeCompare(String((b.fact_clientes || {}).nombre)));
     const pend = items.filter(x => x.estado === 'borrador');
     const est = FV.numerosEstimados(pend, ultimos);
@@ -8955,7 +8956,8 @@ router.get('/api/facturacion/lotes', auth, async (req, res) => {
     const lotes = data || [];
     const todos = lotes.flatMap(l => (l.fact_items || []).map(it => ({ it, l })));
     const ultimos = {};
-    todos.forEach(({ it }) => { const n = Number(it.numero_comprobante); if (it.numero_comprobante && !(ultimos[it.tipo_comprobante] >= n)) ultimos[it.tipo_comprobante] = n; });
+    todos.forEach(({ it }) => { const n = Number(it.numero_comprobante);
+      if (it.numero_comprobante && puntoDeNumero(n) === cfgVentas().puntoVenta && !(ultimos[it.tipo_comprobante] >= n)) ultimos[it.tipo_comprobante] = n; });
     const pend = todos.filter(x => x.it.estado === 'borrador').sort((a, b) => String(a.l.created_at).localeCompare(String(b.l.created_at)));
     const est = FV.numerosEstimados(pend.map(x => x.it), ultimos);
     pend.forEach((x, i) => { x.it.numero_estimado = est[i]; });
