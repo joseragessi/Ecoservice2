@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturar: circuito completo, PDFs en tanda conciliados por número, mail con PDF';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-29 · facturar: botón Mandar a Flexxus (el CAE lo pide Sole)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12613,7 +12613,7 @@ function admHtmlInicio(tabs){
   const chip=(f,t)=>`<button class="adm-chipf${admFiltro===f?' on':''}" onclick="admFiltro='${f}';go('administracion')">${t} <small>${cnt(f)}</small></button>`;
   const pendEmit=L.filter(x=>x.estado==='borrador'&&!admMalPunto(x)&&admArtItem(x));
   const listosEnviar=emit.filter(x=>x.pdf_ruta);
-  const extra=admFiltro==='pend'&&pendEmit.length?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">🔑 Emitir ${pendEmit.length===1?'la':'las'} ${pendEmit.length}</button>`
+  const extra=admFiltro==='pend'&&pendEmit.length?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">📤 Mandar ${pendEmit.length===1?'la':'las'} ${pendEmit.length} a Flexxus</button>`
     :(['emit','todas','sinpdf'].includes(admFiltro)&&listosEnviar.length?`<button class="btn" onclick="admIrEnviar()">📧 Enviar ${listosEnviar.length===1?'la':'las'} ${listosEnviar.length} con PDF</button>`:'');
   return `${ADM_CSS}
   <div class="adm-hero"><div><h1>Facturación</h1><div class="d">Armar, emitir, adjuntar el PDF y enviar. Todo el mes acá.</div></div>
@@ -12652,7 +12652,7 @@ function admRow(x){
       :`<span class="adm-pdf no" onclick="event.stopPropagation();admPdfUno('${x.id}')">sin PDF · subir</span>`):'<span class="sub">—</span>';
   let b='';
   if(mal)b=`<button class="btn-salir adm-del" onclick="event.stopPropagation();admSacarAnulada('${x.id}')">Ya la anulé · sacar</button>`;
-  else if(x.estado==='borrador')b=`<button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="event.stopPropagation();admEmitirUno('${x.id}')">🔑 Emitir</button>`;
+  else if(x.estado==='borrador')b=`<button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="event.stopPropagation();admEmitirUno('${x.id}')">📤 Mandar a Flexxus</button>`;
   else if(x.estado==='generada')b=`<button class="btn-salir" onclick="event.stopPropagation();admTraerCAE()">↻ Traer CAE</button>`;
   else if(x.estado==='cae')b=x.pdf_ruta?`<button class="btn" onclick="event.stopPropagation();admIrEnviar('${x.id}')">📧 Enviar</button>`
     :`<button class="btn-salir" onclick="event.stopPropagation();admPdfUno('${x.id}')">📎 Adjuntar</button>`;
@@ -12822,9 +12822,9 @@ function admCard(x){
       <div class="fila" style="margin-top:8px"><span>Se envía a</span><b style="font-size:11.5px;${c.email?'':'color:#854F0B'}">${escStk(c.email||'sin email')}</b></div>
       ${x.error?`<div class="err">✕ ${escStk(x.error)}</div>`:''}</div>
     <div class="pie">${mal?`<button class="btn-salir" style="flex:1" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button><button class="btn-salir adm-del" style="flex:1" onclick="admSacarAnulada('${x.id}')">Ya la anulé · sacar</button>`
-      :gen?`<button class="btn-salir" style="flex:1" onclick="admTraerCAE()">↻ Traer CAE de Flexxus</button><button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
+      :gen?`<button class="btn-salir" style="flex:1" onclick="admTraerCAE()">↻ Traer CAE de Flexxus</button>`
       :`<button class="btn-salir" onclick="admEditarItem('${x.id}')">✎ Editar</button>
-        <button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">🔑 Emitir</button>
+        <button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">📤 Mandar a Flexxus</button>
         <button class="btn-salir adm-del" title="Eliminar esta factura" onclick="admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>`}</div></div>`;
 }
 function admDetalle(id){
@@ -12860,7 +12860,8 @@ function admDetalle(id){
         ${x.numero_comprobante?`<button class="btn-salir" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button>`:''}
         ${x.numero_comprobante&&!admMalPunto(x)?`<button class="btn-salir" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="document.getElementById('adm-det').remove();admEditarItem('${x.id}')">✎ Editar</button>`:''}
-        ${pend&&!admMalPunto(x)?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="document.getElementById('adm-det').remove();admEmitirUno('${x.id}')">🔑 ${x.estado==='generada'?'Pedir CAE':'Emitir con CAE'}</button>`:''}</div></div></div>`;
+        ${x.estado==='borrador'&&!admMalPunto(x)?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="document.getElementById('adm-det').remove();admEmitirUno('${x.id}')">📤 Mandar a Flexxus</button>`:''}
+        ${x.estado==='generada'&&!admMalPunto(x)?`<button class="btn" onclick="document.getElementById('adm-det').remove();admTraerCAE()">↻ Traer CAE</button>`:''}</div></div></div>`;
   document.body.appendChild(bg);bg.onclick=e=>{if(e.target===bg)bg.remove();};
 }
 function admVerSinFacturar(){
@@ -12878,16 +12879,17 @@ async function admTraerCAE(){
 }
 async function admEmitirUno(id){
   const x=admItem(id);if(!x)return;
-  if(!confirm(`¿Emitir la factura de ${(x.fact_clientes||{}).nombre} por ${money(x.total)}?\n\nSe genera en Flexxus y se pide el CAE a ARCA. Una vez emitida no se puede editar.`))return;
-  try{const r=await api('/api/facturacion/items/'+id+'/emitir',{method:'POST',body:'{}'});toast(`✓ Emitida · CAE ${r.cae||''}`);}
+  if(!confirm(`¿Mandar a Flexxus la factura de ${(x.fact_clientes||{}).nombre} por ${money(x.total)}?\n\nQueda creada en Flexxus: después Sole pide el CAE y tocás "Traer CAE". Una vez mandada no se puede editar.`))return;
+  try{const r=await api('/api/facturacion/items/'+id+'/emitir',{method:'POST',body:'{}'});
+    toast(r.cae?`✓ Emitida · CAE ${r.cae}`:`✓ En Flexxus${r.numero?' · '+admNroTxt(r.numero):''}. Falta que Sole pida el CAE.`);}
   catch(e){toast(e.message,'error');}
   go('administracion');
 }
 async function admEmitirTodas(){
   const P=admPend().filter(x=>!admMalPunto(x)&&admArtItem(x));const tot=P.reduce((s,x)=>s+Number(x.total||0),0);
-  if(!confirm(`¿Emitir ${P.length} facturas por ${money(tot)}?\n\nSe generan en Flexxus y se pide el CAE a ARCA. Una vez emitidas no se pueden editar.`))return;
+  if(!confirm(`¿Mandar ${P.length} facturas a Flexxus por ${money(tot)}?\n\nQuedan creadas en Flexxus: después Sole pide los CAE y tocás "Traer CAE". Una vez mandadas no se pueden editar.`))return;
   const bg=document.createElement('div');bg.className='modal-bg abierto';
-  bg.innerHTML=`<div class="modal" style="max-width:420px"><div class="modal-tit">Emitiendo con CAE</div>
+  bg.innerHTML=`<div class="modal" style="max-width:420px"><div class="modal-tit">Mandando a Flexxus</div>
     <div style="height:8px;background:var(--papel);border-radius:5px;overflow:hidden;margin:14px 0 8px"><i id="adm-bar" style="display:block;height:100%;width:0;background:var(--brote);transition:width .3s"></i></div>
     <div class="sub" id="adm-pmsg">Arrancando…</div></div>`;
   document.body.appendChild(bg);
@@ -12898,10 +12900,10 @@ async function admEmitirTodas(){
       // Flexxus la creó en otro punto de venta: se frena todo (29-sep).
       if(/Anulala en Flexxus/.test(e.message||'')){bg.remove();alert(e.message+'\n\nNo se emitió ninguna más.');go('administracion');return;}}
     const b=document.getElementById('adm-bar');if(b)b.style.width=Math.round((ok+mal)*100/P.length)+'%';
-    const m=document.getElementById('adm-pmsg');if(m)m.innerHTML=`<b>${ok}</b> de ${P.length} emitidas${mal?` · <span style="color:var(--rojo)">${mal} con error</span>`:''}`;
+    const m=document.getElementById('adm-pmsg');if(m)m.innerHTML=`<b>${ok}</b> de ${P.length} en Flexxus${mal?` · <span style="color:var(--rojo)">${mal} con error</span>`:''}`;
   }
   bg.remove();
-  toast(mal?`${ok} emitidas · ${mal} con error: mirá cada tarjeta`:`✓ ${ok} emitidas. Ya las podés enviar.`,mal?'error':undefined);
+  toast(mal?`${ok} en Flexxus · ${mal} con error: mirá cada una`:`✓ ${ok} en Flexxus. Ahora Sole pide los CAE y tocás "Traer CAE".`,mal?'error':undefined);
   go('administracion');
 }
 
