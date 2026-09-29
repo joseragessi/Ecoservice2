@@ -12669,6 +12669,7 @@ async function admClonar(){
   try{
     const r=await api('/api/facturacion/clonar?periodo='+admMes);
     let aum='';try{aum=localStorage.getItem('adm_aumento')||'';}catch(e){}
+    r.filas.sort((a,b)=>(a.incompleto?1:0)-(b.incompleto?1:0));
     _clon={periodo:r.periodo,origen:r.origen,aumento:aum,fecha:new Date().toISOString().slice(0,10),guardarPct:true,
       filas:r.filas.map(f=>({...f,pct0:f.pct_mano_obra,pct:f.pct_mano_obra!=null?f.pct_mano_obra:100,manual:false,neto:null,
         cantidad:f.modo==='cantidad'?null:1,precio:null}))};
@@ -12708,7 +12709,7 @@ function admClonPintar(soloFilas){
       <td class="r mono hm">${cant?(f.prev_precio!=null?'× '+money(f.prev_precio):'—'):(f.prev_neto!=null?money(f.prev_neto):'—')}</td>
       <td class="hm"><span style="white-space:nowrap">${inp(i,'pct',f.pct,56,'pmo'+(f.pct0!=null&&Number(f.pct)!==Number(f.pct0)||f.pct0==null&&Number(f.pct)!==100?' cambio':''))} %</span></td>
       <td class="r inc">${f.inc?'+'+pctTxt(f.inc)+' %':'—'}</td>
-      <td class="r">${cant?`<span class="sub">cant.</span> ${inp(i,'cantidad',f.cantidad,56,'nv')}<div class="sub" style="margin-top:3px">× ${inp(i,'precio',f.precio,100,'nv sm'+(f.manualPrecio?' man':''))}</div>`
+      <td class="r">${f.incompleto?`<button class="mini-btn" onclick="document.getElementById('adm-clon').remove();admTab='clientes';go('administracion');setTimeout(()=>admEditCliente('${f.cliente_id}'),300)">Completar</button>`:cant?`<span class="sub">cant.</span> ${inp(i,'cantidad',f.cantidad,56,'nv')}<div class="sub" style="margin-top:3px">× ${inp(i,'precio',f.precio,100,'nv sm'+(f.manualPrecio?' man':''))}</div>`
         :inp(i,'neto',f.neto,140,'nv'+(f.manual?' man':''))}</td>
       <td class="r mono hm">${Number(f.neto)>0?money(f.neto*(1+f.iva_pct/100)):'—'}</td></tr>`;}).join('');
   if(soloFilas&&document.getElementById('clon-body')){
