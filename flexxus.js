@@ -1669,6 +1669,17 @@ async function proximoNumeroVenta(tipo, pv, piso) {
 function numeroVentaUsado(tipo, pv, n) { _numVenta[tipo + '|' + pv] = { ultimo: Number(n), t: Date.now() }; }
 function numeroVentaOlvidar(tipo, pv) { delete _numVenta[tipo + '|' + pv]; }
 
+/** Condiciones de venta (multiplazos) habilitadas para la venta. Caché 6 h: casi no cambian. */
+let _mpCache = null;
+async function listarMultiplazosVenta() {
+  if (_mpCache && _mpCache.url === ventasUrl() && Date.now() - _mpCache.t < CACHE_MS) return _mpCache.v;
+  const d = await flxV('/multiplazos?paralaventa=true&activos=true&vigentes=true');
+  const v = (Array.isArray(d) ? d : (d && d.data) || []).map(m => ({ codigo: Number(m.codigomultiplazo), descripcion: m.descripcion || m.multiplazo || '' }))
+    .filter(m => m.codigo > 0).sort((a, b) => a.codigo - b.codigo);
+  _mpCache = { url: ventasUrl(), t: Date.now(), v };
+  return v;
+}
+
 /** Buscar artículos en Flexxus por nombre (para elegir el del concepto). Caché 10 min. */
 const _artCache = new Map();
 async function buscarArticulosFlexxus(q) {
@@ -1756,6 +1767,6 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
-  buscarArticulosFlexxus, leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
+  listarMultiplazosVenta, buscarArticulosFlexxus, leerClienteVenta, proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
   diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
