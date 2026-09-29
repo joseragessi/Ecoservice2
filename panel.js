@@ -12710,7 +12710,8 @@ function admVerSinFacturar(){
 }
 async function admTraerCAE(){
   try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});
-    toast(r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con?undefined:'error');}
+    toast(r.anuladas?`${r.anuladas} anulada${r.anuladas===1?'':'s'} por Flexxus (ARCA no dio el CAE): volvieron a pendientes con el mismo número.`
+      :r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con&&!r.anuladas?undefined:'error');}
   catch(e){toast(e.message,'error');}
   go('administracion');
 }
@@ -13332,6 +13333,7 @@ function admArtHtml(key){
   if(st.abierto)h+=`<div style="border:1px solid var(--linea-2);border-radius:9px;margin-top:5px;overflow:hidden">
     <div style="display:flex;gap:6px;padding:6px"><input id="art-q-${key}" value="${escStk(st.q||'')}" placeholder="Código que ve Sole (AYRES M) o descripción…" style="flex:1;padding:6px 9px;border:1px solid var(--linea-2);border-radius:7px;font-size:12.5px" onkeydown="if(event.key==='Enter')admArtBuscar('${key}')">
       <button class="mini-btn" onclick="admArtBuscar('${key}')">Buscar</button><button class="mini-btn" onclick="window._admArt['${key}'].abierto=false;admArtPintar('${key}')">✕</button></div>
+    <div onclick="admArtUsar('${key}','*')" style="padding:6px 10px;cursor:pointer;font-size:12px;border-top:1px solid var(--linea);background:var(--hueso)"><b class="mono">*</b> <span class="sub" style="font-size:11.5px">· Texto libre: el comodín que usa Sole en sus facturas</span></div>
     <div style="max-height:180px;overflow:auto">${st.cargando?'<div class="sub" style="padding:6px 10px">Buscando en Flexxus…</div>'
       :(st.res||[]).length?st.res.map((a,i)=>`<div onclick="admArtUsar('${key}',${i})" style="padding:6px 10px;cursor:pointer;font-size:12px;border-top:1px solid var(--linea);${a.activo?'':'opacity:.5'}">${admArtRef(a)}</div>`).join('')
       :st.res?'<div class="sub" style="padding:6px 10px">No encontré artículos con eso.</div>':''}</div></div>`;
@@ -13365,7 +13367,7 @@ async function admArtBuscar(key){
   st.cargando=false;admArtPintar(key);
 }
 function admArtUsar(key,i){
-  const st=window._admArt[key];const a=i<0?st.sug:(st.res||[])[i];if(!a)return;
+  const st=window._admArt[key];const a=i==='*'?{codigo:'*',particular:'*',descripcion:'Texto libre'}:i<0?st.sug:(st.res||[])[i];if(!a)return;
   st.sel={codigo:a.codigo,particular:a.particular||null,descripcion:a.descripcion||null};st.abierto=false;
   admArtPintar(key);
   if(st.onPick&&window[st.onPick])window[st.onPick](key,st.sel,st.ctx);
