@@ -1740,6 +1740,15 @@ async function pedirCAE(tipocomprobante, numerocomprobante) {
   exigirVentas();
   // Si ya tiene CAE (porque lo pidieron desde Flexxus), no se vuelve a pedir.
   try { const ya = await leerCAE(tipocomprobante, numerocomprobante); if (ya) return ya; } catch (e) { /* se sigue */ }
+  /* 29-sep: la API de EcoService responde "Error wsfeService" al pedir el CAE
+     (el servidor de la API no habla con ARCA; desde el Flexxus de escritorio
+     sale bien). Hasta que Procom lo arregle, el CAE lo pide Sole en Flexxus y
+     el panel solo lo LEE ("Traer CAE"). Para volver a pedirlo por API:
+     FACTURACION_CAE_API=si en Railway. */
+  if (String(process.env.FACTURACION_CAE_API || '').toLowerCase() !== 'si') {
+    const e = new Error('Creada en Flexxus. Falta el CAE: Sole lo pide en Flexxus (Ventas → Facturación electrónica → Solicitar CAE) y después tocás "↻ Traer CAE de Flexxus".');
+    e.status = 409; e.sinRuta = true; throw e;
+  }
   if (!_sinRutaCAE) {
     const body = JSON.stringify({ tipocomprobante, numerocomprobante: Number(numerocomprobante) });
     for (const ruta of ['/facturacionelectronica', '/facturaelectronica']) {
