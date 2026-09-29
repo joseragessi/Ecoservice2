@@ -195,10 +195,11 @@ function armarFilas({ clientes, clienteConceptos, conceptos, leidos, periodo }) 
         neto = l && l.importe != null ? l.importe : null;
         if (neto == null) aviso = l ? (l.aviso || 'sin importe en la planilla') : 'no está en la planilla';
       }
-      const problemas = problemasCliente(cli, conc);
+      const problemas = problemasCliente(cli, conc, cc.codigo_articulo);
       filas.push({
         cliente_id: cli.id, cliente: cli.nombre, tipo: cli.tipo_comprobante, iva_pct: Number(cli.porcentaje_iva) || 0,
         email: cli.email || null, cliente_concepto_id: cc.id || null, concepto_id: conc.id, concepto: conc.nombre,
+        codigo_articulo: cc.codigo_articulo || null, articulo_particular: cc.articulo_particular || null,
         plantilla: conc.plantilla, modo: cc.modo, origen, cantidad, precio_unitario: precio, neto,
         precio_habitual: cc.modo === 'cantidad' ? precio : null,     // para avisar si se cambia
         descripcion: textoConcepto(conc.plantilla, periodo, cc.modo === 'cantidad' ? cantidad : 1),
@@ -266,8 +267,11 @@ function clienteParaFlexxus(f, cliente) {
   return o;
 }
 
-/** Qué le falta a un cliente para poder facturarse. */
-function problemasCliente(c, concepto) {
+/** Qué le falta a un cliente para poder facturarse.
+ *  `articulo` = código INTERNO del artículo de Flexxus de ESE cliente (29-sep):
+ *  en Flexxus cada cliente tiene el suyo (FADEA 000001, AYRES M 000015…). El
+ *  del concepto ya no vale: por él salió la factura de AYRES como FADEA. */
+function problemasCliente(c, concepto, articulo) {
   const p = [];
   if (!c) return ['no está configurado'];
   if (!c.codigo_cliente) p.push('sin código de cliente de Flexxus');
@@ -276,7 +280,7 @@ function problemasCliente(c, concepto) {
   // lo rechaza ("el multiplazo no existe o no está habilitado", 29-sep).
   if (!(Number(c.codigo_multiplazo) > 0)) p.push('sin condición de venta');
   if (!concepto) p.push('sin concepto');
-  else if (!concepto.codigo_articulo) p.push('el concepto no tiene artículo de Flexxus');
+  else if (!articulo) p.push('sin artículo de Flexxus (Clientes → Editar → paso 4)');
   return p;
 }
 
@@ -309,7 +313,7 @@ function armarComprobante(item, cliente, concepto, fecha, cfg) {
       codigomultiplazo: cliente.codigo_multiplazo != null ? Number(cliente.codigo_multiplazo) : undefined,
       cliente: { codigocliente: cliente.codigo_cliente },
       productos: [{
-        codigoarticulo: concepto.codigo_articulo,
+        codigoarticulo: item.codigo_articulo,          // el del cliente (fact_cliente_conceptos), nunca el del concepto
         cantidad: cant,
         preciounitario: unit,
         preciototal: neto,
