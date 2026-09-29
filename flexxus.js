@@ -1674,8 +1674,9 @@ let _mpCache = null;
 async function listarMultiplazosVenta() {
   if (_mpCache && _mpCache.url === ventasUrl() && Date.now() - _mpCache.t < CACHE_MS) return _mpCache.v;
   const d = await flxV('/multiplazos?paralaventa=true&activos=true&vigentes=true');
-  const v = (Array.isArray(d) ? d : (d && d.data) || []).map(m => ({ codigo: Number(m.codigomultiplazo), descripcion: m.descripcion || m.multiplazo || '' }))
-    .filter(m => m.codigo > 0).sort((a, b) => a.codigo - b.codigo);
+  const v = (Array.isArray(d) ? d : (d && d.data) || []).map(m => ({ codigo: Number(m.codigomultiplazo), descripcion: m.descripcion || m.multiplazo || '',
+    ctacte: m.contadoctacte === true || m.contadoctacte === 1 || m.contadoctacte === 'S' || m.facturapedidosctacte === true }))
+    .filter(m => m.codigo > 0).sort((a, b) => (b.ctacte - a.ctacte) || a.codigo - b.codigo);
   _mpCache = { url: ventasUrl(), t: Date.now(), v };
   return v;
 }
