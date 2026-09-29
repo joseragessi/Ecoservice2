@@ -8569,7 +8569,13 @@ async function armarEnvio(it) {
   }
   const nro = await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
   const body = FV.armarComprobante({ ...it, codigo_articulo: art.codigo }, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
-  body.carrito.numerocomprobante = nro;
+  /* 29-sep, la causa del punto 0006: a Flexxus va el número SOLO (1081), no
+     codificado (300001081). Flexxus le suma él mismo el punto: 3×100.000.000 +
+     300001081 = 600001081 → "punto 6". Lo dice la doc de /notadedebitomanual:
+     "numero de comprobante… mayor o igual a 1; si coincide con el contador del
+     punto de venta el contador avanza". Adentro del panel seguimos guardando
+     el número completo (punto × 100.000.000 + número). */
+  body.carrito.numerocomprobante = nro % 1e8;
   body.carrito.cliente = FV.clienteParaFlexxus(datos, it.fact_clientes);
   return { cfg, tipo, nro, art, body };
 }
@@ -8584,7 +8590,8 @@ async function crearConNumero(it) {
   let d;
   try { d = await flx.crearFacturaVenta(body); }
   catch (e) { flx.numeroVentaOlvidar(tipo, cfg.puntoVenta); e.data = { ...(e.data || {}), _enviado: body }; throw e; }
-  const real = Number(d.numerocomprobante) || nro;
+  let real = Number(d.numerocomprobante) || nro;
+  if (real < 1e8) real = Number(cfg.puntoVenta) * 1e8 + real;   // si Flexxus contesta el número solo
   const guardar = { ...d, _enviado: body };
   // Control (29-sep): si Flexxus la creó en OTRO punto de venta, no se le pide
   // el CAE, queda marcada para anular y se frena la tanda.
