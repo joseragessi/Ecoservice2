@@ -8542,6 +8542,22 @@ async function articuloDelItem(it) {
 /* El punto de venta de un número de Flexxus (punto × 100.000.000 + número). */
 const puntoDeNumero = n => (Number(n) >= 1e8 ? Math.floor(Number(n) / 1e8) : null);
 
+/* Si ARCA no da el CAE, Flexxus ANULA la factura sola (29-sep, FB 0003-1081:
+   "Error wsfeService" y quedó "Comprobante Anulado"). Si pasó eso, la factura
+   vuelve a "pendiente" con el mismo número para reintentar. Devuelve true si
+   la encontró anulada. */
+async function volverSiAnulada(it, tipo, nro, motivo) {
+  try {
+    const d = await require('./flexxus').leerFacturaVenta(tipo, nro);
+    const f = (d && d.data) || d;
+    if (!f || f.anulada !== true) return false;
+    await supabase.from('fact_items').update({ estado: 'borrador', tipo_comprobante: tipo, numero_comprobante: nro,
+      error: `ARCA no dio el CAE${motivo ? ' (' + String(motivo).slice(0, 150) + ')' : ''} y Flexxus la anuló. Quedó pendiente: al emitir se reintenta con el mismo número.`,
+      updated_at: new Date().toISOString() }).eq('id', it.id);
+    return true;
+  } catch (e) { return false; }
+}
+
 /* Arma TODO lo que se le manda a /ordenmanual, sin mandarlo. Lo usan la
    emisión y la vista previa "Ver lo que se envía" (29-sep: la FB 1081 salió
    en el punto 0006 y con artículo FADEA; hay que poder ver el cuerpo exacto). */
@@ -8567,7 +8583,11 @@ async function armarEnvio(it) {
     datos = await flx.leerClienteVenta(it.fact_clientes.codigo_cliente);
     await supabase.from('fact_clientes').update({ datos_flexxus: datos }).eq('id', it.cliente_id);
   }
-  const nro = await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
+  /* Reintento (29-sep): si ARCA no dio el CAE, Flexxus la anula sola y el
+     número queda libre para ARCA. Se vuelve a mandar EL MISMO número: Flexxus
+     reemplaza la anulada. Con uno nuevo ARCA la rechazaría por salto de número. */
+  const reusar = it.estado === 'borrador' && it.numero_comprobante && puntoDeNumero(it.numero_comprobante) === Number(cfg.puntoVenta);
+  const nro = reusar ? Number(it.numero_comprobante) : await flx.proximoNumeroVenta(tipo, cfg.puntoVenta, piso);
   const body = FV.armarComprobante({ ...it, codigo_articulo: art.codigo }, it.fact_clientes, it.fact_conceptos, it.fact_lotes.fecha_comprobante, cfg);
   /* 29-sep, la causa del punto 0006: a Flexxus va el número SOLO (1081), no
      codificado (300001081). Flexxus le suma él mismo el punto: 3×100.000.000 +
@@ -8979,16 +8999,16 @@ router.post('/api/facturacion/traer-cae', auth, async (req, res) => {
     const { leerCAE } = require('./flexxus');
     const { data } = await supabase.from('fact_items').select('id, tipo_comprobante, numero_comprobante')
       .eq('estado', 'generada').not('numero_comprobante', 'is', null).limit(20);
-    let con = 0, sin = 0;
+    let con = 0, sin = 0, anuladas = 0;
     for (const it of (data || [])) {
       try {
         const r = await leerCAE(it.tipo_comprobante, it.numero_comprobante);
         if (r) { await supabase.from('fact_items').update({ estado: 'cae', cae: r.cae, cae_vto: r.vencimiento, error: null,
           updated_at: new Date().toISOString() }).eq('id', it.id); con++; }
-        else sin++;
+        else { sin++; if (await volverSiAnulada(it, it.tipo_comprobante, it.numero_comprobante)) anuladas++; }
       } catch (e) { sin++; }
     }
-    res.json({ con, sin, revisadas: (data || []).length });
+    res.json({ con, sin, anuladas, revisadas: (data || []).length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -9021,6 +9041,8 @@ router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
       const upd = { error: String(e.message || e).slice(0, 500), updated_at: new Date().toISOString() };
       if (e.data) upd.respuesta = e.data;
       await supabase.from('fact_items').update(upd).eq('id', it.id);
+      if (nro && !e.frenar && await volverSiAnulada(it, tipo, nro, e.message))
+        return res.status(502).json({ error: `ARCA no dio el CAE (${e.message}) y Flexxus la anuló. Quedó pendiente con el mismo número.` });
       res.status(e.status === 423 ? 423 : 502).json({ error: e.message });
     }
   } catch (err) { console.error('fact emitir uno:', err); res.status(500).json({ error: err.message }); }
@@ -9153,8 +9175,10 @@ router.post('/api/facturacion/lotes/:id/emitir', auth, async (req, res) => {
         await supabase.from('fact_items').update({ estado: 'generada', tipo_comprobante: tipo, numero_comprobante: nro,
           respuesta: r0.d, updated_at: new Date().toISOString() }).eq('id', it.id);
       }
-      const { cae, respuesta } = await pedirCAE(tipo, nro);
-      await supabase.from('fact_items').update({ estado: 'cae', cae, error: null, respuesta,
+      let rc;
+      try { rc = await pedirCAE(tipo, nro); }
+      catch (e) { await volverSiAnulada(it, tipo, nro, e.message); throw e; }
+      await supabase.from('fact_items').update({ estado: 'cae', cae: rc.cae, error: null, respuesta: rc.respuesta,
         updated_at: new Date().toISOString() }).eq('id', it.id);
     }, 3);   // 2 llamadas por factura: de a 3 para no pasar los 30 s de Railway
     res.json(r);
