@@ -1630,6 +1630,45 @@ function exigirVentas() {
   return e;
 }
 
+/**
+ * PRÓXIMO NÚMERO de factura (29-sep). Flexxus no lo asigna solo: con
+ * numerocomprobante 0 responde "El numero de comprobante es requerido".
+ * Se toma la última factura de ese tipo en el punto de venta (listado de
+ * facturas electrónicas de los últimos 90 días) y se suma uno.
+ * El número va codificado como punto × 100.000.000 + número (300002665).
+ *
+ * En una tanda se consulta UNA vez: después de cada factura creada se anota
+ * el número y la siguiente usa +1. Si una falla, se olvida y se vuelve a
+ * consultar — así nunca se saltea ni se repite por quedar desfasado.
+ */
+const _numVenta = {};
+const NUM_TTL = 60 * 1000;
+function _ultimoDeLista(lista, tipo) {
+  const nums = (lista || []).filter(x => String(x.tipocomprobante || '').toUpperCase() === String(tipo).toUpperCase())
+    .map(x => Number(x.numerocomprobante)).filter(n => n > 0);
+  return nums.length ? Math.max(...nums) : null;
+}
+async function proximoNumeroVenta(tipo, pv, piso) {
+  const k = tipo + '|' + pv;
+  const c = _numVenta[k];
+  if (c && Date.now() - c.t < NUM_TTL) return c.ultimo + 1;
+  const desde = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
+  const cp = String(pv).padStart(3, '0');
+  const d = await flxV(`/ventas/facturaselectronicas?fechacomprobantedesde=${desde}&codigospuntodeventa=${cp}&limit=1000`);
+  const lista = Array.isArray(d) ? d : (d && d.data) || [];
+  let ultimo = _ultimoDeLista(lista, tipo);
+  // Lo último que emitimos nosotros también cuenta (por si el listado demora).
+  if (piso && (!ultimo || piso > ultimo)) ultimo = piso;
+  if (!ultimo) {
+    const e = new Error(`No encontré ninguna factura ${tipo} del punto ${cp} en los últimos 90 días para saber el próximo número. Hacé la primera desde Flexxus.`);
+    e.status = 409; throw e;
+  }
+  _numVenta[k] = { ultimo, t: Date.now() };
+  return ultimo + 1;
+}
+function numeroVentaUsado(tipo, pv, n) { _numVenta[tipo + '|' + pv] = { ultimo: Number(n), t: Date.now() }; }
+function numeroVentaOlvidar(tipo, pv) { delete _numVenta[tipo + '|' + pv]; }
+
 /** Crea la factura en Flexxus. Devuelve { tipocomprobante, numerocomprobante, mensaje, advertencia }. */
 async function crearFacturaVenta(body) {
   exigirVentas();
@@ -1688,5 +1727,6 @@ async function listarPuntosVenta() {
 }
 
 module.exports = {
+  proximoNumeroVenta, numeroVentaUsado, numeroVentaOlvidar, _ultimoDeLista,
   diagnosticoNumeracion, probarConexionVentas, entornoVentas, crearFacturaVenta, pedirCAE, leerFacturaVenta, pdfFacturaVenta, buscarClientesFlexxus, listarPuntosVenta,
   estadoToken, precalentarFlexxus, anularComprobanteCompra, repartoCentroCosto, listarCentrosCosto, listarCentrosCostoTodos, listarPlanCuentas, imputarFactura, verificarImputacion, apropiarCentroCosto, probarConexion, buscarProveedorPorCuit, formatearNumeroFlexxus, listarClasesProveedor, actualizarClaseProveedorFlexxus, leerCuentasAsiento, fichaProveedorPorCuit, colocarClaseComprobante, listarRubrosBienesUso };
