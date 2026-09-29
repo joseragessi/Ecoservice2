@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturar: clonar el mes anterior con aumento × % mano de obra';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-29 · facturar: solo el mes elegido + barra al traer CAE';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12590,8 +12590,9 @@ const ADM_ESTF={
   borrador:['e-pend','Pendiente'],anular:['e-mal','Otro punto · anular'],generada:['e-flx','En Flexxus · falta el CAE'],
   cae:['e-cae','Emitida'],enviada:['e-env','Enviada']};
 function admDelTablero(){
-  // Lo que está en curso (de cualquier mes) + lo enviado en el mes elegido.
-  return admTodos().filter(x=>['borrador','anular','generada','cae'].includes(x.estado)||(x.estado==='enviada'&&x._lote.periodo===admMes));
+  // Solo las facturas del mes elegido arriba (29-sep, pedido de José): al pasar
+  // de mes se ve únicamente lo de ese mes.
+  return admTodos().filter(x=>x._lote&&x._lote.periodo===admMes);
 }
 function admEnFiltro(x,f){
   if(f==='pend')return ['borrador','anular'].includes(x.estado);
@@ -12964,11 +12965,25 @@ function admVerSinFacturar(){
   const L=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente&&(tienen.has(c.id)||c.concepto_id)&&!delMes.has(c.id));
   alert(`Sin factura en ${admMesTxt(admMes)} (${L.length}):\n\n`+L.map(c=>'· '+c.nombre).join('\n'));
 }
+// Barra animada mientras se consulta Flexxus (29-sep): tarda 1-3 s por factura.
+function admEspera(titulo,sub){
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-espera';
+  bg.innerHTML=`<style>@keyframes admBarra{0%{left:-40%}100%{left:100%}}</style><div class="modal" style="max-width:420px">
+    <div class="modal-tit">${titulo}</div><div class="sub" style="margin:6px 0 14px">${sub||''}</div>
+    <div style="position:relative;height:8px;background:var(--papel);border-radius:5px;overflow:hidden">
+      <i style="position:absolute;top:0;bottom:0;width:40%;background:var(--brote);border-radius:5px;animation:admBarra 1.1s ease-in-out infinite"></i></div>
+    <div class="sub mono" id="adm-espera-t" style="margin-top:8px;font-size:11.5px">0,0 s</div></div>`;
+  document.body.appendChild(bg);
+  const t0=Date.now(),iv=setInterval(()=>{const e=document.getElementById('adm-espera-t');if(e)e.textContent=((Date.now()-t0)/1000).toFixed(1).replace('.',',')+' s';},100);
+  return ()=>{clearInterval(iv);bg.remove();};
+}
 async function admTraerCAE(){
-  try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});
+  const n=admTodos().filter(x=>x.estado==='generada').length;
+  const fin=admEspera('Trayendo el CAE de Flexxus',`Consultando ${n||''} factura${n===1?'':'s'} en Flexxus…`);
+  try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});fin();
     toast(r.anuladas?`${r.anuladas} anulada${r.anuladas===1?'':'s'} por Flexxus (ARCA no dio el CAE): volvieron a pendientes con el mismo número.`
       :r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con&&!r.anuladas?undefined:'error');}
-  catch(e){toast(e.message,'error');}
+  catch(e){fin();toast(e.message,'error');}
   go('administracion');
 }
 async function admEmitirUno(id){
