@@ -250,7 +250,8 @@ function clienteParaFlexxus(f, cliente) {
     razonsocial: txt(d.razonsocial || cliente.nombre, 50),
     direccion: txt(d.direccion, 50),
     codigoprovincia: txt(prov, 15),
-    codigolocalidad: loc != null && loc !== '' ? (isNaN(Number(loc)) ? loc : Number(loc)) : undefined,
+    // Flexxus la pide como TEXTO de hasta 15 caracteres ("753", no 753).
+    codigolocalidad: loc != null && loc !== '' ? String(loc).slice(0, 15) : undefined,
     telefono: txt(d.telefono || d.telefonolaboral || d.telefonoempresa1, 50),
     condicioniva: txt(d.condicioniva || cliente.condicion_iva, 15),
     codigozona: Number(zona) || 0,
