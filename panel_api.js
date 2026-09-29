@@ -8908,6 +8908,26 @@ router.get('/api/facturacion/lotes', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Traer CAE de Flexxus: para las que ya están en Flexxus y el CAE se pidió desde
+// allá. Solo lee (una llamada por factura).
+router.post('/api/facturacion/traer-cae', auth, async (req, res) => {
+  try {
+    const { leerCAE } = require('./flexxus');
+    const { data } = await supabase.from('fact_items').select('id, tipo_comprobante, numero_comprobante')
+      .eq('estado', 'generada').not('numero_comprobante', 'is', null).limit(20);
+    let con = 0, sin = 0;
+    for (const it of (data || [])) {
+      try {
+        const r = await leerCAE(it.tipo_comprobante, it.numero_comprobante);
+        if (r) { await supabase.from('fact_items').update({ estado: 'cae', cae: r.cae, cae_vto: r.vencimiento, error: null,
+          updated_at: new Date().toISOString() }).eq('id', it.id); con++; }
+        else sin++;
+      } catch (e) { sin++; }
+    }
+    res.json({ con, sin, revisadas: (data || []).length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Emitir UNA factura: generarla y pedir el CAE (o solo el CAE si ya estaba en
 // Flexxus). Dos llamadas como máximo. Nunca la crea dos veces.
 router.post('/api/facturacion/items/:id/emitir', auth, async (req, res) => {
