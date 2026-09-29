@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturación: artículo de Flexxus por cliente, control de punto de venta, ver envío';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-29 · facturar: circuito completo, PDFs en tanda conciliados por número, mail con PDF';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12576,47 +12576,205 @@ async function admVerFacturar(view){
     try{admLote=await api('/api/facturacion/lotes/'+admLoteId);}catch(e){admLoteId=null;admPasoF=1;}
     if(admLote)return view.innerHTML=admHead('Facturación',`Lote de ${admMesTxt(admLote.periodo)}`)+head+admHtmlPaso2();
   }
-  if(admPasoF===3)return view.innerHTML=admHead('Facturación','Enviar por mail')+head+admHtmlEnviar();
+  if(admPasoF===3){try{window._admMail=await api('/api/facturacion/mail/estado');}catch(e){window._admMail=null;}
+    return view.innerHTML=admHead('Facturación','Enviar por mail')+head+admHtmlEnviar();}
   if(admPrev)return view.innerHTML=admHead('Facturación',`Armando ${admMesTxt(admPrev.periodo)}`)+head+admHtmlArmado();
   view.innerHTML=admHtmlInicio(head);
 }
 
-// ── Inicio ──
+// ── Inicio (rediseño 29-sep): el circuito completo del mes en una sola pantalla ──
+// Pendientes → En Flexxus (falta CAE) → Emitidas (con CAE, con o sin PDF) → Enviadas.
+// Las emitidas ya no desaparecen: quedan acá hasta que se envían.
+let admFiltro='todas';
+const ADM_ESTF={
+  borrador:['e-pend','Pendiente'],anular:['e-mal','Otro punto · anular'],generada:['e-flx','En Flexxus · falta el CAE'],
+  cae:['e-cae','Emitida'],enviada:['e-env','Enviada']};
+function admDelTablero(){
+  // Lo que está en curso (de cualquier mes) + lo enviado en el mes elegido.
+  return admTodos().filter(x=>['borrador','anular','generada','cae'].includes(x.estado)||(x.estado==='enviada'&&x._lote.periodo===admMes));
+}
+function admEnFiltro(x,f){
+  if(f==='pend')return ['borrador','anular'].includes(x.estado);
+  if(f==='flx')return x.estado==='generada';
+  if(f==='emit')return x.estado==='cae';
+  if(f==='sinpdf')return x.estado==='cae'&&!x.pdf_ruta;
+  if(f==='env')return x.estado==='enviada';
+  return true;
+}
 function admHtmlInicio(tabs){
-  const T=admTodos(), P=admPend();
-  const delMes=T.filter(x=>x._lote.periodo===admMes);
-  const emit=delMes.filter(x=>['cae','enviada'].includes(x.estado));
-  const sinEnviar=T.filter(x=>x.estado==='cae');
-  const suma=a=>a.reduce((s,x)=>s+Number(x.total||0),0);
-  const conFact=new Set(delMes.map(x=>x.cliente_id));
-  const tienenConc=new Set((admCfg.clienteConceptos||[]).map(x=>x.cliente_id));
-  const activos=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente&&(tienenConc.has(c.id)||c.concepto_id));
-  const sinFact=activos.filter(c=>!conFact.has(c.id));
-  const kpi=(cls,l,v,s,click)=>`<div class="adm-kpi ${cls}" ${click?`onclick="${click}" style="cursor:pointer"`:''}><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
-  const acc=(prim,ic,t,d,click)=>`<div class="adm-acc${prim?' prim':''}" onclick="${click}"><div class="ic">${ic}</div><div><b>${t}</b><span>${d}</span></div></div>`;
+  const T=admDelTablero(), orden={anular:0,borrador:1,generada:2,cae:3,enviada:4};
+  const cnt=f=>T.filter(x=>admEnFiltro(x,f)).length, suma=a=>a.reduce((s,x)=>s+Number(x.total||0),0);
+  const emit=T.filter(x=>x.estado==='cae'),conPdf=emit.filter(x=>x.pdf_ruta).length,env=T.filter(x=>x.estado==='enviada');
+  const L=T.filter(x=>admEnFiltro(x,admFiltro)).sort((a,b)=>(orden[a.estado]-orden[b.estado])||String((a.fact_clientes||{}).nombre).localeCompare(String((b.fact_clientes||{}).nombre)));
+  const hab=admCfg.entorno&&admCfg.entorno.habilitado;
+  const paso=(f,n,l,sub,col)=>`<div class="adm-paso${admFiltro===f?' on':''}" onclick="admFiltro='${admFiltro===f?'todas':f}';go('administracion')">
+    <div class="l">${l}</div><div class="n">${n}</div><div class="s">${sub}</div><i style="background:${col}"></i></div>`;
+  const acc=(prim,ic,t,d,click,dis)=>`<div class="adm-acc${prim?' prim':''}${dis?' dis':''}" onclick="${dis?'':click}"><div class="ic">${ic}</div><div><b>${t}</b><span>${d}</span></div></div>`;
+  const chip=(f,t)=>`<button class="adm-chipf${admFiltro===f?' on':''}" onclick="admFiltro='${f}';go('administracion')">${t} <small>${cnt(f)}</small></button>`;
+  const pendEmit=L.filter(x=>x.estado==='borrador'&&!admMalPunto(x)&&admArtItem(x));
+  const listosEnviar=emit.filter(x=>x.pdf_ruta);
+  const extra=admFiltro==='pend'&&pendEmit.length?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">🔑 Emitir ${pendEmit.length===1?'la':'las'} ${pendEmit.length}</button>`
+    :(['emit','todas','sinpdf'].includes(admFiltro)&&listosEnviar.length?`<button class="btn" onclick="admIrEnviar()">📧 Enviar ${listosEnviar.length===1?'la':'las'} ${listosEnviar.length} con PDF</button>`:'');
   return `${ADM_CSS}
-  <div class="adm-hero"><div><h1>Facturación</h1><div class="d">Todo lo del mes en un lugar: armar, emitir y enviar.</div></div>
+  <div class="adm-hero"><div><h1>Facturación</h1><div class="d">Armar, emitir, adjuntar el PDF y enviar. Todo el mes acá.</div></div>
     <div class="adm-mes"><button onclick="admMover(-1)">‹</button><b>${admMesTxt(admMes)}</b><button onclick="admMover(1)">›</button></div></div>
   ${tabs||''}
-  <div class="adm-kpis">
-    ${kpi('a','Pendientes de emitir',P.length,money(suma(P)))}
-    ${kpi('b','Emitidas en '+ADM_MES[+admMes.split('-')[1]-1],emit.length,money(suma(emit)))}
-    ${kpi('c','Emitidas sin enviar',sinEnviar.length,sinEnviar.length?'tocá para enviarlas':'todo enviado',sinEnviar.length?"admPasoF=3;admEnvio={};go('administracion')":'')}
-    ${kpi('d','Clientes sin facturar',sinFact.length,`de ${activos.length} activos este mes`,sinFact.length?'admVerSinFacturar()':'')}
+  <div class="adm-flujo">
+    ${paso('pend',cnt('pend'),'1 · Pendientes',`${money(suma(T.filter(x=>admEnFiltro(x,'pend'))))} · sin mandar a Flexxus`,'#D98A1F')}
+    ${paso('flx',cnt('flx'),'2 · En Flexxus','falta el CAE (lo pide Sole)','#3B7DC4')}
+    ${paso('emit',emit.length,'3 · Emitidas',emit.length?`con CAE · <b>${conPdf} con PDF</b>${emit.length-conPdf?`, ${emit.length-conPdf} sin PDF`:''}`:'con CAE','#159B51')}
+    ${paso('env',env.length,'4 · Enviadas',`${money(suma(env))} en ${ADM_MES[+admMes.split('-')[1]-1]}`,'#7C5CD6')}
   </div>
   <input type="file" id="adm-file" accept=".xlsx,.xls" style="display:none" onchange="admLeerExcel(this.files[0])">
-  <div class="adm-accs">
-    ${acc(1,'📄','Facturar el mes','Subí la planilla de incrementos: arma todas las facturas del mes',"document.getElementById('adm-file').click()")}
-    ${acc(0,'＋','Factura nueva','Una sola, para un cliente o para alguien de Flexxus','admNueva()')}
-    ${acc(0,'🚛','Bateas y fijos','Sin planilla: solo lo que va por cantidad o importe fijo','admArmar([])')}
+  <input type="file" id="adm-pdfs" accept="application/pdf,.pdf" multiple style="display:none" onchange="admPdfsAbrir([...this.files]);this.value=''">
+  <div class="adm-accs4">
+    ${acc(1,'📄','Facturar el mes','Subí la planilla de incrementos',"document.getElementById('adm-file').click()")}
+    ${acc(0,'＋','Factura nueva','Una sola','admNueva()')}
+    ${acc(0,'↻','Traer CAE',cnt('flx')?`${cnt('flx')} esperando el CAE de Sole`:'Nada esperando CAE','admTraerCAE()',!cnt('flx'))}
+    ${acc(0,'📎','Subir PDFs','Todos juntos: se concilian solos',"document.getElementById('adm-pdfs').click()")}
   </div>
-  <div class="sub" id="adm-msg" style="margin:-10px 0 12px"></div>
-  ${P.length?`<div class="adm-sech"><h2>Pendientes de emitir <small>armadas, todavía sin CAE</small></h2>
-      <button class="btn" ${admCfg.entorno&&admCfg.entorno.habilitado?'':'disabled style="opacity:.5"'} onclick="admEmitirTodas()">🔑 Emitir ${(n=>(n===1?'la':'las')+' '+n)(P.filter(x=>!admMalPunto(x)&&admArtItem(x)).length)}</button></div>
-    <div class="adm-facs">${P.map(admCard).join('')}</div>`
-  :`<div class="adm-vacio"><div class="ic">✅</div><div style="font-size:16px;font-weight:700">No hay facturas pendientes</div>
-      <div class="sub" style="font-size:13px;margin-top:4px">Para empezar, usá los botones de arriba.</div></div>`}`;
+  <div class="sub" id="adm-msg" style="margin:-8px 0 10px"></div>
+  <div class="adm-filtros">${chip('todas','Todas')}${chip('pend','Pendientes')}${chip('flx','En Flexxus')}${chip('emit','Emitidas')}${chip('sinpdf','Sin PDF')}${chip('env','Enviadas')}
+    <span style="margin-left:auto;display:flex;gap:8px">${extra}</span></div>
+  ${L.length?`<div class="adm-lista">
+    <div class="adm-row h"><span></span><span>Cliente</span><span>Factura</span><span class="r">Total</span><span>Estado</span><span>PDF</span><span></span></div>
+    ${L.map(admRow).join('')}</div>`
+  :`<div class="adm-vacio"><div class="ic">✅</div><div style="font-size:16px;font-weight:700">${admFiltro==='todas'?'No hay facturas en curso':'Nada en este paso'}</div>
+      <div class="sub" style="font-size:13px;margin-top:4px">${admFiltro==='todas'?'Para empezar, usá los botones de arriba.':'Tocá "Todas" para ver el resto.'}</div></div>`}`;
 }
+function admRow(x){
+  const c=x.fact_clientes||{},[L,cod]=admLetra(x.tipo_comprobante),mal=admMalPunto(x),art=admArtItem(x);
+  const [cls,txt]=mal?ADM_ESTF.anular:(ADM_ESTF[x.estado]||['e-pend',x.estado]);
+  const hab=admCfg.entorno&&admCfg.entorno.habilitado;
+  const estTxt=x.estado==='cae'?`Emitida · CAE <span class="mono">${escStk(x.cae||'')}</span>`:x.estado==='enviada'?`Enviada${x.enviado_at?' · '+new Date(x.enviado_at).toLocaleDateString('es-AR'):''}`:txt;
+  const pdf=['generada','cae','enviada'].includes(x.estado)&&!mal
+    ?(x.pdf_ruta?`<span class="adm-pdf ok" title="${escStk(x.pdf_nombre||'')}" onclick="event.stopPropagation();admPdf('${x.id}')">📎 PDF ✓</span>`
+      :`<span class="adm-pdf no" onclick="event.stopPropagation();admPdfUno('${x.id}')">sin PDF · subir</span>`):'<span class="sub">—</span>';
+  let b='';
+  if(mal)b=`<button class="btn-salir adm-del" onclick="event.stopPropagation();admSacarAnulada('${x.id}')">Ya la anulé · sacar</button>`;
+  else if(x.estado==='borrador')b=`<button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="event.stopPropagation();admEmitirUno('${x.id}')">🔑 Emitir</button>`;
+  else if(x.estado==='generada')b=`<button class="btn-salir" onclick="event.stopPropagation();admTraerCAE()">↻ Traer CAE</button>`;
+  else if(x.estado==='cae')b=x.pdf_ruta?`<button class="btn" onclick="event.stopPropagation();admIrEnviar('${x.id}')">📧 Enviar</button>`
+    :`<button class="btn-salir" onclick="event.stopPropagation();admPdfUno('${x.id}')">📎 Adjuntar</button>`;
+  else b=`<button class="btn-salir" onclick="event.stopPropagation();admDetalle('${x.id}')">Ver</button>`;
+  return `<div class="adm-row${x.error&&x.estado!=='enviada'?' err-row':''}" onclick="admDetalle('${x.id}')">
+    <div class="letra sm">${L}<small>COD.${cod}</small></div>
+    <div class="cli"><b>${escStk(c.nombre||'')}</b><span>${escStk(x.descripcion||'')}</span>${x.error&&x.estado!=='enviada'?`<span class="e">✕ ${escStk(String(x.error).slice(0,120))}</span>`:''}</div>
+    <span>${admNro(x)}</span><span class="mono r"><b>${money(x.total)}</b></span>
+    <span><span class="adm-est ${cls}">● ${estTxt}</span></span><span>${pdf}</span><span class="r">${b}</span></div>`;
+}
+function admIrEnviar(id){
+  admEnvio={};
+  if(id){const x=admItem(id),c=(x&&x.fact_clientes)||{};admEnvio[id]={sel:true,email:c.email||'',cc:c.email_cc||'',guardar:false};
+    admTodos().filter(y=>y.estado==='cae'&&y.id!==id).forEach(y=>{const k=y.fact_clientes||{};admEnvio[y.id]={sel:false,email:k.email||'',cc:k.email_cc||'',guardar:false};});}
+  admPasoF=3;go('administracion');
+}
+
+/* ── Subir PDFs en tanda (29-sep) ──
+   Cada PDF se concilia con su factura por el NÚMERO: primero el del nombre del
+   archivo (FacturaB 0003-00001082_…), y si no, el escrito adentro (Nº 0003-00001082).
+   Además se controla CUIT del cliente, total y CAE contra lo que tiene el panel.
+   Lo dudoso no se adjunta sin tildarlo; lo que no coincide se descarta. */
+let _admPdfs=null;
+function admCargarPdfJs(){
+  if(window.pdfjsLib)return Promise.resolve();
+  return new Promise((ok,mal)=>{const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';ok();};
+    s.onerror=()=>mal(new Error('No pude cargar el lector de PDF'));document.head.appendChild(s);});
+}
+async function admPdfTexto(buf){
+  const doc=await window.pdfjsLib.getDocument({data:buf}).promise;const pag=await doc.getPage(1);
+  const t=await pag.getTextContent();return t.items.map(i=>i.str).join(' ').replace(/\s+/g,' ');
+}
+function admPdfDatos(nombre,txt){
+  const d={};
+  const mn=String(nombre).match(/(?:Factura\s*|F)([AB])[\s_-]*(\d{4,5})-(\d{8})/i);
+  if(mn){d.tipoN='F'+mn[1].toUpperCase();d.nroN=Number(mn[2])*1e8+Number(mn[3]);}
+  if(txt){
+    const mt=txt.match(/FACTURA\s+([AB])\b/i);if(mt)d.tipoT='F'+mt[1].toUpperCase();
+    // El orden del texto en el PDF de Flexxus no es el visual ("Nº" y el número
+    // salen separados, "Total:" lejos del importe): se busca por forma.
+    const mx=txt.match(/(?:^|[^\d-])(\d{4,5})-(\d{8})(?![\d-])/);if(mx)d.nroT=Number(mx[1])*1e8+Number(mx[2]);
+    const mc=txt.match(/(?:^|\D)(\d{14})(?!\d)/);if(mc)d.cae=mc[1];
+    d.montos=[...txt.matchAll(/\$\s*([\d.]+,\d{2})/g)].map(m=>Number(m[1].replace(/\./g,'').replace(',','.')));
+    d.cuits=(txt.match(/\d{2}-\d{8}-\d/g)||[]).map(x=>x.replace(/\D/g,''));
+  }
+  return d;
+}
+async function admPdfsAbrir(files,soloId){
+  files=(files||[]).filter(f=>/\.pdf$/i.test(f.name)||f.type==='application/pdf');
+  if(!files.length)return;
+  const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-pdfm';
+  bg.innerHTML=`${ADM_CSS}<div class="adm-pdfm"><div class="mh"><h3>Adjuntar PDFs</h3><div class="sub">Leyendo ${files.length} archivo${files.length===1?'':'s'}…</div></div></div>`;
+  document.body.appendChild(bg);
+  try{await admCargarPdfJs();}catch(e){}
+  const cand=admTodos().filter(x=>x.numero_comprobante&&['generada','cae','enviada'].includes(x.estado)&&!admMalPunto(x));
+  const res=[];
+  for(const f of files){
+    const buf=await f.arrayBuffer();let txt='';
+    try{if(window.pdfjsLib)txt=await admPdfTexto(buf.slice(0));}catch(e){}
+    const d=admPdfDatos(f.name,txt),r={f,buf,d,obs:[],nivel:'ok'};
+    const tipo=d.tipoN||d.tipoT,nro=d.nroN||d.nroT;
+    if(d.nroN&&d.nroT&&d.nroN!==d.nroT){r.nivel='mal';r.obs.push('el nombre dice un número y el PDF otro');}
+    r.it=nro?cand.find(x=>Number(x.numero_comprobante)===nro&&(!tipo||x.tipo_comprobante===tipo)):null;
+    if(soloId&&r.it&&r.it.id!==soloId){r.nivel='mal';r.obs.push('es de otra factura');}
+    if(!r.it){r.nivel='mal';r.obs.push(nro?`no hay ninguna factura ${tipo||''} ${admNroTxt(nro)} en el panel`:'no encontré el número de factura');}
+    else{
+      const x=r.it,c=x.fact_clientes||{};
+      if(!d.nroN){r.nivel=r.nivel==='mal'?'mal':'warn';r.obs.push('el nombre no trae el número: lo leí adentro del PDF');}
+      if(txt){
+        const cuit=String(c.cuit||'').replace(/\D/g,'');
+        if(cuit&&d.cuits&&d.cuits.length&&!d.cuits.includes(cuit)){r.nivel='mal';r.obs.push('el CUIT no es el del cliente');}
+        if(d.montos&&d.montos.length&&!d.montos.some(v=>Math.abs(v-Number(x.total))<=0.01)){r.nivel='mal';r.obs.push(`el PDF no tiene el total de la factura (${money(x.total)})`);}
+        if(x.cae&&d.cae&&x.cae!==d.cae){r.nivel='mal';r.obs.push('el CAE no coincide');}
+        if(!x.cae){r.nivel=r.nivel==='mal'?'mal':'warn';r.obs.push('en el panel todavía no tiene CAE (tocá Traer CAE)');}
+      }else{r.nivel=r.nivel==='mal'?'mal':'warn';r.obs.push('no pude leer el texto del PDF: solo se controló el número');}
+      if(x.pdf_ruta)r.obs.push('ya tenía PDF: se reemplaza');
+    }
+    res.push(r);
+  }
+  // Dos PDF para la misma factura: se queda el primero.
+  const vistos=new Set();res.forEach(r=>{if(r.it&&r.nivel!=='mal'){if(vistos.has(r.it.id)){r.nivel='mal';r.obs.push('ya hay otro PDF para esta factura');}else vistos.add(r.it.id);}});
+  res.forEach(r=>{r.sel=r.nivel==='ok';});
+  _admPdfs=res;admPdfsPintar();
+}
+function admNroTxt(n){n=Number(n);return String(Math.floor(n/1e8)).padStart(4,'0')+'-'+String(n%1e8).padStart(8,'0');}
+function admPdfsPintar(){
+  const bg=document.getElementById('adm-pdfm');if(!bg||!_admPdfs)return;
+  const R=_admPdfs,n=k=>R.filter(r=>r.nivel===k).length,sel=R.filter(r=>r.sel).length;
+  bg.innerHTML=`${ADM_CSS}<div class="adm-pdfm">
+    <div class="mh"><h3>Adjuntar PDFs de las facturas</h3><div class="sub">Cada PDF se engancha a su factura por el número. Revisá y confirmá.</div></div>
+    <div style="padding:14px 22px 0" class="adm-rsum">
+      ${n('ok')?`<span class="rs ok">✓ ${n('ok')} coinciden</span>`:''}${n('warn')?`<span class="rs warn">⚠ ${n('warn')} para revisar</span>`:''}${n('mal')?`<span class="rs mal">✕ ${n('mal')} se descartan</span>`:''}</div>
+    <div class="adm-concs">${R.map((r,i)=>{const x=r.it,c=(x&&x.fact_clientes)||{};return `<label class="adm-conc ${r.nivel}">
+      <input type="checkbox" ${r.sel?'checked':''} ${r.nivel==='mal'?'disabled':''} onchange="_admPdfs[${i}].sel=this.checked;admPdfsPintar()">
+      <span class="f" title="${escStk(r.f.name)}">${escStk(r.f.name)}</span>
+      <span>${x?`<b>${escStk(c.nombre||'')}</b> · <span class="mono">${x.tipo_comprobante} ${admNroTxt(x.numero_comprobante)}</span>`:'<span class="sub">sin factura</span>'}</span>
+      <span class="mono r">${x?money(x.total):''}</span>
+      <span class="o">${r.nivel==='ok'?'✓ Número'+(r.d.cuits&&r.d.cuits.length?', CUIT':'')+(r.d.montos&&r.d.montos.length?', total':'')+(r.d.cae?' y CAE':'')+' coinciden':''}${r.obs.length?(r.nivel==='ok'?' · ':'')+r.obs.join(' · '):''}</span></label>`;}).join('')}</div>
+    <div class="mf"><span class="sub" id="adm-pdfmsg">${sel?`Se adjuntan ${sel}.`:'No hay nada tildado.'}</span>
+      <span style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-pdfm').remove()">Cancelar</button>
+      <button class="btn" ${sel?'':'disabled style="opacity:.5"'} onclick="admPdfsSubir()">📎 Adjuntar ${sel===1?'el':'los'} ${sel}</button></span></div></div>`;
+}
+function admB64(buf){let s='';const b=new Uint8Array(buf);for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s);}
+async function admPdfsSubir(){
+  const L=(_admPdfs||[]).filter(r=>r.sel&&r.it);let ok=0,mal=0;
+  const m=()=>{const e=document.getElementById('adm-pdfmsg');if(e)e.innerHTML=`Subiendo… <b>${ok}</b> de ${L.length}${mal?` · <span style="color:var(--rojo)">${mal} con error</span>`:''}`;};
+  for(const r of L){
+    try{await api('/api/facturacion/items/'+r.it.id+'/pdf-adjunto',{method:'POST',body:JSON.stringify({data:admB64(r.buf),nombre:r.f.name})});ok++;}
+    catch(e){mal++;toast(r.f.name+': '+e.message,'error');}
+    m();
+  }
+  const bg=document.getElementById('adm-pdfm');if(bg)bg.remove();
+  toast(mal?`${ok} adjuntados · ${mal} con error`:`✓ ${ok} PDF adjuntado${ok===1?'':'s'}`,mal?'error':undefined);
+  _admPdfs=null;go('administracion');
+}
+function admPdfUno(id){
+  const i=document.createElement('input');i.type='file';i.accept='application/pdf,.pdf';
+  i.onchange=()=>{if(i.files[0])admPdfsAbrir([i.files[0]],id);};i.click();
+}
+
 function admLetra(t){return t==='FB'?['B','06']:['A','01'];}
 // Punto de venta configurado y el de cada número (punto × 100.000.000 + número).
 function admPV(){return Number(admCfg&&admCfg.cfg&&admCfg.cfg.puntoVenta)||3;}
@@ -12692,7 +12850,10 @@ function admDetalle(id){
     <div class="tots"><div class="sub">Neto <span class="mono">${money(x.neto)}</span> · IVA ${pct}% <span class="mono">${money(x.iva)}</span></div><div class="big">${money(x.total)}</div></div>
     <div style="padding:0 22px 14px"><div class="lbl">${x.email_enviado?'Enviada a':'Se envía a'}</div>
       <div style="font-size:13px">${escStk(x.email_enviado||[c.email,c.email_cc].filter(Boolean).join(' · ')||'sin email')}</div>
-      ${x.error?`<div class="err" style="margin-top:8px">✕ ${escStk(x.error)}</div>`:''}</div>
+      ${['generada','cae','enviada'].includes(x.estado)&&!admMalPunto(x)?`<div class="lbl" style="margin-top:12px">PDF de la factura</div>
+        <div style="font-size:13px">${x.pdf_ruta?`📎 <a href="#" onclick="event.preventDefault();admPdf('${x.id}')">${escStk(x.pdf_nombre||'PDF')}</a> <span class="sub">· subido ${x.pdf_subido_at?new Date(x.pdf_subido_at).toLocaleDateString('es-AR'):''}</span>`
+          :`<span style="color:#854F0B">Todavía sin PDF.</span> <button class="mini-btn" onclick="document.getElementById('adm-det').remove();admPdfUno('${x.id}')">📎 Subir</button>`}</div>`:''}
+      ${x.error&&x.estado!=='enviada'?`<div class="err" style="margin-top:8px">✕ ${escStk(x.error)}</div>`:''}</div>
     <div class="f">${x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg> Eliminar</button>`:'<span></span>'}
       <div style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-det').remove()">Cerrar</button>
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="admVerEnvio('${x.id}')">🔎 Ver lo que se envía</button>`:''}
@@ -12877,7 +13038,47 @@ const ADM_CSS=`<style>
 .adm-det td{padding:12px 22px;border-bottom:1px solid #F2F5F0}.adm-det .num{text-align:right;font-family:ui-monospace,monospace}
 .adm-det .tots{padding:12px 22px;display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-size:13px}.adm-det .tots .big{font-size:22px;font-weight:700;font-family:ui-monospace,monospace}
 .adm-det .f{padding:14px 22px;display:flex;gap:8px;justify-content:space-between;background:var(--hueso);border-top:1px solid var(--linea)}
-@media(max-width:900px){.adm-kpis{grid-template-columns:1fr 1fr}.adm-accs{grid-template-columns:1fr}}
+/* rediseño 29-sep: circuito + lista + PDFs */
+.adm-flujo{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.adm-paso{background:#fff;border-radius:14px;box-shadow:0 1px 2px rgba(22,40,30,.05),0 4px 14px rgba(22,40,30,.06);padding:14px 16px 12px;position:relative;cursor:pointer;transition:transform .12s}
+.adm-paso:hover{transform:translateY(-2px)}.adm-paso.on{outline:2px solid var(--brote);outline-offset:-2px}
+.adm-paso .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--tinta-3);font-weight:700}
+.adm-paso .n{font-family:ui-monospace,monospace;font-size:26px;font-weight:700;margin:3px 0 1px}.adm-paso .s{font-size:12px;color:var(--tinta-2);min-height:16px}
+.adm-paso i{display:block;height:4px;border-radius:3px;margin-top:10px}
+.adm-paso:not(:last-child)::after{content:'›';position:absolute;right:-10px;top:38%;color:var(--tinta-3);font-size:18px;z-index:1}
+.adm-accs4{display:grid;grid-template-columns:1.35fr 1fr 1fr 1fr;gap:12px;margin-bottom:18px}
+.adm-accs4 .adm-acc{padding:14px 16px}.adm-accs4 .adm-acc .ic{width:40px;height:40px;font-size:19px}.adm-accs4 .adm-acc b{font-size:14.5px}
+.adm-acc.dis{opacity:.55;cursor:default}.adm-acc.dis:hover{transform:none}
+.adm-filtros{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.adm-chipf{padding:6px 12px;border-radius:20px;border:1px solid var(--linea-2);background:#fff;font-size:12.5px;font-family:inherit;cursor:pointer;color:var(--tinta-2)}
+.adm-chipf small{font-family:ui-monospace,monospace;font-size:11px;color:var(--tinta-3);margin-left:2px}
+.adm-chipf.on{background:var(--tinta);color:#fff;border-color:var(--tinta)}.adm-chipf.on small{color:rgba(255,255,255,.65)}
+.adm-lista{background:#fff;border-radius:16px;box-shadow:0 1px 2px rgba(22,40,30,.05),0 4px 14px rgba(22,40,30,.06);overflow:hidden;border:1px solid var(--linea)}
+.adm-row{display:grid;grid-template-columns:44px minmax(180px,1.7fr) 1fr .9fr 1.3fr .9fr 150px;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--linea);cursor:pointer}
+.adm-row:hover{background:var(--hueso)}.adm-row.h{border-top:0;background:var(--hueso);cursor:default;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tinta-3);font-weight:700;padding:9px 16px}
+.adm-row .r{text-align:right}.adm-row.err-row{background:#FFFBFB}
+.adm-row .cli b{display:block;font-size:13.5px}.adm-row .cli span{display:block;font-size:11.5px;color:var(--tinta-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adm-row .cli .e{color:#A3253A;white-space:normal}
+.letra.sm{width:36px;height:36px;font-size:17px;border-width:2px}.letra.sm small{font-size:6.5px}
+.adm-est{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:600;line-height:1.4}
+.e-pend{background:#FBF0DC;color:#854F0B}.e-flx{background:#E8F1FA;color:#245C94}.e-cae{background:#E5F5EC;color:#0F7E40}.e-env{background:#EFEBFB;color:#5B3FB0}.e-mal{background:#FCEBED;color:#A3253A}
+.adm-pdf{display:inline-block;font-size:11.5px;padding:3px 9px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.adm-pdf.ok{background:#E5F5EC;color:#0F7E40;font-weight:600}.adm-pdf.no{border:1px dashed var(--linea-2);color:var(--tinta-3)}.adm-pdf.no:hover{border-color:var(--brote);color:var(--brote-2)}
+.adm-pdfm{max-width:920px;width:94vw;margin:5vh auto;background:#fff;border-radius:18px;box-shadow:0 12px 44px rgba(0,0,0,.16);overflow:hidden;max-height:88vh;display:flex;flex-direction:column}
+.adm-pdfm .mh{padding:18px 22px;border-bottom:1px solid var(--linea)}.adm-pdfm h3{font-size:18px;margin:0 0 3px}
+.adm-rsum{display:flex;gap:8px;flex-wrap:wrap}.adm-rsum .rs{padding:6px 11px;border-radius:9px;font-weight:600;font-size:12px}
+.rs.ok{background:#E5F5EC;color:#0F7E40}.rs.warn{background:#FBF0DC;color:#854F0B}.rs.mal{background:#FCEBED;color:#A3253A}
+.adm-concs{padding:12px 22px;overflow:auto;flex:1}
+.adm-conc{display:grid;grid-template-columns:20px 1.5fr 1.5fr .9fr 1.6fr;gap:10px;align-items:center;padding:9px 12px;border:1px solid var(--linea);border-radius:10px;margin-bottom:6px;font-size:12.5px;cursor:pointer}
+.adm-conc .f{font-family:ui-monospace,monospace;font-size:11px;color:var(--tinta-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adm-conc .r{text-align:right}.adm-conc .o{font-size:11.5px;color:#0F7E40;font-weight:600}
+.adm-conc.warn{border-color:#F0D3A4;background:#FFFCF6}.adm-conc.warn .o{color:#854F0B}
+.adm-conc.mal{border-color:#F1B8C0;background:#FFFAFA;cursor:default}.adm-conc.mal .o{color:#A3253A}
+.adm-pdfm .mf{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px 22px;border-top:1px solid var(--linea);background:var(--hueso)}
+.adm-aviso{background:#FBF0DC;color:#854F0B;border-radius:12px;padding:12px 14px;font-size:12.5px;margin-bottom:12px;line-height:1.5}
+@media(max-width:900px){.adm-kpis,.adm-flujo,.adm-accs4{grid-template-columns:1fr 1fr}.adm-accs{grid-template-columns:1fr}.adm-paso::after{display:none}
+  .adm-row{grid-template-columns:36px 1fr auto}.adm-row>*:nth-child(3),.adm-row>*:nth-child(5),.adm-row>*:nth-child(6){display:none}.adm-row.h{display:none}
+  .adm-conc{grid-template-columns:20px 1fr}.adm-conc>*:nth-child(n+3){grid-column:2}}
 </style>`;
 
 // ── FACTURA NUEVA (29-sep): una sola, para un cliente configurado u "otro" de Flexxus ──
@@ -13023,27 +13224,36 @@ function admEditarItem(id){
 function admHtmlEnviar(){
   const it=admTodos().filter(x=>x.estado==='cae'||(x.estado==='enviada'&&x._lote.periodo===admMes))
     .sort((a,b)=>(a.estado==='cae'?0:1)-(b.estado==='cae'?0:1)||String((a.fact_clientes||{}).nombre).localeCompare(String((b.fact_clientes||{}).nombre)));
-  it.forEach(x=>{if(!admEnvio[x.id]){const c=x.fact_clientes||{};admEnvio[x.id]={sel:x.estado==='cae'&&!!c.email,email:c.email||'',cc:c.email_cc||'',guardar:false};}});
+  it.forEach(x=>{if(!admEnvio[x.id]){const c=x.fact_clientes||{};admEnvio[x.id]={sel:x.estado==='cae'&&!!c.email&&!!x.pdf_ruta,email:c.email||'',cc:c.email_cc||'',guardar:false};}
+    if(!x.pdf_ruta)admEnvio[x.id].sel=false;});   // sin PDF no se envía (29-sep)
   const sel=it.filter(x=>admEnvio[x.id].sel);
+  const M=window._admMail;
   const inp=(id,k,v,ph)=>`<input value="${escStk(v||'')}" placeholder="${ph||''}" oninput="admEnvio['${id}'].${k}=this.value" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid ${k==='email'&&!v?'#D98A1F':'var(--linea-2)'};border-radius:8px;${k==='email'&&!v?'background:#FBF0DC':''}">`;
-  return `${ADM_CSS}<div class="adm-sech"><h2>Enviar por mail <small>lo manda Flexxus con el modelo de EcoService</small></h2>
+  return `${ADM_CSS}${M&&!M.configurado?`<div class="adm-aviso"><b>Falta configurar el correo.</b> En Railway → Variables cargá <span class="mono">SMTP_HOST</span>, <span class="mono">SMTP_USER</span>, <span class="mono">SMTP_PASS</span> (y <span class="mono">SMTP_PORT</span> si no es 465) con los datos de la casilla de Ferozo (Email → Cuentas → ícono de info).</div>`:''}
+    <div class="adm-sech"><h2>Enviar por mail <small>sale desde ${escStk((M&&M.casilla)||'la casilla de EcoService')}, con el PDF adjunto</small></h2>
     <div style="display:flex;gap:8px"><button class="btn-salir" onclick="admIrPaso1()">← Inicio</button>
-      <button class="btn" ${sel.length?'':'disabled style="opacity:.5"'} onclick="admEnviar()">📧 Enviar ${sel.length===1?'la':'las'} ${sel.length} tildada${sel.length===1?'':'s'}</button></div></div>
-    ${it.length?`<div class="panel" style="padding:0;overflow:hidden"><div class="tablewrap"><table><thead><tr><th style="width:28px"></th><th>Cliente</th><th>Factura</th><th class="num">Total</th><th>Para</th><th>Copia</th><th title="guardar en el cliente">Guardar</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${M&&M.configurado?`<button class="btn-salir" onclick="admMailPrueba()">✉ Mandarme una prueba</button>`:''}
+      <button class="btn" ${sel.length&&!(M&&!M.configurado)?'':'disabled style="opacity:.5"'} onclick="admEnviar()">📧 Enviar ${sel.length===1?'la':'las'} ${sel.length} tildada${sel.length===1?'':'s'}</button></div></div>
+    ${it.length?`<div class="panel" style="padding:0;overflow:hidden"><div class="tablewrap"><table><thead><tr><th style="width:28px"></th><th>Cliente</th><th>Factura</th><th class="num">Total</th><th>Para</th><th>Copia</th><th title="guardar en el cliente">Guardar</th><th>PDF</th><th>Estado</th></tr></thead><tbody>
     ${it.map(x=>{const e=admEnvio[x.id];return `<tr${x.error?' style="background:#FFF9F9"':''}>
-      <td><input type="checkbox" ${e.sel?'checked':''} onchange="admEnvio['${x.id}'].sel=this.checked;go('administracion')" style="accent-color:var(--brote)"></td>
+      <td><input type="checkbox" ${e.sel?'checked':''} ${x.pdf_ruta?'':'disabled title="Falta el PDF"'} onchange="admEnvio['${x.id}'].sel=this.checked;go('administracion')" style="accent-color:var(--brote)"></td>
       <td><b>${escStk((x.fact_clientes||{}).nombre||'')}</b><div class="sub" style="font-size:10.5px">${escStk(x.descripcion||'').slice(0,50)}</div></td>
       <td class="mono" style="font-size:12px">${x.tipo_comprobante==='FB'?'B':'A'} ${String(x.numero_comprobante).padStart(8,'0')}</td>
       <td class="num money">${money(x.total)}</td>
       <td style="min-width:190px">${inp(x.id,'email',e.email,'falta el email')}</td>
       <td style="min-width:150px">${inp(x.id,'cc',e.cc,'opcional')}</td>
       <td style="text-align:center"><input type="checkbox" ${e.guardar?'checked':''} onchange="admEnvio['${x.id}'].guardar=this.checked"></td>
+      <td>${x.pdf_ruta?`<span class="adm-pdf ok" onclick="admPdf('${x.id}')">📎 ✓</span>`:`<span class="adm-pdf no" onclick="admPdfUno('${x.id}')">subir</span>`}</td>
       <td>${x.estado==='enviada'?`<span class="badge b-green">✓ enviada</span>`:'<span class="badge b-gray">sin enviar</span>'}
-        ${x.error?`<div style="font-size:11px;color:#A3253A">✕ ${escStk(x.error)}</div>`:''}</td>
-      <td><button class="mini-btn" onclick="admPdf('${x.id}')">📄</button></td></tr>`;}).join('')}
+        ${x.error?`<div style="font-size:11px;color:#A3253A">✕ ${escStk(x.error)}</div>`:''}</td></tr>`;}).join('')}
     </tbody></table></div>
     <div class="sub" style="padding:10px 16px;font-size:11.5px">El mail se usa para este envío. Tildando <b>Guardar</b> queda en el cliente para los meses siguientes.</div></div>`
     :`<div class="adm-vacio"><div class="ic">📭</div><div style="font-size:16px;font-weight:700">No hay nada para enviar</div></div>`}`;
+}
+async function admMailPrueba(){
+  const m=prompt('¿A qué casilla te mando el mail de prueba? (va con el último PDF subido)','');if(!m)return;
+  try{await api('/api/facturacion/mail/prueba',{method:'POST',body:JSON.stringify({email:m})});toast('✓ Mail de prueba enviado a '+m);}
+  catch(e){toast(e.message,'error');}
 }
 async function admEnviar(){
   const it=admTodos().filter(x=>admEnvio[x.id]&&admEnvio[x.id].sel);
@@ -13055,7 +13265,7 @@ async function admEnviar(){
   let hechas=0,fallaron=0;
   try{for(let i=0;i<cola.length;i+=3){
     const r=await api('/api/facturacion/enviar',{method:'POST',body:JSON.stringify({items:cola.slice(i,i+3)})});
-    hechas+=r.hechas;fallaron+=r.fallaron;
+    hechas+=r.hechas;fallaron+=r.fallaron;if(r.errores&&r.errores.length&&/configurar el correo|nodemailer/.test(r.errores[0])){toast(r.errores[0],'error');break;}
     const m=document.getElementById('adm-emsg');if(m)m.innerHTML=`<b>${hechas}</b> de ${cola.length} enviadas${fallaron?` · <span style="color:var(--rojo)">${fallaron} con error</span>`:''}`;}}
   catch(e){toast(e.message,'error');}
   bg.remove();cola.forEach(x=>{admEnvio[x.id].sel=false;});
