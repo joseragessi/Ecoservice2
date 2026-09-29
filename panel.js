@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturación rediseñada: inicio con tarjetas, emitir de a una, envío general';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-29 · facturación: artículo de Flexxus por cliente, control de punto de venta, ver envío';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12566,7 +12566,7 @@ function admMesTxt(p){const [a,m]=String(p).split('-');return (ADM_MES[+m-1]||''
 function admMover(d){const [a,m]=admMes.split('-').map(Number);const f=new Date(a,m-1+d,1);admMes=f.getFullYear()+'-'+String(f.getMonth()+1).padStart(2,'0');go('administracion');}
 function admTodos(){return (admLotes||[]).flatMap(l=>(l.fact_items||[]).map(it=>({...it,_lote:l})));}
 function admItem(id){return admTodos().find(x=>x.id===id)||((admLote&&admLote.fact_items)||[]).find(x=>x.id===id);}
-const admPend=()=>admTodos().filter(x=>['borrador','generada'].includes(x.estado))
+const admPend=()=>admTodos().filter(x=>['borrador','generada','anular'].includes(x.estado))
   .sort((a,b)=>String((a.fact_clientes||{}).nombre).localeCompare(String((b.fact_clientes||{}).nombre)));
 
 async function admVerFacturar(view){
@@ -12618,15 +12618,31 @@ function admHtmlInicio(tabs){
       <div class="sub" style="font-size:13px;margin-top:4px">Para empezar, usá los botones de arriba.</div></div>`}`;
 }
 function admLetra(t){return t==='FB'?['B','06']:['A','01'];}
+// Punto de venta configurado y el de cada número (punto × 100.000.000 + número).
+function admPV(){return Number(admCfg&&admCfg.cfg&&admCfg.cfg.puntoVenta)||3;}
+function admPtoDe(n){n=Number(n);return n>=1e8?Math.floor(n/1e8):null;}
+// 29-sep: la FB 1081 salió en el punto 0006. Esas no llevan CAE: se anulan en Flexxus.
+function admMalPunto(x){const p=admPtoDe(x.numero_comprobante);return x.estado==='anular'||(p!=null&&p!==admPV()&&!['cae','enviada'].includes(x.estado));}
+// El artículo de la factura: la foto guardada o, si es de antes del cambio, el del cliente.
+function admArtItem(x){
+  if(x.codigo_articulo)return {codigo:x.codigo_articulo,particular:x.articulo_particular};
+  if(x.numero_comprobante)return null;
+  const L=(admCfg&&admCfg.clienteConceptos)||[];
+  const cc=L.find(c=>c.id===x.cliente_concepto_id&&c.codigo_articulo)||L.find(c=>c.cliente_id===x.cliente_id&&c.concepto_id===x.concepto_id&&c.codigo_articulo&&c.activo!==false);
+  return cc?{codigo:cc.codigo_articulo,particular:cc.articulo_particular}:null;
+}
 function admNro(x){
-  if(x.numero_comprobante)return `<b class="mono">0003-${String(x.numero_comprobante).padStart(8,'0')}</b>`;
-  if(x.numero_estimado)return `<b class="mono">0003-${String(x.numero_estimado).padStart(8,'0')}<span class="adm-aprox">aprox.</span></b>`;
+  if(x.numero_comprobante){const n=Number(x.numero_comprobante),p=admPtoDe(n);
+    return `<b class="mono"${admMalPunto(x)?' style="color:var(--rojo)"':''}>${String(p!=null?p:admPV()).padStart(4,'0')}-${String(p!=null?n%1e8:n).padStart(8,'0')}</b>`;}
+  if(x.numero_estimado){const n=Number(x.numero_estimado),p=admPtoDe(n);
+    return `<b class="mono">${String(p!=null?p:admPV()).padStart(4,'0')}-${String(p!=null?n%1e8:n).padStart(8,'0')}<span class="adm-aprox">aprox.</span></b>`;}
   return '<span class="sub">se asigna al emitir</span>';
 }
 function admCondVta(c){const t=admMPTxt(c.codigo_multiplazo);return t?escStk(t):'<span style="color:#854F0B">sin condición de venta</span>';}
 function admCard(x){
   const c=x.fact_clientes||{},k=x.fact_conceptos||{},[L,cod]=admLetra(x.tipo_comprobante);
   const gen=x.estado==='generada',hab=admCfg.entorno&&admCfg.entorno.habilitado;
+  const mal=admMalPunto(x),art=admArtItem(x);
   const pct=Number(x.neto)?Math.round(Number(x.iva)*1000/Number(x.neto))/10:0;
   const fch=new Date(x._lote.fecha_comprobante+'T12:00').toLocaleDateString('es-AR');
   return `<div class="adm-fac${x.error?' mal':''}">
@@ -12636,18 +12652,21 @@ function admCard(x){
       <div class="letra">${L}<small>COD.${cod}</small></div></div>
     <div class="body" onclick="admDetalle('${x.id}')">
       <div class="fila"><span>Factura</span>${admNro(x)}</div>
-      ${gen?`<div class="fila"><span>Estado</span><span class="adm-chip gen">en Flexxus · falta el CAE</span></div>`
+      ${mal?`<div class="fila"><span>Estado</span><span class="adm-chip" style="background:#FCEBED;color:#A3253A">otro punto de venta · anular</span></div>`
+        :gen?`<div class="fila"><span>Estado</span><span class="adm-chip gen">en Flexxus · falta el CAE</span></div>`
         :`<div class="fila"><span>Fecha</span><b>${fch}</b></div>`}
       <div class="concepto"><div class="t">${escStk(x.descripcion||'')}</div>
-        <div class="q">${x.cantidad||1} × ${money(x.precio_unitario!=null?x.precio_unitario:Number(x.neto)/(x.cantidad||1))} · ${c.clase_comprobante===0?'Bienes de cambio':'Servicios'}</div></div>
+        <div class="q">${x.cantidad||1} × ${money(x.precio_unitario!=null?x.precio_unitario:Number(x.neto)/(x.cantidad||1))} · ${c.clase_comprobante===0?'Bienes de cambio':'Servicios'}</div>
+        <div class="q">Artículo Flexxus: ${art?`<b class="mono">${escStk(art.particular||art.codigo)}</b>`:x.numero_comprobante?'—':'<b style="color:var(--rojo)">falta · Clientes → Editar → paso 4</b>'}</div></div>
       <div class="montos"><div class="monto"><div class="l">Neto</div><div class="v">${money(x.neto)}</div></div>
         <div class="monto"><div class="l">IVA ${pct}%</div><div class="v">${money(x.iva)}</div></div>
         <div class="monto tot"><div class="l">Total</div><div class="v">${money(x.total)}</div></div></div>
       <div class="fila" style="margin-top:8px"><span>Se envía a</span><b style="font-size:11.5px;${c.email?'':'color:#854F0B'}">${escStk(c.email||'sin email')}</b></div>
       ${x.error?`<div class="err">✕ ${escStk(x.error)}</div>`:''}</div>
-    <div class="pie">${gen?`<button class="btn-salir" style="flex:1" onclick="admTraerCAE()">↻ Traer CAE de Flexxus</button><button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
+    <div class="pie">${mal?`<button class="btn-salir" style="flex:1" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button><button class="btn-salir adm-del" style="flex:1" onclick="admSacarAnulada('${x.id}')">Ya la anulé · sacar</button>`
+      :gen?`<button class="btn-salir" style="flex:1" onclick="admTraerCAE()">↻ Traer CAE de Flexxus</button><button class="btn" style="flex:1" ${hab?'':'disabled'} onclick="admEmitirUno('${x.id}')">🔑 Pedir CAE</button>`
       :`<button class="btn-salir" onclick="admEditarItem('${x.id}')">✎ Editar</button>
-        <button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">🔑 Emitir</button>
+        <button class="btn" ${hab&&art?'':'disabled style="opacity:.5"'} onclick="admEmitirUno('${x.id}')">🔑 Emitir</button>
         <button class="btn-salir adm-del" title="Eliminar esta factura" onclick="admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>`}</div></div>`;
 }
 function admDetalle(id){
@@ -12666,9 +12685,9 @@ function admDetalle(id){
         ${F('Código Flexxus','<span class="mono">'+escStk(c.codigo_cliente||'—')+'</span>')}${F('Centro de costo',escStk(c.centro_costo||'—'))}</div>
       <div><div class="lbl">Comprobante</div>${F('Fecha',l.fecha_comprobante?new Date(l.fecha_comprobante+'T12:00').toLocaleDateString('es-AR'):'—')}
         ${F('Condición de venta',admCondVta(c))}${F('Clase',c.clase_comprobante===0?'Bienes de cambio':'Servicios')}
-        ${x.cae?F('CAE','<span class="mono">'+escStk(x.cae)+'</span>'):F('Punto de venta','<span class="mono">0003</span>')}</div></div>
+        ${x.cae?F('CAE','<span class="mono">'+escStk(x.cae)+'</span>'):F('Punto de venta','<span class="mono">'+String(admPtoDe(x.numero_comprobante)||admPV()).padStart(4,'0')+'</span>')}</div></div>
     <table><thead><tr><th>Concepto</th><th class="num">Cant.</th><th class="num">Precio unit.</th><th class="num">Importe</th></tr></thead>
-      <tbody><tr><td><b>${escStk(x.descripcion||'')}</b><div class="sub">${escStk(k.nombre||'')}${k.codigo_articulo?' · artículo Flexxus '+escStk(k.codigo_articulo):''}</div></td>
+      <tbody><tr><td><b>${escStk(x.descripcion||'')}</b><div class="sub">${escStk(k.nombre||'')}${(a=>a?' · artículo Flexxus <b class="mono">'+escStk(a.particular||a.codigo)+'</b>'+(a.particular&&a.particular!==a.codigo?' (int. '+escStk(a.codigo)+')':''):'')(admArtItem(x))}</div></td>
         <td class="num">${x.cantidad||1}</td><td class="num">${money(x.precio_unitario!=null?x.precio_unitario:Number(x.neto)/(x.cantidad||1))}</td><td class="num">${money(x.neto)}</td></tr></tbody></table>
     <div class="tots"><div class="sub">Neto <span class="mono">${money(x.neto)}</span> · IVA ${pct}% <span class="mono">${money(x.iva)}</span></div><div class="big">${money(x.total)}</div></div>
     <div style="padding:0 22px 14px"><div class="lbl">${x.email_enviado?'Enviada a':'Se envía a'}</div>
@@ -12676,7 +12695,9 @@ function admDetalle(id){
       ${x.error?`<div class="err" style="margin-top:8px">✕ ${escStk(x.error)}</div>`:''}</div>
     <div class="f">${x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg> Eliminar</button>`:'<span></span>'}
       <div style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-det').remove()">Cerrar</button>
-        ${x.numero_comprobante?`<button class="btn-salir" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
+        ${x.estado==='borrador'?`<button class="btn-salir" onclick="admVerEnvio('${x.id}')">🔎 Ver lo que se envía</button>`:''}
+        ${x.numero_comprobante?`<button class="btn-salir" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button>`:''}
+        ${x.numero_comprobante&&!admMalPunto(x)?`<button class="btn-salir" onclick="admPdf('${x.id}')">📄 PDF</button>`:''}
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="document.getElementById('adm-det').remove();admEditarItem('${x.id}')">✎ Editar</button>`:''}
         ${pend?`<button class="btn" ${hab?'':'disabled style="opacity:.5"'} onclick="document.getElementById('adm-det').remove();admEmitirUno('${x.id}')">🔑 ${x.estado==='generada'?'Pedir CAE':'Emitir con CAE'}</button>`:''}</div></div></div>`;
   document.body.appendChild(bg);bg.onclick=e=>{if(e.target===bg)bg.remove();};
@@ -12701,7 +12722,7 @@ async function admEmitirUno(id){
   go('administracion');
 }
 async function admEmitirTodas(){
-  const P=admPend();const tot=P.reduce((s,x)=>s+Number(x.total||0),0);
+  const P=admPend().filter(x=>!admMalPunto(x)&&admArtItem(x));const tot=P.reduce((s,x)=>s+Number(x.total||0),0);
   if(!confirm(`¿Emitir ${P.length} facturas por ${money(tot)}?\n\nSe generan en Flexxus y se pide el CAE a ARCA. Una vez emitidas no se pueden editar.`))return;
   const bg=document.createElement('div');bg.className='modal-bg abierto';
   bg.innerHTML=`<div class="modal" style="max-width:420px"><div class="modal-tit">Emitiendo con CAE</div>
@@ -12710,7 +12731,10 @@ async function admEmitirTodas(){
   document.body.appendChild(bg);
   let ok=0,mal=0;
   for(const x of P){
-    try{await api('/api/facturacion/items/'+x.id+'/emitir',{method:'POST',body:'{}'});ok++;}catch(e){mal++;}
+    try{await api('/api/facturacion/items/'+x.id+'/emitir',{method:'POST',body:'{}'});ok++;}
+    catch(e){mal++;
+      // Flexxus la creó en otro punto de venta: se frena todo (29-sep).
+      if(/Anulala en Flexxus/.test(e.message||'')){bg.remove();alert(e.message+'\n\nNo se emitió ninguna más.');go('administracion');return;}}
     const b=document.getElementById('adm-bar');if(b)b.style.width=Math.round((ok+mal)*100/P.length)+'%';
     const m=document.getElementById('adm-pmsg');if(m)m.innerHTML=`<b>${ok}</b> de ${P.length} emitidas${mal?` · <span style="color:var(--rojo)">${mal} con error</span>`:''}`;
   }
@@ -12859,10 +12883,11 @@ const ADM_CSS=`<style>
 let _nv=null;
 function admNueva(){
   const hoy=new Date().toISOString().slice(0,10);
-  const conc=(admCfg.conceptos||[]).filter(k=>k.activo!==false&&k.codigo_articulo);
-  if(!conc.length){toast('Primero cargá un concepto con su artículo de Flexxus (pestaña Conceptos).','error');return;}
+  const conc=(admCfg.conceptos||[]).filter(k=>k.activo!==false);
+  if(!conc.length){toast('Primero cargá un concepto (pestaña Conceptos).','error');return;}
+  delete window._admArt.nv;
   _nv={modo:'mis',cliente_id:'',flx:null,guardar:false,concepto_id:conc[0].id,cantidad:1,precio:'',iva:21,email:'',
-    fecha:admFecha||hoy,descripcion:'',descManual:false};
+    fecha:admFecha||hoy,descripcion:'',descManual:false,art:null};
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-nv';
   document.body.appendChild(bg);admNvRender();
   bg.onclick=e=>{if(e.target===bg)bg.remove();};
@@ -12887,14 +12912,17 @@ function admNvRender(){
   const hoy=new Date().toISOString().slice(0,10),min=new Date(Date.now()-10*864e5).toISOString().slice(0,10);
   const L=t=>`<label class="sub" style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:12px 0 4px">${t}</label>`;
   const st='width:100%;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px;font-family:inherit;font-size:13px';
-  const segB=(v,t)=>`<button onclick="_nv.modo='${v}';admNvRender()" style="flex:1;padding:9px;border:2px solid ${_nv.modo===v?'var(--brote)':'var(--linea)'};border-radius:10px;background:${_nv.modo===v?'var(--brote-soft)':'#fff'};color:${_nv.modo===v?'var(--brote-2)':'var(--tinta-2)'};font-weight:700;font-family:inherit">${t}</button>`;
+  const segB=(v,t)=>`<button onclick="_nv.modo='${v}';admNvResetArt();admNvRender()" style="flex:1;padding:9px;border:2px solid ${_nv.modo===v?'var(--brote)':'var(--linea)'};border-radius:10px;background:${_nv.modo===v?'var(--brote-soft)':'#fff'};color:${_nv.modo===v?'var(--brote-2)':'var(--tinta-2)'};font-weight:700;font-family:inherit">${t}</button>`;
   const clientes=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente);
-  const listo=cli&&neto>0&&_nv.concepto_id&&(_nv.modo==='mis'||_nv.mp);
+  // Artículo (29-sep): el que el cliente tiene para ese concepto; si no tiene, se elige acá.
+  if(_nv.modo==='mis'&&cli&&!_nv.artManual){const cc=(admCfg.clienteConceptos||[]).find(x=>x.cliente_id===cli.id&&x.concepto_id===_nv.concepto_id&&x.codigo_articulo&&x.activo!==false);
+    _nv.art=cc?{codigo:cc.codigo_articulo,particular:cc.articulo_particular,descripcion:cc.articulo_descripcion}:null;}
+  const listo=cli&&neto>0&&_nv.concepto_id&&_nv.art&&(_nv.modo==='mis'||_nv.mp);
   bg.innerHTML=`<div class="modal" style="max-width:600px;max-height:92vh;overflow:auto">
     <div class="modal-tit">Factura nueva</div><div class="sub">Una sola factura, fuera de la tanda del mes</div>
     ${L('Cliente')}<div style="display:flex;gap:6px">${segB('mis','De mis clientes')}${segB('otro','Otro (buscar en Flexxus)')}</div>
     ${_nv.modo==='mis'?`
-      <select onchange="_nv.cliente_id=this.value;admNvRender()" style="${st};margin-top:8px"><option value="">— elegí el cliente —</option>
+      <select onchange="_nv.cliente_id=this.value;admNvResetArt();admNvRender()" style="${st};margin-top:8px"><option value="">— elegí el cliente —</option>
         ${clientes.map(c=>`<option value="${c.id}" ${c.id===_nv.cliente_id?'selected':''}>${escStk(c.nombre)}</option>`).join('')}</select>
       ${cli?`<div class="sub" style="margin-top:5px;font-size:12px">${cli.tipo_comprobante==='FB'?'B':'A'} · ${cli.porcentaje_iva}% · ${escStk(cli.email||'sin email')}</div>`:''}`
     :`<div style="display:flex;gap:6px;margin-top:8px"><input id="nv-q" placeholder="Nombre o CUIT…" style="${st};flex:1" onkeydown="if(event.key==='Enter')admNvBuscar()"><button class="btn-salir" onclick="admNvBuscar()">🔍</button></div>
@@ -12905,8 +12933,9 @@ function admNvRender(){
         <label style="display:flex;gap:7px;align-items:center;margin-top:8px;font-size:12.5px"><input type="checkbox" ${_nv.guardar?'checked':''} onchange="_nv.guardar=this.checked"> Guardarlo en mis clientes</label>`:''}`}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
       <div>${L('Fecha')}<input type="date" value="${_nv.fecha}" min="${min}" max="${hoy}" onchange="_nv.fecha=this.value;admNvRender()" style="${st}"></div>
-      <div>${L('Concepto')}<select onchange="_nv.concepto_id=this.value;_nv.descManual=false;admNvRender()" style="${st}">
-        ${(admCfg.conceptos||[]).filter(k=>k.activo!==false&&k.codigo_articulo).map(k=>`<option value="${k.id}" ${k.id===_nv.concepto_id?'selected':''}>${escStk(k.nombre)}</option>`).join('')}</select></div></div>
+      <div>${L('Concepto')}<select onchange="_nv.concepto_id=this.value;_nv.descManual=false;admNvResetArt();admNvRender()" style="${st}">
+        ${(admCfg.conceptos||[]).filter(k=>k.activo!==false).map(k=>`<option value="${k.id}" ${k.id===_nv.concepto_id?'selected':''}>${escStk(k.nombre)}</option>`).join('')}</select></div></div>
+    ${cli?L('Artículo de Flexxus')+admArtInit('nv',{sel:_nv.art,sugQ:_nv.modo==='mis'?String(cli.alias_planilla||cli.nombre||'').trim():String((_nv.flx&&_nv.flx.razonsocial)||'').split(/\s+/)[0],onPick:'admNvArt'}):''}
     ${L('Texto de la factura')}<input value="${escStk(_nv.descripcion)}" oninput="_nv.descripcion=this.value;_nv.descManual=true" style="${st}">
     <div style="display:grid;grid-template-columns:${_nv.modo==='otro'?'1fr 1fr 1fr':'1fr 1fr'};gap:0 12px">
       <div>${L('Cantidad')}<input type="number" min="1" value="${_nv.cantidad}" onchange="_nv.cantidad=Number(this.value)||1;admNvRender()" style="${st};text-align:right"></div>
@@ -12935,13 +12964,16 @@ async function admNvBuscar(){
   }catch(e){box.innerHTML=`<div style="color:var(--rojo);font-size:12px">${escStk(e.message)}</div>`;}
 }
 async function admNvElegir(i){
-  const c=window._nvRes[i];_nv.flx=c;if(c.email&&!_nv.email)_nv.email=c.email;
+  const c=window._nvRes[i];_nv.flx=c;admNvResetArt();if(c.email&&!_nv.email)_nv.email=c.email;
   _nv.mp=Number(c.codigo_multiplazo)>0?Number(c.codigo_multiplazo):null;
   try{if(!window._admMP)window._admMP=await api('/api/facturacion/flexxus/multiplazos');}catch(e){}
   admNvRender();
 }
+function admNvResetArt(){_nv.art=null;_nv.artManual=false;delete window._admArt.nv;}
+function admNvArt(key,a){_nv.art=a;_nv.artManual=true;admNvRender();}
 async function admNvCrear(){
-  const b={fecha:_nv.fecha,concepto_id:_nv.concepto_id,descripcion:_nv.descripcion,cantidad:_nv.cantidad,precio_unitario:Number(_nv.precio)};
+  const b={fecha:_nv.fecha,concepto_id:_nv.concepto_id,descripcion:_nv.descripcion,cantidad:_nv.cantidad,precio_unitario:Number(_nv.precio),
+    codigo_articulo:_nv.art&&_nv.art.codigo,articulo_particular:_nv.art&&_nv.art.particular};
   if(_nv.modo==='mis')b.cliente_id=_nv.cliente_id;
   else Object.assign(b,{cliente_flexxus:_nv.flx,tipo_comprobante:_nv.flx.tipo_comprobante,porcentaje_iva:_nv.iva,email:_nv.email,guardar:_nv.guardar,codigo_multiplazo:_nv.mp});
   try{
@@ -12959,7 +12991,7 @@ function admHtmlPaso2(){
   return `${ADM_CSS}<div class="adm-sech"><h2>${it.length} factura${it.length===1?'':'s'} · ${money(tot)} <small>fecha ${new Date(admLote.fecha_comprobante+'T12:00').toLocaleDateString('es-AR')}</small></h2>
     <div style="display:flex;gap:8px"><button class="btn-salir" onclick="admIrPaso1()">← Inicio</button>
       ${it.some(x=>x.estado==='cae')?`<button class="btn" onclick="admPasoF=3;admEnvio={};go('administracion')">📧 Enviar</button>`:''}</div></div>
-    <div class="adm-facs">${it.map(x=>['borrador','generada'].includes(x.estado)?admCard(x):admCardEmitida(x)).join('')}</div>`;
+    <div class="adm-facs">${it.map(x=>['borrador','generada','anular'].includes(x.estado)?admCard(x):admCardEmitida(x)).join('')}</div>`;
 }
 function admCardEmitida(x){
   const c=x.fact_clientes||{},[L,cod]=admLetra(x.tipo_comprobante);
@@ -13064,6 +13096,32 @@ async function admPdf(id){
   }catch(e){toast(e.message,'error');}
 }
 
+async function admSacarAnulada(id){
+  if(!confirm('¿Ya la anulaste en Flexxus?\n\nSe saca del panel. Si no la anulaste, sigue existiendo en Flexxus.'))return;
+  try{await api('/api/facturacion/items/'+id,{method:'DELETE'});go('administracion');}catch(e){toast(e.message,'error');}
+}
+// Diagnóstico de solo lectura (29-sep): el JSON exacto, para revisarlo o pasárselo a Procom.
+function admVerJson(tit,sub,obj){
+  const txt=JSON.stringify(obj,null,1);
+  const bg=document.createElement('div');bg.className='modal-bg abierto';
+  bg.innerHTML=`<div class="modal" style="max-width:760px;max-height:92vh;display:flex;flex-direction:column"><div class="modal-tit">${tit}</div>
+    <div class="sub" style="margin:4px 0 10px">${sub}</div>
+    <pre style="flex:1;overflow:auto;background:var(--hueso);border:1px solid var(--linea);border-radius:9px;padding:10px;font-size:11.5px;margin:0;white-space:pre-wrap">${escStk(txt)}</pre>
+    <div class="modal-acciones" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn-salir" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.closest('.modal').querySelector('pre').textContent).then(()=>toast('✓ Copiado'))">Copiar</button>
+      <button class="btn" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(bg);bg.onclick=e=>{if(e.target===bg)bg.remove();};
+}
+async function admVerEnvio(id){
+  try{const r=await api('/api/facturacion/items/'+id+'/envio');
+    admVerJson('Lo que se le manda a Flexxus',`No se envió nada. Número ${escStk(r.numero_texto||'')} · artículo <b class="mono">${escStk((r.articulo&&(r.articulo.particular||r.articulo.codigo))||'—')}</b>`,r.body);}
+  catch(e){toast(e.message,'error');}
+}
+async function admLeerFlx(id){
+  try{const r=await api('/api/facturacion/items/'+id+'/flexxus');
+    admVerJson('La factura en Flexxus','Cómo quedó guardada allá, y lo que el panel tiene de cuando se creó (<span class="mono">_enviado</span> = lo que se mandó).',r);}
+  catch(e){toast(e.message,'error');}
+}
 async function admSacar(id){
   if(!confirm('¿Eliminar esta factura? No se emitió: se borra del panel y listo.'))return;
   try{await api('/api/facturacion/items/'+id,{method:'DELETE'});go('administracion');}catch(e){toast(e.message,'error');}
@@ -13077,15 +13135,14 @@ function admVerConceptos(view){
       <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--linea)">
         <span class="sub">Usá <span class="mono">{mes}</span>, <span class="mono">{anio}</span> y <span class="mono">{cantidad}</span> en el texto.</span>
         <button class="btn" onclick="admEditConcepto()">＋ Nuevo concepto</button></div>
-      <table><thead><tr><th>Concepto</th><th>Cómo sale</th><th>Artículo Flexxus</th><th></th></tr></thead><tbody>
+      <table><thead><tr><th>Concepto</th><th>Cómo sale</th><th></th></tr></thead><tbody>
       ${cs.length?cs.map(c=>`<tr><td><b>${escStk(c.nombre)}</b>${c.usa_cantidad?' <span class="badge b-violet">con cantidad</span>':''}</td>
         <td class="mono sub" style="font-size:11.5px">${escStk(c.plantilla)}</td>
-        <td class="mono">${c.codigo_articulo?escStk(c.codigo_articulo):'<span style="color:var(--rojo)">falta</span>'}</td>
         <td style="white-space:nowrap"><button class="mini-btn" onclick="admEditConcepto('${c.id}')">Editar</button>
           <button class="mini-btn" title="eliminar" style="color:var(--rojo)" onclick="admBorrarConcepto('${c.id}')">✕</button></td></tr>`).join('')
-        :'<tr><td colspan="4" class="sub" style="padding:18px">Todavía no hay conceptos.</td></tr>'}
+        :'<tr><td colspan="3" class="sub" style="padding:18px">Todavía no hay conceptos.</td></tr>'}
       </tbody></table></div>
-    <div class="panel sub" style="margin-top:12px;font-size:12px">Cada concepto necesita un <b>artículo de servicio creado en Flexxus</b>: la API exige un código de artículo en cada renglón. El texto se reescribe en cada factura.</div>`;
+    <div class="panel sub" style="margin-top:12px;font-size:12px">El <b>artículo de Flexxus</b> ya no va acá: cada cliente tiene el suyo (FADEA, OSDE, AYRES M…) y se elige en <b>Clientes → Editar → paso 4</b>. El texto se reescribe en cada factura.</div>`;
 }
 async function admBorrarConcepto(id){
   const c=(admCfg.conceptos||[]).find(x=>x.id===id);if(!c)return;
@@ -13115,14 +13172,8 @@ function admEditConcepto(id){
   admModal('Concepto',`
     ${admCampo('Nombre','ac-nombre',c.nombre,'Mantenimiento de espacios verdes')}
     ${admCampo('Cómo sale en la factura','ac-plant',c.plantilla,'Mantenimiento de espacios verdes del mes {mes}-{anio}')}
-    <label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">Artículo de Flexxus</label>
-    <div style="display:flex;gap:6px"><input id="ac-art-q" placeholder="Buscalo por nombre: mantenimiento, bateas…" style="flex:1;padding:8px 10px;border:1px solid var(--linea-2);border-radius:8px" onkeydown="if(event.key==='Enter')admBuscarArt()">
-      <button class="btn-salir" onclick="admBuscarArt()">🔍</button></div>
-    <div id="ac-art-res" style="max-height:170px;overflow:auto;margin-top:6px"></div>
-    <input type="hidden" id="ac-art" value="${escStk(c.codigo_articulo||'')}">
-    <div id="ac-art-sel" style="margin-top:6px;font-size:12.5px">${c.codigo_articulo?`Elegido: <b class="mono">${escStk(c.codigo_articulo)}</b>`:'<span style="color:#854F0B">Todavía sin artículo</span>'}</div>
     <label style="display:flex;gap:7px;align-items:center;margin-top:10px;font-size:13px"><input type="checkbox" id="ac-cant" ${c.usa_cantidad?'checked':''}> Lleva cantidad (ej: viajes de bateas)</label>`,
-    async()=>{await api('/api/facturacion/conceptos',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('ac-nombre'),plantilla:admV('ac-plant'),codigo_articulo:admV('ac-art'),usa_cantidad:document.getElementById('ac-cant').checked})});},
+    async()=>{await api('/api/facturacion/conceptos',{method:'POST',body:JSON.stringify({id:c.id,nombre:admV('ac-nombre'),plantilla:admV('ac-plant'),usa_cantidad:document.getElementById('ac-cant').checked})});},
     c.id?async()=>{await api('/api/facturacion/conceptos/'+c.id,{method:'DELETE'});}:null);
 }
 
@@ -13149,7 +13200,7 @@ function admVerClientes(view){
         <td><span class="badge b-gray">${c.tipo_comprobante==='FB'?'B':'A'}</span></td>
         <td class="sub" style="font-size:11px">${c.clase_comprobante===0?'Bienes de cambio':'Servicios'}</td>
         <td class="sub" style="font-size:11.5px">${(()=>{const L=(admCfg.clienteConceptos||[]).filter(x=>x.cliente_id===c.id);
-          return L.length?L.map(x=>escStk(conc(x.concepto_id)||'?')).join(' · '):(c.concepto_id?escStk(conc(c.concepto_id)||'—'):'<span style="color:#854F0B">sin conceptos</span>');})()}</td>
+          return L.length?L.filter(x=>x.activo!==false).map(x=>escStk(conc(x.concepto_id)||'?')+' · '+(x.codigo_articulo?`<b class="mono" style="color:var(--tinta)">${escStk(x.articulo_particular||x.codigo_articulo)}</b>`:'<span style="color:var(--rojo)">falta artículo</span>')).join('<br>'):(c.concepto_id?escStk(conc(c.concepto_id)||'—'):'<span style="color:#854F0B">sin conceptos</span>');})()}</td>
         <td class="sub" style="font-size:11.5px">${c.email?escStk(c.email):'<span style="color:#854F0B">sin email</span>'}</td>
         <td><button class="mini-btn" onclick="admEditCliente('${c.id}')">Editar</button></td></tr>`).join('')
         :`<tr><td colspan="9" class="sub" style="padding:18px">Todavía no hay clientes. ${faltanCC?'Empezá con <b>Traer centros de costo</b>.':''}</td></tr>`}
@@ -13247,10 +13298,80 @@ function admHtmlConcCliente(cid){
       ${x.modo==='cantidad'?`<input type="number" step="0.01" placeholder="precio unit." value="${x.precio_unitario??''}" onchange="admGuardarCC('${cid}','${x.id}',{precio_unitario:this.value===''?null:Number(this.value)})" style="width:110px;${selSt};text-align:right">`
         :x.modo==='fijo'?`<input type="number" step="0.01" placeholder="importe" value="${x.importe_fijo??''}" onchange="admGuardarCC('${cid}','${x.id}',{importe_fijo:this.value===''?null:Number(this.value)})" style="width:110px;${selSt};text-align:right">`
         :'<span style="width:110px"></span>'}
-      <button class="mini-btn" title="sacar" onclick="admBorrarCC('${cid}','${x.id}')">✕</button></div>`).join('')
+      <button class="mini-btn" title="sacar" onclick="admBorrarCC('${cid}','${x.id}')">✕</button></div>
+      <div style="margin:-2px 0 10px">${admArtInit('cc-'+x.id,{
+        sel:x.codigo_articulo?{codigo:x.codigo_articulo,particular:x.articulo_particular,descripcion:x.articulo_descripcion}:null,
+        sugQ:admArtNombreCli(cid),onPick:'admArtPickCC',ctx:{cid,id:x.id}})}</div>`).join('')
     :'<div class="sub" style="font-size:12px;margin-bottom:6px">No tiene conceptos: no va a aparecer al facturar.</div>')
     +(concs.length?`<button class="btn-salir" style="font-size:12px;padding:5px 11px" onclick="admGuardarCC('${cid}',null,{concepto_id:'${concs[0].id}',modo:'planilla'})">＋ Agregar concepto</button>`
       :'<div class="sub" style="font-size:12px">Primero cargá conceptos en la pestaña Conceptos.</div>');
+}
+/* ── Artículo de Flexxus por cliente (29-sep) ──
+   En Flexxus cada cliente tiene SU artículo (FADEA 000001, OSDE 000002,
+   AYRES M 000015…); antes había uno por concepto y la primera factura de AYRES
+   salió como FADEA. La caja muestra el código que ve Sole (particular) y guarda
+   el interno, que es el que pide /ordenmanual. Si no hay, sugiere uno buscando
+   el nombre del cliente en el código particular; se confirma con "✓ Usar". */
+window._admArt=window._admArt||{};
+function admArtNombreCli(cid){const c=(admCfg.clientes||[]).find(x=>x.id===cid)||{};return String(c.alias_planilla||c.nombre||'').trim();}
+function admArtInit(key,o){
+  const st=window._admArt[key]||(window._admArt[key]={});
+  st.sel=o.sel||null;st.onPick=o.onPick;st.ctx=o.ctx||{};
+  if(!st.sel&&o.sugQ&&st.sugQ!==o.sugQ){st.sugQ=o.sugQ;st.sug=null;setTimeout(()=>admArtSugerir(key),0);}
+  return `<div id="art-${key}">${admArtHtml(key)}</div>`;
+}
+function admArtRef(a){return `<b class="mono">${escStk(a.particular||a.codigo)}</b>${a.descripcion?` <span class="sub" style="font-size:11.5px">· ${escStk(a.descripcion)}</span>`:''}${a.particular&&a.particular!==a.codigo?` <span class="sub mono" style="font-size:10.5px">(int. ${escStk(a.codigo)})</span>`:''}`;}
+function admArtHtml(key){
+  const st=window._admArt[key]||{};
+  const box=(bg,bd,col,html)=>`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 9px;border-radius:7px;font-size:12px;background:${bg};border:1px solid ${bd};color:${col}">${html}</div>`;
+  const b=(t,fn)=>`<button class="mini-btn" style="margin-left:auto" onclick="${fn}">${t}</button>`;
+  let h;
+  if(st.sel)h=box('var(--hueso)','var(--linea-2)','var(--tinta)',`Artículo Flexxus: ${admArtRef(st.sel)}${b('🔍 Cambiar',`admArtAbrir('${key}')`)}`);
+  else if(st.sug)h=box('#E8F1FA','#BFD6EE','var(--tinta)',`Sugerido: ${admArtRef(st.sug)}${b('✓ Usar',`admArtUsar('${key}',-1)`)}<button class="mini-btn" onclick="admArtAbrir('${key}')">🔍 Otro</button>`);
+  else h=box('#FCEBED','#DC4A5B','#A3253A',`⚠ ${st.buscando?'Buscando el artículo en Flexxus…':'Sin artículo de Flexxus: esta factura no se puede emitir'}${st.buscando?'':b('🔍 Elegir',`admArtAbrir('${key}')`)}`);
+  if(st.abierto)h+=`<div style="border:1px solid var(--linea-2);border-radius:9px;margin-top:5px;overflow:hidden">
+    <div style="display:flex;gap:6px;padding:6px"><input id="art-q-${key}" value="${escStk(st.q||'')}" placeholder="Código que ve Sole (AYRES M) o descripción…" style="flex:1;padding:6px 9px;border:1px solid var(--linea-2);border-radius:7px;font-size:12.5px" onkeydown="if(event.key==='Enter')admArtBuscar('${key}')">
+      <button class="mini-btn" onclick="admArtBuscar('${key}')">Buscar</button><button class="mini-btn" onclick="window._admArt['${key}'].abierto=false;admArtPintar('${key}')">✕</button></div>
+    <div style="max-height:180px;overflow:auto">${st.cargando?'<div class="sub" style="padding:6px 10px">Buscando en Flexxus…</div>'
+      :(st.res||[]).length?st.res.map((a,i)=>`<div onclick="admArtUsar('${key}',${i})" style="padding:6px 10px;cursor:pointer;font-size:12px;border-top:1px solid var(--linea);${a.activo?'':'opacity:.5'}">${admArtRef(a)}</div>`).join('')
+      :st.res?'<div class="sub" style="padding:6px 10px">No encontré artículos con eso.</div>':''}</div></div>`;
+  return h;
+}
+function admArtPintar(key){const el=document.getElementById('art-'+key);if(el)el.innerHTML=admArtHtml(key);}
+async function admArtBuscarQ(q){return q&&q.length>=3?await api('/api/facturacion/flexxus/articulos?q='+encodeURIComponent(q)):[];}
+async function admArtSugerir(key){
+  const st=window._admArt[key];if(!st||st.sel)return;
+  const q=st.sugQ;st.buscando=true;admArtPintar(key);
+  try{
+    const r=await admArtBuscarQ(q);
+    const n=v=>String(v||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]/g,'');
+    // Solo se sugiere si el CÓDIGO PARTICULAR tiene el nombre del cliente (AYRES → AYRES M).
+    const porCod=r.filter(a=>a.activo&&n(a.particular).startsWith(n(q)));
+    st.sug=porCod[0]||null;st.res=r;st.q=q;
+  }catch(e){st.sug=null;}
+  st.buscando=false;admArtPintar(key);
+}
+function admArtAbrir(key){
+  const st=window._admArt[key];st.abierto=true;if(!st.q)st.q=st.sugQ||'';admArtPintar(key);
+  setTimeout(()=>{const i=document.getElementById('art-q-'+key);if(i)i.focus();},30);
+  if(!st.res&&st.q)admArtBuscar(key);
+}
+async function admArtBuscar(key){
+  const st=window._admArt[key],i=document.getElementById('art-q-'+key);
+  st.q=(i?i.value:st.q||'').trim();
+  if(st.q.length<3){toast('Escribí al menos 3 letras','error');return;}
+  st.cargando=true;admArtPintar(key);
+  try{st.res=await admArtBuscarQ(st.q);}catch(e){st.res=[];toast(e.message,'error');}
+  st.cargando=false;admArtPintar(key);
+}
+function admArtUsar(key,i){
+  const st=window._admArt[key];const a=i<0?st.sug:(st.res||[])[i];if(!a)return;
+  st.sel={codigo:a.codigo,particular:a.particular||null,descripcion:a.descripcion||null};st.abierto=false;
+  admArtPintar(key);
+  if(st.onPick&&window[st.onPick])window[st.onPick](key,st.sel,st.ctx);
+}
+function admArtPickCC(key,a,ctx){
+  admGuardarCC(ctx.cid,ctx.id,{codigo_articulo:a.codigo,articulo_particular:a.particular,articulo_descripcion:a.descripcion});
 }
 async function admGuardarCC(cid,id,campos){
   try{
