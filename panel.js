@@ -13094,7 +13094,7 @@ function admVerClientes(view){
   const conc=id=>((admCfg.conceptos||[]).find(k=>k.id===id)||{}).nombre;
   const usados=new Set(cs.map(c=>c.centro_costo_id).filter(Boolean));
   const faltanCC=(admCfg.centros||[]).filter(c=>!usados.has(c.id)).length;
-  const sinCod=cs.filter(c=>!c.codigo_cliente).length;
+  const sinCod=cs.filter(c=>!c.codigo_cliente||!(c.datos_flexxus&&c.datos_flexxus.razonsocial)).length;
   view.innerHTML=admHead('Administración','Clientes · son los centros de costo, completados con los datos de Flexxus')+admTabs()+`
     <div class="panel" style="padding:0;overflow:hidden">
       <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--linea)">
@@ -13154,7 +13154,7 @@ function admEditCliente(id){
   const sel=(idd,opts,val)=>`<select id="${idd}" style="width:100%;padding:8px;border:1px solid var(--linea-2);border-radius:8px">${opts.map(([v,t])=>`<option value="${v}" ${String(val)===String(v)?'selected':''}>${t}</option>`).join('')}</select>`;
   const lbl=t=>`<label class="sub" style="display:block;font-size:11px;margin:10px 0 3px">${t}</label>`;
   const usados=new Set((admCfg.clientes||[]).filter(x=>x.id!==c.id).map(x=>x.centro_costo_id).filter(Boolean));
-  window._admCC=c.centro_costo_id||'';window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null};
+  window._admCC=c.centro_costo_id||'';window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null,datos_flexxus:c.datos_flexxus||null};
   admModal('Cliente',`
     ${lbl('1 · Centro de costo')}
     <select id="acl-cc-sel" onchange="admElegirCentro(this.value)" style="width:100%;padding:9px;border:1.5px solid var(--brote);border-radius:8px;font-weight:600">
@@ -13233,9 +13233,24 @@ function admElegirCentro(id){
   admBuscarFlx(true);
 }
 function admResumenFlx(c){
-  return `<div style="background:var(--brote-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:#0F5C33;line-height:1.55">
+  const f=c.datos_flexxus||window._admExtra&&window._admExtra.datos_flexxus||null;
+  return `<div style="background:var(--brote-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:#0F5C33;line-height:1.55;position:relative">
     ✓ <b>${escStk(c.nombre||c.razonsocial||'')}</b> · código <span class="mono">${escStk(c.codigo_cliente)}</span><br>
-    CUIT <span class="mono">${escStk(c.cuit||'—')}</span> · IVA ${escStk(c.condicion_iva||'—')} · condición de venta ${escStk(c.codigo_multiplazo??'—')}</div>`;
+    CUIT <span class="mono">${escStk(c.cuit||'—')}</span> · IVA ${escStk(c.condicion_iva||(f&&f.condicioniva)||'—')} · condición de venta ${escStk(c.codigo_multiplazo??'—')}
+    ${f?`<br>${escStk(f.direccion||'sin dirección')}${f.localidad?' · '+escStk(f.localidad):''}${f.codigoprovincia?' · prov. '+escStk(f.codigoprovincia):''} · tel. ${escStk(f.telefono||'—')}`
+      :`<br><span style="color:#854F0B">Falta la ficha completa de Flexxus (dirección, zona…)</span>`}
+    ${c.codigo_cliente?`<button class="mini-btn" style="position:absolute;top:7px;right:8px" onclick="admActualizarFicha('${escStk(c.codigo_cliente)}')">🔄 Actualizar desde Flexxus</button>`:''}</div>`;
+}
+// Trae la ficha completa (dirección, provincia, zona, teléfono…) y la deja lista para guardar.
+async function admActualizarFicha(codigo){
+  const box=document.getElementById('acl-datos');if(box)box.style.opacity='.5';
+  try{
+    const f=await api('/api/facturacion/flexxus/cliente/'+encodeURIComponent(codigo));
+    window._admExtra={...(window._admExtra||{}),datos_flexxus:f,condicion_iva:f.condicioniva||(window._admExtra||{}).condicion_iva||null};
+    const nom=(document.getElementById('acl-nombre')||{}).value, cuit=(document.getElementById('acl-cuit')||{}).value,mp=(document.getElementById('acl-mp')||{}).value;
+    if(box){box.style.opacity='1';box.innerHTML=admResumenFlx({nombre:nom||f.razonsocial,codigo_cliente:codigo,cuit:cuit||f.cuit,codigo_multiplazo:mp,datos_flexxus:f});}
+    toast('✓ Ficha traída de Flexxus. Guardá para que quede.');
+  }catch(e){if(box)box.style.opacity='1';toast(e.message,'error');}
 }
 async function admBuscarFlx(auto){
   const q=admV('acl-busca'), box=document.getElementById('acl-res');
@@ -13256,9 +13271,10 @@ function admUsarFlx(i){
   const c=window._admFlx[i];const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
   set('acl-nombre',c.razonsocial);set('acl-cod',c.codigo_cliente);set('acl-cuit',c.cuit);set('acl-mp',c.codigo_multiplazo);
   set('acl-mail',c.email);if(c.tipo_comprobante)set('acl-tipo',c.tipo_comprobante);
-  window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null};
+  window._admExtra={condicion_iva:c.condicion_iva||null,codigo_vendedor:c.codigo_vendedor||null,datos_flexxus:null};
   document.getElementById('acl-res').innerHTML='';
   document.getElementById('acl-datos').innerHTML=admResumenFlx({...c,nombre:c.razonsocial});
+  admActualizarFicha(c.codigo_cliente);   // una llamada más, una sola vez: la ficha completa
 }
 
 // ── utilidades del módulo ──
