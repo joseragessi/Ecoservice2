@@ -1687,9 +1687,20 @@ async function buscarArticulosFlexxus(q) {
   const k = ventasUrl() + '::' + String(q || '').trim().toLowerCase();
   const ya = _artCache.get(k);
   if (ya && Date.now() - ya.t < PROV_TTL) return ya.v;
-  const d = await flxV('/articulos?busqueda=' + encodeURIComponent(q));
-  const lista = (Array.isArray(d) ? d : (d && d.data) || []).slice(0, 30).map(a => ({
-    codigo: a.codigoarticulo, particular: a.codigoparticular || null, descripcion: a.descripcion || a.descripcionarticulo || '',
+  /* 29-sep: `busqueda` mira solo la DESCRIPCIÓN, y los artículos de facturación
+     se distinguen por el código particular (FADEA, OSDE, AYRES M…), todos con
+     descripción "MANTENIMIENTO DE ESPACIOS VERDES". Se busca también por código
+     particular y esos van primero. Si la instalación no tiene /articulos/search
+     (API vieja), se prueba el filtro exacto de /articulos. */
+  const arr = d => (Array.isArray(d) ? d : (d && d.data) || []);
+  let porCodigo = [];
+  try { porCodigo = arr(await flxV('/articulos/search?codigoparticular=' + encodeURIComponent(q))); }
+  catch (e) { try { porCodigo = arr(await flxV('/articulos?codigoparticular=' + encodeURIComponent(q))); } catch (e2) { /* sin búsqueda por código */ } }
+  const porTexto = arr(await flxV('/articulos?busqueda=' + encodeURIComponent(q)));
+  const vistos = new Set();
+  const lista = [...porCodigo, ...porTexto].filter(a => a && a.codigoarticulo != null && !vistos.has(String(a.codigoarticulo)) && vistos.add(String(a.codigoarticulo)))
+    .slice(0, 40).map(a => ({
+    codigo: String(a.codigoarticulo), particular: a.codigoparticular || null, descripcion: a.descripcion || a.descripcionarticulo || '',
     activo: a.activo !== false && a.inactivo !== true }));
   _artCache.set(k, { t: Date.now(), v: lista });
   return lista;
