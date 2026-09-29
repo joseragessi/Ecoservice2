@@ -8758,7 +8758,7 @@ router.post('/api/facturacion/clientes/completar', auth, async (req, res) => {
         let upd = {}, codigo = c.codigo_cliente;
         if (!codigo) {
           const r = await buscarClientesFlexxus(c.nombre);
-          if (r.length !== 1) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: r.length ? `${r.length} coincidencias` : 'no está en Flexxus' }); continue; }
+          if (r.length !== 1 || r.parcial) { dudosos.push({ id: c.id, nombre: c.nombre, motivo: r.parcial ? 'coincidencia parcial: elegilo a mano' : r.length ? `${r.length} coincidencias` : 'no está en Flexxus' }); continue; }
           upd = datosDeFlexxus(r[0]);
           Object.keys(upd).forEach(k => upd[k] === undefined && delete upd[k]);
           codigo = upd.codigo_cliente;
