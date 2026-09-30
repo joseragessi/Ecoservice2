@@ -8483,7 +8483,7 @@ async function movRecibir(unidadId){
   }catch(e){alert(e.message||'No pude marcar la llegada');}
 }
  
-const MODS_PANEL=[['dashboard','Dashboard'],['costos','Cost Intelligence'],['insumos','Insumos'],['combustible','Combustible'],['compras','Compras'],['reparaciones','Reparaciones'],['stock','Stock'],['movimientos','Movimientos'],['maestros','Maestros']];
+const MODS_PANEL=[['dashboard','Dashboard'],['costos','Cost Intelligence'],['insumos','Insumos'],['combustible','Combustible'],['compras','Compras'],['reparaciones','Reparaciones'],['stock','Stock'],['movimientos','Movimientos'],['maestros','Maestros'],['administracion','Administración']];
 let uPanelData=[], uPanelEdit=null;   // null=lista · {}=nuevo · {id,...}=edición
 async function vUsuariosPanel(view,tabs){
   view.innerHTML=`
