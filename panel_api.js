@@ -9017,22 +9017,63 @@ router.get('/api/facturacion/lotes', auth, async (req, res) => {
 
 // Traer CAE de Flexxus: para las que ya están en Flexxus y el CAE se pidió desde
 // allá. Solo lee (una llamada por factura).
+/* ¿La factura que está en Flexxus con ese número es ESTA? (30-sep)
+   Caso real: en Flexxus borraron la 0003-2668 de 4 HOJAS, Sole reutilizó el
+   número para otro cliente y el panel le trajo el CAE ajeno. Se controla
+   cliente y total; si no coinciden, ese número ya no es nuestro. */
+const _codCli = c => { const t = String(c == null ? '' : c).trim(); return /^\d+$/.test(t) ? String(Number(t)) : t.toUpperCase(); };
+function verificarEnFlexxus(it, f) {
+  if (!f || !f.numerocomprobante) return 'no está en Flexxus';
+  if (f.anulada === true) return 'anulada en Flexxus';
+  const cli = (it.fact_clientes || {}).codigo_cliente, fc = f.cliente && f.cliente.codigocliente;
+  if (cli && fc != null && _codCli(cli) !== _codCli(fc))
+    return `en Flexxus ese número es de otro cliente (${String((f.cliente && f.cliente.razonsocial) || fc).trim()})`;
+  const tb = Number(f.totalbruto != null ? f.totalbruto : f.total);
+  if (it.total != null && isFinite(tb) && Math.abs(tb - Number(it.total)) > 0.05)
+    return `en Flexxus el total es $ ${tb.toLocaleString('es-AR', { minimumFractionDigits: 2 })} y en el panel $ ${Number(it.total).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
+  return null;
+}
+const caeDe = f => { const c = f && f.cae; const v = c && (typeof c === 'object' ? c.cae : c); return v && String(v).trim() && !/^0+$/.test(String(v)) ? { cae: String(v).trim(), vto: c && c.vencimientocae || null } : null; };
+async function leerF(it) { const r = await require('./flexxus').leerFacturaVenta(it.tipo_comprobante, it.numero_comprobante); return (r && r.data) || r || null; }
+/* El número ya no es nuestro: la factura vuelve a pendiente SIN número para
+   mandarla de nuevo (tomará el próximo libre). */
+async function soltarNumero(it, motivo) {
+  await supabase.from('fact_items').update({ estado: 'borrador', numero_comprobante: null, cae: null, respuesta: null,
+    error: `La ${it.tipo_comprobante} ${String(Math.floor(it.numero_comprobante / 1e8)).padStart(4, '0')}-${String(it.numero_comprobante % 1e8).padStart(8, '0')} ya no es de este cliente: ${motivo}. Quedó pendiente para mandarla de nuevo con otro número.`,
+    updated_at: new Date().toISOString() }).eq('id', it.id);
+}
 router.post('/api/facturacion/traer-cae', auth, async (req, res) => {
   try {
-    const { leerCAE } = require('./flexxus');
-    const { data } = await supabase.from('fact_items').select('id, tipo_comprobante, numero_comprobante')
+    const { data } = await supabase.from('fact_items').select('id, tipo_comprobante, numero_comprobante, total, fact_clientes(codigo_cliente)')
       .eq('estado', 'generada').not('numero_comprobante', 'is', null).limit(20);
-    let con = 0, sin = 0, anuladas = 0;
+    let con = 0, sin = 0, anuladas = 0, ajenas = 0;
     for (const it of (data || [])) {
       try {
-        const r = await leerCAE(it.tipo_comprobante, it.numero_comprobante);
-        if (r) { await supabase.from('fact_items').update({ estado: 'cae', cae: r.cae, cae_vto: r.vencimiento, error: null,
+        const f = await leerF(it);
+        const mal = verificarEnFlexxus(it, f);
+        if (mal === 'anulada en Flexxus') { sin++; if (await volverSiAnulada(it, it.tipo_comprobante, it.numero_comprobante)) anuladas++; continue; }
+        if (mal) { await soltarNumero(it, mal); ajenas++; continue; }
+        const r = caeDe(f);
+        if (r) { await supabase.from('fact_items').update({ estado: 'cae', cae: r.cae, cae_vto: r.vto, error: null,
           updated_at: new Date().toISOString() }).eq('id', it.id); con++; }
-        else { sin++; if (await volverSiAnulada(it, it.tipo_comprobante, it.numero_comprobante)) anuladas++; }
+        else sin++;
       } catch (e) { sin++; }
     }
-    res.json({ con, sin, anuladas, revisadas: (data || []).length });
+    res.json({ con, sin, anuladas, ajenas, revisadas: (data || []).length });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+/* Verificar contra Flexxus una factura ya emitida (botón en el detalle). */
+router.post('/api/facturacion/items/:id/verificar', auth, async (req, res) => {
+  try {
+    const { data: it } = await supabase.from('fact_items').select('id, estado, tipo_comprobante, numero_comprobante, total, cae, fact_clientes(codigo_cliente)').eq('id', req.params.id).single();
+    if (!it || !it.numero_comprobante) return res.status(404).json({ error: 'Esa factura no tiene número' });
+    const f = await leerF(it);
+    const mal = verificarEnFlexxus(it, f);
+    const r = caeDe(f);
+    if (!mal && r && it.cae && r.cae !== it.cae) return res.json({ ok: false, problema: 'el CAE de Flexxus no es el del panel' });
+    if (mal && it.estado !== 'enviada') { await soltarNumero(it, mal); return res.json({ ok: false, problema: mal, soltada: true }); }
+    res.json({ ok: !mal, problema: mal });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // Emitir UNA factura: generarla y pedir el CAE (o solo el CAE si ya estaba en
@@ -9126,11 +9167,12 @@ router.get('/api/facturacion/flexxus/comparar', auth, async (req, res) => {
 
 router.delete('/api/facturacion/items/:id', auth, async (req, res) => {
   try {
-    const { data: it } = await supabase.from('fact_items').select('estado, numero_comprobante').eq('id', req.params.id).single();
-    // También las creadas en otro punto de venta (hay que anularlas en Flexxus; acá solo se sacan).
-    const pvIt = it && puntoDeNumero(it.numero_comprobante);
-    const otroPunto = it && it.estado !== 'cae' && it.estado !== 'enviada' && pvIt != null && pvIt !== Number(cfgVentas().puntoVenta);
-    if (!it || !(['borrador', 'error', 'anular'].includes(it.estado) || otroPunto)) return res.status(409).json({ error: 'Solo se puede sacar una factura que todavía no se generó' });
+    const { data: it } = await supabase.from('fact_items').select('estado, numero_comprobante, pdf_ruta').eq('id', req.params.id).single();
+    // 30-sep: también las que están en Flexxus o emitidas (ej. la borraron en
+    // Flexxus): se sacan SOLO del panel. Las ya enviadas al cliente, no.
+    if (!it) return res.status(404).json({ error: 'No encontré la factura' });
+    if (it.estado === 'enviada') return res.status(409).json({ error: 'Ya se le envió al cliente: no se puede eliminar del panel' });
+    if (it.pdf_ruta) await supabase.storage.from(BUCKET_VENTAS).remove([it.pdf_ruta]).catch(() => {});
     await supabase.from('fact_items').delete().eq('id', req.params.id);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -9287,6 +9329,13 @@ async function enviarItem(it, email, cc) {
   const copia = String(cc || '').split(/[,;\s]+/).filter(Boolean);
   const pdf = await bajarPdfVenta(it.pdf_ruta);
   const extra = await datosMail(it);
+  // Control (30-sep): no mandar una factura cuyo número en Flexxus ya es de otro cliente.
+  if (extra._flx) {
+    let cod = (it.fact_clientes || {}).codigo_cliente;
+    if (!cod) { const { data } = await supabase.from('fact_clientes').select('codigo_cliente').eq('id', it.cliente_id).single(); cod = data && data.codigo_cliente; }
+    const mal = verificarEnFlexxus({ ...it, fact_clientes: { codigo_cliente: cod } }, extra._flx);
+    if (mal) throw new Error('No se envió: ' + mal + '. Revisala en el panel.');
+  }
   await FM.enviarFactura({ it: { ...it, ...extra }, cliente: extra.cliente, para: para.join(','), cc: copia.join(',') || null, pdf, nombrePdf: it.pdf_nombre });
   const destino = [...para, ...copia].join(',');
   await supabase.from('fact_items').update({ estado: 'enviada', email_enviado: destino, enviado_at: new Date().toISOString(),
@@ -9303,6 +9352,7 @@ async function datosMail(it) {
   try {
     const r = await require('./flexxus').leerFacturaVenta(it.tipo_comprobante, it.numero_comprobante);
     const f = (r && r.data) || r || {};
+    if (f.numerocomprobante) o._flx = f;
     if (f.fechavencimiento) o._vence = String(f.fechavencimiento).slice(0, 10);
     if (f.multiplazo && f.multiplazo.descripcion) o._condicion = 'Cuenta corriente · ' + String(f.multiplazo.descripcion).replace(/^cta\.?\s*cte\.?\s*/i, '').trim();
   } catch (e) { /* sin vencimiento: el mail sale igual */ }
