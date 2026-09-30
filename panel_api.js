@@ -5964,8 +5964,8 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
       const { data: unis } = await supabase.from('unidades').select('patente, tarjeta_combustible');
       const tarjetaDePatente = {};
       (unis || []).forEach(u => { if (u.patente && u.tarjeta_combustible) tarjetaDePatente[normP(u.patente)] = String(u.tarjeta_combustible); });
-      // Solo cargas con tarjeta o sin proveedor: las de Ferreyra/SERVISUD no son de Edenred.
-      const candidatas = (cargas || []).filter(c => c.tarjeta || !c.proveedor_id);
+      // Todas menos las de proveedores de cuenta corriente (SERVI SUD, Ferreyra).
+      const candidatas = (cargas || []).filter(CE.puedeSerEdenred);
       const { pares, sueltas } = CE.emparejar(gEden, candidatas, tarjetaDePatente, cargasUsadas);
       // Alertas propias de la línea: nocturna, 3+ cargas el mismo día, supera el tanque
       const porDia = {};
@@ -5988,7 +5988,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     // Si solo se miran listados de Edenred, las cargas de otros proveedores no
     // son "sin respaldo": no tenían por qué estar en Edenred.
     const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado'
-      && (!soloEden || c.tarjeta || !c.proveedor_id)
+      && (!soloEden || require('./conciliacion_edenred').puedeSerEdenred(c))
       && (!soloEden || (c.fecha >= fechas[0] && c.fecha <= fechas[fechas.length - 1])));
  
     // 6) Resumen por unidad (patente)
@@ -6045,6 +6045,50 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
   } catch (err) {
     console.error('combustible analisis:', err);
     res.status(500).json({ error: 'Error armando el análisis' });
+  }
+});
+
+// ── COMBUSTIBLE · Informe para gerencia (30-sep) ──────────────
+// Lo declarado por los capataces (ítem por ítem) + control Edenred, de un mes.
+// La lógica está en informe_combustible.js (probada con h_informe_combustible.js).
+router.get('/api/combustible/informe-gerencia', auth, async (req, res) => {
+  try {
+    const mes = String(req.query.mes || '');
+    if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json({ error: 'Falta el mes (YYYY-MM)' });
+    const [a, m] = mes.split('-').map(Number);
+    const dia = (y, mm, d) => new Date(Date.UTC(y, mm - 1, d)).toISOString().slice(0, 10);
+    const desde = dia(a, m, 0);          // último día del mes anterior (cargas de madrugada)
+    const hasta = dia(a, m + 1, 1);      // primer día del mes siguiente
+    const [rC, rR, rA, rO, rU] = await Promise.all([
+      supabase.from('cargas_combustible')
+        .select('*, cargas_combustible_items(*), unidades(patente), objetivos(nombre), capataces(nombre), proveedores(nombre)')
+        .neq('estado', 'anulada').gte('fecha', desde).lte('fecha', hasta).limit(3000),
+      supabaseCompras.from('remitos_combustible').select('id, data, created_at').order('created_at', { ascending: false }),
+      supabase.from('objetivos_alias').select('alias, objetivo_id, objetivos(nombre)').then(r => r, () => ({ data: [] })),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true),
+      supabase.from('unidades').select('id, patente, tarjeta_combustible'),
+    ]);
+    if (rC.error) throw rC.error;
+    if (rR.error) throw rR.error;
+    // Filas de Edenred del mes (±1 día) de TODOS los listados subidos; si dos
+    // listados se pisan, cada transacción cuenta una vez (el más nuevo manda).
+    const vistas = new Set(), edenred = [];
+    (rR.data || []).filter(r => r.data && r.data.origen === 'edenred_xlsx').forEach(r => {
+      (r.data.filas || []).forEach(f => {
+        if (!f.fecha || f.fecha < desde || f.fecha > hasta) return;
+        const k = f.numero_remito || [f.fecha, f.hora, f.patente, f.litros].join('|');
+        if (vistas.has(k)) return; vistas.add(k); edenred.push(f);
+      });
+    });
+    const alias = {
+      alias: (rA.data || []).filter(x => x.objetivo_id && x.objetivos).map(x => ({ alias: x.alias, nombre: x.objetivos.nombre })),
+      objetivos: rO.data || [],
+    };
+    const { armarInforme } = require('./informe_combustible');
+    res.json(armarInforme({ cargas: rC.data || [], edenred, alias, unidades: rU.data || [], mes }));
+  } catch (err) {
+    console.error('informe gerencia combustible:', err);
+    res.status(500).json({ error: 'No pude armar el informe' });
   }
 });
  
