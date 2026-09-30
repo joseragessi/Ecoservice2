@@ -115,7 +115,8 @@ function emparejar(grupos, cargas, tarjetaDePatente = {}, usadas = new Set()) {
 function alertas(g, mismoDia) {
   const a = [];
   const h = Number(String(g.hora || '').slice(0, 2));
-  if (g.hora && (h >= 22 || h < 5)) a.push('🌙 carga nocturna');
+  // Con la hora ambigua del Raw (12 h sin AM/PM) no se puede saber si es de noche.
+  if (g.hora && !g.hora12 && (h >= 22 || h < 5)) a.push('🌙 carga nocturna');
   if (mismoDia >= 3) a.push(`🔁 ${mismoDia} cargas el mismo día`);
   if (g.tanque && g.litros > Number(g.tanque) * 1.05) a.push('⛽ supera el tanque');
   return a;
