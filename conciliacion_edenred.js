@@ -94,8 +94,15 @@ function emparejar(grupos, cargas, tarjetaDePatente = {}, usadas = new Set()) {
     const lt = Number(c.litros_total) || 0;
     cand2.push({ g, c, pts: id.pts - Math.abs(g.litros - lt) / 10, via: id.por.join(' + ') });
   }));
-  cand2.sort((a, b) => b.pts - a.pts);
-  cand2.forEach(x => {
+  // Solo si el par es ÚNICO ese día (30-sep): un chofer que carga 3 veces por
+  // día (Claudio Chavez) daba "desvíos" que eran una carga cruzada con otra.
+  // Si hay más de un candidato de algún lado, no se adivina: quedan como sin
+  // ticket / sin respaldo y se miran a mano.
+  const nG = {}, nC = {};
+  cand2.forEach(x => { nG[x.g.key] = (nG[x.g.key] || 0) + 1; nC[x.c.id] = (nC[x.c.id] || 0) + 1; });
+  const unicos = cand2.filter(x => nG[x.g.key] === 1 && nC[x.c.id] === 1);
+  unicos.sort((a, b) => b.pts - a.pts);
+  unicos.forEach(x => {
     if (hechos.has(x.g.key) || usadas.has(x.c.id)) return;
     hechos.add(x.g.key); usadas.add(x.c.id);
     pares.push({ g: x.g, c: x.c, dif: Math.round((x.g.litros - (Number(x.c.litros_total) || 0)) * 100) / 100, via: x.via });
