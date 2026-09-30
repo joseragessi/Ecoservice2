@@ -9044,22 +9044,31 @@ async function soltarNumero(it, motivo) {
 }
 router.post('/api/facturacion/traer-cae', auth, async (req, res) => {
   try {
-    const { data } = await supabase.from('fact_items').select('id, tipo_comprobante, numero_comprobante, total, fact_clientes(codigo_cliente)')
-      .eq('estado', 'generada').not('numero_comprobante', 'is', null).limit(20);
-    let con = 0, sin = 0, anuladas = 0, ajenas = 0;
+    // 30-sep: también revisa las ya emitidas sin enviar (estado cae): si en
+    // Flexxus el número pasó a ser de otro cliente, se detecta acá.
+    const { data } = await supabase.from('fact_items').select('id, estado, tipo_comprobante, numero_comprobante, total, fact_clientes(nombre, codigo_cliente)')
+      .in('estado', ['generada', 'cae']).not('numero_comprobante', 'is', null).order('updated_at').limit(25);
+    let con = 0, sin = 0, anuladas = 0, ajenas = 0, ok = 0; const detalle = [];
     for (const it of (data || [])) {
       try {
         const f = await leerF(it);
         const mal = verificarEnFlexxus(it, f);
+        if (it.estado === 'cae') {
+          if (mal) { await soltarNumero(it, mal); ajenas++;
+            detalle.push({ cliente: (it.fact_clientes || {}).nombre, numero: it.numero_comprobante, tipo: it.tipo_comprobante, motivo: mal }); }
+          else ok++;
+          continue;
+        }
         if (mal === 'anulada en Flexxus') { sin++; if (await volverSiAnulada(it, it.tipo_comprobante, it.numero_comprobante)) anuladas++; continue; }
-        if (mal) { await soltarNumero(it, mal); ajenas++; continue; }
+        if (mal) { await soltarNumero(it, mal); ajenas++;
+          detalle.push({ cliente: (it.fact_clientes || {}).nombre, numero: it.numero_comprobante, tipo: it.tipo_comprobante, motivo: mal }); continue; }
         const r = caeDe(f);
         if (r) { await supabase.from('fact_items').update({ estado: 'cae', cae: r.cae, cae_vto: r.vto, error: null,
           updated_at: new Date().toISOString() }).eq('id', it.id); con++; }
         else sin++;
       } catch (e) { sin++; }
     }
-    res.json({ con, sin, anuladas, ajenas, revisadas: (data || []).length });
+    res.json({ con, sin, anuladas, ajenas, ok, detalle, revisadas: (data || []).length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 /* Verificar contra Flexxus una factura ya emitida (botón en el detalle). */
