@@ -12624,7 +12624,7 @@ function admHtmlInicio(tabs){
   <div class="adm-accs4">
     ${acc(1,'🧾','Facturar',`Clona ${ADM_MES[(+admMes.split('-')[1]+10)%12]} con el aumento`,'admClonar()')}
     ${acc(0,'＋','Factura nueva','Una sola','admNueva()')}
-    ${acc(0,'↻','Traer CAE',cnt('flx')?`${cnt('flx')} esperando el CAE de Sole`:'Nada esperando CAE','admTraerCAE()',!cnt('flx'))}
+    ${acc(0,'↻','Traer CAE',cnt('flx')?`${cnt('flx')} esperando el CAE de Sole`:emit.length?'Y verifica las emitidas con Flexxus':'Nada esperando CAE','admTraerCAE()',!cnt('flx')&&!emit.length)}
     ${acc(0,'📎','Subir PDFs','Todos juntos: se concilian solos',"document.getElementById('adm-pdfs').click()")}
   </div>
   <div class="sub" id="adm-msg" style="margin:-8px 0 10px"></div>
@@ -12966,6 +12966,20 @@ function admVerSinFacturar(){
   const L=(admCfg.clientes||[]).filter(c=>c.activo!==false&&c.codigo_cliente&&(tienen.has(c.id)||c.concepto_id)&&!delMes.has(c.id));
   alert(`Sin factura en ${admMesTxt(admMes)} (${L.length}):\n\n`+L.map(c=>'· '+c.nombre).join('\n'));
 }
+/* Cartel propio (30-sep) en vez del alert() del navegador.
+   tipo: 'ok' | 'warn' | 'mal'. items: [{t, s}] renglones opcionales. */
+function admAviso(tipo,titulo,texto,items){
+  const C={ok:['#E5F5EC','#0F7E40','✓'],warn:['#FBF0DC','#854F0B','!'],mal:['#FCEBED','#A3253A','✕']}[tipo]||['#E8F1FA','#245C94','i'];
+  const bg=document.createElement('div');bg.className='modal-bg abierto';
+  bg.innerHTML=`<div class="modal" style="max-width:460px;padding:0;overflow:hidden">
+    <div style="display:flex;gap:14px;align-items:flex-start;padding:20px 22px 14px">
+      <div style="width:42px;height:42px;border-radius:12px;background:${C[0]};color:${C[1]};display:grid;place-items:center;font-size:20px;font-weight:800;flex-shrink:0">${C[2]}</div>
+      <div><div style="font-size:16.5px;font-weight:700;line-height:1.3">${titulo}</div>
+        ${texto?`<div class="sub" style="font-size:13px;margin-top:5px;line-height:1.5">${texto}</div>`:''}</div></div>
+    ${items&&items.length?`<div style="padding:0 22px 12px">${items.map(i=>`<div style="background:${C[0]};border-radius:10px;padding:9px 12px;margin-bottom:6px;font-size:12.5px"><b style="color:var(--tinta)">${i.t}</b>${i.s?`<div style="color:${C[1]};margin-top:2px">${i.s}</div>`:''}</div>`).join('')}</div>`:''}
+    <div style="display:flex;justify-content:flex-end;padding:12px 22px;background:var(--hueso);border-top:1px solid var(--linea)"><button class="btn" onclick="this.closest('.modal-bg').remove()">Entendido</button></div></div>`;
+  document.body.appendChild(bg);bg.onclick=e=>{if(e.target===bg)bg.remove();};
+}
 // Barra animada mientras se consulta Flexxus (29-sep): tarda 1-3 s por factura.
 function admEspera(titulo,sub){
   const bg=document.createElement('div');bg.className='modal-bg abierto';bg.id='adm-espera';
@@ -12979,10 +12993,12 @@ function admEspera(titulo,sub){
   return ()=>{clearInterval(iv);bg.remove();};
 }
 async function admTraerCAE(){
-  const n=admTodos().filter(x=>x.estado==='generada').length;
-  const fin=admEspera('Trayendo el CAE de Flexxus',`Consultando ${n||''} factura${n===1?'':'s'} en Flexxus…`);
+  const n=admTodos().filter(x=>['generada','cae'].includes(x.estado)).length;
+  const fin=admEspera('Trayendo el CAE de Flexxus',`Consultando y verificando ${n||''} factura${n===1?'':'s'} en Flexxus…`);
   try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});fin();
-    if(r.ajenas)alert(`⚠ ${r.ajenas} factura${r.ajenas===1?'':'s'}: el número en Flexxus ya es de OTRO cliente (la borraron en Flexxus y se reusó). No se trajo ese CAE: volvieron a Pendientes sin número, para mandarlas de nuevo.`);
+    if(r.ajenas){admAviso('warn',`${r.ajenas} factura${r.ajenas===1?' ya no es':'s ya no son'} de su cliente en Flexxus`,
+      'Las borraron en Flexxus y el número se usó para otra factura. No se tomó ese CAE: volvieron a <b>Pendientes sin número</b>, para mandarlas de nuevo.',
+      (r.detalle||[]).map(d=>({t:`${escStk(d.cliente||'')} · ${d.tipo==='FB'?'B':'A'} ${admNroTxt(d.numero)}`,s:escStk(d.motivo)})));go('administracion');return;}
     toast(r.anuladas?`${r.anuladas} anulada${r.anuladas===1?'':'s'} por Flexxus (ARCA no dio el CAE): volvieron a pendientes con el mismo número.`
       :r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con&&!r.anuladas?undefined:'error');}
   catch(e){fin();toast(e.message,'error');}
@@ -13009,7 +13025,7 @@ async function admEmitirTodas(){
     try{await api('/api/facturacion/items/'+x.id+'/emitir',{method:'POST',body:'{}'});ok++;}
     catch(e){mal++;
       // Flexxus la creó en otro punto de venta: se frena todo (29-sep).
-      if(/Anulala en Flexxus/.test(e.message||'')){bg.remove();alert(e.message+'\n\nNo se emitió ninguna más.');go('administracion');return;}}
+      if(/Anulala en Flexxus/.test(e.message||'')){bg.remove();admAviso('mal','Se frenó la tanda',escStk(e.message)+'<br><br>No se mandó ninguna más.');go('administracion');return;}}
     const b=document.getElementById('adm-bar');if(b)b.style.width=Math.round((ok+mal)*100/P.length)+'%';
     const m=document.getElementById('adm-pmsg');if(m)m.innerHTML=`<b>${ok}</b> de ${P.length} en Flexxus${mal?` · <span style="color:var(--rojo)">${mal} con error</span>`:''}`;
   }
@@ -13443,8 +13459,8 @@ async function admSacarEmitida(id){
 async function admVerificar(id){
   const fin=admEspera('Verificando con Flexxus','Controlo que el número sea de este cliente y el total coincida…');
   try{const r=await api('/api/facturacion/items/'+id+'/verificar',{method:'POST',body:'{}'});fin();
-    if(r.ok)toast('✓ Coincide con Flexxus: cliente, total y CAE');
-    else alert('⚠ '+r.problema+(r.soltada?'\n\nLa factura volvió a Pendientes sin número, para mandarla de nuevo.':''));}
+    if(r.ok)admAviso('ok','Coincide con Flexxus','El número es de este cliente, el total y el CAE coinciden.');
+    else admAviso('warn','Esta factura no coincide con Flexxus',escStk(r.problema)+(r.soltada?'.<br><br>Volvió a <b>Pendientes sin número</b>, para mandarla de nuevo.':''));}
   catch(e){fin();toast(e.message,'error');}
   go('administracion');
 }
