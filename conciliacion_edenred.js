@@ -122,4 +122,21 @@ function alertas(g, mismoDia) {
   return a;
 }
 
-module.exports = { emparejar, alertas, parecidoNombre, dias };
+// Qué cargas pueden estar en Edenred. NO alcanza con "tiene tarjeta o no tiene
+// proveedor": el OCR toma como proveedor el titular del ticket de tarjeta
+// ("ECOSERVICE SRL", "ELUSSERVICE", "NEWCOR", la estación…) y muchas vienen sin
+// tarjeta leída. Se excluyen solo los proveedores de CUENTA CORRIENTE, que
+// facturan aparte con su propio listado (SERVI SUD, Ferreyra). 30-sep.
+const CUENTA_CORRIENTE = /s\w{2,4}\s*sud\b|ferreyra/i;
+// Un remito formal "0033-00000519" (punto de venta-número) es de proveedor de
+// cuenta corriente aunque el OCR le haya puesto otro nombre (pasó con GWG,
+// EDENRED y ELUSSERVICE en remitos de SERVI SUD). Los tickets de tarjeta traen
+// números cortos de surtidor (8098, 20261504).
+const REMITO_FORMAL = /^\d{4}-\d{8}$/;
+function puedeSerEdenred(c) {
+  const prov = (c.proveedores && c.proveedores.nombre) || '';
+  if (REMITO_FORMAL.test(String(c.numero_remito || '').trim())) return false;
+  return !!c.tarjeta || !CUENTA_CORRIENTE.test(prov);
+}
+
+module.exports = { emparejar, alertas, parecidoNombre, dias, puedeSerEdenred };
