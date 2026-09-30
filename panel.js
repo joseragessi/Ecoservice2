@@ -5867,27 +5867,33 @@ async function cargarHistorico(objetivoId){
   }
 }
 // Modal de selección: mostrar exactamente a quién se le va a mandar antes de disparar.
+// 30-sep: aparecen TODOS los objetivos activos. Pendientes tildados; los que ya
+// respondieron se pueden volver a pedir (destildados); sin capataz, con el motivo.
 function pedirStock(){
   const d=stockData;if(!d)return;
-  const cand=(d.candidatos||[]).filter(c=>c.estado!=='respondido');
-  const yaResp=(d.candidatos||[]).filter(c=>c.estado==='respondido').length;
-  const enviables=cand.filter(c=>!c.sin_capataz);
-  if(!enviables.length){
-    alert('No hay objetivos operativos a los que pedirles stock.\n'+
-      (yaResp?yaResp+' ya respondieron.\n':'')+
-      (cand.length?cand.length+' no tienen capataz con teléfono cargado.':'Revisá Maestros → Objetivos: solo se les pide a los de tipo "operativo".'));
-    return;
-  }
-  stockPedirSel=new Set(enviables.map(c=>c.id)); // por defecto todos los enviables
-  const filas=cand.map(c=>`<label class="mm-hab" style="padding:7px 0;border-bottom:1px solid var(--linea);display:flex;align-items:center;gap:9px">
-    <input type="checkbox" value="${c.id}" ${c.sin_capataz?'disabled':'checked'} onchange="stockTogglePedir('${c.id}',this.checked)" style="accent-color:var(--brote)">
-    <span style="flex:1"><b style="font-weight:600">${c.nombre}</b>
-      <span class="sub" style="display:block;font-size:11px">${c.sin_capataz?'⚠ sin capataz con teléfono':c.capataces.join(', ')}${c.estado==='pendiente'?' · ya se le pidió':''}</span></span>
-  </label>`).join('');
+  const todos=(d.candidatos||[]);
+  const grupo=c=>c.sin_capataz?2:c.estado==='respondido'?1:0;
+  const lista=[...todos].sort((a,b)=>grupo(a)-grupo(b)||a.nombre.localeCompare(b.nombre));
+  stockPedirSel=new Set(lista.filter(c=>grupo(c)===0).map(c=>c.id));
+  const tit=t=>`<div class="sub" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:12px 0 2px">${t}</div>`;
+  let ult=-1;
+  const filas=lista.map(c=>{const g=grupo(c);let h='';
+    if(g!==ult){ult=g;h+=tit(['Para pedir','Ya respondieron · tildalos para volver a pedir','Sin capataz activo con teléfono'][g]);}
+    const det=c.sin_capataz
+      ?(c.capataces_inactivos&&c.capataces_inactivos.length?`⚠ capataz desactivado: ${c.capataces_inactivos.join(', ')} (activalo en Maestros → Capataces)`:'⚠ no tiene capataz: asignale uno en Maestros → Capataces')
+      :c.capataces.join(', ')+(c.estado==='pendiente'?' · ya se le pidió':'')+(c.estado==='respondido'?' · ✓ ya respondió este mes':'');
+    return h+`<label class="mm-hab" style="padding:7px 0;border-bottom:1px solid var(--linea);display:flex;align-items:center;gap:9px;${c.sin_capataz?'opacity:.6':''}">
+    <input type="checkbox" value="${c.id}" ${c.sin_capataz?'disabled':g===0?'checked':''} onchange="stockTogglePedir('${c.id}',this.checked)" style="accent-color:var(--brote)">
+    <span style="flex:1"><b style="font-weight:600">${escStk(c.nombre)}</b>
+      <span class="sub" style="display:block;font-size:11px;${c.sin_capataz?'color:#854F0B':''}">${escStk(det)}</span></span>
+  </label>`;}).join('');
+  const pend=lista.filter(c=>grupo(c)===0).length,resp=lista.filter(c=>grupo(c)===1).length,sin=lista.filter(c=>grupo(c)===2).length;
   document.getElementById('mm-titulo').textContent='Pedir stock · '+mesStk(d.periodo);
   document.getElementById('mm-campos').innerHTML=`
-    <div class="sub" style="margin-bottom:10px">Se manda un WhatsApp a los capataces de los objetivos tildados. ${yaResp?'<b>'+yaResp+'</b> ya respondieron y no aparecen.':''}</div>
-    <div style="max-height:320px;overflow:auto">${filas}</div>
+    <div class="sub" style="margin-bottom:8px">Se manda un WhatsApp a los capataces de los objetivos tildados. <b>${pend}</b> para pedir · <b>${resp}</b> ya respondieron · <b>${sin}</b> sin capataz.</div>
+    <div style="display:flex;gap:6px;margin-bottom:4px"><input id="stk-q" placeholder="Buscar objetivo…" oninput="stockFiltrarPedir(this.value)" style="flex:1;padding:7px 10px;border:1px solid var(--linea-2);border-radius:8px">
+      <button class="btn-salir" onclick="stockMarcarPedir(true)">Marcar todos</button><button class="btn-salir" onclick="stockMarcarPedir(false)">Ninguno</button></div>
+    <div id="stk-pedir-lista" style="max-height:360px;overflow:auto">${filas}</div>
     <div class="sub" id="stk-pedir-cnt" style="margin-top:10px"></div>
     <div class="modal-acciones">
       <button class="btn-salir" onclick="cerrarMaestro()">Cancelar</button>
@@ -5896,6 +5902,14 @@ function pedirStock(){
   document.getElementById('mm-bg').classList.add('abierto');
   document.getElementById('mm-acciones').style.display='none'; // el modal de stock trae sus propios botones
   stockPedirCnt();
+}
+function stockFiltrarPedir(q){
+  q=String(q||'').toLowerCase();
+  document.querySelectorAll('#stk-pedir-lista label').forEach(l=>{l.style.display=!q||l.textContent.toLowerCase().includes(q)?'flex':'none';});
+}
+function stockMarcarPedir(on){
+  document.querySelectorAll('#stk-pedir-lista input[type=checkbox]').forEach(i=>{
+    if(i.disabled||i.closest('label').style.display==='none')return;i.checked=on;stockTogglePedir(i.value,on);});
 }
 function stockTogglePedir(id,on){on?stockPedirSel.add(id):stockPedirSel.delete(id);stockPedirCnt();}
 function stockPedirCnt(){
@@ -5908,7 +5922,9 @@ async function confirmarPedirStock(){
   if(btn){btn.disabled=true;btn.textContent='Enviando…';}
   try{
     const r=await api('/api/stock/pedir',{method:'POST',
-      body:JSON.stringify({periodo:stockData.periodo,objetivo_ids:[...stockPedirSel]})});
+      body:JSON.stringify({periodo:stockData.periodo,objetivo_ids:[...stockPedirSel],
+        // los tildados que ya respondieron se vuelven a pedir a propósito
+        forzar_ids:(stockData.candidatos||[]).filter(c=>c.estado==='respondido'&&stockPedirSel.has(c.id)).map(c=>c.id)})});
     cerrarMaestro();
     alert(`Pedidos enviados: ${r.enviados}`+(r.fallidos?`\n⚠ Fallaron: ${r.fallidos} (revisá Twilio)`:'')+(r.sin_capataz?`\nSin capataz con teléfono: ${r.sin_capataz}`:''));
     go('stock');
