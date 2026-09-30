@@ -12949,7 +12949,8 @@ function admDetalle(id){
         <div style="font-size:13px">${x.pdf_ruta?`📎 <a href="#" onclick="event.preventDefault();admPdf('${x.id}')">${escStk(x.pdf_nombre||'PDF')}</a> <span class="sub">· subido ${x.pdf_subido_at?new Date(x.pdf_subido_at).toLocaleDateString('es-AR'):''}</span>`
           :`<span style="color:#854F0B">Todavía sin PDF.</span> <button class="mini-btn" onclick="document.getElementById('adm-det').remove();admPdfUno('${x.id}')">📎 Subir</button>`}</div>`:''}
       ${x.error&&x.estado!=='enviada'?`<div class="err" style="margin-top:8px">✕ ${escStk(x.error)}</div>`:''}</div>
-    <div class="f">${x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg> Eliminar</button>`:'<span></span>'}
+    <div class="f">${['generada','cae'].includes(x.estado)&&!admMalPunto(x)?`<span style="display:flex;gap:6px"><button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacarEmitida('${x.id}')">🗑 Eliminar</button><button class="btn-salir" onclick="document.getElementById('adm-det').remove();admVerificar('${x.id}')">✓ Verificar</button></span>`
+      :x.estado==='borrador'?`<button class="btn-salir adm-del" onclick="document.getElementById('adm-det').remove();admSacar('${x.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg> Eliminar</button>`:'<span></span>'}
       <div style="display:flex;gap:8px"><button class="btn-salir" onclick="document.getElementById('adm-det').remove()">Cerrar</button>
         ${x.estado==='borrador'?`<button class="btn-salir" onclick="admVerEnvio('${x.id}')">🔎 Ver lo que se envía</button>`:''}
         ${x.numero_comprobante?`<button class="btn-salir" onclick="admLeerFlx('${x.id}')">🔎 Leer de Flexxus</button>`:''}
@@ -12981,6 +12982,7 @@ async function admTraerCAE(){
   const n=admTodos().filter(x=>x.estado==='generada').length;
   const fin=admEspera('Trayendo el CAE de Flexxus',`Consultando ${n||''} factura${n===1?'':'s'} en Flexxus…`);
   try{const r=await api('/api/facturacion/traer-cae',{method:'POST',body:'{}'});fin();
+    if(r.ajenas)alert(`⚠ ${r.ajenas} factura${r.ajenas===1?'':'s'}: el número en Flexxus ya es de OTRO cliente (la borraron en Flexxus y se reusó). No se trajo ese CAE: volvieron a Pendientes sin número, para mandarlas de nuevo.`);
     toast(r.anuladas?`${r.anuladas} anulada${r.anuladas===1?'':'s'} por Flexxus (ARCA no dio el CAE): volvieron a pendientes con el mismo número.`
       :r.con?`✓ ${r.con} con CAE${r.sin?` · ${r.sin} todavía sin CAE en Flexxus`:''}`:'Todavía no tienen CAE en Flexxus. Pedilo allá (Ventas → Facturación electrónica).',r.con&&!r.anuladas?undefined:'error');}
   catch(e){fin();toast(e.message,'error');}
@@ -13432,6 +13434,20 @@ async function admPdf(id){
   }catch(e){toast(e.message,'error');}
 }
 
+// 30-sep: sacar del panel una que ya está en Flexxus (ej. la borraron allá).
+async function admSacarEmitida(id){
+  const x=admItem(id);if(!x)return;
+  if(!confirm(`¿Eliminar del panel la factura ${admNroTxt(x.numero_comprobante)} de ${(x.fact_clientes||{}).nombre}?\n\nSe borra SOLO del panel. En Flexxus no se toca: si existe allá, anulala o hacé la nota de crédito desde Flexxus.`))return;
+  try{await api('/api/facturacion/items/'+id,{method:'DELETE'});toast('✓ Eliminada del panel');go('administracion');}catch(e){toast(e.message,'error');}
+}
+async function admVerificar(id){
+  const fin=admEspera('Verificando con Flexxus','Controlo que el número sea de este cliente y el total coincida…');
+  try{const r=await api('/api/facturacion/items/'+id+'/verificar',{method:'POST',body:'{}'});fin();
+    if(r.ok)toast('✓ Coincide con Flexxus: cliente, total y CAE');
+    else alert('⚠ '+r.problema+(r.soltada?'\n\nLa factura volvió a Pendientes sin número, para mandarla de nuevo.':''));}
+  catch(e){fin();toast(e.message,'error');}
+  go('administracion');
+}
 async function admSacarAnulada(id){
   if(!confirm('¿Ya la anulaste en Flexxus?\n\nSe saca del panel. Si no la anulaste, sigue existiendo en Flexxus.'))return;
   try{await api('/api/facturacion/items/'+id,{method:'DELETE'});go('administracion');}catch(e){toast(e.message,'error');}
