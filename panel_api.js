@@ -40,7 +40,8 @@ function usuarios() {
 // Cada usuario del panel tiene una lista de módulos habilitados. El admin ve
 // todo. Los usuarios de PANEL_USERS (env) son admin siempre — así José nunca
 // puede quedar afuera aunque la tabla se rompa.
-const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','costos','compras','reparaciones','stock','movimientos','maestros'];
+// 30-sep: + 'administracion' (facturación de ventas), asignable a cada usuario.
+const MODULOS_PANEL = ['dashboard','facturas','insumos','combustible','costos','compras','reparaciones','stock','movimientos','maestros','administracion'];
 function moduloDeRuta(p) {
   if (p.startsWith('/api/dashboard'))     return 'dashboard';
   if (p.startsWith('/api/facturas'))      return 'facturas';
@@ -49,6 +50,7 @@ function moduloDeRuta(p) {
   if (p.startsWith('/api/costos'))        return 'costos';
   if (p.startsWith('/api/viajes'))        return 'bateas';
   if (p.startsWith('/api/compras'))       return 'compras';
+  if (p.startsWith('/api/facturacion'))   return 'administracion';
   if (p.startsWith('/api/reparaciones') || p.startsWith('/api/services')) return 'reparaciones';
   if (p.startsWith('/api/stock'))         return 'stock';
   if (p.startsWith('/api/maestros') || p.startsWith('/api/mecanicos') ||
