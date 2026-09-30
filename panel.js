@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-30 · combustible: Excel de Edenred en la conciliación';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-30 · combustible: informe imprimible + desvíos solo con par único';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1492,7 +1492,7 @@ async function cambiarInsumo(id,estado){
  
 /* ===== Combustible ===== */
 let filtroComb='';
-let combTab='cargas';           // 'cargas' | 'analisis'
+let combTab='cargas';           // 'cargas' | 'analisis' | 'informe'
 let combObj='', combUni='', combCap='', combQ='';   // filtros: objetivo, unidad, capataz, búsqueda libre (vacío = todos)
 let combAlias=null;             // {alias:[], objetivos:[]} — se pide una vez
  
@@ -1589,8 +1589,10 @@ async function vCombustible(view){
   const tabs=`<div class="toggle-imp" style="margin-bottom:16px">
     <button class="${combTab==='cargas'?'on':''}" onclick="combTab='cargas';combRemStep='';go('combustible')">Cargas</button>
     <button class="${combTab==='analisis'?'on':''}" onclick="combTab='analisis';go('combustible')">Análisis de consumo</button>
+    <button class="${combTab==='informe'?'on':''}" onclick="combTab='informe';combRemStep='';go('combustible')">Informe</button>
   </div>`;
   if(combTab==='analisis'){return vCombAnalisis(view,tabs);}
+  if(combTab==='informe'){return vCombInforme(view,tabs);}
   try{
     const params=[];
     if(filtroComb)params.push('estado='+filtroComb);
@@ -2890,6 +2892,184 @@ function selUniAna(key){
       <span class="badge b-amber">revisar</span></div>`).join('')}`:''}`;
 }
  
+/* ===== Combustible · Informe imprimible (30-sep) =====
+   Aprobado en mockup_informe_combustible.html. Sale del mismo análisis que la
+   pestaña "Análisis de consumo" (mismos listados tildados), armado para leer e
+   imprimir: conclusión, KPIs, gráficos, resumen por chofer, desvíos, tickets
+   sin carga y el detalle completo de las cargas sin ticket. Se imprime desde
+   un iframe propio para que salga solo el informe, sin el menú del panel. */
+const INF_CSS=`.inf{--b:#159B51;--b2:#0F7E40;--bs:#E5F5EC;--s:#B8323F;--ss:#FBEAEC;--a:#854F0B;--as:#FBF0DC;--t:#16221C;--t2:#586B60;--t3:#8C9B92;--p:#F4F6F2;--l:#E6EBE4;--l2:#D5DDD1;color:var(--t);font-family:'Bricolage Grotesque',sans-serif;font-size:13px}
+.inf .mono{font-family:'JetBrains Mono',monospace;font-feature-settings:"tnum"}
+.inf .hoja{background:#fff;border-radius:14px;padding:34px 38px;box-shadow:0 8px 30px rgba(22,34,28,.08)}
+.inf .cab{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid var(--t);padding-bottom:14px;margin-bottom:18px;gap:16px}
+.inf .cab h1{font-size:22px;margin:0 0 4px}.inf .cab .sub{color:var(--t2)}
+.inf .logo{display:flex;align-items:center;gap:10px}.inf .logo i{width:38px;height:38px;border-radius:9px;background:var(--b);display:grid;place-items:center;color:#fff;font-style:normal;font-weight:700;flex:none}
+.inf h2{font-size:15px;margin:26px 0 10px;display:flex;align-items:center;gap:8px}.inf h2 span{font-size:11px;color:var(--t3);font-weight:500}
+.inf .concl{background:var(--p);border-left:4px solid var(--s);border-radius:8px;padding:12px 16px;line-height:1.6;font-size:13.5px}
+.inf .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+.inf .kpi{border:1px solid var(--l);border-radius:12px;padding:12px 14px}
+.inf .kpi .l{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3)}
+.inf .kpi .v{font-size:26px;font-weight:700;margin-top:2px}.inf .kpi .s{color:var(--t2);font-size:11.5px}
+.inf .g2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+.inf .card{border:1px solid var(--l);border-radius:12px;padding:14px 16px}
+.inf .ley{display:flex;gap:14px;font-size:11.5px;color:var(--t2);margin-bottom:6px}.inf .ley i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.inf i.hx{background:repeating-linear-gradient(45deg,#B8323F 0 3px,#D98A95 3px 5px)}
+.inf svg text{font-family:'Bricolage Grotesque',sans-serif}
+.inf table{width:100%;border-collapse:collapse;font-size:12px}
+.inf th{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);text-align:left;padding:7px 8px;border-bottom:1.5px solid var(--l2);font-weight:600}
+.inf td{padding:6px 8px;border-bottom:1px solid var(--l)}.inf td.n,.inf th.n{text-align:right}
+.inf tr.grp td{background:var(--p);font-weight:600;padding-top:9px}
+.inf .chip{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:600}
+.inf .c-sin{background:var(--ss);color:var(--s)}.inf .c-am{background:var(--as);color:var(--a)}
+.inf .pie{margin-top:30px;display:flex;justify-content:space-between;color:var(--t3);font-size:11px;border-top:1px solid var(--l);padding-top:10px}
+.inf .firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:46px}.inf .firmas div{border-top:1px solid var(--t);padding-top:6px;text-align:center;color:var(--t2);font-size:11.5px}
+.inf .salto{page-break-before:always;break-before:page}
+#inf-tt{position:fixed;pointer-events:none;background:#16221C;color:#fff;border-radius:8px;padding:7px 10px;font-size:11.5px;line-height:1.45;opacity:0;transition:opacity .1s;z-index:9999;max-width:260px}
+@media(max-width:700px){.inf .kpis{grid-template-columns:1fr 1fr}.inf .g2{grid-template-columns:1fr}.inf .hoja{padding:20px 16px}}
+@media print{@page{size:A4;margin:12mm}body{background:#fff;margin:0}.inf{font-size:11px}.inf .hoja{box-shadow:none;padding:0;border-radius:0}
+ .inf .card,.inf .kpi{break-inside:avoid}.inf tr{break-inside:avoid}.inf h2{break-after:avoid}#inf-tt{display:none}
+ .inf *{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
+let combInfHtml='';
+function infDatos(a){
+  const ok=a.matcheadas||[],dv=a.desvios||[],st=a.sin_ticket||[],all=[...ok,...dv,...st];
+  const nom=g=>String(g.chofer||'(sin chofer)').replace(/\s+/g,' ').trim()||'(sin chofer)';
+  const ch={};const C=n=>ch[n]||(ch[n]={n,con:0,sin:0,nc:0,ns:0,pe:0,pat:new Set(),al:0});
+  [...ok,...dv].forEach(g=>{const c=C(nom(g));c.con+=g.litros||0;c.nc++;if(g.patente)c.pat.add(g.patente);});
+  st.forEach(g=>{const c=C(nom(g));c.sin+=g.litros||0;c.ns++;c.pe+=g.total||0;if(g.patente)c.pat.add(g.patente);});
+  all.forEach(g=>{C(nom(g)).al+=(g.alertas||[]).length;});
+  const choferes=Object.values(ch).map(c=>({...c,pat:[...c.pat].sort()})).sort((x,y)=>y.sin-x.sin||y.con-x.con);
+  const lunes=f=>{const d=new Date(f+'T12:00');d.setDate(d.getDate()-((d.getDay()+6)%7));return d.toISOString().slice(0,10);};
+  const S={};[...ok,...dv].forEach(g=>{if(!g.fecha)return;const k=lunes(g.fecha);(S[k]=S[k]||{s:k,con:0,sin:0}).con+=g.litros||0;});
+  st.forEach(g=>{if(!g.fecha)return;const k=lunes(g.fecha);(S[k]=S[k]||{s:k,con:0,sin:0}).sin+=g.litros||0;});
+  const semanas=Object.values(S).sort((x,y)=>x.s.localeCompare(y.s));
+  const al={};let nal=0;
+  all.forEach(g=>{const as=g.alertas||[];if(as.length)nal++;as.forEach(x=>{const k=/mismo d/.test(x)?'3+ cargas el mismo día':x.replace(/^\S+\s/,'');al[k]=(al[k]||0)+1;});});
+  const fechas=all.map(g=>g.fecha).filter(Boolean).sort();
+  const sum=(xs,f)=>xs.reduce((s,x)=>s+(Number(x[f])||0),0);
+  const aplic=new Set(a.ids_aplicados||[]);
+  const provs=[...new Set((a.remitos||[]).filter(r=>aplic.has(String(r.id))).map(r=>r.proveedor||'Proveedor'))];
+  return{choferes,semanas,al,nal,
+    sin:st.map(g=>({...g,__c:nom(g)})).sort((x,y)=>x.__c.localeCompare(y.__c)||String(x.fecha).localeCompare(String(y.fecha))||String(x.hora||'').localeCompare(String(y.hora||''))),
+    desvios:dv.slice().sort((x,y)=>Math.abs(y.dif)-Math.abs(x.dif)),resp:a.sin_respaldo||[],provs,
+    k:{cargas:all.length,lt:sum(all,'litros'),pe:sum(all,'total'),con:ok.length+dv.length,sin:st.length,ltsin:sum(st,'litros'),pesin:sum(st,'total'),dv:dv.length,resp:(a.sin_respaldo||[]).length,desde:fechas[0],hasta:fechas[fechas.length-1]}};
+}
+function infArmar(D){
+  const n0=v=>Math.round(v||0).toLocaleString('es-AR');
+  const pesos=v=>'$ '+(v>=1e6?(v/1e6).toLocaleString('es-AR',{maximumFractionDigits:1})+' M':n0(v));
+  const fd=f=>f?f.slice(8,10)+'/'+f.slice(5,7):'';const fa=f=>f?fd(f)+'/'+f.slice(0,4):'—';
+  const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const tip=h=>`data-tt="${esc(h)}"`;
+  const k=D.k,pct=k.cargas?Math.round(k.con*100/k.cargas):0;
+  const HATCH=`<defs><pattern id="inf-hx" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#B8323F"/><line x1="0" y1="0" x2="0" y2="6" stroke="#fff" stroke-opacity=".35" stroke-width="2"/></pattern></defs>`;
+  // Litros por semana: columnas apiladas con/sin ticket + % de cobertura
+  const chSem=()=>{if(!D.semanas.length)return'<div style="color:#8C9B92">Sin datos</div>';
+    const W=440,H=220,L=40,B=34,T=18,max=Math.max(1,...D.semanas.map(s=>s.con+s.sin)),paso=max>2000?500:max>800?200:100,top=Math.ceil(max/paso)*paso;
+    const bw=(W-L-10)/D.semanas.length,y=v=>T+(H-T-B)*(1-v/top);let g='';
+    for(let v=0;v<=top;v+=paso)g+=`<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#E6EBE4"/><text x="${L-6}" y="${y(v)+4}" font-size="10" fill="#8C9B92" text-anchor="end">${n0(v)}</text>`;
+    D.semanas.forEach((s,i)=>{const x=L+i*bw+bw*.18,w=bw*.64,yc=y(s.con),ys=y(s.con+s.sin),p=s.con+s.sin?Math.round(s.con*100/(s.con+s.sin)):0;
+      g+=`<g ${tip(`<b>Semana del ${fd(s.s)}</b><br>Con ticket: ${n0(s.con)} lt<br>Sin ticket: ${n0(s.sin)} lt<br>Cobertura: ${p}%`)}><rect x="${x-4}" y="${T}" width="${w+8}" height="${H-B-T}" fill="transparent"/>
+      ${s.con?`<rect x="${x}" y="${yc}" width="${w}" height="${Math.max(y(0)-yc,0)}" fill="#159B51" rx="2"/>`:''}
+      ${s.sin?`<rect x="${x}" y="${ys}" width="${w}" height="${Math.max(yc-ys-2,1)}" fill="url(#inf-hx)" rx="3"/>`:''}
+      <text x="${x+w/2}" y="${ys-5}" font-size="10.5" text-anchor="middle" fill="#16221C" font-weight="600">${p}%</text>
+      <text x="${x+w/2}" y="${H-B+15}" font-size="10" text-anchor="middle" fill="#586B60">${fd(s.s)}</text></g>`;});
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%">${HATCH}${g}<line x1="${L}" x2="${W}" y1="${y(0)}" y2="${y(0)}" stroke="#8C9B92"/></svg>`;};
+  // Litros por chofer: barras horizontales apiladas
+  const chCho=()=>{const cs=D.choferes.filter(c=>c.sin+c.con>0).slice(0,16);if(!cs.length)return'';
+    const W=900,rh=24,L=170,R=140,H=cs.length*rh+10,max=Math.max(1,...cs.map(c=>c.con+c.sin)),x=v=>(W-L-R)*v/max;let g='';
+    cs.forEach((c,i)=>{const yy=i*rh+4,wc=x(c.con),ws=x(c.sin);
+      g+=`<g ${tip(`<b>${esc(c.n)}</b>${c.pat.length?' · '+esc(c.pat.join(', ')):''}<br>Con ticket: ${c.nc} cargas · ${n0(c.con)} lt<br>Sin ticket: ${c.ns} cargas · ${n0(c.sin)} lt · ${pesos(c.pe)}`)}><rect x="0" y="${yy-2}" width="${W}" height="${rh}" fill="transparent"/>
+      <text x="${L-8}" y="${yy+13}" font-size="11.5" text-anchor="end" fill="#16221C">${esc(c.n.length>26?c.n.slice(0,25)+'…':c.n)}</text>
+      ${wc?`<rect x="${L}" y="${yy+2}" width="${Math.max(wc-2,1)}" height="15" fill="#159B51" rx="3"/>`:''}
+      ${ws?`<rect x="${L+wc}" y="${yy+2}" width="${Math.max(ws,1)}" height="15" fill="url(#inf-hx)" rx="3"/>`:''}
+      <text x="${L+wc+ws+6}" y="${yy+13}" font-size="11" fill="${c.sin?'#B8323F':'#586B60'}" font-weight="600">${c.sin?n0(c.sin)+' lt sin ticket':'todo con ticket'}</text></g>`;});
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%">${HATCH}${g}</svg>`;};
+  const chAl=()=>{const a=Object.entries(D.al).sort((x,y)=>y[1]-x[1]);if(!a.length)return'<div style="color:#8C9B92;margin-top:10px">Sin alertas en el período.</div>';
+    const max=Math.max(...a.map(x=>x[1])),ico={'carga nocturna':'🌙','3+ cargas el mismo día':'🔁','supera el tanque':'⛽'};
+    return a.map(([n,v])=>`<div style="display:flex;align-items:center;gap:10px;margin:9px 0"><div style="width:150px">${ico[n]||'⚑'} ${esc(n)}</div>
+      <div style="flex:1;background:#F4F6F2;border-radius:4px;height:14px"><div style="width:${v*100/max}%;height:14px;background:#854F0B;border-radius:4px"></div></div>
+      <b class="mono" style="width:34px;text-align:right">${v}</b></div>`).join('')+
+      `<div style="color:#8C9B92;font-size:11px;margin-top:6px">Una carga puede tener más de una alerta. "Supera el tanque" puede ser carga en bidones.</div>`;};
+  const peores=D.choferes.filter(c=>c.ns).slice(0,3).map(c=>esc(c.n)).join(', ');
+  const nunca=D.choferes.filter(c=>c.ns&&!c.nc&&c.n!=='(sin chofer)').map(c=>esc(c.n));
+  let sinH='',cur=null;
+  D.sin.forEach(s=>{if(s.__c!==cur){cur=s.__c;const c=D.choferes.find(x=>x.n===cur)||{ns:0,sin:0,pe:0};
+      sinH+=`<tr class="grp"><td colspan="5">${esc(cur)} <span style="color:#8C9B92;font-weight:400">· ${c.ns} cargas · ${n0(c.sin)} lt · ${pesos(c.pe)}</span></td></tr>`;}
+    sinH+=`<tr><td class="mono">${fd(s.fecha)} ${esc(s.hora||'')}</td><td class="mono">${esc(s.patente||'—')}</td><td class="n mono">${(Math.round((s.litros||0)*1000)/1000).toLocaleString('es-AR')}</td><td class="n mono">${n0(s.total)}</td><td>${esc(s.estacion||s.numero_remito||'')} ${(s.alertas||[]).map(a=>`<span class="chip c-am">${esc(a)}</span>`).join(' ')}</td></tr>`;});
+  const titulo=D.provs.length===1&&D.provs[0]==='Edenred'?'Tarjeta Edenred':esc(D.provs.join(' + ')||'Proveedor');
+  const hoy=new Date().toLocaleDateString('es-AR');
+  return `<div class="hoja">
+<div class="cab"><div class="logo"><i>E</i><div><h1>Informe de combustible · ${titulo}</h1>
+<div class="sub">Período ${fa(k.desde)} al ${fa(k.hasta)} · cargas del proveedor vs. tickets subidos por los capataces</div></div></div>
+<div style="text-align:right;color:#586B60;font-size:11.5px">EcoService S.R.L.<br>Emitido ${hoy}</div></div>
+<div class="concl"><b>Conclusión.</b> De ${k.cargas} cargas, <b>${k.sin} (${100-pct}%) no tienen ticket en el panel</b>${k.sin?`: ${n0(k.ltsin)} litros por ${pesos(k.pesin)}. Se concentran en ${peores}.`:'.'} ${nunca.length?nunca.join(', ')+' no subieron ningún ticket en el período. ':''}Hay ${k.dv} carga${k.dv===1?'':'s'} donde los litros del ticket no coinciden con el proveedor y ${D.nal} con alertas para revisar.</div>
+<div class="kpis">
+<div class="kpi"><div class="l">Cargas del proveedor</div><div class="v">${k.cargas}</div><div class="s">${n0(k.lt)} lt · ${pesos(k.pe)}</div></div>
+<div class="kpi"><div class="l">Con ticket</div><div class="v" style="color:#0F7E40">${k.con}</div><div class="s">cobertura ${pct}%</div></div>
+<div class="kpi"><div class="l">Sin ticket</div><div class="v" style="color:#B8323F">${k.sin}</div><div class="s">${n0(k.ltsin)} lt · ${pesos(k.pesin)}</div></div>
+<div class="kpi"><div class="l">Desvíos de litros</div><div class="v" style="color:#854F0B">${k.dv}</div><div class="s">+ ${k.resp} tickets sin carga del proveedor</div></div>
+</div>
+<div class="g2">
+<div class="card"><h2 style="margin:0 0 6px">Litros por semana <span>% = cobertura con ticket</span></h2>
+<div class="ley"><span><i style="background:#159B51"></i>Con ticket</span><span><i class="hx"></i>Sin ticket</span></div>${chSem()}</div>
+<div class="card"><h2 style="margin:0 0 6px">Alertas <span>${D.nal} cargas</span></h2>${chAl()}</div>
+</div>
+<h2>Litros por chofer <span>ordenado por litros sin ticket</span></h2>
+<div class="card"><div class="ley"><span><i style="background:#159B51"></i>Con ticket</span><span><i class="hx"></i>Sin ticket</span></div>${chCho()}</div>
+<h2>Resumen por chofer</h2>
+<table><tr><th>Chofer</th><th>Patente</th><th class="n">Con ticket</th><th class="n">Sin ticket</th><th class="n">Litros s/ticket</th><th class="n">$ s/ticket</th><th class="n">Alertas</th></tr>
+${D.choferes.map(c=>`<tr><td>${esc(c.n)}</td><td class="mono">${esc(c.pat.join(', '))}</td><td class="n mono">${c.nc}</td><td class="n mono">${c.ns?`<span class="chip c-sin">${c.ns}</span>`:'—'}</td><td class="n mono">${c.sin?n0(c.sin):'—'}</td><td class="n mono">${c.pe?n0(c.pe):'—'}</td><td class="n mono">${c.al||'—'}</td></tr>`).join('')}
+<tr><td colspan="3"><b>Total</b></td><td class="n mono"><b>${k.sin}</b></td><td class="n mono"><b>${n0(k.ltsin)}</b></td><td class="n mono"><b>${n0(k.pesin)}</b></td><td></td></tr></table>
+<h2>Desvíos de litros <span>el ticket no coincide con el proveedor</span></h2>
+${D.desvios.length?`<table><tr><th>Fecha</th><th>Chofer</th><th>Patente</th><th class="n">Proveedor</th><th class="n">Ticket</th><th class="n">Dif.</th><th>Ticket N°</th><th>Objetivo</th></tr>
+${D.desvios.map(d=>`<tr><td class="mono">${fd(d.fecha)}</td><td>${esc(d.chofer||d.capataz||'')}</td><td class="mono">${esc(d.patente||'')}</td><td class="n mono">${d.litros}</td><td class="n mono">${d.litros_ticket}</td><td class="n mono" style="color:#B8323F;font-weight:600">${d.dif>0?'+':''}${d.dif}</td><td class="mono">${esc(d.remito_ticket||d.numero_remito||'')}</td><td>${esc(d.objetivo||'')}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Sin desvíos.</div>'}
+<h2>Tickets sin carga del proveedor</h2>
+${D.resp.length?`<table><tr><th>Fecha</th><th>Ticket</th><th>Capataz</th><th class="n">Litros</th><th>Objetivo</th></tr>
+${D.resp.map(r=>`<tr><td class="mono">${fd(r.fecha)}</td><td class="mono">${esc(r.numero_remito||'s/n')}</td><td>${esc(r.capataz||'')}</td><td class="n mono">${Math.round((r.litros||0)*100)/100}</td><td>${esc(r.objetivo||'')}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Ninguno.</div>'}
+${D.sin.length?`<h2 class="salto">Detalle · cargas sin ticket <span>${k.sin} cargas, agrupadas por chofer</span></h2>
+<table><tr><th>Fecha y hora</th><th>Patente</th><th class="n">Litros</th><th class="n">Importe</th><th>Estación · alertas</th></tr>${sinH}</table>`:''}
+<div class="firmas"><div>Logística</div><div>Administración</div></div>
+<div class="pie"><span>Panel EcoService · Combustible → Informe</span><span>Fuente: listado del proveedor + tickets de los capataces</span></div></div>`;
+}
+async function vCombInforme(view,tabs){
+  if(!document.getElementById('inf-css')){const st=document.createElement('style');st.id='inf-css';st.textContent=INF_CSS;document.head.appendChild(st);}
+  view.innerHTML=tabs+'<div class="cargando-v">Armando el informe…</div>';
+  try{
+    const qs=combRemSel==='todos'?'?ids=todos':(Array.isArray(combRemSel)&&combRemSel.length?'?ids='+combRemSel.join(','):'');
+    const a=await api('/api/combustible/analisis'+qs);
+    if(!(a.remitos||[]).length){view.innerHTML=tabs+'<div class="aviso-amarillo">Todavía no hay listados cargados. Subí uno en Análisis de consumo.</div>';return;}
+    const aplic=new Set(a.ids_aplicados||[]);
+    const lst=(a.remitos||[]).filter(r=>aplic.has(String(r.id))).map(r=>`${r.proveedor||'—'} · ${fechaAR(r.periodo_desde)} → ${fechaAR(r.periodo_hasta)} (${r.filas})`).join(' + ');
+    combInfHtml=infArmar(infDatos(a));
+    view.innerHTML=`${tabs}
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <div><b>${lst}</b><div class="sub">Se arma con los listados tildados en Análisis de consumo</div></div>
+      <span style="flex:1"></span><button class="btn" onclick="combInfImprimir()">🖨 Imprimir / PDF</button></div>
+    <div class="inf" id="inf-hoja" onmousemove="infTip(event)" onmouseleave="infTip()">${combInfHtml}</div>`;
+  }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el informe. ${e.message||''}</div>`;}
+}
+function infTip(e){
+  let tt=document.getElementById('inf-tt');
+  if(!tt){tt=document.createElement('div');tt.id='inf-tt';document.body.appendChild(tt);}
+  const g=e&&e.target&&e.target.closest?e.target.closest('[data-tt]'):null;
+  if(!g){tt.style.opacity=0;return;}
+  tt.innerHTML=g.getAttribute('data-tt');tt.style.opacity=1;
+  tt.style.left=Math.min(e.clientX+14,innerWidth-270)+'px';tt.style.top=(e.clientY+12)+'px';
+}
+function combInfImprimir(){
+  if(!combInfHtml)return;
+  const old=document.getElementById('inf-print');if(old)old.remove();
+  const f=document.createElement('iframe');f.id='inf-print';
+  f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  document.body.appendChild(f);
+  const d=f.contentWindow.document;
+  d.open();d.write(`<!doctype html><html><head><meta charset="utf-8"><title>Informe de combustible</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>${INF_CSS} body{margin:0;background:#fff}</style></head><body><div class="inf">${combInfHtml}</div></body></html>`);d.close();
+  const ir=()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){alert('No pude abrir la impresión.');}};
+  // Esperar las fuentes para que no imprima con la tipografía por defecto
+  setTimeout(()=>{const fs=f.contentWindow.document.fonts;(fs&&fs.ready?fs.ready:Promise.resolve()).then(()=>setTimeout(ir,150));},300);
+}
+
 /* ===== Stock de maquinaria ===== */
 let stockTab='general'; // 'general' | 'maquinas' | 'panol' | 'censo'
 let stockPeriodo=null;   // null = período actual
