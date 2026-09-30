@@ -5898,7 +5898,11 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     const esEden = r => !!(r.data && r.data.origen === 'edenred_xlsx');
     remsSel.forEach(r => {
       const fs = (r.data && r.data.filas) || [];
-      fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id, __eden: esEden(r) }));
+      // El Raw de Edenred trae la hora en 12 h SIN AM/PM (16:42 sale 04:42).
+      // Si ninguna hora del listado pasa de 12, la hora es ambigua: se muestra
+      // "02:10 / 14:10" y no se usa para la alerta de carga nocturna (30-sep).
+      const h12 = esEden(r) && fs.length > 0 && fs.every(f => !f.hora || Number(String(f.hora).slice(0, 2)) <= 12);
+      fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id, __eden: esEden(r), __h12: h12 }));
     });
     const hayEden = remsSel.some(esEden);
     const soloEden = remsSel.length > 0 && remsSel.every(esEden);
@@ -5915,6 +5919,13 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     const { data: cargas, error: e2 } = await q;
     if (e2) throw e2;
  
+    const horaTxt = f => {
+      if (!f.hora) return null;
+      if (!f.__h12) return f.hora;
+      const h = Number(String(f.hora).slice(0, 2)), m = String(f.hora).slice(2, 5);
+      const otra = h === 12 ? 0 : h + 12;
+      return String(h).padStart(2, '0') + m + ' / ' + String(otra).padStart(2, '0') + m;
+    };
     // 3) Agrupar filas del listado por remito (un remito puede tener 2 productos)
     const grupos = {};
     filas.forEach(f => {
@@ -5924,7 +5935,7 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
         : (normN(f.numero_remito) || ('SR|' + normP(f.patente) + '|' + (f.fecha || '')));
       if (!grupos[k]) grupos[k] = { key: k, numero_remito: f.numero_remito, fecha: f.fecha, patente: f.patente,
         chofer: f.chofer, proveedor: f.__prov, litros: 0, total: 0, productos: [],
-        ...(f.__eden ? { eden: true, hora: f.hora || null, tarjeta: f.tarjeta || null, estacion: f.estacion || null, tanque: f.tanque || null } : {}) };
+        ...(f.__eden ? { eden: true, hora: horaTxt(f), hora12: !!f.__h12, tarjeta: f.tarjeta || null, estacion: f.estacion || null, tanque: f.tanque || null } : {}) };
       grupos[k].litros += Number(f.litros) || 0;
       grupos[k].total  += Number(f.total)  || 0;
       if (f.producto) grupos[k].productos.push(f.producto);
