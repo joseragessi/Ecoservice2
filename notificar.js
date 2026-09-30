@@ -176,4 +176,33 @@ function mensajeCierreSinReparar(motivo, { equipo, unidad, mecanico, nota, falla
     `\n_EcoService · Taller_`;
 }
 
-module.exports = { notificarCapataz, notificarCapatazTemplate, mensajeEstadoIncidencia, mensajeCierreSinReparar, MOTIVOS_CIERRE };
+/**
+ * 30-sep: faltaba y rompía "Pedir stock" ("notificarConFallback is not a function").
+ * Si el capataz le escribió al bot en las últimas 24 hs (ventana abierta),
+ * manda el TEXTO (el listado de stock para confirmar). Si no, WhatsApp solo
+ * acepta plantillas: manda la plantilla aprobada y el listado le llega cuando
+ * conteste. La ventana se mira en Twilio (último mensaje ENTRANTE de ese número),
+ * porque el rechazo del texto fuera de ventana llega asíncrono y no se puede atrapar.
+ * @returns {Promise<{ok:boolean, via:'texto'|'template'}>}
+ */
+async function ventanaAbierta(limpio) {
+  try {
+    const desde = new Date(Date.now() - 23.5 * 3600 * 1000);
+    const l = await client.messages.list({ from: 'whatsapp:+' + limpio, to: process.env.TWILIO_WHATSAPP_NUMBER, dateSentAfter: desde, limit: 1 });
+    return l && l.length > 0;
+  } catch (e) {
+    console.error(`[NOTIF] no pude ver la ventana de ${limpio}: ${e.message}`);
+    return false;                              // ante la duda, plantilla (siempre llega)
+  }
+}
+async function notificarConFallback(telefono, texto, contentSid, variables) {
+  const limpio = String(telefono || '').replace(/\D/g, '');
+  if (!limpio) return { ok: false, via: null };
+  if (texto && await ventanaAbierta(limpio)) {
+    const ok = await notificarCapataz(limpio, texto);
+    if (ok) return { ok: true, via: 'texto' };
+  }
+  return { ok: await notificarCapatazTemplate(limpio, contentSid, variables), via: 'template' };
+}
+
+module.exports = { notificarCapataz, notificarCapatazTemplate, notificarConFallback, mensajeEstadoIncidencia, mensajeCierreSinReparar, MOTIVOS_CIERRE };
