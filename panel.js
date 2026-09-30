@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-30 · combustible: informe + hora Edenred sin AM/PM';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-30 · combustible: informe para gerencia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3030,22 +3030,108 @@ ${D.sin.length?`<h2 class="salto">Detalle · cargas sin ticket <span>${k.sin} ca
 <div class="firmas"><div>Logística</div><div>Administración</div></div>
 <div class="pie"><span>Panel EcoService · Combustible → Informe</span><span>Fuente: listado del proveedor + tickets de los capataces</span></div></div>`;
 }
+/* ── Informe para gerencia (30-sep) · mockup_informe_gerencia.html v2 ──
+   Cuatro preguntas del mes: dónde fue el combustible, qué objetivos
+   consumieron más, cuánto se cargó con tarjeta sin ticket y de quién, y qué
+   desvíos hay. Base: lo que declaró cada capataz ítem por ítem; Edenred es el
+   control. Lo arma el server (/api/combustible/informe-gerencia). */
+let combInfTipo='gerencia';   // 'gerencia' | 'conciliacion'
+let combInfMes=new Date().toISOString().slice(0,7);
+const INF_GER_CSS=`.inf .res{font-size:14px;line-height:1.65;background:#F4F6F2;border-radius:10px;padding:12px 16px}.inf .res ul{margin:0;padding-left:18px}.inf .res li{margin:2px 0}
+.inf .h2s{color:#586B60;margin:-6px 0 10px}.inf .rojo{color:#B8323F;font-weight:600}
+.inf .dest{display:flex;height:36px;border-radius:8px;overflow:hidden;gap:2px;margin:8px 0}.inf .dest div{display:flex;align-items:center;padding:0 10px;color:#fff;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden}
+.inf .rk{display:grid;grid-template-columns:22px 1fr 150px 110px 90px;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #E6EBE4}
+.inf .rk .bb{height:10px;border-radius:4px;background:#159B51}.inf .rk .n{text-align:right}
+.inf tr.tot td{font-weight:700;border-top:1.5px solid #D5DDD1;border-bottom:0}
+.inf .aviso{background:#FBF0DC;color:#854F0B;border-radius:8px;padding:9px 12px;margin-top:8px;font-size:12px}
+@media(max-width:700px){.inf .rk{grid-template-columns:18px 1fr 90px}.inf .rk .bb,.inf .rk .x{display:none}}
+@media print{.inf .sec{break-inside:avoid}}`;
+const MESES_INF=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function infGerArmar(D){
+  const n0=v=>Math.round(v||0).toLocaleString('es-AR');
+  const M=v=>'$ '+((v||0)>=1e6?(v/1e6).toLocaleString('es-AR',{minimumFractionDigits:1,maximumFractionDigits:1})+' M':n0(v));
+  const fd=f=>f?f.slice(8,10)+'/'+f.slice(5,7):'';
+  const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const [a,m]=D.mes.split('-').map(Number),mes=MESES_INF[m-1],Mes=mes.charAt(0).toUpperCase()+mes.slice(1);
+  const T=D.total,lt=T.litros||0,dest=D.destinos||[],obj=D.objetivos||[],top=obj.slice(0,10),maxO=top.length?top[0].litros:1;
+  const st=D.sin_ticket||{cargas:0,litros:0,importe:0,por_chofer:[]},dv=D.desvios||[],dvL=dv.reduce((s,d)=>s+d.dif,0);
+  const b=dest.find(x=>x.nombre==='Bidones'),ed=D.edenred||{};
+  const col={'Bidones':'#159B51','Tanque de unidad':'#2F6DB5','Equipos':'#854F0B'};
+  const txt={'Bidones':'Bidones para máquinas en los objetivos','Tanque de unidad':'Tanque de los vehículos','Equipos':'Equipos (bobcat, tractor…)'};
+  const sinEden=!ed.cubre;
+  const avisoEden=sinEden?`<div class="aviso">No hay reporte de Edenred cargado para ${mes}: las cargas sin ticket y los desvíos no se pueden calcular. Subilo en Análisis de consumo → ＋ Subir listado.</div>`
+    :(ed.desde>D.mes+'-01'||ed.hasta<D.mes+'-28'?`<div class="aviso">El reporte de Edenred cargado cubre del ${fd(ed.desde)} al ${fd(ed.hasta)}: lo que esté fuera de esas fechas no se controla.</div>`:'');
+  const pctEst=T.importe?Math.round(T.importe_estimado*100/T.importe):0;
+  return `<div class="hoja">
+<div class="cab"><div><h1>Informe de combustible · ${Mes} ${a}</h1>
+<div class="sub">Lo declarado por los capataces, controlado contra la tarjeta Edenred</div></div>
+<div style="text-align:right;color:#586B60;font-size:11.5px">EcoService S.R.L.<br>Emitido ${new Date().toLocaleDateString('es-AR')}</div></div>
+<div class="res"><ul>
+<li>Se cargaron <b>${n0(lt)} litros por ${M(T.importe)}</b> en ${T.cargas} cargas declaradas.</li>
+${b&&lt?`<li>El <b>${Math.round(b.litros*100/lt)}%</b> fue a bidones para las máquinas de los objetivos.</li>`:''}
+${top.length?`<li>El objetivo que más consumió fue <b>${esc(top[0].nombre)}</b> (${n0(top[0].litros)} lt).</li>`:''}
+${sinEden?'':st.cargas?`<li class="rojo">Hay ${st.cargas} cargas con tarjeta (${n0(st.litros)} lt · ${M(st.importe)}) sin ticket declarado${st.por_chofer[0]?`; la mayor parte de ${esc(st.por_chofer[0].chofer)}${st.por_chofer[1]?' y '+esc(st.por_chofer[1].chofer):''}`:''}.</li>`:'<li>Todas las cargas de Edenred tienen su ticket.</li>'}
+${sinEden?'':dv.length?`<li>Se identificaron <b>${dv.length} desvío${dv.length===1?'':'s'}</b>: Edenred cargó ${n0(dvL)} lt ${dvL>=0?'más':'menos'} de lo que dicen los tickets.</li>`:'<li>No se identificaron desvíos de litros.</li>'}
+</ul></div>
+<div class="kpis">
+<div class="kpi"><div class="l">Consumo</div><div class="v">${n0(lt)} lt</div><div class="s">${M(T.importe)}</div></div>
+<div class="kpi"><div class="l">Sin ticket</div><div class="v" style="color:#B8323F">${sinEden?'—':st.cargas}</div><div class="s">${sinEden?'sin reporte Edenred':n0(st.litros)+' lt · '+M(st.importe)}</div></div>
+<div class="kpi"><div class="l">Desvíos</div><div class="v" style="color:#854F0B">${sinEden?'—':dv.length}</div><div class="s">${sinEden?'sin reporte Edenred':n0(dvL)+' lt de diferencia'}</div></div>
+<div class="kpi"><div class="l">Objetivos</div><div class="v">${obj.length}</div><div class="s">con consumo en el mes</div></div></div>
+${avisoEden}
+<div class="sec"><h2>1 · ¿Dónde fue el combustible?</h2>
+${lt?`<div class="dest">${dest.map(x=>`<div style="flex:${x.litros};background:${col[x.nombre]||'#586B60'}">${x.litros/lt>.1?Math.round(x.litros*100/lt)+'%':''}</div>`).join('')}</div>
+<div class="ley">${dest.map(x=>`<span><i style="background:${col[x.nombre]||'#586B60'}"></i>${txt[x.nombre]||esc(x.nombre)}: <b>${n0(x.litros)} lt</b> · ${M(x.importe)}</span>`).join('')}</div>`:'<div style="color:#8C9B92">Sin cargas declaradas en el mes.</div>'}</div>
+<div class="sec"><h2>2 · Objetivos que más consumieron</h2><div class="h2s">Los 10 primeros · litros declarados (bidones + vehículos del objetivo)</div>
+${top.map((x,i)=>`<div class="rk"><b class="mono" style="color:#8C9B92">${i+1}</b><div><b>${esc(x.nombre)}</b><div style="font-size:11px;color:#8C9B92">${esc((x.capataces||[]).join(', '))}</div></div>
+<div class="x"><div class="bb" style="width:${x.litros*100/maxO}%"></div></div><div class="n mono"><b>${n0(x.litros)} lt</b></div><div class="n mono" style="color:#586B60">${M(x.importe)}</div></div>`).join('')||'<div style="color:#8C9B92">Sin datos.</div>'}</div>
+<div class="sec"><h2>3 · Consumo sin ticket · ¿de quién?</h2><div class="h2s">Cargas que figuran en la tarjeta Edenred y ningún capataz declaró</div>
+${sinEden?'<div style="color:#8C9B92">Sin reporte de Edenred para este mes.</div>':st.por_chofer.length?`<table><tr><th>Chofer (según Edenred)</th><th>Patente</th><th class="n">Cargas</th><th class="n">Litros</th><th class="n">Importe</th></tr>
+${st.por_chofer.map(x=>`<tr><td><b>${esc(x.chofer)}</b></td><td class="mono">${esc((x.patentes||[]).join(', '))}</td><td class="n mono">${x.cargas}</td><td class="n mono">${n0(x.litros)}</td><td class="n mono">${n0(x.importe)}</td></tr>`).join('')}
+<tr class="tot"><td>Total</td><td></td><td class="n mono">${st.cargas}</td><td class="n mono">${n0(st.litros)}</td><td class="n mono">${n0(st.importe)}</td></tr></table>`:'<div style="color:#8C9B92">Todas las cargas de Edenred tienen su ticket.</div>'}</div>
+<div class="sec"><h2>4 · Desvíos identificados</h2><div class="h2s">Misma carga en Edenred y en el ticket, pero con distintos litros</div>
+${sinEden?'<div style="color:#8C9B92">Sin reporte de Edenred para este mes.</div>':dv.length?`<table><tr><th>Fecha</th><th>Chofer</th><th>Patente</th><th class="n">Edenred</th><th class="n">Declarado</th><th class="n">Diferencia</th><th class="n">Importe Edenred</th></tr>
+${dv.map(d=>`<tr><td class="mono">${fd(d.fecha)}</td><td>${esc(d.chofer)}</td><td class="mono">${esc(d.patente||'')}</td><td class="n mono">${d.litros_edenred}</td><td class="n mono">${d.litros_declarados}</td><td class="n mono rojo">${d.dif>0?'+':''}${d.dif} lt</td><td class="n mono">${n0(d.importe)}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Sin desvíos.</div>'}</div>
+<div class="firmas"><div>Logística</div><div>Gerencia</div></div>
+<div class="pie"><span>Panel EcoService · Combustible → Informe</span><span>${pctEst?pctEst+'% del importe es estimado (cargas sin importe confiable, al precio medio del mes) · ':''}Fuente: declaraciones de los capataces + reporte Edenred</span></div></div>`;
+}
+async function vCombInfGerencia(view,tabs,sub){
+  view.innerHTML=tabs+sub+'<div class="cargando-v">Armando el informe…</div>';
+  try{
+    const D=await api('/api/combustible/informe-gerencia?mes='+combInfMes);
+    combInfHtml=infGerArmar(D);
+    view.innerHTML=`${tabs}${sub}
+    <div class="inf" id="inf-hoja">${combInfHtml}</div>`;
+  }catch(e){view.innerHTML=tabs+sub+`<div class="cargando-v">No pude armar el informe. ${e.message||''}</div>`;}
+}
+function combInfMeses(){
+  const out=[];const d=new Date();d.setDate(1);
+  for(let i=0;i<12;i++){const k=d.toISOString().slice(0,7);out.push([k,MESES_INF[d.getMonth()].replace(/^./,c=>c.toUpperCase())+' '+d.getFullYear()]);d.setMonth(d.getMonth()-1);}
+  return out;
+}
 async function vCombInforme(view,tabs){
-  if(!document.getElementById('inf-css')){const st=document.createElement('style');st.id='inf-css';st.textContent=INF_CSS;document.head.appendChild(st);}
-  view.innerHTML=tabs+'<div class="cargando-v">Armando el informe…</div>';
+  if(!document.getElementById('inf-css')){const st=document.createElement('style');st.id='inf-css';st.textContent=INF_CSS+INF_GER_CSS;document.head.appendChild(st);}
+  const sub=`<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <div class="toggle-imp"><button class="${combInfTipo==='gerencia'?'on':''}" onclick="combInfTipo='gerencia';go('combustible')">Gerencia</button>
+    <button class="${combInfTipo==='conciliacion'?'on':''}" onclick="combInfTipo='conciliacion';go('combustible')">Conciliación Edenred</button></div>
+    ${combInfTipo==='gerencia'?`<select class="sel" style="padding:7px 10px;border:1px solid var(--linea);border-radius:8px" onchange="combInfMes=this.value;go('combustible')">${combInfMeses().map(([k,t])=>`<option value="${k}" ${k===combInfMes?'selected':''}>${t}</option>`).join('')}</select>`:''}
+    <span style="flex:1"></span><button class="btn" onclick="combInfImprimir()">🖨 Imprimir / PDF</button></div>`;
+  if(combInfTipo==='gerencia')return vCombInfGerencia(view,tabs,sub);
+  return vCombInfConciliacion(view,tabs,sub);
+}
+async function vCombInfConciliacion(view,tabs,sub){
+  view.innerHTML=tabs+sub+'<div class="cargando-v">Armando el informe…</div>';
   try{
     const qs=combRemSel==='todos'?'?ids=todos':(Array.isArray(combRemSel)&&combRemSel.length?'?ids='+combRemSel.join(','):'');
     const a=await api('/api/combustible/analisis'+qs);
-    if(!(a.remitos||[]).length){view.innerHTML=tabs+'<div class="aviso-amarillo">Todavía no hay listados cargados. Subí uno en Análisis de consumo.</div>';return;}
+    if(!(a.remitos||[]).length){view.innerHTML=tabs+sub+'<div class="aviso-amarillo">Todavía no hay listados cargados. Subí uno en Análisis de consumo.</div>';return;}
     const aplic=new Set(a.ids_aplicados||[]);
     const lst=(a.remitos||[]).filter(r=>aplic.has(String(r.id))).map(r=>`${r.proveedor||'—'} · ${fechaAR(r.periodo_desde)} → ${fechaAR(r.periodo_hasta)} (${r.filas})`).join(' + ');
     combInfHtml=infArmar(infDatos(a));
-    view.innerHTML=`${tabs}
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-      <div><b>${lst}</b><div class="sub">Se arma con los listados tildados en Análisis de consumo</div></div>
-      <span style="flex:1"></span><button class="btn" onclick="combInfImprimir()">🖨 Imprimir / PDF</button></div>
+    view.innerHTML=`${tabs}${sub}
+    <div style="margin-bottom:12px"><b>${lst}</b><div class="sub">Se arma con los listados tildados en Análisis de consumo</div></div>
     <div class="inf" id="inf-hoja" onmousemove="infTip(event)" onmouseleave="infTip()">${combInfHtml}</div>`;
-  }catch(e){view.innerHTML=tabs+`<div class="cargando-v">No pude armar el informe. ${e.message||''}</div>`;}
+  }catch(e){view.innerHTML=tabs+sub+`<div class="cargando-v">No pude armar el informe. ${e.message||''}</div>`;}
 }
 function infTip(e){
   let tt=document.getElementById('inf-tt');
@@ -3064,7 +3150,7 @@ function combInfImprimir(){
   const d=f.contentWindow.document;
   d.open();d.write(`<!doctype html><html><head><meta charset="utf-8"><title>Informe de combustible</title>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>${INF_CSS} body{margin:0;background:#fff}</style></head><body><div class="inf">${combInfHtml}</div></body></html>`);d.close();
+<style>${INF_CSS}${INF_GER_CSS} body{margin:0;background:#fff}</style></head><body><div class="inf">${combInfHtml}</div></body></html>`);d.close();
   const ir=()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){alert('No pude abrir la impresión.');}};
   // Esperar las fuentes para que no imprima con la tipografía por defecto
   setTimeout(()=>{const fs=f.contentWindow.document.fonts;(fs&&fs.ready?fs.ready:Promise.resolve()).then(()=>setTimeout(ir,150));},300);
