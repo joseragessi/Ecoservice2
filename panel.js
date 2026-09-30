@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-30 · combustible: informe imprimible + desvíos solo con par único';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-30 · combustible: informe + hora Edenred sin AM/PM';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2948,7 +2948,7 @@ function infDatos(a){
   const sum=(xs,f)=>xs.reduce((s,x)=>s+(Number(x[f])||0),0);
   const aplic=new Set(a.ids_aplicados||[]);
   const provs=[...new Set((a.remitos||[]).filter(r=>aplic.has(String(r.id))).map(r=>r.proveedor||'Proveedor'))];
-  return{choferes,semanas,al,nal,
+  return{choferes,semanas,al,nal,h12:all.some(g=>g.hora12),
     sin:st.map(g=>({...g,__c:nom(g)})).sort((x,y)=>x.__c.localeCompare(y.__c)||String(x.fecha).localeCompare(String(y.fecha))||String(x.hora||'').localeCompare(String(y.hora||''))),
     desvios:dv.slice().sort((x,y)=>Math.abs(y.dif)-Math.abs(x.dif)),resp:a.sin_respaldo||[],provs,
     k:{cargas:all.length,lt:sum(all,'litros'),pe:sum(all,'total'),con:ok.length+dv.length,sin:st.length,ltsin:sum(st,'litros'),pesin:sum(st,'total'),dv:dv.length,resp:(a.sin_respaldo||[]).length,desde:fechas[0],hasta:fechas[fechas.length-1]}};
@@ -2983,12 +2983,12 @@ function infArmar(D){
       ${ws?`<rect x="${L+wc}" y="${yy+2}" width="${Math.max(ws,1)}" height="15" fill="url(#inf-hx)" rx="3"/>`:''}
       <text x="${L+wc+ws+6}" y="${yy+13}" font-size="11" fill="${c.sin?'#B8323F':'#586B60'}" font-weight="600">${c.sin?n0(c.sin)+' lt sin ticket':'todo con ticket'}</text></g>`;});
     return `<svg viewBox="0 0 ${W} ${H}" width="100%">${HATCH}${g}</svg>`;};
-  const chAl=()=>{const a=Object.entries(D.al).sort((x,y)=>y[1]-x[1]);if(!a.length)return'<div style="color:#8C9B92;margin-top:10px">Sin alertas en el período.</div>';
+  const chAl=()=>{const a=Object.entries(D.al).sort((x,y)=>y[1]-x[1]);if(!a.length)return'<div style="color:#8C9B92;margin-top:10px">Sin alertas en el período.'+(D.h12?' La hora del Raw de Edenred viene sin AM/PM, así que no se marcan cargas nocturnas.':'')+'</div>';
     const max=Math.max(...a.map(x=>x[1])),ico={'carga nocturna':'🌙','3+ cargas el mismo día':'🔁','supera el tanque':'⛽'};
     return a.map(([n,v])=>`<div style="display:flex;align-items:center;gap:10px;margin:9px 0"><div style="width:150px">${ico[n]||'⚑'} ${esc(n)}</div>
       <div style="flex:1;background:#F4F6F2;border-radius:4px;height:14px"><div style="width:${v*100/max}%;height:14px;background:#854F0B;border-radius:4px"></div></div>
       <b class="mono" style="width:34px;text-align:right">${v}</b></div>`).join('')+
-      `<div style="color:#8C9B92;font-size:11px;margin-top:6px">Una carga puede tener más de una alerta. "Supera el tanque" puede ser carga en bidones.</div>`;};
+      `<div style="color:#8C9B92;font-size:11px;margin-top:6px">Una carga puede tener más de una alerta. "Supera el tanque" puede ser carga en bidones.${D.h12?' El Excel Raw de Edenred trae la hora sin AM/PM: por eso se muestran las dos (02:10 / 14:10) y no se marcan cargas nocturnas.':''}</div>`;};
   const peores=D.choferes.filter(c=>c.ns).slice(0,3).map(c=>esc(c.n)).join(', ');
   const nunca=D.choferes.filter(c=>c.ns&&!c.nc&&c.n!=='(sin chofer)').map(c=>esc(c.n));
   let sinH='',cur=null;
