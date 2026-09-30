@@ -6034,8 +6034,9 @@ router.get('/api/stock', auth, async (req, res) => {
       supabase.from('censos_stock').select('periodo'),
       // Candidatos para pedir stock: objetivos operativos activos, con su
       // capataz y el estado del censo de este período (si ya existe).
-      supabase.from('objetivos').select('id, nombre, tipo').eq('activo', true).eq('tipo', 'operativo'),
-      supabase.from('capataces').select('nombre, telefono, objetivo_id').eq('activo', true),
+      // 30-sep: TODOS los objetivos activos (antes solo los de tipo "operativo").
+      supabase.from('objetivos').select('id, nombre, tipo').eq('activo', true),
+      supabase.from('capataces').select('nombre, telefono, objetivo_id, activo'),
     ]);
     for (const r of [rCensos, rPers, rObjs, rCaps]) if (r.error) throw r.error;
     const censos = rCensos.data, objs = rObjs.data, caps = rCaps.data;
@@ -6044,9 +6045,11 @@ router.get('/api/stock', auth, async (req, res) => {
     const estadoPorObj = {};
     (censos || []).forEach(c => { estadoPorObj[c.objetivo_id] = c.estado; });
     const candidatos = (objs || []).map(o => {
-      const cs = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
-      return { id: o.id, nombre: o.nombre,
+      const cs = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono && c.activo !== false);
+      const inactivos = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono && c.activo === false);
+      return { id: o.id, nombre: o.nombre, tipo: o.tipo || null,
         capataces: cs.map(c => c.nombre),
+        capataces_inactivos: inactivos.map(c => c.nombre),
         sin_capataz: cs.length === 0,
         estado: estadoPorObj[o.id] || null };
     }).sort((a, b) => a.nombre.localeCompare(b.nombre));
@@ -6099,8 +6102,9 @@ async function pedirStockObjetivos(body) {
     // reparación en vez del listado) o cuando se quiere un control extra.
     // El censo NO se borra: se marca pendiente y el capataz lo rehace sobre
     // lo que ya había, así no pierde lo cargado si no contesta.
-    const forzar = !!body.forzar;
+    const forzarIds = new Set(Array.isArray(body.forzar_ids) ? body.forzar_ids : []);
     for (const o of (objs || [])) {
+      const forzar = !!body.forzar || forzarIds.has(o.id);   // 30-sep: repedir solo a los tildados que ya respondieron
       const censo = porObj[o.id];
       if (censo && censo.estado === 'respondido' && !forzar) { yaRespondidos++; continue; }
       const capsObj = (caps || []).filter(c => c.objetivo_id === o.id && c.telefono);
@@ -6156,7 +6160,7 @@ async function pedirStockObjetivos(body) {
           .update({ stock_ultimo_pedido: new Date().toISOString() }).eq('id', o.id);
       }
     }
-    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}${forzar ? ' [forzado]' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} repedidos=${repedidos} con_listado=${conListado} fallidos=${fallidos}`);
+    console.log(`[stock] pedido ${periodo}${body.grupo ? ' (' + body.grupo + ')' : ''}${body.forzar || forzarIds.size ? ' [forzado]' : ''}: enviados=${enviados} sin_capataz=${sinCapataz} ya_respondidos=${yaRespondidos} repedidos=${repedidos} con_listado=${conListado} fallidos=${fallidos}`);
     return { enviados, sin_capataz: sinCapataz, ya_respondidos: yaRespondidos, fallidos, repedidos, con_listado: conListado };
   }
 }
