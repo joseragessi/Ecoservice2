@@ -5837,7 +5837,9 @@ router.post('/api/combustible/remito', auth, async (req, res) => {
         periodo_desde:  r.periodo_desde || null,
         periodo_hasta:  r.periodo_hasta || null,
         total_general:  Number(r.total_general) || 0,
-        data:           { filas: r.filas || [], origen: 'panel_conciliacion' },
+        // Edenred (30-sep): el Excel se lee en el navegador y se marca, porque se
+        // concilia distinto (sin número de remito: litros + fecha + chofer/tarjeta).
+        data:           { filas: r.filas || [], origen: r.origen === 'edenred_xlsx' ? 'edenred_xlsx' : 'panel_conciliacion' },
       }).select().single();
     if (error) throw error;
     res.json(aplanar(data));
@@ -5893,26 +5895,36 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     }
  
     const filas = [];
+    const esEden = r => !!(r.data && r.data.origen === 'edenred_xlsx');
     remsSel.forEach(r => {
       const fs = (r.data && r.data.filas) || [];
-      fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id }));
+      fs.forEach(f => filas.push({ ...f, __prov: r.proveedor, __remId: r.id, __eden: esEden(r) }));
     });
+    const hayEden = remsSel.some(esEden);
+    const soloEden = remsSel.length > 0 && remsSel.every(esEden);
  
     // 2) Cargas de los capataces (base bot), acotadas al rango de los listados
     let q = supabase.from('cargas_combustible')
       .select('*, cargas_combustible_items(*), unidades(patente,codigo,marca), capataces(nombre), proveedores(nombre), objetivos(nombre)')
       .neq('estado', 'anulada');
     const fechas = filas.map(f => f.fecha).filter(Boolean).sort();
-    if (fechas.length) q = q.gte('fecha', fechas[0]).lte('fecha', fechas[fechas.length - 1]);
+    // Edenred: ±1 día, las cargas de madrugada el capataz las sube al día siguiente
+    const corre = (f, d) => new Date(new Date(f + 'T12:00').getTime() + d * 86400000).toISOString().slice(0, 10);
+    if (fechas.length) q = q.gte('fecha', hayEden ? corre(fechas[0], -1) : fechas[0])
+      .lte('fecha', hayEden ? corre(fechas[fechas.length - 1], 1) : fechas[fechas.length - 1]);
     const { data: cargas, error: e2 } = await q;
     if (e2) throw e2;
  
     // 3) Agrupar filas del listado por remito (un remito puede tener 2 productos)
     const grupos = {};
     filas.forEach(f => {
-      const k = normN(f.numero_remito) || ('SR|' + normP(f.patente) + '|' + (f.fecha || ''));
+      // Edenred: cada transacción es su propia línea (clave propia, nunca se
+      // junta con un remito de otro proveedor que tenga el mismo número).
+      const k = f.__eden ? ('ED|' + (normN(f.numero_remito) || [f.fecha, f.hora, normP(f.patente), f.litros].join('|')))
+        : (normN(f.numero_remito) || ('SR|' + normP(f.patente) + '|' + (f.fecha || '')));
       if (!grupos[k]) grupos[k] = { key: k, numero_remito: f.numero_remito, fecha: f.fecha, patente: f.patente,
-        chofer: f.chofer, proveedor: f.__prov, litros: 0, total: 0, productos: [] };
+        chofer: f.chofer, proveedor: f.__prov, litros: 0, total: 0, productos: [],
+        ...(f.__eden ? { eden: true, hora: f.hora || null, tarjeta: f.tarjeta || null, estacion: f.estacion || null, tanque: f.tanque || null } : {}) };
       grupos[k].litros += Number(f.litros) || 0;
       grupos[k].total  += Number(f.total)  || 0;
       if (f.producto) grupos[k].productos.push(f.producto);
@@ -5929,7 +5941,29 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
     // 5) Matchear
     const sinTicket = [], desvios = [], matcheadas = [];
     const cargasUsadas = new Set();
-    Object.values(grupos).forEach(g => {
+    const cargaAFila = (g, c, dif, via) => ({ ...g, carga_id: c.id, litros_ticket: Number(c.litros_total) || 0, dif, via: via || null,
+      capataz: c.capataces ? c.capataces.nombre : null,
+      objetivo: c.objetivos ? c.objetivos.nombre : null,
+      remito_ticket: c.numero_remito || c.lote || null, fecha_ticket: c.fecha });
+    // Edenred primero (30-sep): sin número en común, se empareja por litros +
+    // fecha ±1 + chofer/tarjeta/patente. Ver conciliacion_edenred.js.
+    const gEden = Object.values(grupos).filter(g => g.eden);
+    if (gEden.length) {
+      const CE = require('./conciliacion_edenred');
+      const { data: unis } = await supabase.from('unidades').select('patente, tarjeta_combustible');
+      const tarjetaDePatente = {};
+      (unis || []).forEach(u => { if (u.patente && u.tarjeta_combustible) tarjetaDePatente[normP(u.patente)] = String(u.tarjeta_combustible); });
+      // Solo cargas con tarjeta o sin proveedor: las de Ferreyra/SERVISUD no son de Edenred.
+      const candidatas = (cargas || []).filter(c => c.tarjeta || !c.proveedor_id);
+      const { pares, sueltas } = CE.emparejar(gEden, candidatas, tarjetaDePatente, cargasUsadas);
+      // Alertas propias de la línea: nocturna, 3+ cargas el mismo día, supera el tanque
+      const porDia = {};
+      gEden.forEach(g => { const k = normP(g.patente) + '|' + g.fecha; porDia[k] = (porDia[k] || 0) + 1; });
+      gEden.forEach(g => { g.alertas = CE.alertas(g, porDia[normP(g.patente) + '|' + g.fecha]); });
+      pares.forEach(p => { const f = cargaAFila(p.g, p.c, p.dif, p.via); if (Math.abs(p.dif) > 1) desvios.push(f); else matcheadas.push(f); });
+      sueltas.forEach(g => sinTicket.push(g));
+    }
+    Object.values(grupos).filter(g => !g.eden).forEach(g => {
       let c = byNum[g.key] || byPatFecha[normP(g.patente) + '|' + (g.fecha || '')] || null;
       if (!c) { sinTicket.push(g); return; }
       cargasUsadas.add(c.id);
@@ -5940,17 +5974,28 @@ router.get('/api/combustible/analisis', auth, async (req, res) => {
         objetivo: c.objetivos ? c.objetivos.nombre : null };
       if (Math.abs(dif) > 1) desvios.push(fila); else matcheadas.push(fila);
     });
-    const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado');
+    // Si solo se miran listados de Edenred, las cargas de otros proveedores no
+    // son "sin respaldo": no tenían por qué estar en Edenred.
+    const sinRespaldo = (cargas || []).filter(c => !cargasUsadas.has(c.id) && c.origen !== 'pdf_consolidado'
+      && (!soloEden || c.tarjeta || !c.proveedor_id)
+      && (!soloEden || (c.fecha >= fechas[0] && c.fecha <= fechas[fechas.length - 1])));
  
     // 6) Resumen por unidad (patente)
     const porUnidad = {};
     const uniDe = p => { const k = normP(p) || 'SINPAT';
       if (!porUnidad[k]) porUnidad[k] = { patente: p || '—', litros_prov: 0, litros_ticket: 0, entregas: 0, cargas: 0, sin_ticket: 0 };
       return porUnidad[k]; };
-    Object.values(grupos).forEach(g => { const u = uniDe(g.patente); u.litros_prov += g.litros; u.entregas++; });
+    Object.values(grupos).forEach(g => { const u = uniDe(g.patente); u.litros_prov += g.litros; u.entregas++;
+      if (g.alertas && g.alertas.length) u.alertas = (u.alertas || 0) + g.alertas.length; });
     sinTicket.forEach(g => { uniDe(g.patente).sin_ticket++; });
+    // La patente de la carga: si se emparejó con una línea, la de esa línea (en
+    // las cargas con tarjeta el OCR casi nunca lee la patente y quedaban en SINPAT).
+    const patDeCarga = {};
+    [...matcheadas, ...desvios].forEach(f => { if (f.carga_id) patDeCarga[f.carga_id] = f.patente; });
+    const respIds = new Set(sinRespaldo.map(c => c.id));
     (cargas || []).forEach(c => {
-      const u = uniDe((c.unidades && c.unidades.patente) || c.patente_raw);
+      if (soloEden && !patDeCarga[c.id] && !respIds.has(c.id)) return;   // fuera del alcance de Edenred
+      const u = uniDe(patDeCarga[c.id] || (c.unidades && c.unidades.patente) || c.patente_raw);
       u.litros_ticket += Number(c.litros_total) || 0; u.cargas++;
     });
     const unidades = Object.values(porUnidad)
