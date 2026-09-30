@@ -52,5 +52,6 @@ if (fs.existsSync(RAW) && fs.existsSync(PAN)) {
   t('real: cada carga y cada línea se usan una sola vez', unaVez);
 }
 t('alertas: nocturna + 3 el mismo día', CE.alertas({ hora: '02:18', litros: 30, tanque: 60 }, 3).length === 2);
+t('alertas: hora ambigua (Raw 12 h) no marca nocturna', CE.alertas({ hora: '02:10 / 14:10', hora12: true, litros: 30 }, 1).length === 0);
 t('nombre: Chaves ≈ Chavez', CE.parecidoNombre('Claudio Chaves', 'Claudio Chavez') === 2);
 console.log(`\n${ok} OK · ${mal} MAL`); process.exit(mal ? 1 : 0);
