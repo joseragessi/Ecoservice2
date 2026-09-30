@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-29 · facturar: solo el mes elegido + barra al traer CAE';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-30 · combustible: Excel de Edenred en la conciliación';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2267,8 +2267,65 @@ async function restaurarCarga(id){
 }
  
 /* ===== Combustible · Análisis y conciliación ===== */
+/* Excel de Edenred (30-sep): se lee acá mismo, sin IA. Sirven los dos que baja
+   José: el Raw (hoja "Datos", trae chofer y odómetros) y el Reporte de consumo
+   (trae la tarjeta). No trae el remito/lote de la estación: el cruce con las
+   cargas es por litros + fecha + chofer/tarjeta (conciliacion_edenred.js). */
+function edenredFilas(matriz){
+  const nk=s=>String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9.]/g,'');
+  let hi=-1;
+  for(let i=0;i<Math.min(15,matriz.length);i++){const r=(matriz[i]||[]).map(nk);
+    if(r.some(x=>x==='placa'||x==='placaidentificacion')&&r.includes('litros')){hi=i;break;}}
+  if(hi<0)return null;
+  const h=matriz[hi].map(nk);
+  const col=(...ns)=>{for(const n of ns){const i=h.indexOf(n);if(i>=0)return i;}return -1;};
+  const C={fecha:col('fecha'),hora:col('hora'),placa:col('placa','placaidentificacion'),unidad:col('unidad'),
+    prod:col('producto/servicio','productoservicio'),lt:col('litros'),mn:col('m.n.'),chofer:col('conductor'),
+    tx:col('no.transaccion'),aut:col('autorizado'),tarj:col('tarjeta'),est:col('estaciondeservicio'),
+    odoA:col('odometroanterior'),odo:col('ultimoodometro'),tanque:col('capacidaddetanque'),precio:col('precioltscondescuento')};
+  const v=(r,i)=>i>=0?r[i]:null;
+  const num=x=>{if(x==null||x==='')return 0;if(typeof x==='number')return x;return Number(String(x).replace(/\./g,'').replace(',','.'))||Number(x)||0;};
+  const fec=x=>{if(x==null||x==='')return null;
+    if(x instanceof Date)return x.toISOString().slice(0,10);
+    if(typeof x==='number'){const d=new Date(Math.round((x-25569)*86400000));return d.toISOString().slice(0,10);}
+    const m=String(x).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);return m?`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`:null;};
+  const hor=x=>{if(x==null||x==='')return null;if(typeof x==='number'){const s=Math.round(x*86400);return String(Math.floor(s/3600)).padStart(2,'0')+':'+String(Math.floor(s/60)%60).padStart(2,'0');}return String(x).slice(0,5);};
+  const filas=[],vistos=new Set();
+  matriz.slice(hi+1).forEach(r=>{
+    if(!r)return;const fecha=fec(v(r,C.fecha));const litros=num(v(r,C.lt));
+    const patente=String(v(r,C.placa)||v(r,C.unidad)||'').trim();
+    if(!fecha||!litros||!patente)return;   // filas de totales / vacías
+    const hora=hor(v(r,C.hora));
+    const tx=String(v(r,C.tx)||'').trim();
+    const clave=tx||[fecha,hora,patente,litros].join('|');
+    if(vistos.has(clave))return;vistos.add(clave);   // el Raw repite transacciones
+    filas.push({fecha,hora,numero_remito:tx||null,patente,chofer:String(v(r,C.chofer)||'').trim()||null,
+      producto:v(r,C.prod)||null,litros:Math.round(litros*1000)/1000,precio_unit:num(v(r,C.precio))||null,total:num(v(r,C.mn)),
+      numero_factura:null,autorizado:v(r,C.aut)?String(v(r,C.aut)):null,
+      tarjeta:v(r,C.tarj)?String(v(r,C.tarj)).replace(/\D/g,''):null,estacion:v(r,C.est)||null,
+      odo_ant:C.odoA>=0&&v(r,C.odoA)!==''?num(v(r,C.odoA)):null,odo:C.odo>=0&&v(r,C.odo)!==''?num(v(r,C.odo)):null,
+      tanque:C.tanque>=0?num(v(r,C.tanque))||null:null});
+  });
+  if(!filas.length)return null;
+  const fs=filas.map(f=>f.fecha).sort();
+  return{proveedor:'Edenred',origen:'edenred_xlsx',periodo_desde:fs[0],periodo_hasta:fs[fs.length-1],
+    total_general:Math.round(filas.reduce((s,f)=>s+(f.total||0),0)*100)/100,filas};
+}
+async function combRemExcel(f){
+  combRemStep='extract';go('combustible');
+  try{
+    await admCargarXLSX();
+    const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+    let d=null;
+    for(const n of wb.SheetNames){d=edenredFilas(XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:''}));if(d)break;}
+    if(!d){alert('No reconozco este Excel. Tiene que ser el reporte de consumo de Edenred (con Placa, Fecha y Litros).');combRemStep='upload';}
+    else{combRemExtracted=d;combRemStep='preview';}
+  }catch(e){alert('No pude leer el Excel: '+(e.message||''));combRemStep='upload';}
+  go('combustible');
+}
 function combRemPick(input){
   const f=input.files&&input.files[0];if(!f)return;
+  if(/\.xlsx?$/i.test(f.name)){combRemFile=null;return combRemExcel(f);}
   const r=new FileReader();
   r.onload=()=>{combRemFile={data:String(r.result).split(',')[1],type:f.type,name:f.name};go('combustible')};
   r.readAsDataURL(f);
@@ -2596,14 +2653,14 @@ async function vCombAnalisis(view,tabs){
   // Flujo de subida del listado
   if(combRemStep==='upload'){
     view.innerHTML=`<div class="view-head"><div><div class="view-title">Subir listado del proveedor</div>
-      <div class="view-desc">El resumen de remitos del período (Ferreyra, SERVISUD…)</div></div>
+      <div class="view-desc">El resumen de remitos del período (Ferreyra, SERVISUD…) o el reporte de Edenred</div></div>
       <button class="btn-salir" onclick="combRemStep='';go('combustible')">← Volver</button></div>
     <div style="max-width:520px">
       <label class="dropzone">
-        <input type="file" accept="application/pdf,image/*" style="display:none" onchange="combRemPick(this)">
+        <input type="file" accept="application/pdf,image/*,.xlsx,.xls" style="display:none" onchange="combRemPick(this)">
         <div class="dz-ico">＋</div>
         <div class="dz-t">${combRemFile?combRemFile.name:'Tocá para elegir el listado'}</div>
-        <div class="dz-s">PDF, JPG o PNG</div>
+        <div class="dz-s">PDF, JPG o PNG · o el Excel de Edenred (se lee directo, sin IA)</div>
       </label>
       ${combRemFile?`<button class="btn" style="margin-top:14px;width:100%" onclick="combRemExtraer()">✦ Extraer con IA</button>`:''}
     </div>`;
@@ -2620,10 +2677,10 @@ async function vCombAnalisis(view,tabs){
       <div class="view-desc">${d.proveedor||'—'} · ${fechaAR(d.periodo_desde)} a ${fechaAR(d.periodo_hasta)} · ${fs.length} línea${fs.length===1?'':'s'}</div></div>
       <button class="btn-salir" onclick="combRemStep='upload';go('combustible')">← Atrás</button></div>
     ${d._advertencia?`<div class="aviso-amarillo">⚠ ${d._advertencia} Las filas en rojo tienen un litraje sospechoso — corregilo tocando el número antes de guardar.</div>`:''}
-    <div class="sub" style="margin-bottom:10px">Revisá los litros. Si la IA leyó mal alguno, tocá el número y corregilo.</div>
+    <div class="sub" style="margin-bottom:10px">${d.origen==='edenred_xlsx'?'Leído del Excel de Edenred. Se cruza con las cargas de los capataces por litros, fecha, chofer y tarjeta (Edenred no trae el remito de la estación).':'Revisá los litros. Si la IA leyó mal alguno, tocá el número y corregilo.'}</div>
     <div class="tabla-wrap" style="margin-bottom:14px">
-      <table><thead><tr><th>Fecha</th><th>N° Remito</th><th>Patente</th><th>Chofer</th><th>Producto</th><th class="tr">Litros</th><th class="tr">Total</th></tr></thead>
-      <tbody>${fs.map((f,ix)=>`<tr${f._litros_dudoso?' style="background:var(--rojo-soft)"':''}><td class="mono">${fechaAR(f.fecha)}</td><td class="mono">${f.numero_remito||'—'}</td>
+      <table><thead><tr><th>Fecha</th><th>${d.origen==='edenred_xlsx'?'Transacción':'N° Remito'}</th><th>Patente</th><th>Chofer</th><th>Producto</th><th class="tr">Litros</th><th class="tr">Total</th></tr></thead>
+      <tbody>${fs.map((f,ix)=>`<tr${f._litros_dudoso?' style="background:var(--rojo-soft)"':''}><td class="mono">${fechaAR(f.fecha)}${f.hora?' <span class="sub">'+f.hora+'</span>':''}</td><td class="mono">${f.numero_remito||'—'}</td>
         <td><span class="uni-chip">${f.patente||'—'}</span></td><td>${f.chofer||'—'}</td><td style="font-size:12px">${f.producto||'—'}</td>
         <td class="tr"><input type="number" step="0.01" value="${f.litros!=null?f.litros:''}" onchange="combRemSetLitros(${ix},this.value)" style="width:90px;text-align:right;padding:5px 7px;border:1px solid ${f._litros_dudoso?'var(--rojo)':'var(--linea)'};border-radius:7px;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none"></td>
         <td class="money tr">${money0(f.total)}</td></tr>`).join('')}
@@ -2769,7 +2826,8 @@ function renderAnaTabla(){
     :col==='estado'?dir*(rk(x)-rk(y))
     :dir*((x[col]||0)-(y[col]||0)));
   const arr=c=>combAnaOrden.col===c?`<span class="arr">${combAnaOrden.dir>0?'▲':'▼'}</span>`:'';
-  const semaforo=u=>u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>';
+  const semaforo=u=>(u.sin_ticket>0?'<span class="badge b-red">sin ticket</span>':Math.abs(u.dif)>1?'<span class="badge b-amber">desvío</span>':'<span class="badge b-green">ok</span>')
+    +(u.alertas?` <span class="badge b-amber" title="Alertas de Edenred: nocturnas, varias el mismo día, supera el tanque">⚑ ${u.alertas}</span>`:'');
   cont.innerHTML=`<table><thead><tr>
     <th class="sortable" onclick="anaOrdenar('patente')">Patente${arr('patente')}</th>
     <th class="num sortable" onclick="anaOrdenar('litros_prov')">Lt. proveedor${arr('litros_prov')}</th>
@@ -2817,8 +2875,10 @@ function selUniAna(key){
     ${entregas.length?entregas.map(e=>`
       <div class="queue-item" style="margin-bottom:8px">
         <div style="flex:1"><div style="font-weight:600;font-size:12px">${fechaAR(e.fecha)} · ${Math.round(e.litros*100)/100} lt</div>
-        <div class="sub mono" style="font-size:11px">${e.numero_remito||'s/n'}${e.chofer?' · '+e.chofer:''}</div>
-        ${e.capataz||e.objetivo?`<div class="sub" style="font-size:11px">👷 ${e.capataz||'—'}${e.objetivo?' → '+e.objetivo:''}</div>`:''}</div>
+        <div class="sub mono" style="font-size:11px">${e.eden?'Edenred '+(e.hora||'')+(e.estacion?' · '+e.estacion:''):(e.numero_remito||'s/n')}${e.chofer?' · '+e.chofer:''}</div>
+        ${e.capataz||e.objetivo?`<div class="sub" style="font-size:11px">👷 ${e.capataz||'—'}${e.objetivo?' → '+e.objetivo:''}${e.eden&&e.remito_ticket?' · ticket '+e.remito_ticket:''}${e.eden&&e.fecha_ticket&&e.fecha_ticket!==e.fecha?' ('+fechaAR(e.fecha_ticket)+')':''}</div>`:''}
+        ${e.via?`<div class="sub" style="font-size:10.5px">cruzó por ${e.via}${e.__st==='desvio'?' · ticket '+e.litros_ticket+' lt':''}</div>`:''}
+        ${(e.alertas||[]).length?`<div style="font-size:11px;color:#854F0B;margin-top:2px">${e.alertas.join(' · ')}</div>`:''}</div>
         ${chip(e)}
       </div>`).join(''):'<div class="sub" style="padding:8px 0">Sin entregas del proveedor para esta unidad.</div>'}
     ${sinResp.length?`<div class="divider"></div>
