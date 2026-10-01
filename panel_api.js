@@ -3993,6 +3993,12 @@ router.post('/api/reparaciones/:id', auth, async (req, res) => {
     }
     if (req.body.mecanico_id !== undefined) patch.mecanico_id = req.body.mecanico_id || null;
     if (['correctivo', 'preventivo'].includes(req.body.tipo_mant)) patch.tipo_mant = req.body.tipo_mant;
+    // Prioridad a mano desde el panel (1-oct): la calculada por la falla es un
+    // punto de partida, el taller la ajusta (prioridad.js ya lo preveía).
+    if (['critico', 'alta', 'media', 'baja'].includes(req.body.prioridad)) {
+      patch.prioridad = req.body.prioridad;
+      console.log(`[reparaciones] ${req.params.id} prioridad → ${req.body.prioridad} por ${req.usuario || '?'}`);
+    }
  
     // Ninguna reparación se cierra sin mecánico (decisión 04-sep). Se mira el
     // mecánico que quedaría DESPUÉS del cambio: si en el mismo pedido viene la
