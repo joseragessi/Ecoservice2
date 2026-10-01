@@ -32,6 +32,32 @@ function resolverObj(txt, alias, fallback) {
   return String(txt).trim();
 }
 
+// Igual que resolverObj pero devuelve también el id del objetivo (para cruzar
+// con Stock). Bidón: 1) el objetivo que quedó elegido en el ítem (el bot lo
+// guarda aunque el capataz haya escrito "Caminos de la Sierras Circunvalacion"
+// para "Caminos de la Sierras Francios"), 2) el texto resuelto por alias,
+// 3) el de la carga.
+function objetivoDeItem(i, c, alias) {
+  const porId = id => (alias.objetivos || []).find(o => o.id && String(o.id) === String(id));
+  const deCarga = () => ({ id: c.objetivo_id || null, nombre: (c.objetivos && c.objetivos.nombre) || (porId(c.objetivo_id) || {}).nombre || 'Sin objetivo' });
+  if (i.destino !== 'bidon') return deCarga();
+  const oi = i.objetivo_id && porId(i.objetivo_id);
+  if (oi) return { id: oi.id, nombre: oi.nombre };
+  const n = normObj(i.destino_detalle);
+  if (!n) return deCarga();
+  const o = (alias.objetivos || []).find(x => normObj(x.nombre) === n);
+  if (o) return { id: o.id || null, nombre: o.nombre };
+  const a = (alias.alias || []).find(x => x.alias === n);
+  if (a) return { id: a.objetivo_id || null, nombre: a.nombre };
+  if (pareceP(i.destino_detalle)) return deCarga();
+  return { id: null, nombre: String(i.destino_detalle).trim() };
+}
+
+// Litros por jornada completa de cada familia (mismo dato que la ficha de cada
+// objetivo en Combustible).
+const { CONSUMO_JORNADA } = require('./familias_consumo');
+const FAM_MAQ = ['dos_tiempos', 'tractor', 'cortadora', 'fijo'];
+
 const TIPO = p => /diesel|gasoil|gas oil|d500|evolux|v-?power d|power d|premium d|infinia d/i.test(p || '') ? 'Diesel' : 'Nafta';
 // El OCR lee mal muchos totales ($2.113.000 por 50 lt). Un precio fuera de
 // este rango no se usa.
@@ -45,7 +71,7 @@ const precioOk = (pe, lt) => pe > 0 && lt > 0 && pe / lt >= 1500 && pe / lt <= 4
  * unidades: [{id, patente, tarjeta_combustible}]
  * mes:      'YYYY-MM'
  */
-function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], mes }) {
+function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], mes, maquinas = null, diasHabiles = 0 }) {
   const enMes = f => String(f || '').startsWith(mes);
   const uni = {}; const tarjetaDePatente = {};
   unidades.forEach(u => { uni[u.id] = u; if (u.patente && u.tarjeta_combustible) tarjetaDePatente[String(u.patente).toUpperCase().replace(/[^A-Z0-9]/g, '')] = String(u.tarjeta_combustible); });
@@ -84,20 +110,20 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
     const its = (c.cargas_combustible_items || []).filter(i => i.es_combustible !== false);
     const lista = its.length ? its : [{ litros: c.litros_total, destino: c.destino === 'bidon' ? 'bidon' : 'unidad', producto: null }];
     const ltC = lista.reduce((s, i) => s + (Number(i.litros) || 0), 0) || Number(c.litros_total) || 0;
-    const objC = (c.objetivos && c.objetivos.nombre) || 'Sin objetivo';
     const im = imp[c.id];
     lista.forEach(i => {
       const lt = Number(i.litros) || 0;
       const est = !im;
       const pe = im ? im.pe * lt / (ltC || 1) : pm(TIPO(i.producto)) * lt;
       const dest = i.destino === 'bidon' ? 'Bidones' : i.destino === 'equipo' ? 'Equipos' : 'Tanque de unidad';
-      const obj = i.destino === 'bidon' ? resolverObj(i.destino_detalle, alias, objC) : objC;
+      const ob = objetivoDeItem(i, c, alias);
+      const obj = ob.nombre;
       // Lo que cobró Edenred por esta carga, repartido según lo declarado
       // (incluye la diferencia si hubo desvío: es lo que se pagó).
       const pE = parDe[c.id];
       const edenred = pE && enMes(pE.g.fecha) ? (Number(pE.g.total) || 0) * lt / (ltC || 1) : 0;
       items.push({ carga_id: c.id, fecha: c.fecha, capataz: (c.capataces && c.capataces.nombre) || '—',
-        objetivo: obj, destino: dest, litros: lt, importe: pe, estimado: est, edenred,
+        objetivo: obj, objetivo_id: ob.id, destino: dest, litros: lt, importe: pe, estimado: est, edenred,
         patente: i.destino === 'unidad' ? ((uni[i.unidad_id] || {}).patente || (c.unidades && c.unidades.patente) || c.patente_raw || null) : null });
     });
   });
@@ -105,9 +131,9 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
   const suma = (xs, k) => xs.reduce((s, x) => s + (Number(x[k]) || 0), 0);
   const agrupar = (xs, key) => {
     const r = {};
-    xs.forEach(x => { const k = key(x); const g = r[k] || (r[k] = { nombre: k, litros: 0, importe: 0, cargas: new Set(), caps: {} });
-      g.litros += x.litros; g.importe += x.importe; g.cargas.add(x.carga_id); g.caps[x.capataz] = (g.caps[x.capataz] || 0) + x.litros; });
-    return Object.values(r).map(g => ({ nombre: g.nombre, litros: r2(g.litros), importe: Math.round(g.importe), cargas: g.cargas.size,
+    xs.forEach(x => { const k = key(x); const g = r[k] || (r[k] = { nombre: k, litros: 0, maquinas: 0, importe: 0, cargas: new Set(), caps: {} });
+      g.litros += x.litros; if (x.destino !== 'Tanque de unidad') g.maquinas += x.litros; g.importe += x.importe; g.cargas.add(x.carga_id); g.caps[x.capataz] = (g.caps[x.capataz] || 0) + x.litros; });
+    return Object.values(r).map(g => ({ nombre: g.nombre, litros: r2(g.litros), litros_maquinas: r2(g.maquinas), importe: Math.round(g.importe), cargas: g.cargas.size,
       capataces: Object.entries(g.caps).sort((a, b) => b[1] - a[1]).map(z => z[0]).slice(0, 2) })).sort((a, b) => b.litros - a.litros);
   };
 
@@ -136,8 +162,50 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
   const edTotal = Math.round(suma(edenMes, 'total'));
   const edSin = Math.round(suma(sinTicket, 'total'));
   const edDecl = Object.values(porDest).reduce((s, v) => s + v, 0);
+  // ── 5 · Consumo vs. máquinas del objetivo (Stock → General)
+  // maquinas: { [objetivo_id]: { nombre, dos_tiempos, tractor, cortadora, fijo, en_taller, sin_censo } }
+  let consumoMaquinas = null;
+  if (maquinas) {
+    const lt = {}, nom = {};
+    items.filter(i => i.destino !== 'Tanque de unidad').forEach(i => {
+      const k = i.objetivo_id ? 'id:' + i.objetivo_id : 'tx:' + normObj(i.objetivo);
+      lt[k] = (lt[k] || 0) + i.litros; nom[k] = nom[k] || i.objetivo;
+    });
+    const filas = [];
+    const vistos = new Set();
+    Object.entries(maquinas).forEach(([id, m]) => {
+      const k = 'id:' + id; vistos.add(k);
+      const n = FAM_MAQ.reduce((s, f) => s + (Number(m[f]) || 0), 0);
+      const cap = FAM_MAQ.reduce((s, f) => s + (Number(m[f]) || 0) * (CONSUMO_JORNADA[f] || 0) * diasHabiles, 0);
+      const l = r2(lt[k] || 0);
+      if (!n && !l) return;
+      filas.push({ objetivo_id: id, objetivo: m.nombre, dos_tiempos: m.dos_tiempos || 0, tractor: m.tractor || 0,
+        otras: (m.cortadora || 0) + (m.fijo || 0), maquinas: n, en_taller: m.en_taller || 0, sin_censo: !!m.sin_censo,
+        litros: l, litros_por_maquina: n ? r2(l / n) : null, capacidad: Math.round(cap), uso_pct: cap ? Math.round(l * 100 / cap) : null });
+    });
+    // Destinos con litros que no son un objetivo de Stock (texto libre: "u14", "bobkat")
+    Object.keys(lt).filter(k => !vistos.has(k)).forEach(k => {
+      filas.push({ objetivo_id: null, objetivo: nom[k], dos_tiempos: 0, tractor: 0, otras: 0, maquinas: 0, en_taller: 0,
+        sin_censo: true, litros: r2(lt[k]), litros_por_maquina: null, capacidad: 0, uso_pct: null });
+    });
+    const con = filas.filter(f => f.maquinas > 0 && f.litros > 0);
+    const lpm = con.map(f => f.litros_por_maquina).sort((a, b) => a - b);
+    const mediana = lpm.length ? (lpm.length % 2 ? lpm[(lpm.length - 1) / 2] : (lpm[lpm.length / 2 - 1] + lpm[lpm.length / 2]) / 2) : 0;
+    con.forEach(f => { f.veces_mediana = mediana ? r2(f.litros_por_maquina / mediana) : null; });
+    const sinMaq = filas.filter(f => f.maquinas === 0 && f.litros > 0).sort((a, b) => b.litros - a.litros);
+    consumoMaquinas = {
+      dias_habiles: diasHabiles, mediana: r2(mediana),
+      maquinas: filas.reduce((s, f) => s + f.maquinas, 0), objetivos_con_maquinas: filas.filter(f => f.maquinas > 0).length,
+      litros: r2(filas.reduce((s, f) => s + f.litros, 0)),
+      con_consumo: con.sort((a, b) => b.litros_por_maquina - a.litros_por_maquina),
+      sin_maquinas: sinMaq, litros_sin_maquinas: r2(sinMaq.reduce((s, f) => s + f.litros, 0)),
+      sin_consumo: filas.filter(f => f.maquinas > 0 && !f.litros).sort((a, b) => b.maquinas - a.maquinas),
+    };
+  }
+
   return {
     mes,
+    consumo_maquinas: consumoMaquinas,
     total: { litros: r2(suma(items, 'litros')), importe: Math.round(suma(items, 'importe')), cargas: delMes.length,
       importe_estimado: Math.round(suma(items.filter(i => i.estimado), 'importe')) },
     destinos: agrupar(items, x => x.destino),
@@ -156,4 +224,4 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
   };
 }
 
-module.exports = { armarInforme, resolverObj, normObj };
+module.exports = { armarInforme, resolverObj, objetivoDeItem, normObj };
