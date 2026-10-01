@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-01 · informe gerencia: consumo vs. máquinas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-01 · reparaciones: prioridad editable';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -8070,6 +8070,25 @@ async function repAvisar(capatazId,btn){
 }
 
 let repDetalleAbierto=false;
+// Prioridad editable en el detalle (1-oct): el badge pasa a ser un selector
+// con el mismo color, así se cambia de Alta a Crítico sin otra pantalla.
+function prioSelect(r){
+  const k=String(r.prioridad||'').toLowerCase();
+  const st=PRIO_STYLE[k]||'background:var(--papel);color:var(--tinta-2)';
+  const ops=[['critico','● Crítico'],['alta','▲ Alta'],['media','Media'],['baja','Baja']];
+  return `<select title="Cambiar prioridad" onchange="cambiarPrioRep('${r.id}',this.value,this)" class="badge" style="${st};border:0;cursor:pointer;font:inherit;font-size:11px;font-weight:600;padding:4px 8px;appearance:auto">
+    ${ops.map(([v,t])=>`<option value="${v}" ${v===k?'selected':''} style="background:#fff;color:#16221C">${t}</option>`).join('')}</select>`;
+}
+async function cambiarPrioRep(id,prio,sel){
+  if(sel)sel.disabled=true;
+  try{
+    await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({prioridad:prio})});
+    toast('Prioridad: '+(LABEL_PRIO[prio]||prio));
+    const r=(window._repFiltrada||[]).find(x=>x.id===id);if(r)r.prioridad=prio;
+    if(typeof invalidarCacheApi==='function')invalidarCacheApi();
+    go('reparaciones');
+  }catch(e){toast(e.message,'error');if(sel)sel.disabled=false;}
+}
 async function cambiarTipoRep(id,tipo){
   try{
     await api('/api/reparaciones/'+id,{method:'POST',body:JSON.stringify({tipo_mant:tipo})});
@@ -8118,7 +8137,7 @@ function selRep(ix){
     <div class="side-title">${r.equipos?r.equipos.nombre:(r.tipo_equipo||'—')}</div>
     ${r.reclamada?`<div style="background:var(--diesel-soft);border:1px solid var(--diesel);border-radius:8px;padding:8px 11px;margin:8px 0;font-size:12px;color:#854F0B"><b>⏰ Reclamada por ${r.reclamada_por||'supervisor'}</b>${r.reclamada_at?' · '+fechaAR(r.reclamada_at):''}<div class="sub" style="margin-top:2px">El supervisor del objetivo pide apurar esta reparación.</div></div>`:''}
     <div class="side-meta">${r.objetivos?r.objetivos.nombre:'Taller / sin objetivo'} · ${r.capataces?r.capataces.nombre:(r.origen==='app'?'Alta del mecánico':'Alta del panel')}</div>
-    <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${prioBadge(r.prioridad)}
+    <div style="margin:10px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${prioSelect(r)}
       <span class="badge ${r.tipo_mant==='preventivo'?'b-green':'b-gray'}">${r.tipo_mant==='preventivo'?'PREVENTIVO':'CORRECTIVO'}</span>
       <button class="mini-btn" style="font-size:10.5px" title="Cambiar tipo de mantenimiento" onclick="cambiarTipoRep('${r.id}','${r.tipo_mant==='preventivo'?'correctivo':'preventivo'}')">⇄ ${r.tipo_mant==='preventivo'?'pasar a correctivo':'pasar a preventivo'}</button></div>
     <div class="field-l" style="margin-bottom:6px">Descripción</div>
