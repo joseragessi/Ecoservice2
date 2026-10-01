@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-09-30 · combustible: informe para gerencia';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-09-30 · informe gerencia: gasto Edenred por destino';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3082,8 +3082,13 @@ ${avisoEden}
 <div class="sec"><h2>1 · ¿Dónde fue el combustible?</h2>
 ${lt?`<div class="dest">${dest.map(x=>`<div style="flex:${x.litros};background:${col[x.nombre]||'#586B60'}">${x.litros/lt>.1?Math.round(x.litros*100/lt)+'%':''}</div>`).join('')}</div>
 <div class="ley">${dest.map(x=>`<span><i style="background:${col[x.nombre]||'#586B60'}"></i>${txt[x.nombre]||esc(x.nombre)}: <b>${n0(x.litros)} lt</b> · ${M(x.importe)}</span>`).join('')}</div>`:'<div style="color:#8C9B92">Sin cargas declaradas en el mes.</div>'}</div>
+${sinEden?'':`<div class="sec"><h2>Gasto con la tarjeta Edenred · ${M(ed.importe)}</h2><div class="h2s">Lo que cobró Edenred en el mes (${n0(ed.litros)} lt), según adónde declararon que fue</div>
+<table><tr><th>Destino</th><th class="n">Importe</th><th class="n">% del gasto Edenred</th><th style="width:30%"></th></tr>
+${[...(ed.por_destino||[]).map(x=>({k:txt[x.nombre]||x.nombre,v:x.importe,c:col[x.nombre]||'#586B60'})),{k:'Sin ticket (nadie declaró adónde fue)',v:ed.sin_ticket,c:'#B8323F',rojo:1},...(ed.otros>0?[{k:'Con ticket de otro mes',v:ed.otros,c:'#8C9B92'}]:[])]
+  .filter(x=>x.v>0).map(x=>`<tr><td>${x.rojo?'<b class="rojo">'+x.k+'</b>':x.k}</td><td class="n mono"><b>${n0(x.v)}</b></td><td class="n mono">${ed.importe?Math.round(x.v*100/ed.importe):0}%</td><td><div style="height:10px;border-radius:4px;background:${x.c};width:${ed.importe?x.v*100/ed.importe:0}%"></div></td></tr>`).join('')}
+<tr class="tot"><td>Total Edenred</td><td class="n mono">${n0(ed.importe)}</td><td class="n mono">100%</td><td></td></tr></table></div>`}
 <div class="sec"><h2>2 · Objetivos que más consumieron</h2><div class="h2s">Los 10 primeros · litros declarados (bidones + vehículos del objetivo)</div>
-${top.map((x,i)=>`<div class="rk"><b class="mono" style="color:#8C9B92">${i+1}</b><div><b>${esc(x.nombre)}</b><div style="font-size:11px;color:#8C9B92">${esc((x.capataces||[]).join(', '))}</div></div>
+${top.map((x,i)=>`<div class="rk"><b class="mono" style="color:#8C9B92">${i+1}</b><div><b>${esc(x.nombre)}</b></div>
 <div class="x"><div class="bb" style="width:${x.litros*100/maxO}%"></div></div><div class="n mono"><b>${n0(x.litros)} lt</b></div><div class="n mono" style="color:#586B60">${M(x.importe)}</div></div>`).join('')||'<div style="color:#8C9B92">Sin datos.</div>'}</div>
 <div class="sec"><h2>3 · Consumo sin ticket · ¿de quién?</h2><div class="h2s">Cargas que figuran en la tarjeta Edenred y ningún capataz declaró</div>
 ${sinEden?'<div style="color:#8C9B92">Sin reporte de Edenred para este mes.</div>':st.por_chofer.length?`<table><tr><th>Chofer (según Edenred)</th><th>Patente</th><th class="n">Cargas</th><th class="n">Litros</th><th class="n">Importe</th></tr>
