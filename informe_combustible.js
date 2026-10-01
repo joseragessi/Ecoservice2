@@ -92,8 +92,12 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
       const pe = im ? im.pe * lt / (ltC || 1) : pm(TIPO(i.producto)) * lt;
       const dest = i.destino === 'bidon' ? 'Bidones' : i.destino === 'equipo' ? 'Equipos' : 'Tanque de unidad';
       const obj = i.destino === 'bidon' ? resolverObj(i.destino_detalle, alias, objC) : objC;
+      // Lo que cobró Edenred por esta carga, repartido según lo declarado
+      // (incluye la diferencia si hubo desvío: es lo que se pagó).
+      const pE = parDe[c.id];
+      const edenred = pE && enMes(pE.g.fecha) ? (Number(pE.g.total) || 0) * lt / (ltC || 1) : 0;
       items.push({ carga_id: c.id, fecha: c.fecha, capataz: (c.capataces && c.capataces.nombre) || '—',
-        objetivo: obj, destino: dest, litros: lt, importe: pe, estimado: est,
+        objetivo: obj, destino: dest, litros: lt, importe: pe, estimado: est, edenred,
         patente: i.destino === 'unidad' ? ((uni[i.unidad_id] || {}).patente || (c.unidades && c.unidades.patente) || c.patente_raw || null) : null });
     });
   });
@@ -124,6 +128,14 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
 
   const objetivos = agrupar(items, x => x.objetivo).filter(o => o.nombre !== 'Sin objetivo');
   const edenMes = grupos.filter(g => enMes(g.fecha));
+  // Plata de la tarjeta Edenred del mes, según adónde se declaró que fue.
+  // Lo que no se declaró es "Sin ticket". Lo que falta para llegar al total de
+  // Edenred son cargas cruzadas con ticket de otro mes (madrugada del 1°).
+  const porDest = {};
+  items.forEach(i => { if (i.edenred) porDest[i.destino] = (porDest[i.destino] || 0) + i.edenred; });
+  const edTotal = Math.round(suma(edenMes, 'total'));
+  const edSin = Math.round(suma(sinTicket, 'total'));
+  const edDecl = Object.values(porDest).reduce((s, v) => s + v, 0);
   return {
     mes,
     total: { litros: r2(suma(items, 'litros')), importe: Math.round(suma(items, 'importe')), cargas: delMes.length,
@@ -137,6 +149,9 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
     },
     desvios,
     edenred: { lineas: edenMes.length, cubre: edenMes.length > 0,
+      importe: edTotal, litros: r2(suma(edenMes, 'litros')),
+      por_destino: ['Bidones', 'Tanque de unidad', 'Equipos'].filter(k => porDest[k]).map(k => ({ nombre: k, importe: Math.round(porDest[k]) })),
+      sin_ticket: edSin, otros: Math.max(0, Math.round(edTotal - edSin - edDecl)),
       desde: edenMes.map(g => g.fecha).sort()[0] || null, hasta: edenMes.map(g => g.fecha).sort().slice(-1)[0] || null },
   };
 }
