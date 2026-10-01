@@ -6081,11 +6081,48 @@ router.get('/api/combustible/informe-gerencia', auth, async (req, res) => {
       });
     });
     const alias = {
-      alias: (rA.data || []).filter(x => x.objetivo_id && x.objetivos).map(x => ({ alias: x.alias, nombre: x.objetivos.nombre })),
+      alias: (rA.data || []).filter(x => x.objetivo_id && x.objetivos).map(x => ({ alias: x.alias, objetivo_id: x.objetivo_id, nombre: x.objetivos.nombre })),
       objetivos: rO.data || [],
     };
+    // Máquinas de cada objetivo, igual que Stock → General: el último censo
+    // respondido de cada uno, menos lo que está HOY en el taller (1-oct).
+    let maquinas = null;
+    try {
+      const [rCs, rIn] = await Promise.all([
+        supabase.from('censos_stock').select('id, periodo, objetivo_id, censos_stock_items(tipo_equipo, cantidad, numeros)')
+          .eq('estado', 'respondido').order('periodo', { ascending: false }),
+        supabase.from('incidencias').select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, equipo_parado, created_at, fecha_ingreso_taller')
+          .neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
+      ]);
+      if (rCs.error) throw rCs.error;
+      const ultimo = {};
+      (rCs.data || []).forEach(c => { if (!ultimo[c.objetivo_id]) ultimo[c.objetivo_id] = c; });
+      const filasSt = [];
+      (rO.data || []).forEach(o => {
+        const c = ultimo[o.id];
+        (c ? c.censos_stock_items || [] : []).forEach(i => filasSt.push({ objetivo_id: o.id, objetivo: o.nombre,
+          tipo: i.tipo_equipo, cantidad: i.cantidad, numeros: i.numeros || [], familia: familiaConsumo(i.tipo_equipo) }));
+      });
+      cruzarTaller(filasSt, rIn.data || []);
+      maquinas = {};
+      (rO.data || []).forEach(o => { maquinas[o.id] = { nombre: o.nombre, sin_censo: !ultimo[o.id], en_taller: 0 }; });
+      filasSt.forEach(f => {
+        const m = maquinas[f.objetivo_id];
+        m[f.familia] = (m[f.familia] || 0) + (f.disponibles == null ? (Number(f.cantidad) || 0) : Number(f.disponibles));
+        m.en_taller += Number(f.en_taller) || 0;
+      });
+    } catch (e) { console.error('informe gerencia · máquinas:', e.message); }
+    // Días hábiles del mes (lunes a viernes); si es el mes en curso, hasta hoy.
+    const hoy = new Date().toISOString().slice(0, 10);
+    let diasHabiles = 0;
+    for (let d2 = 1; d2 <= 31; d2++) {
+      const f = new Date(Date.UTC(a, m - 1, d2));
+      if (f.getUTCMonth() !== m - 1) break;
+      if (f.toISOString().slice(0, 10) > hoy) break;
+      const dow = f.getUTCDay(); if (dow !== 0 && dow !== 6) diasHabiles++;
+    }
     const { armarInforme } = require('./informe_combustible');
-    res.json(armarInforme({ cargas: rC.data || [], edenred, alias, unidades: rU.data || [], mes }));
+    res.json(armarInforme({ cargas: rC.data || [], edenred, alias, unidades: rU.data || [], mes, maquinas, diasHabiles }));
   } catch (err) {
     console.error('informe gerencia combustible:', err);
     res.status(500).json({ error: 'No pude armar el informe' });
