@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-01 · reparaciones: prioridad editable';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-02 · compras: órdenes del proveedor al cargar factura';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12478,6 +12478,11 @@ async function comprasExtraer(){
     await comprasVincularOrden(oo.encontrada.id);   // ya hace go('compras')
     return;
   }
+  // Sin número de orden en la factura pero con UNA sola orden abierta del
+  // mismo CUIT: se vincula sola (2-oct). Si hay varias, se elige en pantalla.
+  {const cuitF=String((comprasExtracted||{}).cuit||'').replace(/\D/g,'');
+   const cs=(oo.candidatas||[]);const mismo=cuitF?cs.filter(c=>String(c.cuit||'').replace(/\D/g,'')===cuitF):[];
+   if(!oo.encontrada&&cs.length===1&&mismo.length===1){comprasStep='assign';await comprasVincularOrden(mismo[0].id);return;}}
   comprasStep='assign';go('compras');
 }
  
@@ -12547,7 +12552,7 @@ async function comprasGuardar(){
   // olvido es justamente lo que la orden viene a evitar.
   // Mientras el bloque esté oculto, no se puede exigir confirmarlo: sería
   // pedir algo que la pantalla no muestra.
-  if(MOSTRAR_ORDEN_FACTURA&&!comprasOrden&&!comprasSinOrdenOk){
+  if(EXIGIR_ORDEN_FACTURA&&!comprasOrden&&!comprasSinOrdenOk){
     toast('Vinculá una orden de compra, o confirmá que esta factura no lleva orden.','error');
     const b=document.querySelector('.panel[style*="var(--rojo)"],.panel[style*="var(--diesel)"]');
     if(b)b.scrollIntoView({behavior:'smooth',block:'center'});
@@ -12713,9 +12718,9 @@ function vComprasCarga(view){
             <div class="mm-field"><label>Letra ${d.letra?'<span style="color:var(--brote-2);font-weight:400">· leída ✓</span>':'<span style="color:var(--diesel);font-weight:400">· revisá</span>'}</label>
               <select id="cf-letra"><option value="">—</option>${['A','B','C'].map(x=>`<option value="${x}" ${(d.letra||'')===x?'selected':''}>${x}</option>`).join('')}</select></div>
           </div>
-          <div class="mm-field"><label>Proveedor</label><input id="cf-prov" value="${(d.proveedor||'').replace(/"/g,'&quot;')}"></div>
+          <div class="mm-field"><label>Proveedor</label><input id="cf-prov" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" onchange="comprasBuscarOrdenes()"></div>
           <div class="grid g-2">
-            <div class="mm-field"><label>CUIT</label><input id="cf-cuit" value="${(d.cuit||'').replace(/"/g,'&quot;')}"></div>
+            <div class="mm-field"><label>CUIT</label><input id="cf-cuit" value="${(d.cuit||'').replace(/"/g,'&quot;')}" onchange="comprasBuscarOrdenes()"></div>
             <div class="mm-field"><label>Neto (sin IVA)</label><input id="cf-neto" type="number" step="0.01" value="${Number(d.total_sin_iva)||0}"></div>
           </div>
           <div class="mm-field"><label>IVA${(d.ivas||[]).length>1?' (suma de las alícuotas)':''}</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}"></div>
@@ -12776,7 +12781,12 @@ let comprasSinOrdenOk=false;  // el usuario confirmó que esta factura no lleva 
    orden" antes de guardar, que hoy frena la carga.
 
    Para volver a mostrarlo: poner `MOSTRAR_ORDEN_FACTURA = true`. */
-const MOSTRAR_ORDEN_FACTURA=false;
+// 2-oct: vuelve a mostrarse, pero SIN frenar la carga. Busca las órdenes
+// abiertas del proveedor (por CUIT y nombre) y las ofrece para vincular; si
+// hay una sola del mismo CUIT, se vincula sola. Vincular trae el centro de
+// costo de cada ítem tal como está en la orden. Sin orden se guarda igual.
+const MOSTRAR_ORDEN_FACTURA=true;
+const EXIGIR_ORDEN_FACTURA=false;   // true = no deja guardar sin orden o sin confirmar
 
 function bloqueOrdenFactura(){
   if(!MOSTRAR_ORDEN_FACTURA)return '';
@@ -12821,10 +12831,18 @@ function bloqueOrdenFactura(){
             <div class="sub" style="font-size:11px">${escStk(c.descripcion||'')} · ${(c.items||[]).length} ítems · ${money(c.total_estimado)}</div></div>
           <button class="btn" style="padding:5px 12px;font-size:12px" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`).join('')}
       </div>
-      <button class="btn ghost" style="width:100%;margin-top:10px;font-size:12px" onclick="comprasSinOrden()">Esta factura no lleva orden</button>
+      ${EXIGIR_ORDEN_FACTURA?`<button class="btn ghost" style="width:100%;margin-top:10px;font-size:12px" onclick="comprasSinOrden()">Esta factura no lleva orden</button>`:'<div class="sub" style="margin-top:8px;font-size:11.5px">Al vincular, cada ítem toma el centro de costo de la orden. Si no corresponde a ninguna, seguí sin vincular.</div>'}
     </div>`;
   }
   // Sin nada
+  if(!EXIGIR_ORDEN_FACTURA){
+    const prov=d.proveedor||d.cuit||'';
+    return `<div class="panel" style="border-left:3px solid var(--tinta-3);margin-bottom:14px;padding:10px 14px">
+      <div style="font-size:12.5px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span>${comprasBuscandoOC?'Buscando órdenes…':(prov?`No hay órdenes abiertas de <b>${escStk(prov)}</b>.`:'Cargá el proveedor o el CUIT para buscar sus órdenes.')}</span>
+        <button class="btn ghost" style="padding:4px 10px;font-size:11.5px;white-space:nowrap" onclick="comprasBuscarOrdenes()">↻ Buscar</button></div>
+      <div class="sub" style="margin-top:4px;font-size:11.5px">Se guarda igual; la imputación la cargás abajo.</div></div>`;
+  }
   return `<div class="panel" style="border-left:3px solid ${comprasSinOrdenOk?'var(--tinta-3)':'var(--rojo)'};margin-bottom:14px">
     <div style="font-size:12.5px">${escStk(o.motivo||'Sin orden de compra para esta factura.')}</div>
     ${comprasSinOrdenOk
@@ -12834,6 +12852,27 @@ function bloqueOrdenFactura(){
   </div>`;
 }
  
+// Busca de nuevo las órdenes abiertas cuando cambian proveedor o CUIT (el OCR
+// pudo leer mal el nombre y quien carga lo corrige).
+let comprasBuscandoOC=false;
+async function comprasBuscarOrdenes(){
+  comprasCaptura();
+  const d=comprasExtracted;if(!d||comprasOrden)return;
+  const cuit=String(d.cuit||'').replace(/\D/g,''),prov=d.proveedor||'';
+  if(!cuit&&!prov)return;
+  comprasBuscandoOC=true;
+  try{
+    const r=await api('/api/compras/ordenes/candidatas?cuit='+encodeURIComponent(cuit)+'&proveedor='+encodeURIComponent(prov));
+    const cands=r.candidatas||[];
+    d.__orden={...(d.__orden||{}),encontrada:null,candidatas:cands,
+      motivo:cands.length?`Hay ${cands.length} orden${cands.length===1?'':'es'} abierta${cands.length===1?'':'s'} de este proveedor.`:''};
+    comprasBuscandoOC=false;
+    // Una sola orden abierta del MISMO CUIT: se vincula sola (se puede quitar).
+    const delCuit=cuit?cands.filter(c=>String(c.cuit||'').replace(/\D/g,'')===cuit):[];
+    if(delCuit.length===1&&cands.length===1){await comprasVincularOrden(delCuit[0].id);toast('Orden '+delCuit[0].numero+' vinculada: los ítems tomaron su centro de costo');return;}
+  }catch(e){comprasBuscandoOC=false;toast('No pude buscar órdenes: '+e.message,'error');}
+  go('compras');
+}
 async function comprasVincularOrden(id){
   const d=comprasExtracted||{};
   try{
