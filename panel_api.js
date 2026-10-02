@@ -8240,7 +8240,13 @@ router.get('/api/stock/general', auth, async (req, res) => {
  
     const filas = [];
     (objs.data || []).forEach(o => {
-      const c = periodoPedido ? censoDe(o.id, periodoPedido) : ultimo[o.id];
+      // Mes en curso: si el objetivo todavía no respondió, se muestra su último
+      // censo (marcado "no es de este mes") en vez de dejarlo vacío (2-oct:
+      // elegir Octubre dejaba todos los objetivos "sin stock"). Un mes pasado
+      // se muestra tal cual: ahí sí importa qué se declaró en ESE mes.
+      const c = periodoPedido
+        ? (censoDe(o.id, periodoPedido) || (periodoPedido === periodoStockActual() ? ultimo[o.id] : null))
+        : ultimo[o.id];
       // Un objetivo NUEVO (o uno que nunca respondió el censo) no tiene
       // ítems, pero igual tiene que aparecer: si no, no hay dónde cargarle
       // el stock desde el panel.
