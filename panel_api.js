@@ -8233,7 +8233,10 @@ router.get('/api/stock/general', auth, async (req, res) => {
     (censos.data || []).forEach(c => { if (!ultimo[c.objetivo_id]) ultimo[c.objetivo_id] = c; });
 
     // Los meses que tienen algún censo, para el selector del panel.
-    const periodos = [...new Set((censos.data || []).map(c => c.periodo))].sort().reverse();
+    // El mes en curso va siempre, aunque nadie haya respondido todavía (2-oct:
+    // el 1° de octubre no aparecía para elegir). Elegido sin respuestas, cada
+    // objetivo figura "sin censo", que es lo real.
+    const periodos = [...new Set([periodoStockActual(), ...(censos.data || []).map(c => c.periodo)])].sort().reverse();
  
     const filas = [];
     (objs.data || []).forEach(o => {
