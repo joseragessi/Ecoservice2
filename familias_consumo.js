@@ -26,6 +26,10 @@ const FAMILIAS_CONSUMO = [
   [/camion(?!eta)|volcador|chasis/i, 'vehiculo'],
   [/hidro\s*gr|hidrogr/i, 'vehiculo'],
 
+  // Desmalezadora: va enganchada a un tractor y no consume (José, 2-oct). Si
+  // el texto dice "tractor" ("tractor con desmalezadora") cae en tractor.
+  [/^(?!.*tractor).*desmalez/i, 'sin_motor'],
+
   // Tractores y máquinas grandes: consumo alto por hora
   [/mini\s*tractor|giro\s*cero|tractor|desmalez|retro|bobcat|minicargad/i, 'tractor'],
 
