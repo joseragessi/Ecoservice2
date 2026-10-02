@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-02 · compras: órdenes del proveedor al cargar factura';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-02 · compras: orden por número en el detalle + búsqueda manual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12383,7 +12383,7 @@ let comprasAssignments={};     // modo por-ítem: {[i]:{objetivo,unidad,comentar
 // revisa en el modal al imputar a Flexxus.
 let comprasMsg='';
  
-function comprasNueva(){comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;go('compras');}
+function comprasNueva(){comprasOCBusca='';comprasOCAbiertas=null;comprasMode='carga';comprasStep='upload';comprasFile=null;comprasExtracted=null;comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};comprasMsg='';comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;go('compras');}
 function comprasCancelar(){comprasMode='lista';comprasFile=null;comprasPaginas=[];comprasExtracted=null;comprasOCRVuelo=null;comprasOrden=null;comprasOrdenMatch=null;comprasSinOrdenOk=false;go('compras');}
  
 // Las fotos de factura se ACHICAN antes de subirlas (máx 1300px, JPEG 0.82):
@@ -12823,7 +12823,7 @@ function bloqueOrdenFactura(){
   const cands=[...(o.encontrada?[o.encontrada]:[]),...(o.candidatas||[])].filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i);
   if(cands.length){
     return `<div class="panel" style="border-left:3px solid var(--diesel);margin-bottom:14px">
-      ${o.leida?`<div style="font-size:12.5px">La factura dice <b class="mono">${escStk(o.leida)}</b>.</div>`:`<div style="font-size:12.5px">La factura no trae número de orden.</div>`}
+      ${o.leida?`<div style="font-size:12.5px">La factura dice <b class="mono">${escStk(o.leida)}</b>${o.leida_de_items?' <span class="sub">(en el detalle)</span>':''}.</div>`:`<div style="font-size:12.5px">La factura no trae número de orden.</div>`}
       ${o.motivo?`<div class="sub" style="margin-top:3px">${escStk(o.motivo)}</div>`:''}
       <div style="margin-top:8px">
         ${cands.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--linea)">
@@ -12832,6 +12832,7 @@ function bloqueOrdenFactura(){
           <button class="btn" style="padding:5px 12px;font-size:12px" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`).join('')}
       </div>
       ${EXIGIR_ORDEN_FACTURA?`<button class="btn ghost" style="width:100%;margin-top:10px;font-size:12px" onclick="comprasSinOrden()">Esta factura no lleva orden</button>`:'<div class="sub" style="margin-top:8px;font-size:11.5px">Al vincular, cada ítem toma el centro de costo de la orden. Si no corresponde a ninguna, seguí sin vincular.</div>'}
+      ${bloqueBuscarOC()}
     </div>`;
   }
   // Sin nada
@@ -12841,7 +12842,9 @@ function bloqueOrdenFactura(){
       <div style="font-size:12.5px;display:flex;justify-content:space-between;align-items:center;gap:10px">
         <span>${comprasBuscandoOC?'Buscando órdenes…':(prov?`No hay órdenes abiertas de <b>${escStk(prov)}</b>.`:'Cargá el proveedor o el CUIT para buscar sus órdenes.')}</span>
         <button class="btn ghost" style="padding:4px 10px;font-size:11.5px;white-space:nowrap" onclick="comprasBuscarOrdenes()">↻ Buscar</button></div>
-      <div class="sub" style="margin-top:4px;font-size:11.5px">Se guarda igual; la imputación la cargás abajo.</div></div>`;
+      ${o.motivo?`<div class="sub" style="margin-top:4px;font-size:11.5px">${escStk(o.motivo)}</div>`:''}
+      ${bloqueBuscarOC()}
+      <div class="sub" style="margin-top:6px;font-size:11.5px">Si no lleva orden, se guarda igual; la imputación la cargás abajo.</div></div>`;
   }
   return `<div class="panel" style="border-left:3px solid ${comprasSinOrdenOk?'var(--tinta-3)':'var(--rojo)'};margin-bottom:14px">
     <div style="font-size:12.5px">${escStk(o.motivo||'Sin orden de compra para esta factura.')}</div>
@@ -12853,25 +12856,78 @@ function bloqueOrdenFactura(){
 }
  
 // Busca de nuevo las órdenes abiertas cuando cambian proveedor o CUIT (el OCR
-// pudo leer mal el nombre y quien carga lo corrige).
+// pudo leer mal el nombre y quien carga lo corrige). 2-oct: además busca el
+// número de orden escrito en el detalle ("Orden 175 ECOSERVICE") y deja
+// buscar a mano entre TODAS las órdenes abiertas.
 let comprasBuscandoOC=false;
+let comprasOCAbiertas=null;     // cache de órdenes abiertas/borrador para la búsqueda manual
+let comprasOCBusca='';
+const RE_OC_TXT=/\b(?:orden(?:\s+de\s+compra)?|o\s*\/\s*c|o\.c\.?|oc)\s*(?:n[°º.]?\s*|nro\.?\s*|#\s*)?((?:20\d{2}\s*[-\/]\s*)?\d{1,5})\b/i;
+function normOC(t,anio){
+  t=String(t||'').toUpperCase();if(!t.trim())return null;
+  const a=anio||new Date().getFullYear();
+  let m=t.match(/(20\d{2})\D{0,3}(\d{1,5})(?!\d)/);if(m)return `OC-${m[1]}-${String(Number(m[2])).padStart(4,'0')}`;
+  m=t.match(/(\d{1,5})(?!\d)/);if(m)return `OC-${a}-${String(Number(m[1])).padStart(4,'0')}`;
+  return null;
+}
+async function comprasCargarOCAbiertas(forzar){
+  if(comprasOCAbiertas&&!forzar)return comprasOCAbiertas;
+  const r=await api('/api/compras/ordenes');
+  comprasOCAbiertas=(Array.isArray(r)?r:[]).filter(o=>o.estado==='abierta'||o.estado==='borrador');
+  return comprasOCAbiertas;
+}
 async function comprasBuscarOrdenes(){
   comprasCaptura();
   const d=comprasExtracted;if(!d||comprasOrden)return;
   const cuit=String(d.cuit||'').replace(/\D/g,''),prov=d.proveedor||'';
-  if(!cuit&&!prov)return;
   comprasBuscandoOC=true;
   try{
-    const r=await api('/api/compras/ordenes/candidatas?cuit='+encodeURIComponent(cuit)+'&proveedor='+encodeURIComponent(prov));
-    const cands=r.candidatas||[];
-    d.__orden={...(d.__orden||{}),encontrada:null,candidatas:cands,
-      motivo:cands.length?`Hay ${cands.length} orden${cands.length===1?'':'es'} abierta${cands.length===1?'':'s'} de este proveedor.`:''};
+    const todas=await comprasCargarOCAbiertas(true);
+    // 1) Por número: el leído por el OCR o el escrito en el detalle
+    let leida=d.orden_compra_leida||null;
+    if(!leida)for(const it of (d.items||[])){const m=String(it.descripcion||'').match(RE_OC_TXT);if(m){leida=m[1];break;}}
+    const anio=String(d.fecha_factura||'').slice(0,4)||null;
+    const num=leida?normOC(leida,Number(anio)||null):null;
+    const porNum=num?todas.find(o=>o.numero===num):null;
+    // 2) Por proveedor: CUIT primero, nombre después
+    const nn=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+    const pn=nn(prov);
+    const porProv=todas.filter(o=>(cuit&&String(o.cuit||'').replace(/\D/g,'')===cuit)||(pn&&o.proveedor&&(nn(o.proveedor)===pn||nn(o.proveedor).includes(pn)||pn.includes(nn(o.proveedor)))));
+    const cands=[...(porNum?[porNum]:[]),...porProv].filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i);
+    d.__orden={leida,leida_de_items:!d.orden_compra_leida&&!!leida,encontrada:porNum||null,candidatas:cands,
+      motivo:porNum?`La factura dice "${leida}": es la orden ${porNum.numero}.`
+        :(num?`La factura dice "${leida}" (${num}) y no hay ninguna orden abierta con ese número.`:'')
+          +(porProv.length?` Hay ${porProv.length} orden${porProv.length===1?'':'es'} abierta${porProv.length===1?'':'s'} de este proveedor.`:'')};
     comprasBuscandoOC=false;
-    // Una sola orden abierta del MISMO CUIT: se vincula sola (se puede quitar).
+    // Se vincula sola si la encontró por número, o si hay UNA sola del mismo CUIT.
+    if(porNum){await comprasVincularOrden(porNum.id);toast('Orden '+porNum.numero+' vinculada');return;}
     const delCuit=cuit?cands.filter(c=>String(c.cuit||'').replace(/\D/g,'')===cuit):[];
     if(delCuit.length===1&&cands.length===1){await comprasVincularOrden(delCuit[0].id);toast('Orden '+delCuit[0].numero+' vinculada: los ítems tomaron su centro de costo');return;}
   }catch(e){comprasBuscandoOC=false;toast('No pude buscar órdenes: '+e.message,'error');}
   go('compras');
+}
+// Búsqueda manual: número, proveedor, descripción u objetivo de cualquier
+// orden abierta. Pinta los resultados sin re-renderizar la pantalla.
+async function comprasOCBuscar(q){
+  comprasOCBusca=q;
+  const box=document.getElementById('oc-res');if(!box)return;
+  const t=String(q||'').trim().toLowerCase();
+  if(t.length<2){box.innerHTML='';return;}
+  try{await comprasCargarOCAbiertas();}catch(e){box.innerHTML='<div class="sub">No pude traer las órdenes.</div>';return;}
+  const n=t.replace(/\D/g,'');
+  const r=(comprasOCAbiertas||[]).filter(o=>{
+    const txt=[o.numero,o.proveedor,o.cuit,o.descripcion,...(o.items||[]).map(i=>(i.descripcion||'')+' '+(i.objetivo||''))].join(' ').toLowerCase();
+    return txt.includes(t)||(n&&String(o.numero||'').replace(/\D/g,'').endsWith(n));
+  }).slice(0,8);
+  box.innerHTML=r.length?r.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--linea)">
+    <div><b class="mono">${escStk(c.numero)}</b> <span class="sub">${escStk(c.proveedor||'sin proveedor')}</span>
+      <div class="sub" style="font-size:11px">${escStk(c.descripcion||'')} · ${(c.items||[]).length} ítems · ${money(c.total_estimado)}${(c.items||[])[0]&&c.items[0].objetivo?' · '+escStk(c.items[0].objetivo):''}</div></div>
+    <button class="btn" style="padding:5px 12px;font-size:12px" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`).join('')
+    :'<div class="sub" style="padding:6px 0">Ninguna orden abierta coincide.</div>';
+}
+function bloqueBuscarOC(){
+  return `<div style="margin-top:10px"><input class="busca" style="width:100%" placeholder="Buscar otra orden: número, proveedor, descripción…" value="${escStk(comprasOCBusca)}" oninput="comprasOCBuscar(this.value)">
+    <div id="oc-res"></div></div>`;
 }
 async function comprasVincularOrden(id){
   const d=comprasExtracted||{};
@@ -12883,6 +12939,18 @@ async function comprasVincularOrden(id){
     comprasAssignMode='per-item';
     comprasAssignments={};
     Object.entries(r.assignments||{}).forEach(([ix,a])=>{comprasAssignments[ix]={objetivo:a.objetivo||'',unidad:a.unidad||'',comentario:a.comentario||''};});
+    // Ítems de la factura que no se encontraron en la orden (la factura dice
+    // "Orden 175" en un solo renglón y la orden tiene 5 ítems): toman el
+    // centro de costo de la orden — el único que tenga, o el de mayor importe
+    // (2-oct). El comentario lleva el número de orden.
+    {const oi=(r.orden&&r.orden.items)||[];const peso={};
+     oi.forEach(x=>{if(x.objetivo)peso[x.objetivo]=(peso[x.objetivo]||0)+(Number(x.precio_unit||x.precio||0)*(Number(x.cantidad)||1)||1);});
+     const dom=Object.entries(peso).sort((a,b)=>b[1]-a[1]).map(z=>z[0])[0]||'';
+     const uni1=[...new Set(oi.map(x=>x.unidad).filter(Boolean))];
+     const com=(r.orden.numero||'')+(r.orden.descripcion?' · '+r.orden.descripcion:'');
+     (d.items||[]).forEach((it,ix)=>{const a=comprasAssignments[ix];
+       if(!a||!a.objetivo)comprasAssignments[ix]={objetivo:dom,unidad:uni1.length===1?uni1[0]:'',comentario:(a&&a.comentario)||com};
+       else if(!String(a.comentario||'').trim())a.comentario=com;});}
     if(!(d.items||[]).length){
       // Factura sin ítems detallados: la orden se aplica al total con el objetivo dominante.
       const oi=r.orden.items||[];
