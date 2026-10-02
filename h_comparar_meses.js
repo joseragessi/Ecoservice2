@@ -81,7 +81,10 @@ const est = (o, tipo, n) => { const x = numsDe(o, tipo).find(y => String(y.n) ==
   let r = await pedir({ periodo: '2026-08' });
   eq('responde 200', r.code === 200);
   eq('devuelve los meses para el selector', Array.isArray(r.json.periodos) && r.json.periodos.includes('2026-08') && r.json.periodos.includes('2026-09'));
-  eq('los meses vienen del más nuevo al más viejo', r.json.periodos[0] === '2026-09');
+  // Desde el 2-oct el mes en curso va siempre primero, aunque no tenga censos.
+  const mesHoy = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Cordoba' }).slice(0, 7);
+  eq('los meses vienen del más nuevo al más viejo', r.json.periodos.join() === [...r.json.periodos].sort().reverse().join() && r.json.periodos.indexOf('2026-09') < r.json.periodos.indexOf('2026-08'));
+  eq('el mes en curso figura aunque no tenga censos', r.json.periodos[0] === mesHoy);
   const ayrAgo = (r.json.filas || []).filter(f => f.objetivo_id === 'ayres' && f.tipo);
   eq('muestra lo declarado en AGOSTO (3 motoguadañas, no 2)', ayrAgo[0] && ayrAgo[0].cantidad === 3, JSON.stringify(ayrAgo.map(f => f.cantidad)));
   eq('y el período pedido vuelve en la respuesta', r.json.periodo === '2026-08');
