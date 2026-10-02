@@ -6125,9 +6125,12 @@ router.get('/api/combustible/informe-gerencia', auth, async (req, res) => {
       cruzarTaller(filasSt, rIn.data || []);
       maquinas = {};
       (rO.data || []).forEach(o => { maquinas[o.id] = { nombre: o.nombre, sin_censo: !ultimo[o.id], en_taller: 0 }; });
+      // Por combustible (2-oct): n2t / nmini / notras van con nafta, gtrac con gasoil.
+      const { claseMaquina } = require('./informe_combustible');
       filasSt.forEach(f => {
         const m = maquinas[f.objetivo_id];
-        m[f.familia] = (m[f.familia] || 0) + (f.disponibles == null ? (Number(f.cantidad) || 0) : Number(f.disponibles));
+        const cl = claseMaquina(f.familia, f.tipo);
+        if (cl) m[cl] = (m[cl] || 0) + (f.disponibles == null ? (Number(f.cantidad) || 0) : Number(f.disponibles));
         m.en_taller += Number(f.en_taller) || 0;
       });
     } catch (e) { console.error('informe gerencia · máquinas:', e.message); }
