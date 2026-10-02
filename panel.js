@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-02 · compras: orden por número en el detalle + búsqueda manual';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-02 · compras: listado de órdenes disponibles al cargar factura';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12912,21 +12912,31 @@ async function comprasOCBuscar(q){
   comprasOCBusca=q;
   const box=document.getElementById('oc-res');if(!box)return;
   const t=String(q||'').trim().toLowerCase();
-  if(t.length<2){box.innerHTML='';return;}
+  // Sin texto: el LISTADO de todas las órdenes disponibles (abiertas o en
+  // borrador, sin factura), la más nueva primero. Si no se sabe el número,
+  // se encuentra mirando la lista (2-oct).
+  if(!comprasOCAbiertas)box.innerHTML='<div class="sub" style="padding:6px 0">Cargando órdenes disponibles…</div>';
   try{await comprasCargarOCAbiertas();}catch(e){box.innerHTML='<div class="sub">No pude traer las órdenes.</div>';return;}
   const n=t.replace(/\D/g,'');
-  const r=(comprasOCAbiertas||[]).filter(o=>{
+  const todas=(comprasOCAbiertas||[]).slice().sort((a,b)=>String(b.fecha||b.created_at||'').localeCompare(String(a.fecha||a.created_at||'')));
+  const r=t.length<2?todas:todas.filter(o=>{
     const txt=[o.numero,o.proveedor,o.cuit,o.descripcion,...(o.items||[]).map(i=>(i.descripcion||'')+' '+(i.objetivo||''))].join(' ').toLowerCase();
     return txt.includes(t)||(n&&String(o.numero||'').replace(/\D/g,'').endsWith(n));
-  }).slice(0,8);
-  box.innerHTML=r.length?r.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--linea)">
-    <div><b class="mono">${escStk(c.numero)}</b> <span class="sub">${escStk(c.proveedor||'sin proveedor')}</span>
-      <div class="sub" style="font-size:11px">${escStk(c.descripcion||'')} · ${(c.items||[]).length} ítems · ${money(c.total_estimado)}${(c.items||[])[0]&&c.items[0].objetivo?' · '+escStk(c.items[0].objetivo):''}</div></div>
-    <button class="btn" style="padding:5px 12px;font-size:12px" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`).join('')
-    :'<div class="sub" style="padding:6px 0">Ninguna orden abierta coincide.</div>';
+  });
+  const est=e=>e==='borrador'?'<span class="badge b-gray" style="font-size:10px">borrador</span>':'<span class="badge b-amber" style="font-size:10px">abierta</span>';
+  box.innerHTML=`<div class="sub" style="font-size:11px;margin:8px 0 2px">${t.length<2?`${todas.length} orden${todas.length===1?'':'es'} disponible${todas.length===1?'':'s'} (sin factura)`:`${r.length} de ${todas.length}`}</div>
+  <div style="max-height:300px;overflow:auto;border-top:1px solid var(--linea)">`+(r.length?r.map(c=>{
+    const objs=[...new Set((c.items||[]).map(i=>i.objetivo).filter(Boolean))];
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid var(--linea)">
+    <div style="min-width:0"><b class="mono">${escStk(c.numero)}</b> ${est(c.estado)} <span class="sub">${fechaAR(c.fecha||c.created_at)} · ${escStk(c.proveedor||'sin proveedor')}</span>
+      <div class="sub" style="font-size:11px">${escStk(c.descripcion||'')}${c.descripcion?' · ':''}${(c.items||[]).length} ítems · ${money(c.total_estimado)}${objs.length?' · '+escStk(objs.slice(0,2).join(', '))+(objs.length>2?'…':''):''}</div></div>
+    <button class="btn" style="padding:5px 12px;font-size:12px;flex:none" onclick="comprasVincularOrden('${c.id}')">Vincular</button></div>`;}).join('')
+    :'<div class="sub" style="padding:8px 0">'+(todas.length?'Ninguna orden disponible coincide.':'No hay órdenes disponibles: todas están facturadas o anuladas.')+'</div>')+'</div>';
 }
 function bloqueBuscarOC(){
-  return `<div style="margin-top:10px"><input class="busca" style="width:100%" placeholder="Buscar otra orden: número, proveedor, descripción…" value="${escStk(comprasOCBusca)}" oninput="comprasOCBuscar(this.value)">
+  // El listado se pinta apenas el bloque está en pantalla.
+  setTimeout(()=>comprasOCBuscar(comprasOCBusca),0);
+  return `<div style="margin-top:10px"><input class="busca" style="width:100%" placeholder="Filtrar: número, proveedor, descripción, objetivo…" value="${escStk(comprasOCBusca)}" oninput="comprasOCBuscar(this.value)">
     <div id="oc-res"></div></div>`;
 }
 async function comprasVincularOrden(id){
