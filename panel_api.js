@@ -1589,8 +1589,21 @@ function normalizarNumeroOC(texto, anio) {
 }
  
 // Devuelve { encontrada, candidatas, motivo } para el panel.
+// El número de orden a veces no viene en el casillero de "O/C" sino en el
+// detalle: "Orden 175 ECOSERVICE" (2-oct, Montañez). Se busca en los ítems.
+const RE_OC_TEXTO = /\b(?:orden(?:\s+de\s+compra)?|o\s*\/\s*c|o\.c\.?|oc)\s*(?:n[°º.]?\s*|nro\.?\s*|#\s*)?((?:20\d{2}\s*[-\/]\s*)?\d{1,5})\b/i;
+function ocDeTexto(parsed) {
+  const textos = [...(parsed.items || []).map(i => i && i.descripcion), parsed.observaciones, parsed.detalle].filter(Boolean);
+  for (const t of textos) { const m = String(t).match(RE_OC_TEXTO); if (m) return m[1]; }
+  return null;
+}
+
 async function buscarOrdenParaFactura(parsed) {
-  const out = { leida: parsed.orden_compra_leida || null, encontrada: null, candidatas: [], motivo: '' };
+  if (!parsed.orden_compra_leida) {
+    const deItems = ocDeTexto(parsed);
+    if (deItems) { parsed.orden_compra_leida = deItems; parsed.orden_compra_de_items = true; }
+  }
+  const out = { leida: parsed.orden_compra_leida || null, leida_de_items: !!parsed.orden_compra_de_items, encontrada: null, candidatas: [], motivo: '' };
   try {
     const num = normalizarNumeroOC(parsed.orden_compra_leida);
     if (num) {
