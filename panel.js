@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-02 · compras: listado de órdenes disponibles al cargar factura';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-02 · informe gerencia: nafta y gasoil vs. máquinas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -2919,7 +2919,7 @@ const INF_CSS=`.inf{--b:#159B51;--b2:#0F7E40;--bs:#E5F5EC;--s:#B8323F;--ss:#FBEA
 .inf th{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);text-align:left;padding:7px 8px;border-bottom:1.5px solid var(--l2);font-weight:600}
 .inf td{padding:6px 8px;border-bottom:1px solid var(--l)}.inf td.n,.inf th.n{text-align:right}
 .inf tr.grp td{background:var(--p);font-weight:600;padding-top:9px}
-.inf .chip{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:600}
+.inf .chip{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:600;white-space:nowrap}
 .inf .c-sin{background:var(--ss);color:var(--s)}.inf .c-am{background:var(--as);color:var(--a)}
 .inf .pie{margin-top:30px;display:flex;justify-content:space-between;color:var(--t3);font-size:11px;border-top:1px solid var(--l);padding-top:10px}
 .inf .firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:46px}.inf .firmas div{border-top:1px solid var(--t);padding-top:6px;text-align:center;color:var(--t2);font-size:11.5px}
@@ -3101,30 +3101,42 @@ ${infGerMaquinas(D.consumo_maquinas)}
 <div class="firmas"><div>Logística</div><div>Gerencia</div></div>
 <div class="pie"><span>Panel EcoService · Combustible → Informe</span><span>${pctEst?pctEst+'% del importe es estimado (cargas sin importe confiable, al precio medio del mes) · ':''}Fuente: declaraciones de los capataces + reporte Edenred</span></div></div>`;
 }
-// 5 · Consumo vs. máquinas del objetivo (mockup_consumo_maquinas.html, 1-oct)
+// 5 · Consumo vs. máquinas, separado en nafta y gasoil (mockup_nafta_gasoil.html, 2-oct)
 function infGerMaquinas(C){
-  if(!C)return'';
+  if(!C||!C.nafta)return'';
   const n0=v=>Math.round(v||0).toLocaleString('es-AR'),n1=v=>v==null?'—':(Math.round(v*10)/10).toLocaleString('es-AR');
   const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  const ok=C.con_consumo||[],sm=C.sin_maquinas||[],sc=C.sin_consumo||[],med=C.mediana||0;
-  const maxL=Math.max(1,...ok.map(r=>r.litros_por_maquina||0));
-  return `<div class="sec"><h2>5 · Consumo vs. máquinas del objetivo</h2>
-<div class="h2s">Lo que se cargó en bidones y equipos para cada objetivo, comparado con las máquinas a motor que tiene en Stock → General (sin las que están en el taller)</div>
+  const LN=C.nafta.litros||0,LG=C.gasoil.litros||0,TOT=LN+LG||1,J=C.jornada||{};
+  const rows=C.objetivos||[],gs=C.gasoil_sin_tractor||[],ns=C.nafta_sin_maquinas||[],sc=C.sin_consumo||[];
+  return `<div class="sec"><h2>5 · Consumo vs. máquinas · nafta y gasoil</h2>
+<div class="h2s">Lo cargado en bidones y equipos, separado por combustible y comparado con las máquinas de Stock → General que lo usan (sin las que están en el taller)</div>
+${LN+LG?`<div class="dest"><div style="flex:${LN||0.0001};background:#159B51">${LN/TOT>.1?'Nafta '+Math.round(LN*100/TOT)+'%':''}</div><div style="flex:${LG||0.0001};background:#2F6DB5">${LG/TOT>.1?'Gasoil '+Math.round(LG*100/TOT)+'%':''}</div></div>`:''}
 <div class="kpis">
-<div class="kpi"><div class="l">Máquinas a motor</div><div class="v">${n0(C.maquinas)}</div><div class="s">en ${C.objetivos_con_maquinas} objetivos</div></div>
-<div class="kpi"><div class="l">Litros a máquinas</div><div class="v">${n0(C.litros)}</div><div class="s">bidones + equipos</div></div>
-<div class="kpi"><div class="l">Litros por máquina</div><div class="v">${n1(med)}</div><div class="s">mediana del mes</div></div>
-<div class="kpi"><div class="l">Sin máquinas en Stock</div><div class="v" style="color:#B8323F">${n0(C.litros_sin_maquinas)} lt</div><div class="s">${sm.length} destinos</div></div></div>
-${ok.length?`<h3 style="font-size:13px;margin:16px 0 6px">Objetivos con máquinas y consumo</h3>
-<table><tr><th>Objetivo</th><th class="n">2T</th><th class="n">Tract.</th><th class="n">Otras</th><th class="n">Litros</th><th class="n">Lt / máq.</th><th style="width:20%"></th><th class="n">% parque</th></tr>
-${ok.map(r=>{const alto=r.veces_mediana!=null&&r.veces_mediana>=2;return `<tr><td><b>${esc(r.objetivo)}</b>${r.en_taller?` <span class="chip c-am">${r.en_taller} en taller</span>`:''}</td><td class="n mono">${r.dos_tiempos||'—'}</td><td class="n mono">${r.tractor||'—'}</td><td class="n mono">${r.otras||'—'}</td><td class="n mono">${n0(r.litros)}</td>
-<td class="n mono" style="white-space:nowrap"><b>${n1(r.litros_por_maquina)}</b>${alto?` <span class="chip c-am">×${n1(r.veces_mediana)}</span>`:''}</td><td><div style="height:10px;border-radius:4px;background:${alto?'#854F0B':'#159B51'};width:${(r.litros_por_maquina||0)*100/maxL}%"></div></td><td class="n mono${r.uso_pct>100?' rojo':''}">${r.uso_pct==null?'—':r.uso_pct+'%'}</td></tr>`;}).join('')}</table>
-<div style="color:#8C9B92;font-size:11px;margin-top:6px">×2 o más = gasta más del doble por máquina que la mediana (${n1(med)} lt). % parque = litros ÷ lo que gastarían todas sus máquinas trabajando los ${C.dias_habiles} días hábiles (2T 6 lt/jornada, tractor 40, cortadora 12, fijo 5). ${ok.some(r=>r.uso_pct>100)?'<b class="rojo">Más de 100% = se cargó más de lo que esas máquinas pueden quemar.</b>':'Ningún objetivo pasó el 100%.'}</div>`:''}
+<div class="kpi" style="border-top:3px solid #159B51"><div class="l">Nafta</div><div class="v">${n0(LN)} lt</div><div class="s">${n0(C.nafta.maquinas)} máquinas (2T + mini tractor)</div></div>
+<div class="kpi" style="border-top:3px solid #159B51"><div class="l">Nafta por máquina</div><div class="v">${n1(C.mediana_nafta)}</div><div class="s">lt en el mes (mediana)</div></div>
+<div class="kpi" style="border-top:3px solid #2F6DB5"><div class="l">Gasoil</div><div class="v">${n0(LG)} lt</div><div class="s">${n0(C.gasoil.tractores)} tractores grandes</div></div>
+<div class="kpi" style="border-top:3px solid #2F6DB5"><div class="l">Gasoil sin tractor</div><div class="v" style="color:#B8323F">${n0(C.litros_gasoil_sin_tractor)} lt</div><div class="s">${gs.length} destinos${LG?' · '+Math.round((C.litros_gasoil_sin_tractor||0)*100/LG)+'% del gasoil':''}</div></div></div>
+${rows.length?`<h3 style="font-size:13px;margin:16px 0 6px">Por objetivo</h3>
+<table><tr><th></th><th colspan="4" style="text-align:center;color:#0F7E40;border-bottom:2px solid #159B51">Nafta</th><th colspan="3" style="text-align:center;color:#2F6DB5;border-bottom:2px solid #2F6DB5;border-left:1px solid #D5DDD1">Gasoil</th><th></th></tr>
+<tr><th>Objetivo</th><th class="n">2T</th><th class="n">Mini</th><th class="n">Litros</th><th class="n">Lt/máq · %</th><th class="n" style="border-left:1px solid #D5DDD1">Tract.</th><th class="n">Litros</th><th class="n">Lt/tract · %</th><th></th></tr>
+${rows.map(r=>{const al=[];
+  if(r.litros_gasoil>0&&!r.tractores)al.push('<span class="chip c-sin">gasoil sin tractor</span>');
+  if(r.tractores&&!r.litros_gasoil)al.push('<span class="chip c-am">tractor sin gasoil</span>');
+  if(r.veces_mediana!=null&&r.veces_mediana>=2)al.push(`<span class="chip c-am">nafta ×${n1(r.veces_mediana)}</span>`);
+  if(r.en_taller)al.push(`<span class="chip c-am">${r.en_taller} en taller</span>`);
+  return `<tr><td><b>${esc(r.objetivo)}</b></td><td class="n mono">${r.n2t||'—'}</td><td class="n mono">${r.nmini||'—'}</td><td class="n mono">${r.litros_nafta?n0(r.litros_nafta):'—'}</td>
+  <td class="n mono" style="white-space:nowrap">${r.nafta_por_maquina!=null?n1(r.nafta_por_maquina)+' · '+r.uso_nafta_pct+'%':'—'}</td>
+  <td class="n mono" style="border-left:1px solid #D5DDD1">${r.tractores||'—'}</td><td class="n mono">${r.litros_gasoil?n0(r.litros_gasoil):'—'}</td>
+  <td class="n mono" style="white-space:nowrap">${r.gasoil_por_tractor!=null?n1(r.gasoil_por_tractor)+' · '+r.uso_gasoil_pct+'%':'—'}</td><td>${al.join(' ')}</td></tr>`;}).join('')}</table>
+<div style="color:#8C9B92;font-size:11px;margin-top:6px">% = litros ÷ lo que gastarían esas máquinas trabajando los ${C.dias_habiles} días hábiles (2T ${J.n2t} lt/jornada, mini tractor ${J.nmini} <i>estimado</i>, cortadora/compresor ${J.notras}, tractor ${J.gtrac}). Nafta ×2 = más del doble por máquina que la mediana. La desmalezadora no cuenta: va enganchada al tractor.</div>`:''}
 <div class="g2" style="margin-top:14px">
-<div><h3 style="font-size:13px;margin:6px 0"><span class="chip c-sin">!</span> Consumen y no tienen máquinas en Stock</h3>
-${sm.length?`<table><tr><th>Destino declarado</th><th class="n">Litros</th></tr>${sm.map(r=>`<tr><td>${esc(r.objetivo)} <span style="color:#8C9B92;font-size:11px">· ${r.objetivo_id?(r.sin_censo?'sin censo':'censo sin máquinas'):'no es un objetivo'}</span></td><td class="n mono">${n0(r.litros)}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Ninguno.</div>'}</div>
-<div><h3 style="font-size:13px;margin:6px 0"><span class="chip c-am">?</span> Tienen máquinas y no recibieron combustible</h3>
-${sc.length?`<table><tr><th>Objetivo</th><th class="n">Máquinas</th></tr>${sc.map(r=>`<tr><td>${esc(r.objetivo)}</td><td class="n mono">${r.maquinas}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Ninguno.</div>'}</div></div></div>`;
+<div><h3 style="font-size:13px;margin:6px 0"><span class="chip c-sin">!</span> Gasoil cargado sin tractor en Stock</h3>
+${gs.length?`<table><tr><th>Destino</th><th class="n">Gasoil</th></tr>${gs.map(r=>`<tr><td>${esc(r.objetivo)}${r.objetivo_id?'':' <span style="color:#8C9B92;font-size:11px">· no es objetivo</span>'}</td><td class="n mono">${n0(r.litros_gasoil)}</td></tr>`).join('')}</table>
+<div style="color:#8C9B92;font-size:11px;margin-top:4px">El gasoil va a tractores grandes (40 a 80 hp). Si el objetivo no tiene tractor en Stock, falta censarlo o hay que revisar a dónde fue.</div>`:'<div style="color:#8C9B92">Ninguno.</div>'}</div>
+<div><h3 style="font-size:13px;margin:6px 0"><span class="chip c-am">!</span> Nafta cargada sin máquinas en Stock</h3>
+${ns.length?`<table><tr><th>Destino</th><th class="n">Nafta</th></tr>${ns.map(r=>`<tr><td>${esc(r.objetivo)}${r.objetivo_id?(r.sin_censo?' <span style="color:#8C9B92;font-size:11px">· sin censo</span>':''):' <span style="color:#8C9B92;font-size:11px">· no es objetivo</span>'}</td><td class="n mono">${n0(r.litros_nafta)}</td></tr>`).join('')}</table>`:'<div style="color:#8C9B92">Ninguno.</div>'}</div></div>
+${sc.length?`<div style="color:#586B60;font-size:12px;margin-top:10px"><b>Tienen máquinas y no recibieron combustible:</b> ${sc.map(r=>esc(r.objetivo)+' ('+(r.maquinas_nafta+r.tractores)+')').join(', ')}.</div>`:''}
+</div>`;
 }
 async function vCombInfGerencia(view,tabs,sub){
   view.innerHTML=tabs+sub+'<div class="cargando-v">Armando el informe…</div>';
