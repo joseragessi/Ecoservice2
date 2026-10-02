@@ -58,6 +58,28 @@ function objetivoDeItem(i, c, alias) {
 const { CONSUMO_JORNADA } = require('./familias_consumo');
 const FAM_MAQ = ['dos_tiempos', 'tractor', 'cortadora', 'fijo'];
 
+// Nafta o gasoil según el producto del ticket (2-oct). Los nombres vienen del
+// OCR: "SHELL EVOLUX DIESEL", "SHELL EVO.UX DIESEL", "ION PUMA DIESEL",
+// "UPOWER DIESEL", "GASOIL", "DIESEL 500".
+const ES_GASOIL = /diesel|gasoil|gas oil|d\s?500|evolux|evo\.?ux|byollum|v-?power d|u-?power d|power d|ion d|premium d|infinia d/i;
+const combustibleDe = p => ES_GASOIL.test(p || '') ? 'gasoil' : 'nafta';
+
+// Qué combustible usa cada máquina del censo (2-oct, José):
+//   nafta  → 2 tiempos, mini tractor / giro cero, cortadoras, compresores
+//   gasoil → tractores grandes (40 a 80 hp, en el censo figuran como "Tractor")
+// La desmalezadora va enganchada al tractor: no consume (familias_consumo).
+function claseMaquina(familia, tipo) {
+  const t = String(tipo || '').toLowerCase();
+  if (familia === 'dos_tiempos') return 'n2t';
+  if (/hanomag/.test(t)) return 'gtrac';
+  if (familia === 'tractor') return /mini|giro|john|johon|deere|husq|cub\s*cadet/.test(t) ? 'nmini' : 'gtrac';
+  if (familia === 'cortadora' || familia === 'fijo') return 'notras';
+  return null;
+}
+// Litros por jornada completa. El del mini tractor es ESTIMADO (José no lo
+// sabe con certeza): se muestra marcado en el informe.
+const JORNADA = { n2t: 6, nmini: 12, notras: 8, gtrac: 40 };
+
 const TIPO = p => /diesel|gasoil|gas oil|d500|evolux|v-?power d|power d|premium d|infinia d/i.test(p || '') ? 'Diesel' : 'Nafta';
 // El OCR lee mal muchos totales ($2.113.000 por 50 lt). Un precio fuera de
 // este rango no se usa.
@@ -123,7 +145,7 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
       const pE = parDe[c.id];
       const edenred = pE && enMes(pE.g.fecha) ? (Number(pE.g.total) || 0) * lt / (ltC || 1) : 0;
       items.push({ carga_id: c.id, fecha: c.fecha, capataz: (c.capataces && c.capataces.nombre) || '—',
-        objetivo: obj, objetivo_id: ob.id, destino: dest, litros: lt, importe: pe, estimado: est, edenred,
+        objetivo: obj, objetivo_id: ob.id, destino: dest, combustible: combustibleDe(i.producto), litros: lt, importe: pe, estimado: est, edenred,
         patente: i.destino === 'unidad' ? ((uni[i.unidad_id] || {}).patente || (c.unidades && c.unidades.patente) || c.patente_raw || null) : null });
     });
   });
@@ -162,44 +184,53 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
   const edTotal = Math.round(suma(edenMes, 'total'));
   const edSin = Math.round(suma(sinTicket, 'total'));
   const edDecl = Object.values(porDest).reduce((s, v) => s + v, 0);
-  // ── 5 · Consumo vs. máquinas del objetivo (Stock → General)
-  // maquinas: { [objetivo_id]: { nombre, dos_tiempos, tractor, cortadora, fijo, en_taller, sin_censo } }
+  // ── 5 · Consumo vs. máquinas del objetivo, separado en nafta y gasoil
+  // maquinas: { [objetivo_id]: { nombre, n2t, nmini, notras, gtrac, en_taller, sin_censo } }
   let consumoMaquinas = null;
   if (maquinas) {
     const lt = {}, nom = {};
     items.filter(i => i.destino !== 'Tanque de unidad').forEach(i => {
       const k = i.objetivo_id ? 'id:' + i.objetivo_id : 'tx:' + normObj(i.objetivo);
-      lt[k] = (lt[k] || 0) + i.litros; nom[k] = nom[k] || i.objetivo;
+      const x = lt[k] || (lt[k] = { nafta: 0, gasoil: 0 });
+      x[i.combustible === 'gasoil' ? 'gasoil' : 'nafta'] += i.litros; nom[k] = nom[k] || i.objetivo;
     });
-    const filas = [];
-    const vistos = new Set();
+    const filas = [], vistos = new Set();
+    const fila = (id, nombre, m, l) => {
+      const mn = (m.n2t || 0) + (m.nmini || 0) + (m.notras || 0), mg = m.gtrac || 0;
+      const capN = ((m.n2t || 0) * JORNADA.n2t + (m.nmini || 0) * JORNADA.nmini + (m.notras || 0) * JORNADA.notras) * diasHabiles;
+      const capG = mg * JORNADA.gtrac * diasHabiles;
+      const ln = r2(l.nafta || 0), lg = r2(l.gasoil || 0);
+      return { objetivo_id: id, objetivo: nombre, n2t: m.n2t || 0, nmini: m.nmini || 0, notras: m.notras || 0, tractores: mg,
+        maquinas_nafta: mn, en_taller: m.en_taller || 0, sin_censo: !!m.sin_censo,
+        litros_nafta: ln, litros_gasoil: lg, litros: r2(ln + lg),
+        nafta_por_maquina: mn && ln ? r2(ln / mn) : null, uso_nafta_pct: capN && ln ? Math.round(ln * 100 / capN) : null,
+        gasoil_por_tractor: mg && lg ? r2(lg / mg) : null, uso_gasoil_pct: capG && lg ? Math.round(lg * 100 / capG) : null };
+    };
     Object.entries(maquinas).forEach(([id, m]) => {
       const k = 'id:' + id; vistos.add(k);
-      const n = FAM_MAQ.reduce((s, f) => s + (Number(m[f]) || 0), 0);
-      const cap = FAM_MAQ.reduce((s, f) => s + (Number(m[f]) || 0) * (CONSUMO_JORNADA[f] || 0) * diasHabiles, 0);
-      const l = r2(lt[k] || 0);
-      if (!n && !l) return;
-      filas.push({ objetivo_id: id, objetivo: m.nombre, dos_tiempos: m.dos_tiempos || 0, tractor: m.tractor || 0,
-        otras: (m.cortadora || 0) + (m.fijo || 0), maquinas: n, en_taller: m.en_taller || 0, sin_censo: !!m.sin_censo,
-        litros: l, litros_por_maquina: n ? r2(l / n) : null, capacidad: Math.round(cap), uso_pct: cap ? Math.round(l * 100 / cap) : null });
+      const f = fila(id, m.nombre, m, lt[k] || {});
+      if (f.maquinas_nafta + f.tractores + f.litros > 0) filas.push(f);
     });
     // Destinos con litros que no son un objetivo de Stock (texto libre: "u14", "bobkat")
-    Object.keys(lt).filter(k => !vistos.has(k)).forEach(k => {
-      filas.push({ objetivo_id: null, objetivo: nom[k], dos_tiempos: 0, tractor: 0, otras: 0, maquinas: 0, en_taller: 0,
-        sin_censo: true, litros: r2(lt[k]), litros_por_maquina: null, capacidad: 0, uso_pct: null });
-    });
-    const con = filas.filter(f => f.maquinas > 0 && f.litros > 0);
-    const lpm = con.map(f => f.litros_por_maquina).sort((a, b) => a - b);
-    const mediana = lpm.length ? (lpm.length % 2 ? lpm[(lpm.length - 1) / 2] : (lpm[lpm.length / 2 - 1] + lpm[lpm.length / 2]) / 2) : 0;
-    con.forEach(f => { f.veces_mediana = mediana ? r2(f.litros_por_maquina / mediana) : null; });
-    const sinMaq = filas.filter(f => f.maquinas === 0 && f.litros > 0).sort((a, b) => b.litros - a.litros);
+    Object.keys(lt).filter(k => !vistos.has(k)).forEach(k => filas.push(fila(null, nom[k], { sin_censo: true }, lt[k])));
+
+    const conN = filas.filter(f => f.maquinas_nafta > 0 && f.litros_nafta > 0);
+    const v = conN.map(f => f.nafta_por_maquina).sort((a, b) => a - b);
+    const mediana = v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : 0;
+    conN.forEach(f => { f.veces_mediana = mediana ? r2(f.nafta_por_maquina / mediana) : null; });
+    const sumF = (xs, k) => r2(xs.reduce((s, f) => s + (f[k] || 0), 0));
+    const gasoilSinTractor = filas.filter(f => f.litros_gasoil > 0 && !f.tractores).sort((a, b) => b.litros_gasoil - a.litros_gasoil);
+    const naftaSinMaq = filas.filter(f => f.litros_nafta > 0 && !f.maquinas_nafta).sort((a, b) => b.litros_nafta - a.litros_nafta);
     consumoMaquinas = {
-      dias_habiles: diasHabiles, mediana: r2(mediana),
-      maquinas: filas.reduce((s, f) => s + f.maquinas, 0), objetivos_con_maquinas: filas.filter(f => f.maquinas > 0).length,
-      litros: r2(filas.reduce((s, f) => s + f.litros, 0)),
-      con_consumo: con.sort((a, b) => b.litros_por_maquina - a.litros_por_maquina),
-      sin_maquinas: sinMaq, litros_sin_maquinas: r2(sinMaq.reduce((s, f) => s + f.litros, 0)),
-      sin_consumo: filas.filter(f => f.maquinas > 0 && !f.litros).sort((a, b) => b.maquinas - a.maquinas),
+      dias_habiles: diasHabiles, jornada: JORNADA, mediana_nafta: r2(mediana),
+      nafta: { litros: sumF(filas, 'litros_nafta'), maquinas: sumF(filas, 'maquinas_nafta') },
+      gasoil: { litros: sumF(filas, 'litros_gasoil'), tractores: sumF(filas, 'tractores') },
+      objetivos: filas.filter(f => (f.maquinas_nafta + f.tractores) > 0 && f.litros > 0)
+        .sort((a, b) => b.litros - a.litros),
+      gasoil_sin_tractor: gasoilSinTractor, litros_gasoil_sin_tractor: sumF(gasoilSinTractor, 'litros_gasoil'),
+      nafta_sin_maquinas: naftaSinMaq, litros_nafta_sin_maquinas: sumF(naftaSinMaq, 'litros_nafta'),
+      tractor_sin_gasoil: filas.filter(f => f.tractores > 0 && !f.litros_gasoil),
+      sin_consumo: filas.filter(f => (f.maquinas_nafta + f.tractores) > 0 && !f.litros).sort((a, b) => (b.maquinas_nafta + b.tractores) - (a.maquinas_nafta + a.tractores)),
     };
   }
 
@@ -224,4 +255,4 @@ function armarInforme({ cargas = [], edenred = [], alias = {}, unidades = [], me
   };
 }
 
-module.exports = { armarInforme, resolverObj, objetivoDeItem, normObj };
+module.exports = { armarInforme, resolverObj, objetivoDeItem, normObj, claseMaquina, combustibleDe, JORNADA };
