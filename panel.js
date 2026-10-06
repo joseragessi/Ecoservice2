@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-06 · compras: tipo de percepción a mano para Flexxus';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-06 · compras: IVA total = suma de alícuotas al cargar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -11899,7 +11899,7 @@ function vComprasDetalle(view){
             <span class="sub">IVA ${x.porcentaje}%</span><span class="money sub">${money(x.monto)}</span></div>`).join('')}
           ${dif<=0.01?`<div class="sub" style="font-size:11px">se imputan por separado en Flexxus</div>`
             :dif<=tol?`<div class="sub" style="font-size:11px;color:var(--diesel)">se imputan por separado · el IVA total se ajusta a ${money(suma)} (decía ${money(ivaTot)})</div>`
-            :`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(ivaTot)} — hay demasiada diferencia, se imputa todo al 21%. Corregilo con ✏️ Editar</div>`}
+            :`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(ivaTot)} — no cierra y así no se puede imputar discriminado. Corregí el IVA con ✏️ Editar antes de imputar</div>`}
         </div>`;})()}
       ${(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
         <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
@@ -12785,7 +12785,19 @@ function vComprasCarga(view){
             <div class="mm-field"><label>CUIT</label><input id="cf-cuit" value="${(d.cuit||'').replace(/"/g,'&quot;')}" onchange="comprasBuscarOrdenes()"></div>
             <div class="mm-field"><label>Neto (sin IVA)</label><input id="cf-neto" type="number" step="0.01" value="${Number(d.total_sin_iva)||0}"></div>
           </div>
-          <div class="mm-field"><label>IVA${(d.ivas||[]).length>1?' (suma de las alícuotas)':''}</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}"></div>
+          ${(()=>{
+            // 6-oct (Papa): el OCR leyó IVA 54.691,47 pero las alícuotas suman
+            // 54.415,47 (las de verdad). El IVA total ES la suma de las
+            // alícuotas: se arranca con esa suma y se avisa si el pie decía otra cosa.
+            const al=(d.ivas||[]).filter(x=>Number(x.monto));
+            if(al.length>1){
+              const suma=Math.round(al.reduce((a,x)=>a+(Number(x.monto)||0),0)*100)/100;
+              if(d.__iva_leido==null)d.__iva_leido=Number(d.total_iva)||0;
+              d.total_iva=suma;
+            }
+            const difLeido=d.__iva_leido!=null&&Math.abs(d.__iva_leido-(Number(d.total_iva)||0))>0.01;
+            return `<div class="mm-field"><label>IVA${al.length>1?' (suma de las alícuotas)':''}</label><input id="cf-iva" type="number" step="0.01" value="${Number(d.total_iva)||0}" ${al.length>1?'readonly title="Es la suma de las alícuotas: cambiá las alícuotas de abajo"':''}>
+              ${difLeido?`<div class="sub" style="font-size:11.5px;margin-top:4px;color:var(--diesel)">⚠ La lectura del pie decía IVA ${money(d.__iva_leido)}; las alícuotas suman ${money(d.total_iva)}. Se usa la suma. Revisá las alícuotas contra el papel.</div>`:''}</div>`;})()}
           ${(()=>{const al=(d.ivas||[]).filter(x=>Number(x.monto));
             if(!al.length)return '';
             return `<div class="mm-field" style="grid-column:1/-1">
