@@ -56,5 +56,16 @@ console.log('\n— No confundir "municipalidad" como CLIENTE con la percepción 
 // nombre del objetivo. Pero si algún día se le pasara, conviene saber qué hace.
 eq('"MUNICIPALIDAD DE CORDOBA" (nombre de objetivo) mapearía a municipal', codigoPercepcion('MUNICIPALIDAD DE CORDOBA'), 'PER MUNICIPA');
 
+console.log('\n— El panel detecta igual que flexxus.js (6-oct) —');
+{
+  const pj = fs.readFileSync(__dirname + '/panel.js', 'utf8');
+  const a = pj.indexOf('function percDetectar('), b = pj.indexOf('function percTipoSelect(');
+  const percDetectar = new Function(pj.slice(a, b) + '; return percDetectar;')();
+  ['Percep. IIBB. Cba', 'Percepción IVA', 'Percep. Mun. Cba', 'SUSS', 'Perc. Ganancias', 'Percepciones', 'Ingresos Brutos Cba']
+    .forEach(c => eq(`"${c}"`, percDetectar(c), codigoPercepcion(c)));
+  const fx = fs.readFileSync(__dirname + '/flexxus.js', 'utf8');
+  eq('flexxus usa el tipo elegido a mano (codigo_flexxus) antes que el texto', /codigoDe = o => \(o\.codigo_flexxus/.test(fx) && /codigopercepcion: codigoDe\(o\)/.test(fx), true);
+}
+
 console.log(`\n${ok} ok · ${mal} mal`);
 process.exit(mal ? 1 : 0);
