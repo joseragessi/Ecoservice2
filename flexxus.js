@@ -413,10 +413,13 @@ async function imputarFactura(f, letra, opts = {}) {
     if (/iva/.test(t)) return 'PER IVA';
     return process.env.FLEXXUS_CODIGO_PERCEPCION || null;
   };
+  // 6-oct: si la factura dice solo "Percepciones", el tipo se elige a mano en
+  // el detalle de la factura y viaja en o.codigo_flexxus; ese manda.
+  const codigoDe = o => (o.codigo_flexxus && String(o.codigo_flexxus)) || codigoPercepcion(o.concepto);
   for (const o of percepciones) {
-    if (!codigoPercepcion(o.concepto)) {
-      throw new Error(`No sé a qué código de percepción de Flexxus mapear "${o.concepto}". ` +
-        'Configurá FLEXXUS_CODIGO_PERCEPCION en Railway como fallback, o corregí el concepto en la factura.');
+    if (!codigoDe(o)) {
+      throw new Error(`La factura dice "${o.concepto}" y no se sabe de qué es (IIBB, IVA, municipal…). ` +
+        'Elegí el tipo en el detalle de la factura, al lado de la percepción, y volvé a imputar.');
     }
   }
 
@@ -623,7 +626,7 @@ async function imputarFactura(f, letra, opts = {}) {
   }
   if (percepciones.length) {
     body.percepciones = percepciones.map(o => ({
-      codigopercepcion: codigoPercepcion(o.concepto),
+      codigopercepcion: codigoDe(o),
       monto: Math.round((Number(o.monto) || 0) * 100) / 100,
     }));
   }
