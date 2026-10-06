@@ -5103,6 +5103,9 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       'provincia, percepción IVA, ganancias) → "p"; impuestos/tasas (sellados, tasa SSN, servicios ' +
       'sociales, gastos notariales, impuestos internos, tasa municipal) → "i"; el resto ' +
       '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
+      '- Si el total dice solo "Percepciones" pero en otra parte de la factura (abajo, en letra chica) ' +
+      'aparece el detalle, p. ej. "Percepciones: IIBB CBA (LUA) [12 - 4,00]", el concepto es ESE detalle ' +
+      '("Percepción IIBB CBA"), no la palabra suelta "Percepciones". Si hay varias, una entrada por cada una.\n' +
       '- La suma de los montos de "iv" tiene que dar "ti".\n' +
       '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
       'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
