@@ -618,6 +618,15 @@ async function imputarFactura(f, letra, opts = {}) {
       }
       console.log(`[flexxus] IVA discriminado: ${alicuotas.map(a => a.porcentaje + '% $' + a.monto).join(' + ')}`);
     } else {
+      // 6-oct (Papa 0018-00040069): con DOS o más alícuotas que no cierran con
+      // el IVA total, mandar todo al 21% deja el IVA mal en Flexxus (se tipeó
+      // 57.415,47 en vez de 54.415,47 y se imputó así). No se imputa: hay que
+      // corregir el IVA o las alícuotas en el panel primero.
+      const distintas = new Set(alicuotas.map(a => a.porcentaje)).size;
+      if (distintas > 1) {
+        throw new Error(`El IVA no cierra: las alícuotas (${alicuotas.map(a => a.porcentaje + '% $' + a.monto).join(' + ')} = $${sumaAlic}) ` +
+          `no suman el IVA total ($${iva}). Corregí el IVA con ✏️ Editar y volvé a imputar: así se manda discriminado.`);
+      }
       body.iva = [{ monto: Math.round(iva * 100) / 100, porcentaje: 21 }];
       if (alicuotas.length) {
         console.log(`[flexxus] alícuotas descartadas: suman ${sumaAlic} y el IVA total es ${iva} (dif ${dif.toFixed(2)}, tolerancia ${tolerancia.toFixed(2)}) — se manda todo al 21%`);
