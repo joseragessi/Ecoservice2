@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-02 · informe gerencia: nafta y gasoil vs. máquinas';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-06 · compras: tipo de percepción a mano para Flexxus';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -10003,6 +10003,55 @@ async function togglePagada(id,valor){
     }else go('compras');
   }catch(e){alert('No pude actualizar: '+(e.message||''));}
 }
+// Tipo de percepción para Flexxus (6-oct). Si el texto ya lo dice ("Percep.
+// IIBB Cba") se muestra lo detectado; si dice solo "Percepciones", hay que
+// elegirlo: sin eso Flexxus no la puede imputar. Mismas reglas que flexxus.js.
+const PERC_COD=[['PER IIBB','Ingresos Brutos'],['PER IVA','IVA'],['PER MUNICIPA','Municipal'],['PER SUSS','SUSS'],['PER GAN','Ganancias']];
+function percDetectar(c){const t=String(c||'').toLowerCase();
+  if(/suss|seguridad social/.test(t))return'PER SUSS';
+  if(/iibb|ingresos brutos|ing\.?\s*brutos|rentas/.test(t))return'PER IIBB';
+  if(/\bmun\b|munic|comercio\s*e?\s*industria|cbamun/.test(t))return'PER MUNICIPA';
+  if(/ganancia/.test(t))return'PER GAN';
+  if(/iva/.test(t))return'PER IVA';
+  return null;}
+// Mismo selector en la carga (Revisar y asignar), antes de guardar: el OCR
+// a veces lee solo "Percepciones" y el detalle (IIBB CBA) está en letra chica.
+function percTipoCarga(o,ix){
+  const esPerc=o.tipo==='percepcion'||/percep/i.test(String(o.concepto||''));
+  if(!esPerc||!(Number(o.monto)||0))return'';
+  const auto=percDetectar(o.concepto),val=o.codigo_flexxus||'';
+  if(auto&&!val)return'';
+  return `<div style="margin-top:5px;font-size:11.5px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <span style="color:${val?'var(--tinta-3)':'var(--rojo)'}">${val?'Tipo:':'⚠ ¿De qué es?'}</span>
+    <select onchange="(comprasExtracted.otros_conceptos[${ix}]||{}).codigo_flexxus=this.value||undefined;this.style.borderColor=this.value?'var(--linea)':'var(--rojo)'" style="font-size:11.5px;padding:3px 6px;border:1px solid ${val?'var(--linea)':'var(--rojo)'};border-radius:6px">
+      <option value="">— Elegí —</option>${PERC_COD.map(([v,l])=>`<option value="${v}" ${val===v?'selected':''}>${l}</option>`).join('')}</select>
+    <span class="sub" style="font-size:10.5px">mirá el detalle en letra chica de la factura</span></div>`;
+}
+function percTipoSelect(inv,o,ix){
+  const esPerc=o.tipo==='percepcion'||/percep/i.test(String(o.concepto||''));
+  if(o.exento||!esPerc||!(Number(o.monto)||0))return'';
+  const auto=percDetectar(o.concepto),val=o.codigo_flexxus||'';
+  if(auto&&!val)return'';   // el texto ya alcanza
+  const falta=!val&&!auto;
+  return `<div style="display:flex;align-items:center;gap:8px;margin:-2px 0 8px 24px;font-size:11.5px">
+    <span style="color:${falta?'var(--rojo)':'var(--tinta-3)'}">${falta?'⚠ ¿De qué es esta percepción?':'Tipo para Flexxus:'}</span>
+    <select onchange="setPercTipo('${inv.id}',${ix},this.value)" style="font-size:11.5px;padding:3px 6px;border:1px solid ${falta?'var(--rojo)':'var(--linea)'};border-radius:6px">
+      <option value="">${auto?'Automático ('+auto+')':'— Elegí —'}</option>
+      ${PERC_COD.map(([v,l])=>`<option value="${v}" ${val===v?'selected':''}>${l}</option>`).join('')}</select></div>`;
+}
+async function setPercTipo(id,ix,cod){
+  const inv=(comprasVer&&String(comprasVer.id)===String(id))?comprasVer
+    :(comprasData||[]).find(f=>String(f.id)===String(id));
+  if(!inv||!inv.otros_conceptos||!inv.otros_conceptos[ix])return;
+  const nuevos=inv.otros_conceptos.map((o,i)=>{if(i!==ix)return o;const x={...o};if(cod)x.codigo_flexxus=cod;else delete x.codigo_flexxus;return x;});
+  try{
+    const r=await api('/api/compras/factura/'+id,{method:'PUT',body:JSON.stringify({otros_conceptos:nuevos})});
+    if(comprasVer&&String(comprasVer.id)===String(id))comprasVer=r;
+    const j=(comprasData||[]).findIndex(f=>String(f.id)===String(id));if(j>-1)comprasData[j]=r;
+    toast(cod?'Percepción: '+cod:'Tipo automático');
+    go('compras');
+  }catch(e){alert('No pude guardar el tipo: '+(e.message||''));}
+}
 // Marca un concepto (percepción/impuesto) como exento o pagable. Guarda toda la
 // lista otros_conceptos actualizada (el PUT mergea sobre el resto de la factura).
 async function toggleConcepto(id,ix,exento){
@@ -11861,7 +11910,7 @@ function vComprasDetalle(view){
               <span style="${o.exento?'text-decoration:line-through;opacity:.5':''}">${o.concepto||cap(o.tipo||'otro')}${o.exento?' <span class="badge b-gray" style="font-size:9px">exento</span>':''}</span>
             </span>
             <b class="money" style="${o.exento?'opacity:.4;text-decoration:line-through':''}">${money(o.monto)}</b>
-          </div>`).join('')}`:''}
+          </div>${percTipoSelect(inv,o,ix)}`).join('')}`:''}
       <div class="divider"></div>
       <div class="mcard-row"><span style="font-weight:600">Total a pagar</span><b class="money">${money(bruto)}</b></div>
       ${nc?`<div class="mcard-row"><span style="color:var(--ambar)">Notas de crédito</span><b class="money" style="color:var(--ambar)">− ${money(nc)}</b></div>
@@ -12599,6 +12648,7 @@ async function comprasGuardar(){
     otros_conceptos:(d.otros_conceptos||[]).map(o=>({
       concepto:o.concepto||null, monto:Number(o.monto)||0, tipo:o.tipo||'otro',
       exento: o.exento!=null ? !!o.exento : (o.tipo==='impuesto'),
+      ...(o.codigo_flexxus?{codigo_flexxus:o.codigo_flexxus}:{}),
     })),
     items:d.items||[],
     assignmentMode:comprasAssignMode,
@@ -12757,7 +12807,7 @@ function vComprasCarga(view){
         </div>
         ${(d.otros_conceptos||[]).length?`<div class="mm-label" style="margin-top:14px">Percepciones e impuestos</div>
         <div class="tabla-wrap"><table><thead><tr><th>Concepto</th><th>Tipo</th><th class="tr">Monto</th></tr></thead>
-          <tbody>${(d.otros_conceptos).map(o=>`<tr><td>${o.concepto||'—'}</td>
+          <tbody>${(d.otros_conceptos).map((o,ix)=>`<tr><td>${o.concepto||'—'}${percTipoCarga(o,ix)}</td>
             <td><span class="badge ${o.tipo==='percepcion'?'b-blue':o.tipo==='impuesto'?'b-amber':'b-gray'}">${cap(o.tipo||'otro')}</span></td>
             <td class="money tr">${money(o.monto)}</td></tr>`).join('')}</tbody></table></div>
         <div class="sub" style="margin-top:6px">Las <b>percepciones</b> se suman al total; los <b>impuestos/tasas</b> arrancan exentos. Podés cambiar cuáles se pagan con el check en el detalle de la factura, después de guardar.</div>`:''}
