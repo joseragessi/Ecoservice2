@@ -4861,6 +4861,42 @@ const MODEL_FACTURAS_RAPIDO = process.env.ANTHROPIC_MODEL_FACTURAS_RAPIDO || 'cl
 // Pasa el JSON compacto del extractor (claves cortas, ítems como arrays) al
 // formato de siempre. Si el modelo responde en el formato largo, lo deja pasar
 // tal cual: así un cambio de modelo no rompe la carga.
+// Controles aritméticos de una lectura (7-oct). Devuelve frases cortas con lo
+// que no cierra; vacío = coherente. Tolerancias amplias: redondeos y bases
+// distintas por alícuota no tienen que disparar nada.
+function problemasFactura(p) {
+  const out = [];
+  if (!p) return out;
+  const fmt = n => '$' + Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const tn = Number(p.total_sin_iva) || 0, ti = Number(p.total_iva) || 0;
+  const al = (p.ivas || []).filter(x => Number(x.monto));
+  if (tn > 0 && al.length === 1 && al[0].porcentaje) {
+    const esperado = tn * al[0].porcentaje / 100;
+    if (Math.abs(esperado - al[0].monto) > Math.max(2, esperado * 0.01))
+      out.push(`IVA ${al[0].porcentaje}% leído ${fmt(al[0].monto)} y debería ser ≈ ${fmt(esperado)}`);
+  }
+  if (al.length > 1) {
+    const s = al.reduce((a, x) => a + Number(x.monto), 0);
+    if (Math.abs(s - ti) > 1) out.push(`las alícuotas suman ${fmt(s)} y el IVA leído es ${fmt(ti)}`);
+  }
+  (p.otros_conceptos || []).forEach(o => {
+    if (!o.porcentaje || !tn) return;
+    const esperado = tn * o.porcentaje / 100;
+    if (Math.abs(esperado - Number(o.monto)) > Math.max(2, esperado * 0.02))
+      out.push(`${o.concepto || 'percepción'} ${o.porcentaje}% leída ${fmt(o.monto)} y debería ser ≈ ${fmt(esperado)}`);
+  });
+  if (p.total_impreso) {
+    const suma = tn + (al.length > 1 ? al.reduce((a, x) => a + Number(x.monto), 0) : ti) + (p.otros_conceptos || []).reduce((a, o) => a + (Number(o.monto) || 0), 0);
+    if (Math.abs(suma - p.total_impreso) > 2) out.push(`neto + IVA + percepciones da ${fmt(suma)} y el total impreso es ${fmt(p.total_impreso)}`);
+  }
+  if (p.fecha_factura) {
+    const f = new Date(p.fecha_factura + 'T12:00'), hoy = Date.now();
+    if (isNaN(f) || f.getTime() > hoy + 3 * 86400000 || f.getTime() < hoy - 150 * 86400000)
+      out.push(`la fecha leída (${p.fecha_factura}) es rara`);
+  }
+  return out;
+}
+
 function expandirFactura(d) {
   if (!d || typeof d !== 'object') return d;
   if ('fecha_factura' in d || 'total_sin_iva' in d) return d;   // formato largo
@@ -4870,7 +4906,7 @@ function expandirFactura(d) {
     ? { descripcion: x[0] ?? null, monto_sin_iva: num(x[1]) || 0, cantidad: num(x[2]) || 1, codigo: x[3] ? String(x[3]).trim() || null : null }
     : { descripcion: (x && (x.descripcion ?? x.d)) ?? null, monto_sin_iva: num(x && (x.monto_sin_iva ?? x.m)) || 0, cantidad: num(x && (x.cantidad ?? x.q)) || 1, codigo: (x && x.codigo) ? String(x.codigo).trim() || null : null };
   const otro = x => Array.isArray(x)
-    ? { concepto: x[0] ?? null, monto: num(x[1]) || 0, tipo: TIPO[x[2]] || x[2] || 'otro' }
+    ? { concepto: x[0] ?? null, monto: num(x[1]) || 0, tipo: TIPO[x[2]] || x[2] || 'otro', ...(num(x[3]) ? { porcentaje: num(x[3]) } : {}) }
     : { concepto: (x && (x.concepto ?? x.c)) ?? null, monto: num(x && (x.monto ?? x.m)) || 0, tipo: TIPO[x && x.tipo] || (x && x.tipo) || 'otro' };
   return {
     fecha_factura: d.f ?? null,
@@ -4881,6 +4917,7 @@ function expandirFactura(d) {
     orden_compra_leida: d.oc ? String(d.oc).trim() || null : null,
     total_sin_iva: num(d.tn) || 0,
     total_iva: num(d.ti) || 0,
+    total_impreso: num(d.t),
     // Alícuotas discriminadas: [[21, 103281.87], [10.5, 700777.52]].
     // Muchas facturas de ferretería/agro mezclan 21% y 10,5%; Flexxus
     // acepta varias y hasta ahora se mandaba todo como 21%.
@@ -5069,9 +5106,16 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       'Leé esta factura argentina y devolvé ÚNICAMENTE este JSON, sin backticks ni texto:\n' +
       '{"f":"YYYY-MM-DD","n":"numero","l":"A|B|C","p":"razon social emisor","c":"cuit emisor",' +
       '"oc":"numero de orden de compra o null",' +
-      '"tn":neto_sin_iva,"ti":iva_total,"iv":[[porcentaje,monto]],' +
+      '"tn":neto_sin_iva,"ti":iva_total,"iv":[[porcentaje,monto]],"t":total_impreso,' +
       '"i":[["descripcion",monto_sin_iva,cantidad,"codigo"]],' +
-      '"o":[["concepto",monto,"p|i|x"]]}\n' +
+      '"o":[["concepto",monto,"p|i|x",porcentaje_o_null]]}\n' +
+      '- "f": las fechas argentinas son DÍA/MES/AÑO: "01/10/2026" es el 1 de OCTUBRE → "2026-10-01".\n' +
+      '- "t": el TOTAL final impreso en la factura (Total / Importe Total). Sirve para controlar.\n' +
+      '- En "o", el 4º campo es el porcentaje impreso al lado del concepto si figura ' +
+      '("Percep. IIBB. Cba 4,00 %" → 4); si no figura, null.\n' +
+      '- Leé cada número DÍGITO POR DÍGITO: en fotos es fácil confundir 1/7, 3/8, 5/6, 6/0. ' +
+      'Si una alícuota dice 21% el IVA tiene que ser ≈ neto × 0,21; si una percepción dice 4% su monto ' +
+      'tiene que ser ≈ neto × 0,04. Si no cierra, releé el número.\n' +
       'Reglas:\n' +
       '- Números sin separador de miles. Campo ilegible: null. Sin ítems: "i":[]. Sin otros: "o":[].\n- cantidad = la CANTIDAD facturada del ítem (columna Cant./Un.). Si no figura o es ilegible: 1. El monto_sin_iva sigue siendo el TOTAL del renglón, NO el precio unitario.\n' +
       '- "p": razón social del EMISOR transcripta EXACTA carácter por carácter (si dice COCCONI es ' +
@@ -5198,6 +5242,18 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       console.log('[factura] primer intento insuficiente → reintento con ' + MODEL_FACTURAS);
       const segundo = await intentoExtraccion(MODEL_FACTURAS);
       if (sirve(segundo) || !parsed) parsed = segundo;
+    } else {
+      // 7-oct (Acerco): Haiku leyó IVA 57.811,49 por 51.811,46 y percepciones
+      // 14.803 / 2.080 por 9.868 / 1.480 de una foto. Los números de una
+      // factura se controlan solos (IVA = neto × %, percepción = neto × %,
+      // neto + IVA + otros = total). Si no cierran, se relee con el modelo
+      // grande y se queda la lectura que cierre mejor.
+      const prob = problemasFactura(parsed);
+      if (prob.length) {
+        console.log('[factura] lectura incoherente (' + prob.join(' | ') + ') → releo con ' + MODEL_FACTURAS);
+        const segundo = await intentoExtraccion(MODEL_FACTURAS);
+        if (sirve(segundo) && problemasFactura(segundo).length <= prob.length) parsed = segundo;
+      }
     }
     console.log(`[factura] total ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     if (!sirve(parsed)) {
@@ -5231,6 +5287,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
           Math.abs(sumaItems - Number(parsed.total_sin_iva)) > Math.max(1, Number(parsed.total_sin_iva) * 0.005)) {
         avisos.push('Los ítems suman ' + sumaItems.toFixed(2) + ' y el neto leído es ' + Number(parsed.total_sin_iva).toFixed(2) + ': verificá los montos contra el papel.');
       }
+      problemasFactura(parsed).forEach(p => avisos.push(p + ' — verificalo contra el papel.'));
       if (avisos.length) parsed.__avisos = avisos;
       // ── Orden de compra: se busca ACÁ, en el mismo paso del OCR, para que
       // cuando aparezca la pantalla de revisión la vinculación ya esté hecha.
