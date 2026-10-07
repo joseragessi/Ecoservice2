@@ -5197,16 +5197,20 @@ router.post('/api/compras/extract', auth, async (req, res) => {
           'anthropic-version': '2023-06-01',
           'content-type':      'application/json',
         },
+        // 7-oct: Sonnet 4.6 rechaza el prefill ("does not support assistant
+        // message prefill") y la relectura fallaba en 0,1 s sin que nadie lo
+        // notara. El prefill y temperature solo van para Haiku; el JSON de los
+        // otros se pesca igual con parseJsonFactura.
         body: JSON.stringify({
           model:      modelo,
           max_tokens: 2500,   // con el formato compacto sobra para 30+ ítems
-          temperature: 0,
+          ...(/haiku/i.test(modelo) ? { temperature: 0 } : {}),
           messages: [
             // Texto ANTES que la imagen y con cache_control: las reglas son
             // estáticas, así que de la 2ª factura de la tanda en adelante el
             // modelo las toma de caché en vez de reprocesarlas (ventana ~5 min).
-            { role: 'user',      content: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }, ...partes] },
-            { role: 'assistant', content: '{' },
+            { role: 'user',      content: [{ type: 'text', text: prompt + (/haiku/i.test(modelo) ? '' : '\nRespondé SOLO con el JSON, empezando por "{".'), cache_control: { type: 'ephemeral' } }, ...partes] },
+            ...(/haiku/i.test(modelo) ? [{ role: 'assistant', content: '{' }] : []),
           ],
         }),
       });
@@ -5214,7 +5218,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       const crudo = (data.content || []).map(c => c.text || '').join('');
       console.log(`[factura] ${modelo} en ${((Date.now() - t1) / 1000).toFixed(1)}s ` +
         `(${paginas.length > 1 ? paginas.length + ' págs, ' : ''}` +
-        `${Math.round(paginas.reduce((a, p) => a + String(p.data || '').length, 0) * 0.75 / 1024)} KB, ` +
+        `${Math.round(paginas.reduce((a, p) => a + String(p.data || '').length, 0) * 0.75 / 1024)} KB${pie ? ' + pie ' + Math.round(String(pie.data).length * 0.75 / 1024) + ' KB' : ' sin pie'}, ` +
         `${(data.usage && data.usage.input_tokens) || '?'} in / ${(data.usage && data.usage.output_tokens) || '?'} out` +
         ((data.usage && data.usage.cache_read_input_tokens) ? `, ${data.usage.cache_read_input_tokens} de caché` : '') + ')');
       if (data.error) {
