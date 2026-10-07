@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-06 · compras: IVA total = suma de alícuotas al cargar';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-07 · compras: control aritmético de la lectura + relectura con Sonnet';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -12524,7 +12524,7 @@ async function comprasExtraer(){
     const d=await comprasOCRVuelo.p;
     if(d.__error){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg=d.__error;}
     else{comprasExtracted=d;comprasMsg='';
-      (d.__avisos||[]).forEach(a=>toast('⚠ '+a,'error'));}
+      if((d.__avisos||[]).length)toast('⚠ La lectura tiene '+d.__avisos.length+' cosa'+(d.__avisos.length===1?'':'s')+' para revisar','error');}
   }catch(e){comprasExtracted={fecha_factura:null,numero_factura:null,proveedor:null,cuit:null,items:[],total_sin_iva:0,total_iva:0};comprasMsg='No se pudo extraer. Completá a mano.';}
   comprasOCRVuelo=null;
   comprasAssignMode='total';comprasAssign={objetivo:'',unidad:'',comentario:''};comprasAssignments={};
@@ -12772,6 +12772,7 @@ function vComprasCarga(view){
     <div class="grid g-2" style="align-items:start">
       <div>
         <div class="mm-label">Datos extraídos</div>
+        ${(d.__avisos||[]).length?`<div class="aviso-amarillo" style="margin-bottom:10px;font-size:12.5px;line-height:1.5"><b>⚠ Revisá contra el papel:</b><ul style="margin:4px 0 0;padding-left:18px">${d.__avisos.map(a=>`<li>${escStk(a)}</li>`).join('')}</ul></div>`:''}
         <div class="panel" style="margin-bottom:14px">
           <div class="grid g-2">
             <div class="mm-field"><label>Fecha</label><input id="cf-fecha" type="date" max="${new Date().toISOString().slice(0,10)}" value="${d.fecha_factura||''}" oninput="cfAvisoFecha()">
