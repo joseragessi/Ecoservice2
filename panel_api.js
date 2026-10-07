@@ -4897,6 +4897,45 @@ function problemasFactura(p) {
   return out;
 }
 
+// Bonificación / descuento general (7-oct, Córdoba Riegos: subtotal 84.629,43,
+// bonificación -10% -8.462,94, neto gravado 76.166,49). El neto que va a
+// Flexxus es el de DESPUÉS del descuento (es sobre el que se calcula el IVA);
+// la bonificación no puede ir además como concepto negativo porque se
+// descontaría dos veces. Se reparte en los ítems (a prorrata) y se saca de los
+// conceptos. Sirve tanto si la lectura trajo el neto antes como después.
+function normalizarBonificacion(p) {
+  if (!p || !Array.isArray(p.otros_conceptos)) return p;
+  const esBon = o => (Number(o.monto) || 0) < 0 && (o.tipo === 'otro' || /bonif|descuento|\bdto\b|dcto/i.test(String(o.concepto || '')));
+  const bon = p.otros_conceptos.filter(esBon);
+  if (!bon.length) return p;
+  const desc = bon.reduce((a, o) => a + Math.abs(Number(o.monto) || 0), 0);
+  let tn = Number(p.total_sin_iva) || 0;
+  const ti = Number(p.total_iva) || 0;
+  const al = (p.ivas || []).filter(x => Number(x.monto));
+  // IVA esperado según qué neto: si hay una sola alícuota se compara con
+  // ella; con varias no se puede saber la base, se decide por los ítems.
+  const pct = al.length === 1 ? Number(al[0].porcentaje) || 0 : 0;
+  const cierra = base => pct && Math.abs(base * pct / 100 - ti) <= Math.max(2, ti * 0.005);
+  const sumItems = (p.items || []).reduce((a, i) => a + (Number(i.monto_sin_iva) || 0), 0);
+  if (pct && !cierra(tn) && cierra(tn - desc)) tn = tn - desc;            // vino el neto ANTES del descuento
+  else if (!pct && sumItems && Math.abs(sumItems - tn) <= 2) tn = tn - desc;  // tn = suma de ítems = antes
+  else if (!(cierra(tn) || Math.abs(sumItems - desc - tn) <= 2)) return p;     // no se entiende: no tocar
+  tn = Math.round(tn * 100) / 100;
+  p.total_sin_iva = tn;
+  p.otros_conceptos = p.otros_conceptos.filter(o => !esBon(o));
+  // Ítems a prorrata para que sumen el neto
+  if (sumItems > 0 && Math.abs(sumItems - tn) > 0.01) {
+    const f = tn / sumItems;
+    let acum = 0;
+    p.items.forEach((it, i) => {
+      if (i === p.items.length - 1) it.monto_sin_iva = Math.round((tn - acum) * 100) / 100;
+      else { it.monto_sin_iva = Math.round((Number(it.monto_sin_iva) || 0) * f * 100) / 100; acum += it.monto_sin_iva; }
+    });
+  }
+  p.bonificacion = { monto: Math.round(desc * 100) / 100, concepto: bon.map(o => o.concepto).filter(Boolean).join(', ') || 'Bonificación' };
+  return p;
+}
+
 function expandirFactura(d) {
   if (!d || typeof d !== 'object') return d;
   if ('fecha_factura' in d || 'total_sin_iva' in d) return d;   // formato largo
@@ -5156,6 +5195,10 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       'provincia, percepción IVA, ganancias) → "p"; impuestos/tasas (sellados, tasa SSN, servicios ' +
       'sociales, gastos notariales, impuestos internos, tasa municipal) → "i"; el resto ' +
       '(bonificaciones y descuentos con monto negativo) → "x". El concepto, tal como figura.\n' +
+      '- BONIFICACIÓN o DESCUENTO general sobre el subtotal ("Subtotal 84.629,43 · Bonificación -10% ' +
+      '-8.462,94 · Subtotal 76.166,49 · IVA 21%"): "tn" es el neto DESPUÉS del descuento (el que lleva ' +
+      'el IVA, 76166.49); los ítems van con su importe impreso tal cual; la bonificación va en "o" como ' +
+      '["Bonificación 10%",-8462.94,"x",-10].\n' +
       '- Si el total dice solo "Percepciones" pero en otra parte de la factura (abajo, en letra chica) ' +
       'aparece el detalle, p. ej. "Percepciones: IIBB CBA (LUA) [12 - 4,00]", el concepto es ESE detalle ' +
       '("Percepción IIBB CBA"), no la palabra suelta "Percepciones". Si hay varias, una entrada por cada una.\n' +
@@ -5238,7 +5281,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         return null;
       }
       try {
-        return expandirFactura(obj);
+        return normalizarBonificacion(expandirFactura(obj));
       } catch (e) {
         console.error('[factura] expandirFactura falló:', e.message);
         ultimoMotivo = 'estructura inesperada en la respuesta';
@@ -5301,6 +5344,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         avisos.push('Los ítems suman ' + sumaItems.toFixed(2) + ' y el neto leído es ' + Number(parsed.total_sin_iva).toFixed(2) + ': verificá los montos contra el papel.');
       }
       problemasFactura(parsed).forEach(p => avisos.push(p + ' — verificalo contra el papel.'));
+      if (parsed.bonificacion) avisos.push(`La factura tiene ${parsed.bonificacion.concepto} de $${parsed.bonificacion.monto.toLocaleString('es-AR', { minimumFractionDigits: 2 })}: ya está descontada del neto y repartida en los ítems (no va aparte a Flexxus).`);
       if (avisos.length) parsed.__avisos = avisos;
       // ── Orden de compra: se busca ACÁ, en el mismo paso del OCR, para que
       // cuando aparezca la pantalla de revisión la vinculación ya esté hecha.
