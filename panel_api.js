@@ -5092,13 +5092,22 @@ router.post('/api/compras/extract', auth, async (req, res) => {
         : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pg.data } };
     };
     const partes = paginas.map(aParte);
+    // 7-oct: con una sola foto, el panel manda además una AMPLIACIÓN de la
+    // mitad de abajo (pie con IVA, percepciones y total), para leer esos
+    // números con el doble de resolución.
+    const pie = req.body && req.body.pie && req.body.pie.data && paginas.length === 1 ? req.body.pie : null;
+    if (pie) {
+      partes.push({ type: 'text', text: 'La imagen siguiente es una AMPLIACIÓN de la mitad de abajo de la MISMA factura ' +
+        '(no es otra página). Usala para leer con precisión el pie: neto, alícuotas de IVA, percepciones con su %, y total.' });
+      partes.push(aParte(pie));
+    }
     const part = partes[0];   // compatibilidad con el resto del handler
     // FORMATO COMPACTO: claves de 1-2 letras y los ítems como arrays. El
     // grueso del tiempo de extracción son los tokens que el modelo ESCRIBE;
     // con este formato una factura de 10 ítems escribe la mitad. Se remapea
     // acá abajo al formato de siempre, así el resto del sistema no cambia.
-    const prompt = (partes.length > 1
-        ? `Te paso ${partes.length} imágenes: son las PÁGINAS DE UNA MISMA FACTURA, en orden. ` +
+    const prompt = (paginas.length > 1
+        ? `Te paso ${paginas.length} imágenes: son las PÁGINAS DE UNA MISMA FACTURA, en orden. ` +
           'Leelas todas juntas como un solo documento: los ítems se acumulan de todas las páginas y ' +
           'los totales están en la última. Cabecera (proveedor, CUIT, número, fecha) una sola vez, ' +
           'sin repetir. Devolvé UN SOLO JSON para la factura completa.\n\n'
