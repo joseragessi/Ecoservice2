@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-07 · compras: control aritmético de la lectura + relectura con Sonnet';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-07 · compras: foto a 1568px + ampliación del pie para el OCR';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -10556,7 +10556,7 @@ async function ordOCR(input){
   if(est)est.innerHTML='<div class="sub" style="margin:-6px 0 12px;text-align:center">⏳ Leyendo el comprobante…</div>';
   try{
     const pgs=[];for(const f of fs)pgs.push(await comprasPrepararArchivo(f));
-    const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:pgs[0].data,fileType:pgs[0].type,paginas:pgs.map(x=>({data:x.data,type:x.type}))})});
+    const d=await api('/api/compras/extract',{method:'POST',body:JSON.stringify({fileData:pgs[0].data,fileType:pgs[0].type,paginas:pgs.map(x=>({data:x.data,type:x.type})),pie:pgs.length===1&&pgs[0].pie?pgs[0].pie:null})});
     if(d.__error)throw new Error(d.__error);
     window._ordOCR=d;
     const g=id=>document.getElementById(id);
@@ -12462,11 +12462,25 @@ function comprasPrepararArchivo(f){
       }
       const img=new Image();
       img.onload=()=>{
-        const esc=Math.min(1,1300/Math.max(img.width,img.height));
+        // 7-oct: 1300px dejaba los números del pie en ~10px de alto y el OCR
+        // confundía 1/7, 5/6 (Acerco: IVA 51.811 leído 57.811). La página va
+        // a 1568px (el máximo que la IA aprovecha) y además se manda una
+        // AMPLIACIÓN del pie (mitad de abajo, desde el original) donde están
+        // IVA, percepciones y total.
+        const esc=Math.min(1,1568/Math.max(img.width,img.height));
         const cv=document.createElement('canvas');
         cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
         cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-        resolve({data:cv.toDataURL('image/jpeg',0.82).split(',')[1],type:'image/jpeg',name:f.name});
+        let pie=null;
+        try{
+          const y0=Math.round(img.height*0.5),hh=img.height-y0;
+          const e2=Math.min(1,1568/Math.max(img.width,hh));
+          const c2=document.createElement('canvas');
+          c2.width=Math.round(img.width*e2);c2.height=Math.round(hh*e2);
+          c2.getContext('2d').drawImage(img,0,y0,img.width,hh,0,0,c2.width,c2.height);
+          if(e2>esc*1.15)pie={data:c2.toDataURL('image/jpeg',0.9).split(',')[1],type:'image/jpeg'};
+        }catch(e){pie=null;}
+        resolve({data:cv.toDataURL('image/jpeg',0.88).split(',')[1],type:'image/jpeg',name:f.name,pie});
       };
       img.onerror=()=>resolve({data:dataUrl.split(',')[1],type:f.type,name:f.name});
       img.src=dataUrl;
@@ -12513,7 +12527,8 @@ function comprasPrefetchOCR(){
   comprasOCRVuelo={clave,
     p:api('/api/compras/extract',{method:'POST',body:JSON.stringify({
         fileData:comprasFile.data,fileType:comprasFile.type,
-        paginas:pgs.map(x=>({data:x.data,type:x.type}))})})
+        paginas:pgs.map(x=>({data:x.data,type:x.type})),
+        pie:pgs.length===1&&pgs[0].pie?pgs[0].pie:null})})
       .catch(e=>({__error:e.message||'No se pudo extraer. Completá a mano.'}))};
 }
 async function comprasExtraer(){
