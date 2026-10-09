@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-09 · stock: familias del parque general desplegables con detalle';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-09 · movimientos de máquinas simples (app + panel + stock general)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3885,9 +3885,11 @@ async function vStockGeneral(view){
     const badgeGr=g=>g==='deposito'?'<span class="badge b-amber">depósito</span>':g==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>';
     const chipsDe=f=>{
       const enT=new Set((f.numeros_taller||[]).map(n=>norm(n)));
+      const prest={};(f.numeros_prestados||[]).forEach(p=>{prest[norm(p.numero)]=p;});
       const nums=f.numeros||[], MAX=12;
       let h=nums.slice(0,MAX).map(n=>{
         const id=padronPorNum[norm(n)], cl=id?` style="cursor:pointer" onclick="fichaMaquina('${id}')"`:'';
+        if(prest[norm(n)])return `<span class="uni-chip" title="prestada a ${escStk(prest[norm(n)].hacia)}" style="background:var(--azul-soft);color:var(--azul);text-decoration:line-through">${escStk(n)}</span>`;
         return enT.has(norm(n))
           ?`<span class="uni-chip" title="en el taller" style="background:var(--rojo-soft);color:#A3253A;border:1px solid #F2C4CB;text-decoration:line-through${id?';cursor:pointer':''}"${id?` onclick="fichaMaquina('${id}')"`:''}>${escStk(n)}</span>`
           :`<span class="uni-chip"${cl}>${escStk(n)}</span>`;}).join('');
@@ -3895,6 +3897,7 @@ async function vStockGeneral(view){
       h+=Array.from({length:snVis},()=>`<span class="uni-chip" title="declarada sin número" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">s/n</span>`).join('');
       const resto=Math.max(0,nums.length-MAX)+(sn-snVis);
       if(resto)h+=`<span class="sub" style="font-size:11px;margin-left:3px">+${resto}</span>`;
+      h+=(f.numeros_recibidos||[]).map(p=>`<span class="uni-chip" title="prestada por ${escStk(p.desde)}" style="background:var(--azul-soft);color:var(--azul);border:1px dashed var(--azul)">${escStk(p.numero)}</span>`).join('');
       return h||'<span class="sub">—</span>';
     };
     const detalle=k=>{
@@ -3985,8 +3988,13 @@ async function vStockGeneral(view){
         // a contarse como disponible sola, sin tocar el censo.
         const enTaller=new Set((f.numeros_taller||[]).map(n=>norm(n)));
         const ambiguos=new Set((f.numeros_ambiguos||[]).map(n=>norm(n)));
+        // Prestadas a otro objetivo (Movimientos, 09-oct): tachadas en azul.
+        const fDM=d=>{const x=String(d||'').slice(0,10).split('-');return x.length===3?x[2]+'/'+x[1]:'';};
+        const prest={};(f.numeros_prestados||[]).forEach(p=>{prest[norm(p.numero)]=p;});
         const chips=(f.numeros||[]).map(n=>{
           const id=padronPorNum[norm(n)];
+          const pr=prest[norm(n)];
+          if(pr)return `<span class="uni-chip" title="prestada a ${escStk(pr.hacia)}${pr.vuelve_fecha?' · vuelve '+fDM(pr.vuelve_fecha):''}" style="background:var(--azul-soft);color:var(--azul);text-decoration:line-through;${pr.vencida?'border:1px solid var(--rojo)':''}">${escStk(n)}</span>`;
           if(enTaller.has(norm(n))){
             const d=(f.taller_detalle||[]).find(t=>norm(t.numero)===norm(n));
             return `<span class="uni-chip" title="en el taller${d&&d.falla?' · '+escStk(d.falla):''}" style="background:var(--rojo-soft);color:#A3253A;border:1px solid #F2C4CB;text-decoration:line-through${id?';cursor:pointer':''}"${id?` onclick="fichaMaquina('${id}')"`:''}>${escStk(n)}</span>`;
@@ -4009,6 +4017,16 @@ async function vStockGeneral(view){
               `<span class="uni-chip" title="el capataz la declaró sin número" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">s/n</span>`).join('')
               +(faltan>12?`<span class="sub" style="font-size:11px;margin-left:3px">+${faltan-12} s/n</span>`:'');
           })();
+        // Movimientos: las que vinieron prestadas y lo que salió/entró después del censo.
+        const movHtml=[
+          ...(f.numeros_recibidos||[]).map(p=>`<span class="uni-chip" title="prestada por ${escStk(p.desde)}" style="background:var(--azul-soft);color:var(--azul);border:1px dashed var(--azul)">${escStk(p.numero)}</span>`),
+        ].join('');
+        const movNotas=[
+          ...(f.numeros_prestados||[]).map(p=>`<span style="color:${p.vencida?'var(--rojo)':'var(--azul)'}">${escStk(p.numero)} → ${escStk(p.hacia)}${p.vuelve_fecha?(p.vencida?' · tenía que volver el ':' · vuelve ')+fDM(p.vuelve_fecha):''}</span>`),
+          ...(f.numeros_recibidos||[]).map(p=>`<span style="color:var(--azul)">${escStk(p.numero)} de ${escStk(p.desde)}${p.vuelve_fecha?' · vuelve '+fDM(p.vuelve_fecha):''}</span>`),
+          ...(f.numeros_salieron||[]).map(p=>`<span class="sub">${escStk(p.numero)} se fue a ${escStk(p.hacia)} (${fDM(p.fecha)})</span>`),
+          ...(f.numeros_llegaron||[]).map(p=>`<span class="sub">${escStk(p.numero)} vino de ${escStk(p.desde)} (${fDM(p.fecha)})</span>`),
+        ].join(' · ');
         const nT=Number(f.en_taller)||0;
         const disp=f.disponibles==null?(Number(f.cantidad)||0):f.disponibles;
         // Reparaciones descontadas sin poder decir de qué máquina son.
@@ -4020,8 +4038,8 @@ async function vStockGeneral(view){
           <td class="mono" style="text-align:right">${f.cantidad}</td>
           <td class="mono" style="text-align:right">${nT
             ?`<span style="color:var(--rojo);font-weight:700">${disp}</span><span class="sub" style="display:block;font-size:10.5px;font-weight:400">${nT} en taller${anon?` · ${anon} s/ident.`:''}</span>`
-            :`<span style="color:var(--brote-2)">${disp}</span>`}</td>
-          <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${chips||'<span class="sub">—</span>'}</div></td>
+            :`<span style="color:var(--brote-2)">${disp}</span>`}${(f.numeros_prestados||[]).length?`<span class="sub" style="display:block;font-size:10.5px;color:var(--azul)">${f.numeros_prestados.length} prestada${f.numeros_prestados.length===1?'':'s'}</span>`:''}${(f.numeros_recibidos||[]).length?`<span class="sub" style="display:block;font-size:10.5px;color:var(--azul)">+${f.numeros_recibidos.length} de otro obj.</span>`:''}</td>
+          <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:340px">${(chips+movHtml)||'<span class="sub">—</span>'}</div>${movNotas?`<div style="font-size:11px;margin-top:3px">${movNotas}</div>`:''}</td>
           <td class="sub" style="font-size:12px">${escStk(f.observacion||'')}</td>
           ${ix===0?`<td rowspan="${fs.length}" class="mono" style="font-size:11.5px;vertical-align:top">${f.periodo_vencido
             ?`<b style="color:var(--diesel)">${fFecha(f.periodo)}</b><div style="font-size:10px;color:var(--diesel);font-weight:600;font-family:inherit">no es de este mes</div>`
@@ -8768,12 +8786,91 @@ async function reasignarRep(id){
    cada máquina, qué salió y nadie recibió, el hilo de cada una y el cruce por
    objetivo. Lo accionable (viajes sin cerrar) va arriba de todo. */
 let movTab='flota', movData=null, movBusca='', movFiltroObj='', movFiltroEst='', movFicha=null, movDias=30;
-function tabsMov(){return `<div class="toggle-imp" style="margin-bottom:16px">
+function tabsMov(){return `<div style="margin-bottom:10px"><a href="javascript:void 0" onclick="go('movimientos')" style="font-size:12.5px;color:var(--brote-2);font-weight:600">← Movimientos de máquinas</a> <span class="sub" style="font-size:12px">· registro anterior (egreso/ingreso de unidades)</span></div>
+<div class="toggle-imp" style="margin-bottom:16px">
   <button class="${movTab==='flota'?'on':''}" onclick="movTab='flota';renderMov()">Dónde está cada una</button>
   <button class="${movTab==='movs'?'on':''}" onclick="movTab='movs';renderMov()">Movimientos</button>
   <button class="${movTab==='objetivo'?'on':''}" onclick="movTab='objetivo';renderMov()">Por objetivo</button>
 </div>`;}
+/* ── Movimientos · versión simple (09-oct) ───────────────────────
+   Lo que cargan los supervisores en la app: N° de máquina, de dónde, a
+   dónde, si vuelve y cuándo. Lo mismo se ve en Stock General (la prestada
+   aparece tachada en azul en su objetivo y suma en el destino). El registro
+   anterior (egreso/ingreso de unidades) queda accesible abajo. */
+let mvsData=null, mvsFiltro='', mvsQ='', mvsDias=90;
 async function vMovimientos(view){
+  view.innerHTML='<div class="cargando-v">Cargando movimientos…</div>';
+  try{mvsData=await api('/api/movimientos-maquinas?dias='+mvsDias);}
+  catch(e){view.innerHTML=`<div class="panel" style="padding:20px">${escMvs(e.message)}</div>`;return;}
+  renderMvs();
+}
+const escMvs=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fMvs=d=>{if(!d)return '—';const x=String(d).slice(0,10).split('-');return x.length===3?`${x[2]}/${x[1]}`:d;};
+const fMvsTs=iso=>iso?new Date(iso).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',timeZone:'America/Argentina/Cordoba'}):'—';
+function mvsEstado(m){
+  if(m.estado==='afuera'&&m.vencida)return `<span class="badge b-red">vencida · ${m.dias_vencida} día${m.dias_vencida===1?'':'s'}</span>`;
+  if(m.estado==='afuera')return '<span class="badge b-amber">afuera</span>';
+  if(m.estado==='volvio')return `<span class="badge b-green">volvió ${fMvsTs(m.volvio_at)}</span>`;
+  if(m.estado==='se_quedo')return '<span class="badge b-gray">se quedó</span>';
+  return escMvs(m.estado);
+}
+function renderMvs(){
+  const view=document.getElementById('view');
+  const r=mvsData.resumen||{};
+  const q=mvsQ.toLowerCase().split(/\s+/).filter(Boolean);
+  const filas=(mvsData.movimientos||[]).filter(m=>{
+    if(mvsFiltro==='afuera'&&m.estado!=='afuera')return false;
+    if(mvsFiltro==='vencidas'&&!m.vencida)return false;
+    if(mvsFiltro==='volvio'&&m.estado!=='volvio')return false;
+    if(mvsFiltro==='se_quedo'&&m.estado!=='se_quedo')return false;
+    if(!q.length)return true;
+    const blob=[m.numero,m.tipo,m.desde,m.hacia,m.creado_por].join(' ').toLowerCase();
+    return q.every(w=>blob.includes(w));
+  }).sort((a,b)=>(b.vencida-a.vencida)||String(b.created_at).localeCompare(String(a.created_at)));
+  const sel='padding:7px 10px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px';
+  view.innerHTML=`
+  <div class="view-head"><div><div class="view-title">Movimientos de máquinas</div>
+    <div class="view-desc">Lo que cargan los supervisores en la app · se refleja en Stock General</div></div></div>
+  <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+    <div class="kpi"><div class="kpi-label">Afuera</div><div class="kpi-val" style="color:var(--diesel)">${r.afuera||0}</div><div class="kpi-sub">prestadas, tienen que volver</div></div>
+    <div class="kpi"><div class="kpi-label">Vencidas</div><div class="kpi-val" style="color:${r.vencidas?'var(--rojo)':'var(--tinta-3)'}">${r.vencidas||0}</div><div class="kpi-sub">pasó la fecha y no volvieron</div></div>
+    <div class="kpi"><div class="kpi-label">Volvieron</div><div class="kpi-val" style="color:var(--brote-2)">${r.volvieron||0}</div><div class="kpi-sub">últimos ${mvsData.dias} días</div></div>
+    <div class="kpi"><div class="kpi-label">Se quedaron</div><div class="kpi-val">${r.se_quedaron||0}</div><div class="kpi-sub">cambiaron de objetivo</div></div>
+  </div>
+  <div class="panel">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <input id="mvs-q" placeholder="Buscar N°, objetivo, quién…" value="${escMvs(mvsQ)}"
+        oninput="mvsQ=this.value;renderMvs();setTimeout(()=>{const i=document.getElementById('mvs-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}},0)"
+        style="flex:1;min-width:200px;${sel}">
+      <select onchange="mvsFiltro=this.value;renderMvs()" style="${sel}">
+        ${[['','Todos'],['afuera','Afuera'],['vencidas','Vencidas'],['volvio','Volvieron'],['se_quedo','Se quedaron']].map(([v,l])=>`<option value="${v}" ${mvsFiltro===v?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <select onchange="mvsDias=Number(this.value);go('movimientos')" style="${sel}">
+        ${[30,90,365].map(d=>`<option value="${d}" ${mvsDias===d?'selected':''}>${d===365?'Último año':'Últimos '+d+' días'}</option>`).join('')}
+      </select>
+    </div>
+    <table><thead><tr><th>Fecha</th><th>Máquina</th><th>Desde</th><th>Hacia</th><th>Vuelve</th><th>Estado</th><th>Cargó</th><th></th></tr></thead><tbody>
+    ${filas.map(m=>`<tr${m.vencida?' style="background:#FEF9F9"':''}>
+      <td class="mono">${fMvsTs(m.created_at)}</td>
+      <td><b>${escMvs(m.numero)}</b> <span class="sub">${escMvs(m.tipo||'')}</span></td>
+      <td>${escMvs(m.desde)}</td><td>${escMvs(m.hacia)}</td>
+      <td class="mono">${m.vuelve?fMvs(m.vuelve_fecha):'<span class="sub">no vuelve</span>'}</td>
+      <td>${mvsEstado(m)}</td>
+      <td class="sub" style="font-size:12px">${escMvs(m.creado_por||'—')}${m.volvio_por?`<div style="font-size:11px">volvió: ${escMvs(m.volvio_por)}</div>`:''}</td>
+      <td style="white-space:nowrap">${m.estado==='afuera'?`<button class="mini-btn" onclick="mvsAccion('${m.id}','volvio')">✓ Volvió</button> `:''}<button class="mini-btn" style="color:var(--tinta-3)" title="anular (cargado por error)" onclick="mvsAccion('${m.id}','anular')">✕</button></td>
+    </tr>`).join('')||'<tr><td colspan="8" class="sub" style="padding:18px;text-align:center">Todavía no hay movimientos con ese filtro.</td></tr>'}
+    </tbody></table>
+  </div>
+  <div class="sub" style="margin-top:12px;font-size:11.5px"><a href="javascript:void 0" onclick="vMovimientosViejo(document.getElementById('view'))" style="color:var(--tinta-3)">Ver el registro anterior (egreso/ingreso de unidades) ›</a></div>`;
+}
+async function mvsAccion(id,accion){
+  const m=(mvsData.movimientos||[]).find(x=>x.id===id);if(!m)return;
+  const txt=accion==='volvio'?`¿Marcar que la ${m.numero} volvió a ${m.desde}?`:`¿Anular el movimiento de la ${m.numero} (${m.desde} → ${m.hacia})? Usalo solo si se cargó por error.`;
+  if(!confirm(txt))return;
+  try{await api('/api/movimientos-maquinas/'+id+'/'+accion,{method:'POST',body:'{}'});stkGen=null;go('movimientos');}
+  catch(e){alert(e.message||'No pude actualizar');}
+}
+async function vMovimientosViejo(view){
   view.innerHTML=tabsMov()+'<div class="cargando-v">Cargando maquinaria…</div>';
   try{movData=await api('/api/movimientos?dias='+movDias);}
   catch(e){view.innerHTML=tabsMov()+`<div class="card" style="padding:20px">${e.message}</div>`;return;}
@@ -8863,7 +8960,7 @@ function movVistaMovs(){
   return `<div class="card" style="padding:16px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
       <div style="font-weight:600">Movimientos de los últimos ${movData.dias} días</div>
-      <select onchange="movDias=Number(this.value);go('movimientos')" style="padding:7px 10px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
+      <select onchange="movDias=Number(this.value);vMovimientosViejo(document.getElementById('view'))" style="padding:7px 10px;border:1px solid var(--linea-2);border-radius:var(--r-s);font-family:inherit;font-size:13px">
         ${[7,30,90,365].map(d=>`<option value="${d}" ${movDias===d?'selected':''}>${d===365?'Último año':'Últimos '+d+' días'}</option>`).join('')}
       </select>
     </div>
@@ -8957,7 +9054,7 @@ async function movRecibir(unidadId){
   if(!confirm('¿Marcar que '+f.rotulo+' llegó a '+(f.hacia||'destino')+'?\n\nQueda registrado como cerrado desde el panel, no por el supervisor.'))return;
   try{
     await api('/api/movimientos/'+abierto.id+'/recibir',{method:'POST',body:JSON.stringify({estado:'anda',observaciones:'Llegada marcada desde el panel'})});
-    go('movimientos');
+    vMovimientosViejo(document.getElementById('view'));
   }catch(e){alert(e.message||'No pude marcar la llegada');}
 }
  
