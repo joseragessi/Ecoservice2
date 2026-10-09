@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-07 · compras: foto a 1568px + ampliación del pie para el OCR';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-09 · stock: familias del parque general desplegables con detalle';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -3695,7 +3695,23 @@ function dsvExportar(){
    pantalla: el último censo respondido de cada objetivo, con grupo,
    números, marca y los faltantes abiertos. Cada N° abre la ficha de la
    máquina si está en el padrón. */
-let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:'',marca:''};
+let stkGen=null, stkGenF={tipo:'',objetivo:'',grupo:'',q:'',marca:'',familia:''};
+// Familias abiertas en "Parque general" y el tipo elegido adentro de cada una (09-oct).
+let stkFamAbierta={}, stkFamTipo={}, stkFamTodas={};
+// "Motoguadaña 291", "motoguadañas echo" → "Motoguadaña": primera palabra, sin plural.
+function stkSubtipo(t){
+  const w=String(t||'').trim().split(/\s+/)[0]||'—';
+  // tractores→tractor, generadores→generador, sopladoras→sopladora
+  const base=w.length<=4?w:/[rlnd]es$/i.test(w)?w.slice(0,-2):/s$/i.test(w)?w.slice(0,-1):w;
+  return base.charAt(0).toUpperCase()+base.slice(1).toLowerCase();
+}
+function stkFamToggle(k){stkFamAbierta[k]=!stkFamAbierta[k];go('stock');}
+function stkFamSetTipo(k,t){stkFamTipo[k]=stkFamTipo[k]===t?'':t;stkFamTodas[k]=false;go('stock');}
+function stkFamVerTodas(k){stkFamTodas[k]=true;go('stock');}
+function stkFamIr(k){
+  stkGenF.familia=k;go('stock');
+  setTimeout(()=>{const el=document.getElementById('stk-por-objetivo');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});},60);
+}
 // Mes que se está mirando y mes contra el que se compara (14-sep).
 // stkMes vacío = el último censo de cada objetivo, como fue siempre.
 let stkMes='', stkComp='', stkSoloCambios=true;
@@ -3785,7 +3801,11 @@ async function vStockGeneral(view){
   const fFecha=p=>{const[a,m]=String(p||'').split('-');return m?`${m}/${a}`:p;};
   const hoyMs=Date.now();
   const filasPorObj={};
-  vis.forEach(f=>{(filasPorObj[f.objetivo]=filasPorObj[f.objetivo]||[]).push(f);});
+  // Filtro por familia (viene del link del detalle en Parque general): solo
+  // afecta la tabla "Stock por objetivo"; los objetivos sin censo se ocultan.
+  const famLabel=F.familia?((vis.find(f=>(f.familia||'otro')===F.familia)||{}).familia_label||F.familia):'';
+  vis.filter(f=>!F.familia||(!f.sin_censo&&f.tipo&&(f.familia||'otro')===F.familia))
+    .forEach(f=>{(filasPorObj[f.objetivo]=filasPorObj[f.objetivo]||[]).push(f);});
  
   const meses=(stkGen.periodos||[]);
   const selMes=`<select onchange="stkMes=this.value;stkGen=null;go('stock')" class="busca" style="width:auto;${stkMes?'border-color:var(--brote);background:var(--brote-soft);color:var(--brote-2);font-weight:600':''}">
@@ -3860,19 +3880,72 @@ async function vStockGeneral(view){
     const orden=['dos_tiempos','cortadora','tractor','vehiculo','fijo','otro','sin_motor'];
     const ks=Object.keys(fam).sort((a,b)=>orden.indexOf(a)-orden.indexOf(b));
     if(!ks.length)return '';
+    // Detalle de una familia abierta (09-oct): tipos que la forman y dónde
+    // está cada máquina, con sus números.
+    const badgeGr=g=>g==='deposito'?'<span class="badge b-amber">depósito</span>':g==='privado'?'<span class="badge" style="background:var(--azul-soft);color:var(--azul)">privado</span>':'<span class="badge b-gray">—</span>';
+    const chipsDe=f=>{
+      const enT=new Set((f.numeros_taller||[]).map(n=>norm(n)));
+      const nums=f.numeros||[], MAX=12;
+      let h=nums.slice(0,MAX).map(n=>{
+        const id=padronPorNum[norm(n)], cl=id?` style="cursor:pointer" onclick="fichaMaquina('${id}')"`:'';
+        return enT.has(norm(n))
+          ?`<span class="uni-chip" title="en el taller" style="background:var(--rojo-soft);color:#A3253A;border:1px solid #F2C4CB;text-decoration:line-through${id?';cursor:pointer':''}"${id?` onclick="fichaMaquina('${id}')"`:''}>${escStk(n)}</span>`
+          :`<span class="uni-chip"${cl}>${escStk(n)}</span>`;}).join('');
+      const sn=Math.max(0,cantDe(f)-nums.length), lugar=Math.max(0,MAX-Math.min(nums.length,MAX)), snVis=Math.min(sn,lugar);
+      h+=Array.from({length:snVis},()=>`<span class="uni-chip" title="declarada sin número" style="background:var(--papel);color:var(--tinta-3);border:1px dashed var(--linea-2)">s/n</span>`).join('');
+      const resto=Math.max(0,nums.length-MAX)+(sn-snVis);
+      if(resto)h+=`<span class="sub" style="font-size:11px;margin-left:3px">+${resto}</span>`;
+      return h||'<span class="sub">—</span>';
+    };
+    const detalle=k=>{
+      const fs=vis.filter(f=>!f.sin_censo&&f.tipo&&(f.familia||'otro')===k);
+      const sub={};fs.forEach(f=>{const s=stkSubtipo(f.tipo);sub[s]=(sub[s]||0)+cantDe(f);});
+      const subs=Object.keys(sub).sort((a,b)=>sub[b]-sub[a]);
+      const sel=stkFamTipo[k]&&sub[stkFamTipo[k]]!=null?stkFamTipo[k]:'';
+      const rows=fs.filter(f=>!sel||stkSubtipo(f.tipo)===sel)
+        .sort((a,b)=>(Number(b.en_taller)||0)-(Number(a.en_taller)||0)||String(a.objetivo).localeCompare(String(b.objetivo))||String(a.tipo).localeCompare(String(b.tipo)));
+      const LIM=40, ver=stkFamTodas[k]?rows:rows.slice(0,LIM);
+      const tot=rows.reduce((a,f)=>a+cantDe(f),0), tal=rows.reduce((a,f)=>a+(Number(f.en_taller)||0),0);
+      const nO=new Set(rows.map(f=>f.objetivo)).size;
+      const esc1=s=>escStk(s).replace(/'/g,"\\'");
+      const tp=(t,n,on,lab)=>`<span onclick="stkFamSetTipo('${k}','${esc1(t)}')" style="cursor:pointer;border:1px solid ${on?'var(--brote)':'var(--linea)'};background:${on?'var(--brote)':'#fff'};color:${on?'#fff':'inherit'};border-radius:999px;padding:3px 10px;font-size:12px">${escStk(lab||t)} <b class="mono">${n}</b></span>`;
+      return `<tr><td colspan="5" style="background:#FBFDFB;padding:4px 10px 14px 30px;border-top:0">
+        ${k==='otro'?'<div class="sub" style="margin:8px 0 4px;font-size:11.5px">Lo que escribieron los capataces y el sistema no reconoce. Tocá uno para ver dónde está.</div>':''}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px">
+          ${tp('',fs.reduce((a,f)=>a+cantDe(f),0),!sel,'Todos')}
+          ${subs.map(s=>tp(s,sub[s],sel===s)).join('')}
+        </div>
+        <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo${k==='otro'?' (como lo escribió)':''}</th><th style="text-align:right">Cant.</th><th style="text-align:right">Taller</th><th style="text-align:right">Disp.</th><th>N° de máquina</th><th>Censo</th></tr></thead><tbody>
+        ${ver.map(f=>{const nT=Number(f.en_taller)||0, disp=f.disponibles==null?cantDe(f):Number(f.disponibles);
+          return `<tr${nT?' style="background:#FEF9F9"':''}>
+            <td style="font-weight:600">${escStk(f.objetivo)}</td><td>${badgeGr(f.grupo)}</td><td>${escStk(f.tipo)}</td>
+            <td class="mono" style="text-align:right">${cantDe(f)}</td>
+            <td class="mono" style="text-align:right;${nT?'color:var(--rojo);font-weight:700':'color:var(--tinta-3)'}">${nT||'—'}</td>
+            <td class="mono" style="text-align:right;color:var(--brote-2)">${disp}</td>
+            <td><div style="display:flex;gap:3px;flex-wrap:wrap;max-width:380px">${chipsDe(f)}</div></td>
+            <td class="mono" style="font-size:11.5px;${f.periodo_vencido?'color:var(--diesel);font-weight:700':''}">${fFecha(f.periodo)}</td></tr>`;}).join('')}
+        ${rows.length>ver.length?`<tr><td colspan="8" style="text-align:center"><button class="mini-btn" onclick="stkFamVerTodas('${k}')">Ver las ${rows.length} filas</button></td></tr>`:''}
+        ${!rows.length?'<tr><td colspan="8" class="sub">Nada con estos filtros.</td></tr>':''}
+        </tbody></table>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11.5px">
+          <span class="sub">${tot} equipo${tot===1?'':'s'} en ${nO} objetivo${nO===1?'':'s'}${tal?` · ${tal} en taller`:''}</span>
+          <a href="javascript:void 0" onclick="stkFamIr('${k}')" style="color:var(--brote-2);font-weight:600;text-decoration:none">↓ Ver en "Stock por objetivo" solo ${escStk(fam[k].label||k)}</a>
+        </div></td></tr>`;
+    };
     return `<div class="panel" style="margin-bottom:14px">
-      <div class="panel-title">Parque general <span class="sub" style="font-weight:400">· agrupado por familia de equipo</span></div>
+      <div class="panel-title">Parque general <span class="sub" style="font-weight:400">· agrupado por familia de equipo · clic para ver el detalle</span></div>
       <table><thead><tr><th>Familia</th><th style="text-align:right">Total</th><th style="text-align:right">En taller</th><th style="text-align:right">Disp.</th><th>Dónde está parado</th></tr></thead><tbody>
       ${ks.map(k=>{
-        const d=fam[k], sinMotor=k==='sin_motor';
+        const d=fam[k], sinMotor=k==='sin_motor', ab=!!stkFamAbierta[k];
         const donde=Object.keys(d.objs).sort((a,b)=>d.objs[b]-d.objs[a])
           .map(o=>`${escStk(o)} ${d.objs[o]}`).join(' · ');
-        return `<tr${d.taller?' style="background:#FEF9F9"':''}>
-          <td${sinMotor?' style="color:var(--tinta-3)"':''}>${escStk(d.label||k)}</td>
+        return `<tr onclick="stkFamToggle('${k}')" style="cursor:pointer;${ab?'background:#F3FAF5':d.taller?'background:#FEF9F9':''}">
+          <td style="${sinMotor?'color:var(--tinta-3);':''}${ab?'font-weight:600':''}"><span style="display:inline-block;width:14px;color:${ab?'var(--brote)':'var(--tinta-3)'};transform:rotate(${ab?90:0}deg)">▶</span>${escStk(d.label||k)}</td>
           <td class="mono" style="text-align:right">${d.cant}</td>
           <td class="mono" style="text-align:right;${d.taller?'color:var(--rojo);font-weight:700':'color:var(--tinta-3)'}">${d.taller||'—'}</td>
           <td class="mono" style="text-align:right;color:var(--brote-2)">${d.disp}</td>
-          <td class="sub" style="font-size:11.5px">${donde||(sinMotor?'no van al taller':'—')}</td></tr>`;}).join('')}
+          <td class="sub" style="font-size:11.5px">${donde||(sinMotor?'no van al taller':'—')}</td></tr>
+          ${ab?detalle(k):''}`;}).join('')}
       </tbody></table>
       ${sinUbicar.length?`<div class="sub" style="margin-top:9px;font-size:11.5px;color:var(--diesel)">
         ⚠ ${sinUbicar.length} reparación${sinUbicar.length===1?'':'es'} abierta${sinUbicar.length===1?'':'s'} que no se pudo colgar de ninguna máquina del censo
@@ -3885,9 +3958,10 @@ async function vStockGeneral(view){
        (diferencias de un censo a otro) ahora se ve en la comparación de dos
        meses, con el cruce del taller. El endpoint los sigue devolviendo. -->
  
-  <div class="panel">
+  <div class="panel" id="stk-por-objetivo">
     <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
-      <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span></span>
+      <span>Stock por objetivo <span class="sub" style="font-weight:400">· último censo respondido de cada uno</span>
+        ${F.familia?`<span onclick="stkGenF.familia='';go('stock')" title="quitar filtro" style="cursor:pointer;margin-left:8px;font-size:11.5px;font-weight:600;background:var(--brote-soft);color:var(--brote-2);border-radius:999px;padding:2px 9px">Familia: ${escStk(famLabel)} ✕</span>`:''}</span>
       <button class="mini-btn" style="flex:none" onclick="imprimirStockGeneral()" title="todo el parque en una hoja, privados y depósito">🖨 Todo el parque</button>
     </div>
     <table><thead><tr><th>Objetivo</th><th>Grupo</th><th>Tipo</th><th style="text-align:right">Cant.</th><th style="text-align:right">Disp.</th><th>N° de máquina</th><th>Observación</th><th>Último censo</th><th></th></tr></thead><tbody>
