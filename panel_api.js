@@ -6998,6 +6998,56 @@ router.post('/api/movimientos/:id/recibir', auth, async (req, res) => {
   }
 });
  
+// ══ MOVIMIENTOS DE MÁQUINAS · versión simple (09-oct) ═════════
+// Lo que cargan los supervisores en la app: número, de dónde, a dónde, si
+// vuelve y cuándo. El panel lo lista y puede marcar "volvió" o anular.
+router.get('/api/movimientos-maquinas', auth, async (req, res) => {
+  try {
+    const MOVM = require('./movimientos_maquinas');
+    const dias = Math.min(730, Math.max(7, Number(req.query.dias) || 90));
+    const desde = new Date(Date.now() - dias * 864e5).toISOString();
+    const [movsR, objsR] = await Promise.all([
+      supabase.from('movimientos_maquinas').select('*').neq('estado', 'anulado')
+        .order('created_at', { ascending: false }).limit(3000),
+      supabase.from('objetivos').select('id, nombre'),
+    ]);
+    if (movsR.error) throw movsR.error;
+    const nombreObj = {}; (objsR.data || []).forEach(o => { nombreObj[o.id] = o.nombre; });
+    // Las prestadas se muestran siempre, aunque sean viejas: son lo accionable.
+    const filas = (movsR.data || []).filter(m => m.estado === 'afuera' || m.created_at >= desde)
+      .map(m => MOVM.armarFila(m, nombreObj));
+    const afuera = filas.filter(f => f.estado === 'afuera');
+    res.json({
+      dias, movimientos: filas,
+      resumen: { afuera: afuera.length, vencidas: afuera.filter(f => f.vencida).length,
+        volvieron: filas.filter(f => f.estado === 'volvio').length, se_quedaron: filas.filter(f => f.estado === 'se_quedo').length },
+    });
+  } catch (err) {
+    res.status(500).json({ error: /movimientos_maquinas/.test(err.message || '')
+      ? 'Falta correr movimientos_maquinas.sql en Supabase (base del bot).' : (err.message || 'Error cargando movimientos') });
+  }
+});
+router.post('/api/movimientos-maquinas/:id/:accion', auth, async (req, res) => {
+  try {
+    if (!['volvio', 'anular'].includes(req.params.accion)) return res.status(404).json({ error: 'Acción desconocida' });
+    const { data: m } = await supabase.from('movimientos_maquinas').select('id, estado').eq('id', req.params.id).maybeSingle();
+    if (!m) return res.status(404).json({ error: 'Movimiento inexistente' });
+    const quien = (req.usuario || 'panel') + ' (panel)';
+    let cambio;
+    if (req.params.accion === 'volvio') {
+      if (m.estado !== 'afuera') return res.status(409).json({ error: 'Ese movimiento ya está cerrado.' });
+      cambio = { estado: 'volvio', volvio_at: new Date().toISOString(), volvio_por: quien };
+    } else {
+      cambio = { estado: 'anulado', obs: 'Anulado por ' + quien };
+    }
+    const { error } = await supabase.from('movimientos_maquinas').update(cambio).eq('id', m.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'No pude actualizar el movimiento' });
+  }
+});
+
 // Cargar/editar a mano el stock de un objetivo desde el panel, sin esperar la
 // respuesta del capataz por WhatsApp. Reemplaza los ítems del censo del
 // período y lo marca respondido.
@@ -8318,7 +8368,7 @@ function cruzarTaller(filas, incidencias) {
  
 router.get('/api/stock/general', auth, async (req, res) => {
   try {
-    const [objs, censos, faltantes, incid] = await Promise.all([
+    const [objs, censos, faltantes, incid, movsMaq] = await Promise.all([
       supabase.from('objetivos').select('id, nombre, grupo_stock').eq('activo', true),
       supabase.from('censos_stock')
         .select('id, periodo, objetivo_id, estado, respondido_at, reenviado_at, capataces(nombre), censos_stock_items(tipo_equipo, cantidad, numeros, observacion)')
@@ -8336,6 +8386,11 @@ router.get('/api/stock/general', auth, async (req, res) => {
       supabase.from('incidencias')
         .select('id, objetivo_id, numero_unidad, tipo_equipo, tipo_falla, estado, equipo_parado, created_at, fecha_ingreso_taller')
         .neq('estado', 'finalizado').not('fecha_ingreso_taller', 'is', null),
+      // Movimientos de máquinas (09-oct): prestadas y las que se quedaron en
+      // otro objetivo. Si la tabla todavía no existe, sin movimientos.
+      supabase.from('movimientos_maquinas').select('*').in('estado', ['afuera', 'se_quedo'])
+        .order('created_at', { ascending: true }).limit(3000)
+        .then(r => r, () => ({ data: [] })),
     ]);
     if (objs.error) throw objs.error;
  
@@ -8413,7 +8468,25 @@ router.get('/api/stock/general', auth, async (req, res) => {
         });
       });
     });
+    // Movimientos (09-oct): como el taller, es información de HOY, así que
+    // solo se aplica a la vista actual (sin mes o el mes en curso).
+    const aplicarMovs = !periodoPedido || periodoPedido === periodoStockActual();
+    const movsVig = aplicarMovs && !movsMaq.error ? (movsMaq.data || []) : [];
+    const nombreObjMov = {}; (objs.data || []).forEach(o => { nombreObjMov[o.id] = o.nombre; });
+    const MOVM = require('./movimientos_maquinas');
+    MOVM.aplicarSeQuedo(filas, movsVig, nombreObjMov);
     const { sin_ubicar } = cruzarTaller(filas, incid.data || []);
+    MOVM.aplicarPrestadas(filas, movsVig, nombreObjMov);
+    // Filas nuevas que crearon los movimientos (un tipo que el destino no
+    // tenía): les falta familia y grupo.
+    const grupoDe = {}; (objs.data || []).forEach(o => { grupoDe[o.id] = o.grupo_stock || null; });
+    filas.forEach(f => {
+      if (!f.solo_movimientos) return;
+      f.familia = familiaConsumo(f.tipo);
+      f.familia_label = LABEL_FAMILIA[f.familia] || 'Sin clasificar';
+      f.grupo = f.grupo || grupoDe[f.objetivo_id] || null;
+      f.periodo_vencido = f.periodo ? f.periodo !== periodoStockActual() : false;
+    });
     /* COMPARACIÓN entre dos meses. Se calcula acá y no en el panel porque
        hace falta el censo del otro mes, que ya está en memoria.
 
