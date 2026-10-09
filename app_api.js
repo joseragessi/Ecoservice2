@@ -1482,6 +1482,152 @@ router.post('/api/app/supervisor/maquinaria/ingreso', authApp(ROLES_MOV), async 
   }
 });
 
+// ══ MOVIMIENTOS DE MÁQUINAS · versión simple (09-oct) ═════════
+// Número de máquina, dónde está, a dónde va, si vuelve y cuándo. Reemplaza
+// en la app el circuito egreso/ingreso de arriba (que queda para no romper
+// lo viejo). La lógica compartida con Stock General vive en
+// movimientos_maquinas.js.
+const MOVM = require('./movimientos_maquinas');
+
+// Último censo respondido de cada objetivo, en filas planas.
+async function filasUltimoCenso() {
+  const [objs, censos] = await Promise.all([
+    supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre'),
+    supabase.from('censos_stock')
+      .select('objetivo_id, periodo, respondido_at, censos_stock_items(tipo_equipo, numeros)')
+      .eq('estado', 'respondido').order('periodo', { ascending: false }),
+  ]);
+  const objetivos = objs.data || [];
+  const nombreObj = {}; objetivos.forEach(o => { nombreObj[o.id] = o.nombre; });
+  const visto = new Set(), filas = [];
+  (censos.data || []).forEach(c => {
+    if (visto.has(c.objetivo_id) || !nombreObj[c.objetivo_id]) return;
+    visto.add(c.objetivo_id);
+    (c.censos_stock_items || []).forEach(i => filas.push({ objetivo_id: c.objetivo_id, objetivo: nombreObj[c.objetivo_id],
+      tipo: i.tipo_equipo, numeros: i.numeros || [], respondido_at: c.respondido_at }));
+  });
+  return { objetivos, nombreObj, filas };
+}
+async function movsVigentes() {
+  const { data, error } = await supabase.from('movimientos_maquinas').select('*')
+    .in('estado', ['afuera', 'se_quedo']).order('created_at', { ascending: true }).limit(3000);
+  if (error) throw error;
+  return data || [];
+}
+const errMovs = (res, err, def) => {
+  console.error('[movimientos]', err.message);
+  res.status(500).json({ error: /movimientos_maquinas/.test(err.message || '')
+    ? 'Falta correr movimientos_maquinas.sql en Supabase (base del bot).' : (err.message || def) });
+};
+async function objetivosACargo(mid) {
+  const { data } = await supabase.from('mecanicos').select('objetivos_cargo').eq('id', mid).maybeSingle();
+  return (data && Array.isArray(data.objetivos_cargo)) ? data.objetivos_cargo.map(String) : [];
+}
+
+// Pantalla: objetivos para elegir + las prestadas del supervisor + lo último.
+// "Del supervisor" = las que cargó él, o las que salieron de sus objetivos.
+router.get('/api/app/supervisor/movimientos', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const [aCargo, objsR, movsR] = await Promise.all([
+      objetivosACargo(req.app_user.mid),
+      supabase.from('objetivos').select('id, nombre').eq('activo', true).order('nombre'),
+      supabase.from('movimientos_maquinas').select('*').neq('estado', 'anulado')
+        .order('created_at', { ascending: false }).limit(300),
+    ]);
+    if (movsR.error) throw movsR.error;
+    const nombreObj = {}; (objsR.data || []).forEach(o => { nombreObj[o.id] = o.nombre; });
+    const mid = String(req.app_user.mid || '');
+    const mio = m => (mid && String(m.creado_por_id || '') === mid) || aCargo.includes(String(m.origen_objetivo_id))
+      || aCargo.includes(String(m.destino_objetivo_id));
+    const mios = (movsR.data || []).filter(mio);
+    const afuera = mios.filter(m => m.estado === 'afuera').map(m => MOVM.armarFila(m, nombreObj))
+      .sort((a, b) => (b.vencida - a.vencida) || String(a.vuelve_fecha || '9').localeCompare(String(b.vuelve_fecha || '9')));
+    res.json({
+      objetivos: objsR.data || [], a_cargo: aCargo,
+      afuera, vencidas: afuera.filter(a => a.vencida).length,
+      recientes: mios.slice(0, 15).map(m => MOVM.armarFila(m, nombreObj)),
+    });
+  } catch (err) { errMovs(res, err, 'Error cargando los movimientos'); }
+});
+
+// Aviso para el inicio de Supervisión (liviano).
+router.get('/api/app/supervisor/movimientos/resumen', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const aCargo = await objetivosACargo(req.app_user.mid);
+    const { data, error } = await supabase.from('movimientos_maquinas')
+      .select('id, estado, vuelve_fecha, creado_por_id, origen_objetivo_id, destino_objetivo_id').eq('estado', 'afuera');
+    if (error) throw error;
+    const mid = String(req.app_user.mid || '');
+    const mios = (data || []).filter(m => (mid && String(m.creado_por_id || '') === mid)
+      || aCargo.includes(String(m.origen_objetivo_id)) || aCargo.includes(String(m.destino_objetivo_id)));
+    res.json({ afuera: mios.length, vencidas: mios.filter(MOVM.vencida).length });
+  } catch (err) { res.json({ afuera: 0, vencidas: 0 }); }
+});
+
+// ¿Dónde está la máquina N? Devuelve las opciones (puede haber dos "16" de
+// tipos distintos en objetivos distintos). Primero las de sus objetivos.
+router.get('/api/app/supervisor/movimientos/buscar', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const numero = String(req.query.numero || '').trim();
+    if (!MOVM.normNum(numero)) return res.json({ opciones: [] });
+    const [{ filas, nombreObj }, movs, aCargo] = await Promise.all([filasUltimoCenso(), movsVigentes(), objetivosACargo(req.app_user.mid)]);
+    const ops = MOVM.ubicarNumero(numero, filas, movs, nombreObj)
+      .map(o => Object.assign(o, { mio: aCargo.includes(String(o.objetivo_id)) }))
+      .sort((a, b) => (b.mio - a.mio) || String(a.objetivo).localeCompare(String(b.objetivo)));
+    res.json({ opciones: ops });
+  } catch (err) { errMovs(res, err, 'No pude buscar la máquina'); }
+});
+
+// Guardar un movimiento.
+router.post('/api/app/supervisor/movimientos', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const numero = String(b.numero || '').trim();
+    if (!MOVM.normNum(numero)) return res.status(400).json({ error: 'Escribí el número de la máquina.' });
+    const origen = String(b.origen_objetivo_id || '').trim() || null;
+    const destino = String(b.destino_objetivo_id || '').trim() || null;
+    if (!origen) return res.status(400).json({ error: 'Elegí dónde está la máquina.' });
+    if (!destino) return res.status(400).json({ error: 'Elegí a dónde va.' });
+    if (origen === destino) return res.status(400).json({ error: 'Dónde está y a dónde va no pueden ser el mismo lugar.' });
+    const vuelve = !!b.vuelve;
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(b.vuelve_fecha || '')) ? b.vuelve_fecha : null;
+    if (vuelve && !fecha) return res.status(400).json({ error: 'Poné cuándo vuelve.' });
+    if (vuelve && fecha < MOVM.hoyISO()) return res.status(400).json({ error: 'La fecha de vuelta no puede ser anterior a hoy.' });
+    // La misma máquina no puede estar prestada dos veces a la vez.
+    const { data: abiertas } = await supabase.from('movimientos_maquinas').select('*').eq('estado', 'afuera');
+    const ya = (abiertas || []).find(m => MOVM.mismoNumero(m.numero, numero) && MOVM.mismoTipo(m.tipo, b.tipo)
+      && String(m.destino_objetivo_id) === String(origen));
+    // Si la mueven desde donde estaba prestada, el préstamo anterior se cierra
+    // ("se quedó" ahí) y el movimiento nuevo arranca desde ese lugar.
+    if (ya) await supabase.from('movimientos_maquinas').update({ estado: 'se_quedo' }).eq('id', ya.id);
+    const { data, error } = await supabase.from('movimientos_maquinas').insert({
+      numero, tipo: String(b.tipo || '').trim() || null,
+      origen_objetivo_id: origen, destino_objetivo_id: destino,
+      vuelve, vuelve_fecha: vuelve ? fecha : null,
+      estado: vuelve ? 'afuera' : 'se_quedo',
+      obs: String(b.obs || '').trim() || null,
+      creado_por: req.app_user.nombre || null, creado_por_id: req.app_user.mid != null ? String(req.app_user.mid) : null,
+      creado_rol: req.app_user.rol || null,
+    }).select('id').single();
+    if (error) throw error;
+    console.log(`[movimientos] ${numero} ${origen} → ${destino} ${vuelve ? 'vuelve ' + fecha : 'se queda'} · ${req.app_user.nombre || '?'}`);
+    res.json({ ok: true, id: data.id });
+  } catch (err) { errMovs(res, err, 'No pude guardar el movimiento'); }
+});
+
+// "Ya volvió"
+router.post('/api/app/supervisor/movimientos/:id/volvio', authApp(ROLES_MOV), async (req, res) => {
+  try {
+    const { data: m } = await supabase.from('movimientos_maquinas').select('id, estado').eq('id', req.params.id).maybeSingle();
+    if (!m) return res.status(404).json({ error: 'No encontré ese movimiento.' });
+    if (m.estado !== 'afuera') return res.status(409).json({ error: 'Ese movimiento ya estaba cerrado.' });
+    const { error } = await supabase.from('movimientos_maquinas')
+      .update({ estado: 'volvio', volvio_at: new Date().toISOString(), volvio_por: req.app_user.nombre || null }).eq('id', m.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) { errMovs(res, err, 'No pude marcar la vuelta'); }
+});
+
 // ══ CARGA DE COMBUSTIBLE · CAPATACES ═════════════════════════
 // Igual que supervisor pero SIMPLE: todo va a SU objetivo y SU unidad
 // (automáticos del login). El capataz solo reparte cuántos litros a la
