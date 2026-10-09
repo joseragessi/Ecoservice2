@@ -259,7 +259,10 @@ function arrancar(){
 async function cargar(){
   $('lista').innerHTML='<div class="vacio">Cargando…</div>';
   try{
-    datos=await api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias');
+    const [d]=await Promise.all([
+      api(rol==='panol'?'/api/app/pedidos':rol==='supervisor'?'/api/app/supervisor/incidencias':'/api/app/mis-incidencias'),
+      rol==='supervisor'?cargarMovResumen():null]);
+    datos=d;
     render();
   }catch(e){$('lista').innerHTML=`<div class="vacio">${e.message}</div>`;}
 }
@@ -379,11 +382,11 @@ function renderSupervisor(){
   $('tabs').innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap">
     <button class="tab-cta" onclick="abrirCombustible()" style="flex:1;min-width:130px;padding:13px;border:none;border-radius:12px;background:var(--brote,#159B51);color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">⛽ Combustible</button>
     <button class="tab-cta" onclick="abrirInsumosSup()" style="flex:1;min-width:130px;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">📦 Insumos</button>
-    <button class="tab-cta" onclick="abrirMaquinaria()" style="flex:1;min-width:130px;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">🚜 Maquinaria</button>
+    <button class="tab-cta" onclick="abrirMaquinaria()" style="flex:1;min-width:130px;padding:13px;border:1px solid #159B51;border-radius:12px;background:#fff;color:#159B51;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer">🚚 Mover máquina</button>
   </div>`;
-  if(!objetivos.length){$('lista').innerHTML='<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
+  if(!objetivos.length){$('lista').innerHTML=avisoPrestadas()+'<div class="vacio">No hay incidencias abiertas en tus objetivos. ✓</div>';return;}
   // Vista lista de objetivos (cantidad) → click abre incidencias
-  $('lista').innerHTML=objetivos.map(o=>{
+  $('lista').innerHTML=avisoPrestadas()+objetivos.map(o=>{
     const ab=supObjAbierto===o.objetivo_id;
     return `<div class="card" style="padding:0;overflow:hidden">
       <div style="padding:12px;cursor:pointer" onclick="supObjAbierto=supObjAbierto==='${o.objetivo_id}'?null:'${o.objetivo_id}';supIncAbierta=null;render()">
@@ -400,184 +403,167 @@ function renderSupervisor(){
       ${ab?`<div style="border-top:1px solid #eef1ee;padding:8px 12px 12px">${o.incidencias.map(supCardInc).join('')}</div>`:''}
     </div>`;}).join('');
 }
-// ══ TRAZABILIDAD DE MAQUINARIA ═══════════════════════════════
-// El supervisor marca cuándo una máquina SALE de su objetivo (egreso) y
-// cuándo LLEGA (ingreso). Cada viaje es una fila: sale → "en viaje" → llega.
-// Con eso el panel sabe dónde está cada máquina y cuáles salieron y nunca
-// llegaron. Solo se pide ESTADO (anda / con falla) y observaciones.
-let maqData=null, maqForm=null;   // maqForm = {accion, unidad_id, rotulo, ...}
+// ══ MOVIMIENTOS DE MÁQUINAS · versión simple (09-oct) ══════════
+// Una sola pantalla: N° de máquina, dónde está, a dónde va, si vuelve y
+// cuándo. Abajo, las prestadas del supervisor con "Ya volvió". Queda en
+// Movimientos del panel y se refleja en Stock General. (El circuito viejo de
+// egreso/ingreso se sacó de la app: no lo entendía nadie.)
+let maqData=null;                 // {objetivos, afuera, recientes, vencidas}
+let mvF=null;                     // formulario: {numero, opciones, origen, destino, vuelve, fecha}
+let mvBuscarT=null, movResumen=null;
 async function abrirMaquinaria(){
-  supVista='maquinaria';maqData=null;maqForm=null;render();
-  try{maqData=await api('/api/app/supervisor/maquinaria');}catch(e){maqData={error:e.message};}
+  supVista='maquinaria';maqData=null;mvF={numero:'',opciones:null,origen:'',destino:'',vuelve:null,fecha:''};render();
+  try{maqData=await api('/api/app/supervisor/movimientos');}catch(e){maqData={error:e.message};}
   render();
 }
-function maqVolver(){supVista='incidencias';maqData=null;maqForm=null;render();}
-function maqAbrirForm(accion,unidadId,rotulo){
-  const d=maqData||{};
-  const todas=[...(d.aca||[]),...(d.en_camino||[]),...(d.otras||[])];
-  const it=todas.find(x=>String(x.unidad_id)===String(unidadId))||{};
-  maqForm={accion,unidad_id:unidadId,rotulo,estado:'anda',obs:'',
-    destino_tipo:'objetivo',destino_objetivo_id:'',retira:'',
-    donde:it.donde||null,hacia:it.hacia||null};
-  render();
+function maqVolver(){supVista='incidencias';maqData=null;mvF=null;cargar();}
+const mvHoy=()=>new Date().toLocaleDateString('sv-SE',{timeZone:'America/Argentina/Cordoba'});
+const mvDM=d=>{const x=String(d||'').slice(0,10).split('-');return x.length===3?x[2]+'/'+x[1]:'';};
+const mvTs=iso=>iso?new Date(iso).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',timeZone:'America/Argentina/Cordoba'}):'';
+const mvInp='width:100%;box-sizing:border-box;padding:12px;border:1.5px solid #cfd5cf;border-radius:10px;font-size:15px;font-family:inherit;background:#fff';
+
+function renderMaquinaria(){
+  $('kpis').innerHTML='';
+  $('tabs').innerHTML=`<button class="tab-cta" onclick="maqVolver()" style="width:100%;padding:11px;border:1px solid #dfe4df;border-radius:12px;background:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">← Volver</button>`;
+  if(!maqData){$('lista').innerHTML='<div class="vacio">Cargando…</div>';return;}
+  if(maqData.error){$('lista').innerHTML=`<div class="vacio">${esc(maqData.error)}</div>`;return;}
+  const objs=maqData.objetivos||[];
+  const f=mvF||(mvF={numero:'',opciones:null,origen:'',destino:'',vuelve:null,fecha:''});
+  const btnSN=(v,txt)=>`<button type="button" onclick="mvSetVuelve(${v})" style="flex:1;padding:13px;border-radius:10px;border:2px solid ${f.vuelve===v?'#159B51':'#e4e7e4'};background:${f.vuelve===v?'#E8F6EE':'#fff'};color:${f.vuelve===v?'#0F7A3F':'#1E2A22'};font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">${txt}</button>`;
+  let h=`<div class="card" style="padding:16px">
+    <h3 style="margin:0 0 10px">🚚 Mover una máquina</h3>
+    <div class="dl" style="margin:6px 0 5px">1. N° de máquina</div>
+    <input id="mv-num" inputmode="numeric" autocomplete="off" value="${esc(f.numero)}" placeholder="Ej: 16"
+      oninput="mvNumero(this.value)" style="${mvInp};font-size:24px;font-weight:800;text-align:center">
+    <div id="mv-encontrada" style="font-size:13px;margin-top:6px;min-height:18px">${mvTextoEncontrada()}</div>
+
+    <div class="dl" style="margin:12px 0 5px">2. ¿Dónde está?</div>
+    <select id="mv-origen" onchange="mvF.origen=this.value" style="${mvInp}">${mvOpcionesOrigen()}</select>
+
+    <div class="dl" style="margin:12px 0 5px">3. ¿A dónde va?</div>
+    <select id="mv-destino" onchange="mvF.destino=this.value" style="${mvInp}">
+      <option value="">Elegí a dónde va…</option>
+      ${objs.map(o=>`<option value="${o.id}" ${String(f.destino)===String(o.id)?'selected':''}>${esc(o.nombre)}</option>`).join('')}
+    </select>
+
+    <div class="dl" style="margin:12px 0 5px">4. ¿Vuelve?</div>
+    <div style="display:flex;gap:8px">${btnSN(true,'Sí, vuelve')}${btnSN(false,'No, se queda')}</div>
+    ${f.vuelve===true?`<div class="dl" style="margin:10px 0 5px">¿Cuándo vuelve?</div>
+      <input id="mv-fecha" type="date" min="${mvHoy()}" value="${esc(f.fecha)}" onchange="mvF.fecha=this.value" style="${mvInp}">`:''}
+
+    <button class="btn" id="mv-guardar" style="margin-top:16px" onclick="mvGuardar()">✓ Guardar</button>
+  </div>`;
+
+  // Prestadas del supervisor
+  const af=maqData.afuera||[];
+  h+=`<div class="dl" style="margin:16px 0 7px">Máquinas prestadas${af.length?' · '+af.length:''}</div>`;
+  h+=af.length?af.map(m=>`<div id="mv-af-${m.id}" style="background:#fff;border:1px solid ${m.vencida?'#F2C4CB':'#e4e7e4'};border-radius:12px;padding:11px;margin-bottom:8px">
+      <div style="font-size:17px;font-weight:800">${esc(m.numero)}${m.tipo?' · '+esc(m.tipo):''}</div>
+      <div style="font-size:12.5px;color:#7a827a;margin:3px 0 8px">${esc(m.desde)} → ${esc(m.hacia)} · ${m.vencida
+        ?`<b style="color:#C0392B">tenía que volver el ${mvDM(m.vuelve_fecha)}</b>`:`vuelve el <b style="color:#1E2A22">${mvDM(m.vuelve_fecha)}</b>`}</div>
+      <button onclick="mvVolvio('${m.id}')" style="width:100%;padding:10px;border-radius:9px;border:1.5px solid #159B51;background:#fff;color:#0F7A3F;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer">✓ Ya volvió</button>
+    </div>`).join('')
+    :'<div class="desc" style="margin-bottom:8px">No tenés máquinas prestadas.</div>';
+
+  const rec=maqData.recientes||[];
+  if(rec.length){
+    h+='<div class="dl" style="margin:16px 0 7px">Últimos movimientos</div>';
+    h+=rec.map(m=>`<div class="desc" style="font-size:12.5px;padding:6px 0;border-bottom:1px solid #eef1ee">
+      <b>${mvTs(m.created_at)}</b> · ${esc(m.numero)}${m.tipo?' '+esc(m.tipo):''} · ${esc(m.desde)} → ${esc(m.hacia)} ·
+      ${m.estado==='afuera'?(m.vencida?'<span style="color:#C0392B">no volvió</span>':'vuelve '+mvDM(m.vuelve_fecha))
+        :m.estado==='volvio'?'<span style="color:#1E8449">volvió '+mvTs(m.volvio_at)+'</span>':'se quedó'}
+      <div style="color:#7a827a;font-size:11.5px">cargó ${esc(m.creado_por||'—')}</div></div>`).join('');
+  }
+  $('lista').innerHTML=h;
 }
-function maqSet(k,v){if(maqForm)maqForm[k]=v;}
-async function maqGuardar(){
-  if(!maqForm)return;
-  const f=maqForm, btn=$('maq-guardar');
-  // Leer los campos del DOM (no re-renderizamos en cada tecla)
-  f.obs=$('maq-obs')?.value.trim()||'';
-  f.estado=$('maq-estado')?.value||'anda';
-  if($('maq-dest'))f.destino_objetivo_id=$('maq-dest').value;
-  if($('maq-dtipo'))f.destino_tipo=$('maq-dtipo').value;
-  if($('maq-retira'))f.retira=$('maq-retira').value.trim();
-  if(f.accion==='egreso'&&f.destino_tipo==='objetivo'&&!f.destino_objetivo_id){
-    alert('Elegí a qué objetivo va la máquina.');return;
+function mvTextoEncontrada(){
+  const f=mvF||{};
+  if(!f.numero)return '';
+  if(f.opciones===null)return '<span style="color:#7a827a">Buscando…</span>';
+  if(!f.opciones.length)return '<span style="color:#B9770E">No figura en ningún censo. Elegí abajo dónde está.</span>';
+  if(f.opciones.length===1){const o=f.opciones[0];
+    return `<span style="color:#0F7A3F;font-weight:700">✓ ${esc(f.numero)}${o.tipo?' · '+esc(o.tipo):''}</span> <span style="color:#7a827a">· ${o.prestada?'prestada en ':'está en '}${esc(o.objetivo)}</span>`;}
+  return `<span style="color:#B9770E;font-weight:600">Hay ${f.opciones.length} máquinas con el N° ${esc(f.numero)}. Elegí cuál abajo.</span>`;
+}
+function mvOpcionesOrigen(){
+  const f=mvF||{}, objs=(maqData&&maqData.objetivos)||[], ops=f.opciones||[];
+  let h=`<option value="">${ops.length>1?'Elegí cuál es…':'Elegí dónde está…'}</option>`;
+  if(ops.length){
+    h+=`<optgroup label="Según el censo">${ops.map((o,i)=>`<option value="op:${i}" ${f.origen==='op:'+i?'selected':''}>${esc(f.numero)}${o.tipo?' · '+esc(o.tipo):''} — ${esc(o.objetivo)}${o.prestada?' (prestada)':''}</option>`).join('')}</optgroup>`;
+    h+='<optgroup label="Otro lugar">';
   }
-  if(f.accion!=='egreso'&&f.accion==='suelta'&&f.destino_tipo==='objetivo'&&!f.destino_objetivo_id){
-    alert('Elegí en qué objetivo está la máquina.');return;
-  }
-  if(btn){btn.disabled=true;btn.textContent='Guardando…';}
-  const ruta=f.accion==='egreso'?'/api/app/supervisor/maquinaria/egreso'
-    :f.accion==='suelta'?'/api/app/supervisor/maquinaria/recibir-suelta'
-    :'/api/app/supervisor/maquinaria/ingreso';
+  h+=objs.map(o=>`<option value="obj:${o.id}" ${f.origen==='obj:'+o.id?'selected':''}>${esc(o.nombre)}</option>`).join('');
+  if(ops.length)h+='</optgroup>';
+  return h;
+}
+function mvNumero(v){
+  mvF.numero=v.trim();mvF.opciones=v.trim()?null:[];mvF.origen='';
+  $('mv-encontrada').innerHTML=mvTextoEncontrada();
+  clearTimeout(mvBuscarT);
+  if(!mvF.numero){$('mv-origen').innerHTML=mvOpcionesOrigen();return;}
+  const pedido=mvF.numero;
+  mvBuscarT=setTimeout(async()=>{
+    let ops=[];
+    try{ops=(await api('/api/app/supervisor/movimientos/buscar?numero='+encodeURIComponent(pedido))).opciones||[];}catch(e){ops=[];}
+    if(!mvF||mvF.numero!==pedido)return;          // escribió otra cosa mientras tanto
+    mvF.opciones=ops;
+    if(ops.length===1)mvF.origen='op:0';          // una sola: ya queda elegida
+    if($('mv-encontrada'))$('mv-encontrada').innerHTML=mvTextoEncontrada();
+    if($('mv-origen'))$('mv-origen').innerHTML=mvOpcionesOrigen();
+  },450);
+}
+function mvSetVuelve(v){
+  // Guardar lo elegido antes de redibujar
+  const d=$('mv-destino'), o=$('mv-origen'), fe=$('mv-fecha');
+  if(d)mvF.destino=d.value; if(o)mvF.origen=o.value; if(fe)mvF.fecha=fe.value;
+  mvF.vuelve=v;render();
+  if(v&&$('mv-fecha'))$('mv-fecha').focus();
+}
+async function mvGuardar(){
+  const f=mvF;
+  if($('mv-origen'))f.origen=$('mv-origen').value;
+  if($('mv-destino'))f.destino=$('mv-destino').value;
+  if($('mv-fecha'))f.fecha=$('mv-fecha').value;
+  if(!f.numero){alert('Escribí el número de la máquina.');return;}
+  if(!f.origen){alert('Elegí dónde está la máquina.');return;}
+  if(!f.destino){alert('Elegí a dónde va.');return;}
+  if(f.vuelve===null){alert('Marcá si la máquina vuelve o se queda.');return;}
+  if(f.vuelve&&!f.fecha){alert('Poné cuándo vuelve.');return;}
+  let origenId='', tipo='';
+  if(f.origen.startsWith('op:')){const o=(f.opciones||[])[Number(f.origen.slice(3))]||{};origenId=o.objetivo_id;tipo=o.tipo||'';}
+  else origenId=f.origen.slice(4);
+  if(String(origenId)===String(f.destino)){alert('Dónde está y a dónde va son el mismo lugar.');return;}
+  const nom=id=>((maqData.objetivos||[]).find(o=>String(o.id)===String(id))||{}).nombre||'?';
+  const frase=`La ${f.numero}${tipo?' ('+tipo+')':''} sale de ${nom(origenId)} y va a ${nom(f.destino)}.\n`+(f.vuelve?`Vuelve el ${mvDM(f.fecha)}.`:'No vuelve: se queda ahí.');
+  if(!confirm(frase+'\n\n¿Está bien?'))return;
+  const btn=$('mv-guardar');if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   try{
-    await api(ruta,{method:'POST',body:JSON.stringify({
-      unidad_id:f.unidad_id,estado:f.estado,observaciones:f.obs,
-      destino_tipo:f.destino_tipo,destino_objetivo_id:f.destino_objetivo_id||null,
-      retira:f.retira||null})});
-    maqForm=null;
+    await api('/api/app/supervisor/movimientos',{method:'POST',body:JSON.stringify({
+      numero:f.numero,tipo,origen_objetivo_id:origenId,destino_objetivo_id:f.destino,vuelve:f.vuelve,vuelve_fecha:f.vuelve?f.fecha:null})});
+    toast('✓ Movimiento guardado');
     await abrirMaquinaria();
   }catch(e){
     alert(e.message||'No pude guardar');
     if(btn){btn.disabled=false;btn.textContent='✓ Guardar';}
   }
 }
-function maqFila(it,acciones){
-  const badge=it.situacion==='en_transito'
-    ?`<span style="font-size:11px;color:#B9770E;background:#FCF3DE;padding:2px 7px;border-radius:20px">🚚 en viaje → ${it.hacia||'?'}</span>`
-    :it.situacion==='sin_registrar'
-      ?'<span style="font-size:11px;color:#7a827a;background:#f1f3f1;padding:2px 7px;border-radius:20px">sin registrar</span>'
-      :`<span style="font-size:11px;color:#1E8449;background:#E8F6EE;padding:2px 7px;border-radius:20px">📍 ${it.donde||'—'}</span>`;
-  const falla=it.estado_maquina==='con_falla'
-    ?'<span style="font-size:11px;color:#C0392B;margin-left:6px">⚠ con falla</span>':'';
-  return `<div style="border:1px solid #e4e7e4;border-radius:10px;padding:10px;margin-bottom:7px">
-    <div style="font-weight:600;font-size:13.5px;margin-bottom:3px">${it.rotulo}</div>
-    <div style="margin-bottom:7px">${badge}${falla}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">${acciones}</div>
+async function mvVolvio(id){
+  const m=((maqData&&maqData.afuera)||[]).find(x=>x.id===id);
+  if(!m||!confirm(`¿La ${m.numero} ya volvió a ${m.desde}?`))return;
+  try{await api('/api/app/supervisor/movimientos/'+id+'/volvio',{method:'POST',body:'{}'});toast('✓ Listo');await abrirMaquinaria();}
+  catch(e){alert(e.message||'No pude marcarlo');}
+}
+// Aviso en el inicio de Supervisión: prestadas y vencidas.
+async function cargarMovResumen(){
+  try{movResumen=await api('/api/app/supervisor/movimientos/resumen');}catch(e){movResumen=null;}
+}
+function avisoPrestadas(){
+  const r=movResumen;
+  if(!r||!r.afuera)return '';
+  return `<div onclick="abrirMaquinaria()" style="cursor:pointer;background:${r.vencidas?'#FDECEA':'#FCF3DE'};border:1px solid ${r.vencidas?'#F2C4CB':'#F1DFA8'};border-radius:12px;padding:12px;margin-bottom:10px">
+    <div style="font-weight:700;color:${r.vencidas?'#C0392B':'#B9770E'}">🚚 Tenés ${r.afuera} máquina${r.afuera===1?'':'s'} prestada${r.afuera===1?'':'s'}</div>
+    <div style="font-size:12.5px;color:#4a544c;margin-top:2px">${r.vencidas?`<b>${r.vencidas} ya tendría${r.vencidas===1?'':'n'} que haber vuelto.</b> `:''}Tocá acá para marcar las que volvieron ›</div>
   </div>`;
-}
-function renderMaquinaria(){
-  $('kpis').innerHTML='';
-  $('tabs').innerHTML=`<button class="tab-cta" onclick="maqVolver()" style="width:100%;padding:11px;border:1px solid #dfe4df;border-radius:12px;background:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">← Volver</button>`;
-  if(maqForm)return renderMaqForm();
-  if(!maqData){$('lista').innerHTML='<div class="vacio">Cargando maquinaria…</div>';return;}
-  if(maqData.error){$('lista').innerHTML=`<div class="vacio">${maqData.error}</div>`;return;}
-  const bt=(txt,fn,primario)=>`<button onclick="${fn}" style="flex:1;min-width:110px;padding:9px;border:1px solid #159B51;border-radius:9px;background:${primario?'#159B51':'#fff'};color:${primario?'#fff':'#159B51'};font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">${txt}</button>`;
-  const esc=s=>String(s||'').replace(/'/g,"\\'");
-  let h='';
-  if((maqData.en_camino||[]).length){
-    h+='<div class="dl" style="margin:4px 0 7px">🚚 Vienen para acá</div>';
-    h+=maqData.en_camino.map(it=>maqFila(it,
-      bt('✓ Llegó',`maqAbrirForm('ingreso','${it.unidad_id}','${esc(it.rotulo)}')`,true))).join('');
-  }
-  h+='<div class="dl" style="margin:12px 0 7px">📍 En tus objetivos</div>';
-  h+=(maqData.aca||[]).length
-    ? maqData.aca.map(it=>maqFila(it,
-        bt('🚚 Se la llevan',`maqAbrirForm('egreso','${it.unidad_id}','${esc(it.rotulo)}')`,true))).join('')
-    : '<div class="desc" style="margin-bottom:10px">Todavía no hay máquinas registradas en tus objetivos. Usá "Registrar máquina que ya está acá" abajo.</div>';
-  h+=`<button onclick="maqAbrirForm('suelta','','')" style="width:100%;padding:11px;border:1px dashed #159B51;border-radius:10px;background:#fff;color:#159B51;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;margin-bottom:14px">＋ Registrar máquina que ya está acá</button>`;
-  const otras=(maqData.otras||[]).filter(o=>o.situacion!=='sin_registrar');
-  if(otras.length){
-    h+='<div class="dl" style="margin:6px 0 7px">Resto de la flota</div>';
-    h+=otras.slice(0,60).map(it=>maqFila(it,
-      it.situacion==='en_transito'
-        ? bt('✓ Llegó acá',`maqAbrirForm('ingreso','${it.unidad_id}','${esc(it.rotulo)}')`)
-        : bt('🚚 Se la llevan',`maqAbrirForm('egreso','${it.unidad_id}','${esc(it.rotulo)}')`))).join('');
-  }
-  const hist=maqData.historial||[];
-  if(hist.length){
-    h+='<div class="dl" style="margin:14px 0 7px">Últimos movimientos</div>';
-    h+=hist.slice(0,15).map(m=>{
-      const f=m.llegada_at||m.salida_at;
-      const fecha=f?new Date(f).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'';
-      const est=m.estado==='en_transito'?'🚚 en viaje':'✓';
-      return `<div class="desc" style="font-size:12px;padding:5px 0;border-bottom:1px solid #eef1ee">
-        <b>${m.unidad}</b> · ${m.desde} → ${m.hasta} ${est}
-        <div style="color:#7a827a">${fecha} · sacó ${m.salida_por||'—'}${m.llegada_por?' · recibió '+m.llegada_por:''}${m.retira?' · lleva '+m.retira:''}${m.obs?' · '+m.obs:''}</div>
-      </div>`;
-    }).join('');
-  }
-  $('lista').innerHTML=h;
-}
-function renderMaqForm(){
-  const f=maqForm, d=maqData||{};
-  const objs=(d.objetivos||[]);
-  const todas=[...(d.aca||[]),...(d.en_camino||[]),...(d.otras||[])];
-  const inp='width:100%;box-sizing:border-box;padding:10px;border:1px solid #d8dcd8;border-radius:8px;font-size:14px;font-family:inherit';
-  const titulo=f.accion==='egreso'?'🚚 Sale una máquina'
-    :f.accion==='suelta'?'📍 Registrar dónde está'
-    :'✓ Llegó la máquina';
-  let h=`<div class="card" style="padding:16px">
-    <h3 style="margin:0 0 4px">${titulo}</h3>`;
-  if(f.unidad_id){
-    h+=`<div class="desc" style="margin-bottom:12px">${f.rotulo}${f.donde?' · hoy en '+f.donde:''}</div>`;
-  }else{
-    // Alta suelta: hay que elegir la máquina
-    h+=`<div class="dl" style="margin:8px 0 5px">Máquina</div>
-      <select id="maq-unidad" style="${inp}" onchange="maqForm.unidad_id=this.value">
-        <option value="">Elegí la máquina…</option>
-        ${todas.map(u=>`<option value="${u.unidad_id}">${u.rotulo}</option>`).join('')}
-      </select>`;
-  }
-  if(f.accion==='egreso'){
-    h+=`<div class="dl" style="margin:12px 0 5px">¿A dónde va?</div>
-      <select id="maq-dtipo" style="${inp};margin-bottom:7px" onchange="document.getElementById('maq-dest-wrap').style.display=this.value==='taller'?'none':'block'">
-        <option value="objetivo">A otro objetivo</option>
-        <option value="taller">Al taller</option>
-      </select>
-      <div id="maq-dest-wrap">
-        <select id="maq-dest" style="${inp}">
-          <option value="">Elegí el objetivo…</option>
-          ${objs.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
-        </select>
-      </div>
-      <div class="dl" style="margin:12px 0 5px">¿Quién la lleva?</div>
-      <input type="text" id="maq-retira" placeholder="Nombre (supervisor, auxiliar logístico…)" style="${inp}">`;
-  }
-  if(f.accion==='suelta'){
-    h+=`<div class="dl" style="margin:12px 0 5px">¿Dónde está?</div>
-      <select id="maq-dtipo" style="${inp};margin-bottom:7px" onchange="document.getElementById('maq-dest-wrap').style.display=this.value==='taller'?'none':'block'">
-        <option value="objetivo">En un objetivo</option>
-        <option value="taller">En el taller</option>
-      </select>
-      <div id="maq-dest-wrap">
-        <select id="maq-dest" style="${inp}">
-          <option value="">Elegí el objetivo…</option>
-          ${objs.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('')}
-        </select>
-      </div>`;
-  }
-  h+=`<div class="dl" style="margin:12px 0 5px">¿Cómo está la máquina?</div>
-    <select id="maq-estado" style="${inp}">
-      <option value="anda">Anda bien</option>
-      <option value="con_falla">Con falla</option>
-    </select>
-    <div class="dl" style="margin:12px 0 5px">Observaciones</div>
-    <textarea id="maq-obs" rows="3" placeholder="Lo que haga falta aclarar" style="${inp};resize:vertical"></textarea>
-    <button class="btn" id="maq-guardar" style="margin-top:14px" onclick="maqGuardarValidando()">✓ Guardar</button>
-    <button class="btn sec" style="margin-top:8px" onclick="maqForm=null;render()">Cancelar</button>
-  </div>`;
-  $('lista').innerHTML=h;
-}
-// Wrapper: para el alta suelta hay que tener elegida la máquina
-function maqGuardarValidando(){
-  if(!maqForm.unidad_id){
-    const sel=$('maq-unidad');
-    if(sel&&sel.value)maqForm.unidad_id=sel.value;
-  }
-  if(!maqForm.unidad_id){alert('Elegí la máquina.');return;}
-  maqGuardar();
 }
 
 // Insumos de los objetivos del supervisor: qué está pedido y qué hay listo
