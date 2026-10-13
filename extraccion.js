@@ -78,9 +78,12 @@ Para estos: "es_tarjeta": true, "tipo_doc": "remito".
   ("219.625" → 219625). Si el anterior viene en 0, ponelo en 0, no en null: el 0 es el dato.
 - **IGNORÁ el campo "Rendimiento"**: lo calcula la terminal con el kilometraje anterior y
   cuando ese viene en 0 imprime un número absurdo (563,1 KM/LTS). No lo devuelvas.
-- La patente figura suelta cerca de la razón social del cliente (ej: "ECOSERVICE SRL
-  (34108.1)" y abajo "KCG906"). El número largo debajo de "CONDUCTOR" es un DNI o legajo,
+- La patente figura suelta en la línea de abajo de la razón social del cliente (ej: "ECOSERVICE SRL
+  (34108.1)" y abajo la patente, con forma AA999AA o AAA999). Transcribí la que está IMPRESA en
+  ESTE ticket; nunca copies una patente de estas instrucciones. Si no se lee, null.
+  El número largo debajo de "CONDUCTOR" es un DNI o legajo,
   NO es la patente y NO es el chofer: dejá "chofer" en null si solo aparece ese número.
+- Lote y Compr: el Lote suele ser el número LARGO (ej 8 dígitos) y Compr el CORTO (3-4 dígitos).
 
 Para los comprobantes que NO son de tarjeta poné "es_tarjeta": false y dejá lote, tarjeta,
 km_anterior, km_actual y saldo_tarjeta en null.
@@ -154,6 +157,20 @@ function sanearTarjeta(p) {
     p.numero = null;
   }
 
+  // Lote y Compr cruzados (13-oct, Gallerano: numero 20261496 / lote 3565).
+  // En el ticket de Edenred el Lote es el largo (20261496) y el Compr el corto
+  // (3568): si vinieron al revés, se dan vuelta.
+  if (p.es_tarjeta && p.lote && p.numero) {
+    const dl = String(p.lote).replace(/\D/g, ''), dn = String(p.numero).replace(/\D/g, '');
+    if (dn.length >= 7 && dl.length <= 5) { const t = p.lote; p.lote = String(p.numero); p.numero = t; p._lote_invertido = true; }
+  }
+
+  // Litros vs precio × total (13-oct): el ticket decía 32,982 lt a $2.162 =
+  // $71.307,08 y se leyó 52,982 (el 3 térmico parece un 5). En la tarjeta el
+  // precio y el total vienen impresos los dos; si los litros no cierran con
+  // ellos, los litros salen de total ÷ precio, que es la cuenta de la terminal.
+  if (p.es_tarjeta) corregirLitrosTarjeta(p);
+
   // Un comprobante de tarjeta nunca discrimina IVA: si el modelo lo inventó,
   // se borra. La factura consolidada la emite la tarjeta a fin de mes.
   if (p.es_tarjeta) {
@@ -162,6 +179,26 @@ function sanearTarjeta(p) {
     p.otros_tributos = null;
   }
   return p;
+}
+
+function corregirLitrosTarjeta(p) {
+  const PRECIO_MIN = 1000, PRECIO_MAX = 5000;   // $/lt razonable en 2026
+  (p.items || []).forEach(it => {
+    let precio = Number(it.precio_unit), sub = Number(it.subtotal), lt = Number(it.litros);
+    if (!isFinite(sub) || sub <= 0) return;
+    // "2.233" leído como 2,233: precio con la escala corrida.
+    if (isFinite(precio) && precio > 0 && precio < 10 && precio * 1000 >= PRECIO_MIN && precio * 1000 <= PRECIO_MAX) {
+      precio = precio * 1000; it.precio_unit = precio;
+    }
+    if (!isFinite(precio) || precio < PRECIO_MIN || precio > PRECIO_MAX) return;
+    const esperado = Math.round(sub / precio * 1000) / 1000;
+    if (!(esperado > 0.5 && esperado <= 500)) return;
+    if (isFinite(lt) && lt > 0 && Math.abs(lt * precio - sub) <= Math.max(2, sub * 0.005)) return;   // cierra: no se toca
+    it._litros_leidos = isFinite(lt) ? lt : null;
+    it.litros = esperado;
+    it._litros_dudoso = false;
+    console.log(`[remito] litros corregidos ${it._litros_leidos} → ${esperado} (total ${sub} ÷ precio ${precio})`);
+  });
 }
 
 /**
@@ -258,7 +295,7 @@ Reglas:
 Devolvé SOLO un JSON válido, sin markdown:
 {
   "ok": true | false,
-  "motivo": string | null,          // solo si ok es false: qué no se entendió, en una frase
+  "motivo": string | null,          // solo si ok es false: qué no se entendió, en una frase dirigida al capataz, de "vos" (ej "No me dijiste a dónde van los 20 lt que sobran")
   "repartos": [
     { "item": number,               // índice del producto del ticket (te lo paso yo)
       "litros": number,
@@ -296,4 +333,4 @@ async function parsearDestinoCombustible({ texto, items, patente, objetivo_capat
   return JSON.parse(salida.replace(/```json/gi, '').replace(/```/g, '').trim());
 }
 
-module.exports = { extraerComprobante, parsearDestinoCombustible, sanearTarjeta };
+module.exports = { extraerComprobante, parsearDestinoCombustible, sanearTarjeta, corregirLitrosTarjeta };
