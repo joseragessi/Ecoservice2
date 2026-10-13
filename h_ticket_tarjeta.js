@@ -1,0 +1,25 @@
+// Harness · saneamiento del ticket de tarjeta (13-oct, lecturas reales del log)
+const { sanearTarjeta } = require('./extraccion');
+let ok = 0, mal = 0;
+const eq = (n, c, x) => { if (c) ok++; else { mal++; console.log('MAL', n, JSON.stringify(x)); } };
+const it = (l, p, s) => [{ producto: 'PUMA SUPER', es_combustible: true, litros: l, precio_unit: p, subtotal: s }];
+const log = console.log; console.log = () => {};
+let r = sanearTarjeta({ es_tarjeta: true, numero: '3568', lote: '20261496', items: it(52.982, 2162, 71307.08), total: 71307.08 });
+eq('52,982 mal leído → 32,982', r.items[0].litros === 32.982, r.items[0]);
+eq('guarda lo leído', r.items[0]._litros_leidos === 52.982);
+r = sanearTarjeta({ es_tarjeta: true, numero: '3568', lote: '20261495', items: it(32.982, 2162, 71307.08) });
+eq('bien leído no se toca', r.items[0].litros === 32.982 && r.items[0]._litros_leidos === undefined, r.items[0]);
+r = sanearTarjeta({ es_tarjeta: true, numero: '20261496', lote: '3565', items: it(50, 2162, 108100) });
+eq('lote y compr cruzados se dan vuelta', r.lote === '20261496' && r.numero === '3565', r);
+r = sanearTarjeta({ es_tarjeta: true, numero: '8350', lote: '20261540', items: it(60, 2.233, 133980) });
+eq('precio 2,233 → 2233 y litros quedan', r.items[0].precio_unit === 2233 && r.items[0].litros === 60, r.items[0]);
+r = sanearTarjeta({ es_tarjeta: true, numero: '3560', lote: '20261496', items: [{ producto: 'ION DIESEL', litros: 122.845, precio_unit: 2589, subtotal: 318045.71 }] });
+eq('Abel 122,845 cierra', r.items[0].litros === 122.845);
+r = sanearTarjeta({ es_tarjeta: true, numero: '1', lote: '2', items: it(null, 2162, 71307.08) });
+eq('litros que no se leyeron salen de total ÷ precio', r.items[0].litros === 32.982, r.items[0]);
+r = sanearTarjeta({ es_tarjeta: true, items: it(40, null, 90000) });
+eq('sin precio no se inventa', r.items[0].litros === 40);
+r = sanearTarjeta({ es_tarjeta: false, numero: '20261496', lote: null, items: it(52.982, 2162, 71307.08) });
+eq('remito común no se toca', r.items[0].litros === 52.982);
+console.log = log;
+console.log(`${ok} ok · ${mal} mal`);
