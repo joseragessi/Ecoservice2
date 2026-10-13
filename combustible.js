@@ -722,6 +722,16 @@ async function continuarConversacion(telefono, mensaje) {
       return `¿A qué objetivo van los bidones?\n\nRespondé *mío* para ${miObj}, o escribí el nombre de otro objetivo.`;
     }
 
+    // Un "." o un mensaje sin letras ni números no dice nada: se repite la
+    // pregunta en vez de mandarlo a la IA (13-oct: Gallerano mandó "." y el bot
+    // le contestó "El capataz no indicó a dónde va el combustible").
+    if (!/[a-z0-9áéíóúñ]/i.test(texto || '')) {
+      return `¿A dónde va la carga? Contame libre, por ejemplo: "todo a la unidad" o "bidones para mi objetivo".
+
+Atajos: *1* todo a la unidad · *2* todo a bidones
+Si querés empezar de nuevo, mandá otra vez la foto del ticket.`;
+    }
+
     // Texto libre → lo interpreta la IA
     let parseo;
     try {
