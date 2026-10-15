@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-09 · movimientos de máquinas simples (app + panel + stock general)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-15 · reparaciones: objetivos del filtro solo con incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -8065,14 +8065,29 @@ function renderReparaciones(view){
     .map(([v,l,c])=>`<div class="frow ${repFPrio===v?'on':''}" onclick="repFPrio='${repFPrio===v?'':v}';renderReparaciones(document.getElementById('view'))"><span class="pdot" style="background:${c}"></span><span>${l}</span><span class="fc">${resumen[v]}</span></div>`).join('');
   // Filtro por objetivo: se cuenta sobre la MISMA base que el filtro de
   // estado, así al mirar "Finalizadas" los números son de finalizadas.
+  // 15-oct (José): solo los objetivos que tienen incidencias en lo que se
+  // está mirando. Se respetan los demás filtros (mecánico, prioridad, taller,
+  // buscador): con "Sebastián Layus" elegido aparecían objetivos que no
+  // tenían nada suyo y al tocarlos la lista quedaba vacía.
+  const pasaFiltros=(r,salvo)=>
+    (salvo==='ingreso'||!repFIngreso||(repFIngreso==='sin'?!r.fecha_ingreso_taller:!!r.fecha_ingreso_taller))&&
+    (salvo==='prio'||!repFPrio||r.prioridad===repFPrio)&&
+    (salvo==='mec'||!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
+    (salvo==='obj'||!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj))&&
+    matchRep(r);
   const objCount={};
-  base.forEach(r=>{const o=r.objetivos&&r.objetivos.nombre;if(o)objCount[o]=(objCount[o]||0)+1;});
+  base.filter(r=>pasaFiltros(r,'obj')).forEach(r=>{const o=r.objetivos&&r.objetivos.nombre;if(o)objCount[o]=(objCount[o]||0)+1;});
+  // El elegido queda visible aunque haya quedado en 0, para poder destildarlo.
+  if(repFObj&&!objCount[repFObj])objCount[repFObj]=0;
   const fObj=Object.keys(objCount).sort().map(o=>
     `<div class="frow ${repFObj===o?'on':''}" onclick="repFObj='${repFObj===o?'':o.replace(/'/g,"\\'")}';renderReparaciones(document.getElementById('view'))"><span>${o}</span><span class="fc">${objCount[o]}</span></div>`).join('')
     ||'<div class="sub" style="font-size:11.5px;padding:4px 2px">sin objetivos en esta vista</div>';
-  const mecCount={}; repData.forEach(r=>{if(r.mecanico_id)mecCount[r.mecanico_id]=(mecCount[r.mecanico_id]||0)+1;});
+  // Los números de mecánico, sobre lo mismo que se ve (antes contaban también
+  // las finalizadas y no coincidían con la lista).
+  const baseMec=base.filter(r=>pasaFiltros(r,'mec'));
+  const mecCount={}; baseMec.forEach(r=>{if(r.mecanico_id)mecCount[r.mecanico_id]=(mecCount[r.mecanico_id]||0)+1;});
   const fMec=[...mecanicos.map(m=>`<div class="frow ${repFMec===m.id?'on':''}" onclick="repFMec='${repFMec===m.id?'':m.id}';renderReparaciones(document.getElementById('view'))"><span>${m.nombre}</span><span class="fc">${mecCount[m.id]||0}</span></div>`).join(''),
-    `<div class="frow ${repFMec==='__sin'?'on':''}" onclick="repFMec='${repFMec==='__sin'?'':'__sin'}';renderReparaciones(document.getElementById('view'))"><span>Sin asignar</span><span class="fc">${repData.filter(r=>!r.mecanico_id).length}</span></div>`].join('');
+    `<div class="frow ${repFMec==='__sin'?'on':''}" onclick="repFMec='${repFMec==='__sin'?'':'__sin'}';renderReparaciones(document.getElementById('view'))"><span>Sin asignar</span><span class="fc">${baseMec.filter(r=>!r.mecanico_id).length}</span></div>`].join('');
  
   const filas=filtrada.map((r,ix)=>{
     const idx=EST_REP.indexOf(r.estado);
