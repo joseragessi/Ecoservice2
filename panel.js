@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-15 · reparaciones: objetivos del filtro solo con incidencias';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-15 · reparaciones: filtros arriba (capataz, objetivo, mecánico…)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -77,7 +77,7 @@ let objetivos = [];
 let insumosData = [], facturasData = [], repData = [], mecanicos = [];
 let filtroIns = '', combMes = '';
 let insumoEntrega = null;   // pedido en el modal de entrega
-let repFEstado = '', repFPrio = '', repFMec = '', repFObj = '';
+let repFEstado = '', repFPrio = '', repFMec = '', repFObj = '', repFCap = '';
 let repFQ = '';   // buscador de Reparaciones→Resumen
 let repFIngreso = '';   // '' | sin | en  — filtro por ingreso al taller
  
@@ -7959,7 +7959,7 @@ function repBuscar(v){
     if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);
 }
 function repLimpiarFiltros(){
-  repFQ='';repFPrio='';repFMec='';repFObj='';repFIngreso='';
+  repFQ='';repFPrio='';repFMec='';repFObj='';repFIngreso='';repFCap='';repFEstado='';
   renderReparaciones(document.getElementById('view'));
 }
  
@@ -8030,11 +8030,13 @@ function renderReparaciones(view){
     const blob=nrm(`${r.tipo_equipo||''} ${r.equipos?r.equipos.nombre:''} ${r.numero_unidad||''} ${r.descripcion||''} ${r.tipo_falla||''} ${r.objetivos?r.objetivos.nombre:''} ${r.mecanicos?r.mecanicos.nombre:''} ${r.capataces?r.capataces.nombre:''} ${r.nota_cierre||''}`);
     return qRep.every(w=>blob.includes(w));
   };
+  const capRep=r=>(r.capataces&&r.capataces.nombre)||'';
   const filtrada=base.filter(r=>
     (!repFIngreso||(repFIngreso==='sin'?!r.fecha_ingreso_taller:!!r.fecha_ingreso_taller))&&
     (!repFPrio||r.prioridad===repFPrio)&&
     (!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
     (!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj))&&
+    (!repFCap||capRep(r)===repFCap)&&
     matchRep(r))
     // ORDEN (11-sep): crítico → alta → media → baja, y DENTRO de cada
     // prioridad, lo más viejo primero. Antes ordenaba solo por fecha y lo
@@ -8074,6 +8076,7 @@ function renderReparaciones(view){
     (salvo==='prio'||!repFPrio||r.prioridad===repFPrio)&&
     (salvo==='mec'||!repFMec||(repFMec==='__sin'?!r.mecanico_id:r.mecanico_id===repFMec))&&
     (salvo==='obj'||!repFObj||(r.objetivos&&r.objetivos.nombre===repFObj))&&
+    (salvo==='cap'||!repFCap||capRep(r)===repFCap)&&
     matchRep(r);
   const objCount={};
   base.filter(r=>pasaFiltros(r,'obj')).forEach(r=>{const o=r.objetivos&&r.objetivos.nombre;if(o)objCount[o]=(objCount[o]||0)+1;});
@@ -8089,6 +8092,52 @@ function renderReparaciones(view){
   const fMec=[...mecanicos.map(m=>`<div class="frow ${repFMec===m.id?'on':''}" onclick="repFMec='${repFMec===m.id?'':m.id}';renderReparaciones(document.getElementById('view'))"><span>${m.nombre}</span><span class="fc">${mecCount[m.id]||0}</span></div>`).join(''),
     `<div class="frow ${repFMec==='__sin'?'on':''}" onclick="repFMec='${repFMec==='__sin'?'':'__sin'}';renderReparaciones(document.getElementById('view'))"><span>Sin asignar</span><span class="fc">${baseMec.filter(r=>!r.mecanico_id).length}</span></div>`].join('');
  
+  // ── Barra de filtros arriba (15-oct, José): desplegables con la cantidad
+  // de cada opción según los demás filtros, y etiquetas de lo activo.
+  const capCount={};
+  base.filter(r=>pasaFiltros(r,'cap')).forEach(r=>{const c=capRep(r);if(c)capCount[c]=(capCount[c]||0)+1;});
+  if(repFCap&&!capCount[repFCap])capCount[repFCap]=0;
+  const prioCount={};base.filter(r=>pasaFiltros(r,'prio')).forEach(r=>{prioCount[r.prioridad]=(prioCount[r.prioridad]||0)+1;});
+  const escA=t=>escStk(t).replace(/'/g,"\\'");
+  const selR=(lbl,val,setter,ops,todos)=>`<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:150px">
+      <label style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tinta-3);font-weight:700">${lbl}</label>
+      <select onchange="${setter}=this.value;renderReparaciones(document.getElementById('view'))" style="padding:7px 9px;border:1px solid ${val?'var(--brote)':'var(--linea)'};border-radius:8px;font:inherit;font-size:12.5px;background:${val?'var(--brote-soft)':'#fff'};color:${val?'var(--brote-2)':'inherit'};${val?'font-weight:600':''}">
+        <option value="">${todos}</option>
+        ${ops.map(([v,l,n])=>`<option value="${escStk(v)}" ${String(val)===String(v)?'selected':''}>${escStk(l)}${n!=null?' ('+n+')':''}</option>`).join('')}
+      </select></div>`;
+  const ordenN=o=>Object.keys(o).sort((a,b)=>a.localeCompare(b));
+  const barraFiltros=`<div class="panel" style="padding:12px 14px;margin-bottom:12px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div style="display:flex;flex-direction:column;gap:3px;flex:2;min-width:220px">
+        <label style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tinta-3);font-weight:700">Buscar</label>
+        <input id="rep-q" class="busca" style="font-size:12.5px;padding:7px 11px" placeholder="Equipo, unidad, falla…" value="${escStk(repFQ)}" oninput="repBuscar(this.value)"></div>
+      ${selR('Estado',repFEstado,'repFEstado',EST_REP.map(e=>[e,EST_REP_LABEL[EST_REP.indexOf(e)]||cap(e),cnt('estado',e)]),`Activas (${activas})`)}
+      ${selR('Capataz',repFCap,'repFCap',ordenN(capCount).map(c=>[c,c,capCount[c]]),'Todos')}
+      ${selR('Objetivo',repFObj,'repFObj',ordenN(objCount).map(o=>[o,o,objCount[o]]),'Todos')}
+      ${selR('Mecánico',repFMec,'repFMec',[...mecanicos.filter(m=>mecCount[m.id]||repFMec===m.id).map(m=>[m.id,m.nombre,mecCount[m.id]||0]),
+        ...(baseMec.some(r=>!r.mecanico_id)?[['__sin','Sin asignar',baseMec.filter(r=>!r.mecanico_id).length]]:[])],'Todos')}
+      ${selR('Prioridad',repFPrio,'repFPrio',[['critico','Crítico'],['alta','Alta'],['media','Media'],['baja','Baja']].filter(([v])=>prioCount[v]||repFPrio===v).map(([v,l])=>[v,l,prioCount[v]||0]),'Todas')}
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <label style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tinta-3);font-weight:700">Taller</label>
+        <div style="display:flex;border:1px solid var(--linea);border-radius:8px;overflow:hidden">
+          ${[['','Todas'],['sin','Sin ingresar'],['en','En el taller']].map(([v,l])=>`<span onclick="repFIngreso='${v}';renderReparaciones(document.getElementById('view'))" style="cursor:pointer;padding:7px 10px;font-size:12px;white-space:nowrap;${repFIngreso===v?'background:var(--brote);color:#fff;font-weight:600':''}">${l}</span>`).join('')}
+        </div></div>
+    </div>
+    ${(()=>{
+      const est=repFEstado?(EST_REP_LABEL[EST_REP.indexOf(repFEstado)]||repFEstado):'';
+      const mecN=repFMec==='__sin'?'Sin asignar':((mecanicos.find(m=>m.id===repFMec)||{}).nombre||'');
+      const prioN={critico:'Crítico',alta:'Alta',media:'Media',baja:'Baja'}[repFPrio]||'';
+      const act=[
+        est&&['Estado: '+est,"repFEstado=''"], repFCap&&['Capataz: '+repFCap,"repFCap=''"], repFObj&&['Objetivo: '+repFObj,"repFObj=''"],
+        repFMec&&['Mecánico: '+mecN,"repFMec=''"], repFPrio&&['Prioridad: '+prioN,"repFPrio=''"],
+        repFIngreso&&[repFIngreso==='sin'?'Sin ingresar':'En el taller',"repFIngreso=''"], repFQ&&['"'+repFQ+'"',"repFQ=''"]].filter(Boolean);
+      return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;font-size:12px">
+        ${act.length?'<span class="sub">Filtrando:</span>'+act.map(([t,f])=>`<span onclick="${f};renderReparaciones(document.getElementById('view'))" title="sacar" style="cursor:pointer;background:var(--brote-soft);color:var(--brote-2);border-radius:999px;padding:3px 10px;font-weight:600">${escStk(t)} ✕</span>`).join('')
+          +'<a href="javascript:void 0" onclick="repLimpiarFiltros()" style="color:var(--tinta-3);margin-left:4px">limpiar todo</a>':'<span class="sub">Activas · sin otros filtros</span>'}
+        <span class="sub" style="margin-left:auto">${filtrada.length} de ${base.length}</span></div>`;
+    })()}
+  </div>`;
+
   const filas=filtrada.map((r,ix)=>{
     const idx=EST_REP.indexOf(r.estado);
     return `<tr onclick="selRep(${ix})" data-ix="${ix}">
@@ -8116,21 +8165,10 @@ function renderReparaciones(view){
         <button class="btn" style="font-family:'Sora'" onclick="repAltaToggle()">+ Nueva incidencia</button></div></div>
     ${tabsRep()}
     ${repAltaOpen?repAltaForm():''}
-    <div class="repwrap">
-      <div class="rep-filters">
-        <div class="fgroup-t">Estado</div>${fEstado}
-        <div class="fgroup-t">Taller</div>${fTaller}
-        <div class="fgroup-t">Prioridad</div>${fPrio}
-        <div class="fgroup-t">Mecánico</div>${fMec}
-        <div class="fgroup-t">Objetivo</div>${fObj}
-      </div>
+    ${barraFiltros}
+    <style>.repwrap.sin-filtros{grid-template-columns:1fr 368px}@media(max-width:1100px){.repwrap.sin-filtros{grid-template-columns:1fr}}</style>
+    <div class="repwrap sin-filtros">
       <div class="tablewrap">
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-          <input id="rep-q" class="busca" style="flex:1;min-width:200px;font-size:12.5px;padding:7px 11px"
-            placeholder="Buscar equipo, unidad, falla, objetivo, capataz o mecánico…" value="${escStk(repFQ)}" oninput="repBuscar(this.value)">
-          <span class="sub" style="font-size:12px;white-space:nowrap">${filtrada.length} de ${base.length}</span>
-          ${repFQ||repFPrio||repFMec||repFObj||repFIngreso?`<button class="btn ghost" style="padding:5px 11px;font-size:11.5px" onclick="repLimpiarFiltros()">✕ limpiar</button>`:''}
-        </div>
         <div class="sub" style="font-size:11px;margin-bottom:7px">Ordenadas por prioridad y, dentro de cada una, las más viejas primero.</div>
         <table><thead><tr><th>Prioridad</th><th>Equipo</th><th>Unidad</th><th>Objetivo</th><th>Capataz</th><th>Mecánico</th><th>Estado</th><th>Hace</th></tr></thead>
         <tbody id="rep-body">${filas||`<tr><td colspan="8"><div class="empty"><div>${repFQ?'Nada con esa búsqueda.':'No hay incidencias con estos filtros.'}</div></div></td></tr>`}</tbody></table></div>
