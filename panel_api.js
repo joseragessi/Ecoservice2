@@ -4307,6 +4307,17 @@ const CAMPOS_MAESTRO = {
   unidades: ['codigo', 'marca_modelo', 'patente', 'responsable', 'objetivo_id', 'activo', 'tipo_rodado', 'tipo_activo', 'tarjeta_combustible'],
 };
  
+// 19-oct: cambiar el teléfono de un capataz daba "500" sin explicación. Si
+// Postgres rechaza por valor repetido (teléfono, usuario, patente…), se dice
+// cuál campo y qué valor, en castellano.
+function errorDuplicado(err) {
+  if (!err || err.code !== '23505') return null;
+  const m = String(err.details || err.message || '').match(/\((\w+)\)=\(([^)]*)\)/);
+  const NOM = { telefono: 'teléfono', usuario: 'usuario', patente: 'patente', codigo: 'código', nombre: 'nombre', tarjeta_combustible: 'tarjeta' };
+  return m ? `Ese ${NOM[m[1]] || m[1]} (${m[2]}) ya lo tiene otro registro. Buscalo en Maestros y cambiáselo o dalo de baja primero.`
+           : 'Ese dato ya lo tiene otro registro (está repetido).';
+}
+
 function filtrarCampos(tipo, body) {
   const permitidos = CAMPOS_MAESTRO[tipo] || [];
   const out = {};
@@ -4362,6 +4373,8 @@ router.post('/api/maestros/:tipo', auth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('maestros create:', err);
+    const dup = errorDuplicado(err);
+    if (dup) return res.status(409).json({ error: dup });
     res.status(500).json({ error: 'No pude crear: ' + (err.message || 'error') });
   }
 });
@@ -4378,6 +4391,8 @@ router.post('/api/maestros/:tipo/:id', auth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('maestros update:', err);
+    const dup = errorDuplicado(err);
+    if (dup) return res.status(409).json({ error: dup });
     res.status(500).json({ error: 'No pude actualizar: ' + (err.message || 'error') });
   }
 });
