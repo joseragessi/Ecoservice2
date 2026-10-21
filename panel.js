@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-15 · reparaciones: filtros arriba (capataz, objetivo, mecánico…)';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-10-21 · compras: percepciones editables';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -9644,6 +9644,7 @@ async function vMaestros(view){
   cargarMaestros();
 }
 async function cargarMaestros(){
+  comprasListasOk=false;   // lo que se cambie acá tiene que verse en Compras
   try{
     // Las tres en paralelo: antes eran tres esperas encadenadas de ~500 ms.
     // Las que no hacen falta para la pestaña resuelven sin pedir nada.
@@ -11509,7 +11510,10 @@ async function vComprasFinanciero(view){
 }
  
 async function vCompras(view){
-  await cargarListasCompras();   // los desplegables salen de Maestros
+  // Al cargar una factura se piden de nuevo (21-oct): la lista quedaba
+  // guardada desde que se abrió el panel y un centro activado después en
+  // Maestros (ARCHIVO) no aparecía para elegir.
+  await cargarListasCompras(comprasMode==='carga');   // los desplegables salen de Maestros
   if(comprasMode==='carga'){vComprasCarga(view);return;}
   if(comprasMode==='detalle'){vComprasDetalle(view);return;}
   if(comprasTab==='cuenta'){vComprasCuenta(view);return;}
@@ -12125,7 +12129,10 @@ function vComprasDetalle(view){
             :dif<=tol?`<div class="sub" style="font-size:11px;color:var(--diesel)">se imputan por separado · el IVA total se ajusta a ${money(suma)} (decía ${money(ivaTot)})</div>`
             :`<div class="sub" style="font-size:11px;color:var(--rojo)">⚠ las alícuotas suman ${money(suma)} y el IVA dice ${money(ivaTot)} — no cierra y así no se puede imputar discriminado. Corregí el IVA con ✏️ Editar antes de imputar</div>`}
         </div>`;})()}
-      ${(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
+      ${ed?`<div class="divider" style="margin:8px 0"></div>
+        <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
+        <div id="ec-conceptos">${ecConceptosHtml(inv)}</div>`
+      :(inv.otros_conceptos||[]).length?`<div class="divider" style="margin:8px 0"></div>
         <div class="field-l" style="margin-bottom:6px">Percepciones e impuestos</div>
         ${(inv.otros_conceptos||[]).map((o,ix)=>`
           <div class="mcard-row" style="align-items:center">
@@ -12486,6 +12493,45 @@ function adjuntarComprobante(id){
   inp.click();
 }
  
+/* Percepciones e impuestos editables (21-oct, José): la lectura de SERVI SUD
+   corrió los importes del pie una columna (IIBB/ITC/CO2) y no había cómo
+   corregirlos. En edición cada concepto tiene nombre, tipo e importe, y se
+   pueden agregar o sacar. Solo se redibuja este bloque, para no perder lo
+   que se esté editando arriba. */
+function ecConceptosHtml(inv){
+  const inp='background:var(--blanco);border:1px solid var(--linea);border-radius:8px;padding:7px 9px;font-family:inherit;font-size:12.5px;outline:none';
+  const os=inv.otros_conceptos||[];
+  return os.map((o,ix)=>`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+      <input id="eo-con-${ix}" value="${escStk(o.concepto||'')}" placeholder="Concepto (ej. Perc. IIBB Córdoba)" style="${inp};flex:1;min-width:0">
+      <select id="eo-tip-${ix}" style="${inp};width:118px">
+        ${[['percepcion','Percepción'],['impuesto','Impuesto'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${(o.tipo||'otro')===v?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <input id="eo-mon-${ix}" type="number" step="0.01" value="${o.monto!=null?o.monto:''}" style="${inp};width:130px;text-align:right">
+      <button class="mini-btn" title="sacar este concepto" onclick="ecQuitarConcepto(${ix})" style="color:var(--rojo)">✕</button>
+    </div>`).join('')
+    +`<button class="mini-btn" onclick="ecAgregarConcepto()">＋ Agregar percepción o impuesto</button>
+      <div class="sub" style="font-size:11px;margin-top:4px">Si un concepto dice 0,00 en la factura, sacalo. El total se recalcula al guardar.</div>`;
+}
+// Lee lo escrito en el bloque y lo deja en la factura en memoria (conserva
+// exento, código de Flexxus y porcentaje de cada concepto).
+function ecLeerConceptos(){
+  const inv=comprasVer;if(!inv)return [];
+  const g=id=>document.getElementById(id);
+  inv.otros_conceptos=(inv.otros_conceptos||[]).map((o,ix)=>{
+    const c=g('eo-con-'+ix),t=g('eo-tip-'+ix),m=g('eo-mon-'+ix);
+    if(!c)return o;
+    const n={...o,concepto:c.value.trim()||null,tipo:t?t.value:(o.tipo||'otro'),monto:Math.round((Number(m&&m.value)||0)*100)/100};
+    // Si cambió el nombre o el tipo, el código de Flexxus elegido para el
+    // concepto anterior ya no vale (si no, un ITC se imputaría como PER IIBB).
+    if(n.concepto!==(o.concepto||null)||n.tipo!==(o.tipo||'otro')){delete n.codigo_flexxus;delete n.porcentaje;}
+    return n;
+  });
+  return inv.otros_conceptos;
+}
+function ecRedibujarConceptos(){const b=document.getElementById('ec-conceptos');if(b)b.innerHTML=ecConceptosHtml(comprasVer);}
+function ecAgregarConcepto(){ecLeerConceptos();comprasVer.otros_conceptos.push({concepto:'',tipo:'percepcion',monto:0});ecRedibujarConceptos();}
+function ecQuitarConcepto(ix){ecLeerConceptos();comprasVer.otros_conceptos.splice(ix,1);ecRedibujarConceptos();}
+
 async function guardarEdicionCompra(){
   const inv=comprasVer;if(!inv)return;
   const g=id=>document.getElementById(id);
@@ -12498,6 +12544,10 @@ async function guardarEdicionCompra(){
     total_iva:Number(g('ec-iva').value)||0,
     assignmentMode:comprasEditMode,
   };
+  // Percepciones e impuestos: los de monto 0 o sin nombre no se guardan.
+  if(document.getElementById('ec-conceptos')){
+    body.otros_conceptos=ecLeerConceptos().filter(o=>(Number(o.monto)||0)!==0&&(o.concepto||'').trim());
+  }
   // Ítems editados: descripción, cantidad, MONTO e IVA. El monto faltaba, así
   // que una corrección del neto no llegaba al detalle y Flexxus imputaba el
   // importe viejo del OCR (caso RAGAGLIA: $27.722,02 en vez de $33.466,23).
