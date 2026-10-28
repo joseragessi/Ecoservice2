@@ -91,7 +91,13 @@ async function auth(req, res, next) {
   // admin por compatibilidad (eran los usuarios de PANEL_USERS).
   const mods = Array.isArray(payload.mods) ? payload.mods : null;
   const esAdmin = payload.admin === true || mods === null;
-  const modulo = moduloDeRuta(req.path);
+  // 28-oct: las LISTAS de mecánicos y objetivos (solo lectura) las necesita
+  // cualquier módulo. Estaban atadas a "maestros", así que en la compu del
+  // taller (usuario sin Maestros) el selector "Mecánico asignado" de
+  // Reparaciones quedaba vacío y no se podía cambiar el mecánico. Editarlos
+  // sigue pidiendo Maestros.
+  const listaComun = req.method === 'GET' && /^\/api\/(mecanicos|objetivos)\/?$/.test(req.path);
+  const modulo = listaComun ? null : moduloDeRuta(req.path);
   if (modulo && !esAdmin && !mods.includes(modulo)) {
     return res.status(403).json({ error: 'No tenés acceso a este módulo' });
   }
@@ -4912,6 +4918,27 @@ function problemasFactura(p) {
   return out;
 }
 
+// Pie de factura de combustible corrido una columna (21-oct, SERVI SUD
+// 0025-00004037). El pie dice "Perc. IIBB Cordoba 0,00 | ITC 144.326,49 |
+// CO2 10.804,74 | Tasa Vial 0,00" y la lectura dio IIBB 144.326,49, ITC
+// 10.804,74, CO2 0: cada importe en la columna de al lado. El total cierra
+// igual, por eso ningún control lo veía. En combustible el ITC es siempre
+// muchas veces el CO2 (≈13×) y la percepción de IIBB es chica: una "IIBB"
+// varias veces mayor que el ITC con el CO2 en 0 es el corrimiento.
+function corregirPieCombustible(p) {
+  const os = p && Array.isArray(p.otros_conceptos) ? p.otros_conceptos : null;
+  if (!os) return false;
+  const busca = re => os.find(o => re.test(String(o.concepto || '')));
+  const iibb = busca(/iibb|ingresos\s*brutos/i), itc = busca(/\bitc\b|23966|impuesto.*combust/i), co2 = busca(/co2|di[oó]xido/i);
+  if (!iibb || !itc) return false;
+  const vI = Number(iibb.monto) || 0, vT = Number(itc.monto) || 0, vC = co2 ? Number(co2.monto) || 0 : 0;
+  if (!(vT > 0 && vI > vT * 3 && vC === 0)) return false;
+  itc.monto = vI;
+  if (co2) co2.monto = vT; else os.push({ concepto: 'CO2', monto: vT, tipo: itc.tipo || 'impuesto' });
+  p.otros_conceptos = os.filter(o => o !== iibb);   // la percepción era 0,00
+  return true;
+}
+
 // Bonificación / descuento general (7-oct, Córdoba Riegos: subtotal 84.629,43,
 // bonificación -10% -8.462,94, neto gravado 76.166,49). El neto que va a
 // Flexxus es el de DESPUÉS del descuento (es sobre el que se calcula el IVA);
@@ -5217,6 +5244,10 @@ router.post('/api/compras/extract', auth, async (req, res) => {
       '- Si el total dice solo "Percepciones" pero en otra parte de la factura (abajo, en letra chica) ' +
       'aparece el detalle, p. ej. "Percepciones: IIBB CBA (LUA) [12 - 4,00]", el concepto es ESE detalle ' +
       '("Percepción IIBB CBA"), no la palabra suelta "Percepciones". Si hay varias, una entrada por cada una.\n' +
+      '- Facturas de COMBUSTIBLE (GNG, Servi Sud, Puma, Shell, YPF): el pie trae columnas como ' +
+      '"Perc. IIBB Cordoba | ITC Ley 23966x | CO2 | Tasa Vial". Leé cada importe DEBAJO DE SU TÍTULO, ' +
+      'columna por columna. Si una columna dice 0,00, ese concepto es 0 (no lo pongas). No corras los ' +
+      'valores: el ITC siempre es mucho más grande que el CO2.\n' +
       '- La suma de los montos de "iv" tiene que dar "ti".\n' +
       '- VERIFICACIÓN FINAL: tn + ti + suma de "o" tiene que dar EXACTAMENTE el "Importe Total" ' +
       'impreso. Si no cierra, casi siempre metiste un subtotal como concepto: corregilo antes de responder.';
@@ -5358,6 +5389,7 @@ router.post('/api/compras/extract', auth, async (req, res) => {
           Math.abs(sumaItems - Number(parsed.total_sin_iva)) > Math.max(1, Number(parsed.total_sin_iva) * 0.005)) {
         avisos.push('Los ítems suman ' + sumaItems.toFixed(2) + ' y el neto leído es ' + Number(parsed.total_sin_iva).toFixed(2) + ': verificá los montos contra el papel.');
       }
+      if (corregirPieCombustible(parsed)) avisos.push('Los impuestos del pie venían corridos una columna (Perc. IIBB / ITC / CO2): los acomodé. Verificalo contra el papel.');
       problemasFactura(parsed).forEach(p => avisos.push(p + ' — verificalo contra el papel.'));
       if (parsed.bonificacion) avisos.push(`La factura tiene ${parsed.bonificacion.concepto} de $${parsed.bonificacion.monto.toLocaleString('es-AR', { minimumFractionDigits: 2 })}: ya está descontada del neto y repartida en los ítems (no va aparte a Flexxus).`);
       if (avisos.length) parsed.__avisos = avisos;
