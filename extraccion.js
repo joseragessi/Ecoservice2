@@ -67,7 +67,8 @@ Para estos: "es_tarjeta": true, "tipo_doc": "remito".
 - El importe SÍ se lee: poné el precio por litro en "precio_unit", el importe de la línea
   en "subtotal" y el mismo importe en "total". La tarjeta NO discrimina IVA (la factura la
   emite la tarjeta a fin de mes, consolidada): dejá neto, iva y otros_tributos en null.
-- "numero" es el campo **Compr** (ej: 2951), NO el Lote. El Lote va en su propio campo.
+- "numero" es el campo **Compr** (el número corto, 3 o 4 dígitos), NO el Lote. El Lote va en su propio campo.
+  Transcribí los números impresos en ESTE ticket; nunca copies números de estas instrucciones.
 - "tarjeta" son los dígitos del campo Tarj, sin espacios.
 - El producto viene bajo "TOTAL CARGADO" con la forma:
     NOMBRE_PRODUCTO / Cantidad: LTS <litros> / Precio: $ <precio> / Total: $ <importe>
