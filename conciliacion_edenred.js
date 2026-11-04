@@ -99,8 +99,12 @@ function emparejar(grupos, cargas, tarjetaDePatente = {}, usadas = new Set()) {
     if (d > 1) return;
     const id = identidad(g, c, tarjetaDePatente);
     const fuerte = id.por.includes('tarjeta') || id.por.includes('patente') || id.pts >= 4;
-    if (!fuerte || d !== 0) return;
+    if (!fuerte) return;
     const lt = Number(c.litros_total) || 0;
+    // Un día de diferencia vale solo si los litros son casi los mismos
+    // (4-nov, Alexis: ticket 06/10 29 lt ↔ Edenred 05/10 29,17 lt: el ticket
+    // se cargó redondeado y con la fecha corrida).
+    if (d === 1 && Math.abs(g.litros - lt) > Math.max(0.3, g.litros * 0.02)) return;
     cand2.push({ g, c, pts: id.pts - Math.abs(g.litros - lt) / 10, via: id.por.join(' + ') });
   }));
   // Solo si el par es ÚNICO ese día (30-sep): un chofer que carga 3 veces por
