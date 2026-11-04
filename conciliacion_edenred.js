@@ -67,11 +67,20 @@ function emparejar(grupos, cargas, tarjetaDePatente = {}, usadas = new Set()) {
     const d = Math.abs(dias(g.fecha, c.fecha));
     if (d > 1) return;
     const id = identidad(g, c, tarjetaDePatente);
-    const conDecimales = Math.abs(g.litros - Math.round(g.litros)) > 0.001;
+    // Los decimales son huella SOLO si coinciden (±0,006 por el redondeo a 2
+    // decimales del PDF de Edenred). 4-nov: el 50 lt de Alexis Barraza se
+    // emparejaba con un 50,01 de Claudio Chavez porque "tenía decimales".
+    const exacto = Math.abs(lt - g.litros) <= 0.006;
+    const conDecimales = exacto && Math.abs(g.litros - Math.round(g.litros)) > 0.001;
     // Litros redondos (40, 60, 80) se repiten todo el tiempo: sin chofer,
     // tarjeta o patente no alcanza. Con decimales (19,237) ya es una huella.
     if (!id.pts && !conDecimales) return;
     let pts = id.pts + (d === 0 ? 3 : 1) + (conDecimales ? 4 : 0);
+    // Chofer de Edenred con nombre y que NO es el que cargó el ticket: es de
+    // otra persona. Solo se acepta si la tarjeta o la patente lo sostienen.
+    const otroChofer = g.chofer && nombreDe(c) && !id.por.includes('chofer');
+    if (otroChofer && !id.por.some(x => /tarjeta|patente/.test(x))) pts -= 5;
+    if (pts <= 0) return;
     if (g.total && c.total && Math.abs(Number(c.total) - g.total) < 1) { pts += 3; id.por.push('importe'); }
     cand.push({ g, c, pts, via: ['litros', ...id.por].join(' + ') });
   }));
