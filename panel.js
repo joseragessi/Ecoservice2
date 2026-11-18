@@ -1,4 +1,4 @@
-const PANEL_BUILD = '2026-10-21 · compras: percepciones editables';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
+const PANEL_BUILD = '2026-11-18 · insumos: filtros y búsqueda';  // escribí PANEL_BUILD en la consola para saber qué versión está corriendo
  
 // ── AUTO-ACTUALIZACIÓN (10-ago) ──────────────────────────────────────────────
 // Antes de esto, cada subida al repo obligaba a hacer Ctrl+Shift+R en cada
@@ -1351,38 +1351,106 @@ function insCopiarLista(){
     .then(()=>toast('Lista copiada ('+l.length+' ítems) — pegala en WhatsApp o donde quieras'))
     .catch(()=>toast('No pude copiar','error'));
 }
+// Filtros de Insumos (18-nov, José): misma barra que Reparaciones.
+// Período por defecto 90 días: antes la lista era larga y los pedidos
+// viejos (4 Hojas de octubre) no se encontraban.
+let insF={q:'',obj:'',cap:'',per:'90'}, insRaw=[];
 async function vInsumos(view){
   try{
-    insumosData=await api('/api/insumos');
-    if(insTab==='indicadores'){vInsInd(view,insumosData);return;}
-    if(insTab==='compra'){vInsCompra(view,insumosData);return;}
-    // 'en_compra' quedó como estado legacy: en la UI cuenta como pendiente.
-    const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
-    if(filtroIns==='pendiente')insumosData=insumosData.filter(esPend);
-    else if(filtroIns==='entregado')insumosData=insumosData.filter(p=>p.estado==='entregado');
-    else if(filtroIns==='faltantes')insumosData=insumosData.filter(p=>p.estado==='entregado'&&p.entrega_completa===false);
-    const chips=[['','Todos'],['pendiente','Pendiente'],['entregado','Entregado'],['faltantes','Con faltantes']].map(([e,l])=>
-      `<div class="chip-f ${filtroIns===e?'on':''}" onclick="filtroIns='${e}';go('insumos')">${l}</div>`).join('');
-    view.innerHTML=`
+    insRaw=await api('/api/insumos');
+    if(insTab==='indicadores'){insumosData=insRaw;vInsInd(view,insRaw);return;}
+    if(insTab==='compra'){insumosData=insRaw;vInsCompra(view,insRaw);return;}
+    insRender(view);
+  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar los pedidos.</div>`;}
+}
+function insBuscar(v){
+  insF.q=v;insRender(document.getElementById('view'));
+  setTimeout(()=>{const i=document.getElementById('ins-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},0);
+}
+function insLimpiar(){insF={q:'',obj:'',cap:'',per:'90'};filtroIns='';insRender(document.getElementById('view'));}
+function insRender(view){
+  const nrm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const objDe=p=>p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—');
+  const capDe=p=>p.capataces?p.capataces.nombre:'';
+  const itemsDe=p=>(p.pedidos_insumos_items||[]).map(i=>i.item).join(', ');
+  // 'en_compra' quedó como estado legacy: en la UI cuenta como pendiente.
+  const esPend=p=>p.estado==='pendiente'||p.estado==='en_compra';
+  const pasaEstado=p=>!filtroIns||(filtroIns==='pendiente'?esPend(p)
+    :filtroIns==='entregado'?p.estado==='entregado'
+    :filtroIns==='faltantes'?(p.estado==='entregado'&&p.entrega_completa===false):true);
+  const desde=insF.per==='mes'?(()=>{const d=new Date();return new Date(d.getFullYear(),d.getMonth(),1).getTime();})()
+    :insF.per==='todo'?0:Date.now()-Number(insF.per||90)*864e5;
+  const qs=nrm(insF.q).split(/\s+/).filter(Boolean);
+  const pasa=(p,salvo)=>new Date(p.created_at).getTime()>=desde&&
+    (salvo==='estado'||pasaEstado(p))&&
+    (salvo==='obj'||!insF.obj||objDe(p)===insF.obj)&&
+    (salvo==='cap'||!insF.cap||capDe(p)===insF.cap)&&
+    (!qs.length||(b=>qs.every(w=>b.includes(w)))(nrm([itemsDe(p),p.texto_original,objDe(p),capDe(p)].join(' '))));
+  const lista=insRaw.filter(p=>pasa(p));
+  insumosData=lista;   // selInsumo(ix) trabaja sobre lo que se ve
+  const cuenta=(salvo,clave)=>{const c={};insRaw.filter(p=>pasa(p,salvo)).forEach(p=>{const k=clave(p);if(k)c[k]=(c[k]||0)+1;});return c;};
+  const cObj=cuenta('obj',objDe), cCap=cuenta('cap',capDe);
+  if(insF.obj&&!cObj[insF.obj])cObj[insF.obj]=0;
+  if(insF.cap&&!cCap[insF.cap])cCap[insF.cap]=0;
+  const lbl='font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tinta-3);font-weight:700';
+  const selF=(t,val,campo,c,todos)=>`<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:160px">
+      <label style="${lbl}">${t}</label>
+      <select onchange="insF.${campo}=this.value;insRender(document.getElementById('view'))" style="padding:7px 9px;border:1px solid ${val?'var(--brote)':'var(--linea)'};border-radius:8px;font:inherit;font-size:12.5px;background:${val?'var(--brote-soft)':'#fff'};color:${val?'var(--brote-2)':'inherit'};${val?'font-weight:600':''}">
+        <option value="">${todos}</option>
+        ${Object.keys(c).sort((a,b)=>a.localeCompare(b)).map(k=>`<option value="${escStk(k)}" ${val===k?'selected':''}>${escStk(k)} (${c[k]})</option>`).join('')}
+      </select></div>`;
+  const PER=[['mes','Este mes'],['30','Últimos 30 días'],['90','Últimos 90 días'],['todo','Todo']];
+  const est=[['','Todos'],['pendiente','Pendiente'],['entregado','Entregado'],['faltantes','Con faltantes']];
+  const act=[filtroIns&&[(est.find(e=>e[0]===filtroIns)||[,''])[1],"filtroIns=''"],
+    insF.q&&['"'+insF.q+'"',"insF.q=''"], insF.obj&&['Objetivo: '+insF.obj,"insF.obj=''"],
+    insF.cap&&['Capataz: '+insF.cap,"insF.cap=''"], insF.per!=='90'&&[(PER.find(x=>x[0]===insF.per)||[,''])[1],"insF.per='90'"]].filter(Boolean);
+  // Resaltado de lo buscado
+  const marca=t=>{let h=escStk(t);if(!qs.length)return h;
+    const sinAc=nrm(h);let out='',i=0;
+    while(i<h.length){const w=qs.find(w=>sinAc.startsWith(w,i));
+      if(w){out+='<mark style="background:#FFF1B8;padding:0 1px;border-radius:3px">'+h.slice(i,i+w.length)+'</mark>';i+=w.length;}else{out+=h[i];i++;}}
+    return out;};
+  view.innerHTML=`
     <div class="view-head"><div><div class="view-title">Pedidos de insumos</div>
       <div class="view-desc">Del pedido del capataz por WhatsApp hasta la entrega en depósito</div></div></div>
     ${tabsIns()}
-    <div class="filters">${chips}</div>
+    <div class="panel" style="padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="display:flex;flex-direction:column;gap:3px;flex:2;min-width:220px">
+          <label style="${lbl}">Buscar</label>
+          <input id="ins-q" class="busca" style="font-size:12.5px;padding:7px 11px" placeholder="Insumo, objetivo, capataz…" value="${escStk(insF.q)}" oninput="insBuscar(this.value)"></div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <label style="${lbl}">Estado</label>
+          <div style="display:flex;border:1px solid var(--linea);border-radius:8px;overflow:hidden">
+            ${est.map(([v,l])=>`<span onclick="filtroIns='${v}';insRender(document.getElementById('view'))" style="cursor:pointer;padding:7px 10px;font-size:12px;white-space:nowrap;${filtroIns===v?'background:var(--brote);color:#fff;font-weight:600':''}">${l}</span>`).join('')}
+          </div></div>
+        ${selF('Objetivo',insF.obj,'obj',cObj,'Todos')}
+        ${selF('Capataz',insF.cap,'cap',cCap,'Todos')}
+        <div style="display:flex;flex-direction:column;gap:3px;min-width:150px">
+          <label style="${lbl}">Período</label>
+          <select onchange="insF.per=this.value;insRender(document.getElementById('view'))" style="padding:7px 9px;border:1px solid ${insF.per!=='90'?'var(--brote)':'var(--linea)'};border-radius:8px;font:inherit;font-size:12.5px;background:${insF.per!=='90'?'var(--brote-soft)':'#fff'}">
+            ${PER.map(([v,l])=>`<option value="${v}" ${insF.per===v?'selected':''}>${l}</option>`).join('')}
+          </select></div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;font-size:12px">
+        ${act.length?'<span class="sub">Filtrando:</span>'+act.map(([t,f])=>`<span onclick="${f};insRender(document.getElementById('view'))" title="sacar" style="cursor:pointer;background:var(--brote-soft);color:var(--brote-2);border-radius:999px;padding:3px 10px;font-weight:600">${escStk(t)} ✕</span>`).join('')
+          +'<a href="javascript:void 0" onclick="insLimpiar()" style="color:var(--tinta-3);margin-left:4px">limpiar todo</a>':'<span class="sub">Últimos 90 días · sin otros filtros</span>'}
+        <span class="sub" style="margin-left:auto">${lista.length} de ${insRaw.length}</span></div>
+    </div>
     <div class="split">
       <div class="tablewrap"><table><thead><tr><th>Objetivo</th><th>Pedido</th><th style="width:92px">Fecha</th><th style="width:170px">Estado</th></tr></thead>
-        <tbody id="ins-body">${insumosData.length?insumosData.map((p,ix)=>{
+        <tbody id="ins-body">${lista.length?lista.map((p,ix)=>{
           const idx=p.estado==='entregado'?1:0;
-          const items=(p.pedidos_insumos_items||[]).map(i=>i.item).join(', ');
+          const items=itemsDe(p);
           const pt=puntualidadInsumo(p);
           return `<tr onclick="selInsumo(${ix})" data-ix="${ix}">
-            <td><div style="font-weight:600">${p.objetivos?p.objetivos.nombre:(p.objetivo_texto||'—')}</div><div class="sub">${p.capataces?p.capataces.nombre:''}</div></td>
-            <td>${items||'—'}</td>
+            <td><div style="font-weight:600">${marca(objDe(p))}</div><div class="sub">${marca(capDe(p))}</div></td>
+            <td>${items?marca(items):'—'}</td>
             <td class="mono" style="font-size:12px">${fechaAR(p.created_at)}</td>
             <td>${p.estado==='cancelado'?'<span class="badge b-red">cancelado</span>':railEstado(idx,2,false)+'<div class="sub mono" style="margin-top:5px">'+(p.estado==='entregado'?(p.entrega_completa===false?'<span style="color:var(--diesel);font-weight:600">⚠ Entregado con faltantes</span>':'<span style="color:var(--brote-2);font-weight:600">✓ Entregado completo</span>'):'Pendiente')+(pt?' · <span style="color:'+pt.color+';font-weight:600">'+pt.texto+'</span>':'')+'</div>'}</td></tr>`;}).join('')
-          :'<tr><td colspan="3"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>No hay pedidos.</div></div></td></tr>'}</tbody></table></div>
+          :'<tr><td colspan="4"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>No hay pedidos con estos filtros.</div></div></td></tr>'}</tbody></table></div>
       <div class="side" id="ins-side"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg><div>Elegí un pedido<br>para ver el detalle</div></div></div>
     </div>`;
-  }catch(e){view.innerHTML=`<div class="cargando-v">No pude cargar los pedidos.</div>`;}
 }
 // Puntualidad de un pedido: entregado = días pedido→entrega; pendiente =
 // días esperando. Regla: hasta 2 días puntual (verde), 3-5 ámbar, más rojo.
