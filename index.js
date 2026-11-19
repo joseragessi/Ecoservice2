@@ -334,6 +334,11 @@ function pareceListadoStock(
 // WEBHOOK TWILIO WHATSAPP
 // ============================================================
 
+// Respuesta al webhook que NO genera ningún mensaje.
+function responderVacio(res) {
+  res.status(200).type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+}
+
 app.post(
   '/webhook',
   async (req, res) => {
@@ -412,10 +417,9 @@ app.post(
       );
 
 
-      // 200 para que Twilio no reintente
-      return res.sendStatus(
-        200
-      );
+      // 200 para que Twilio no reintente. TwiML vacío: con sendStatus(200)
+      // el cuerpo era "OK" y Twilio lo mandaba como mensaje (19-nov).
+      return responderVacio(res);
     }
 
 
@@ -435,10 +439,11 @@ app.post(
 
 
     // Twilio espera 200 como máximo 15 segundos.
-    // Respondemos inmediatamente.
-    res.sendStatus(
-      200
-    );
+    // Respondemos inmediatamente, con TwiML VACÍO (19-nov): sendStatus(200)
+    // devolvía el texto "OK" y Twilio lo mandaba como mensaje de WhatsApp a
+    // cada persona, por cada mensaje que escribía. 1.537 "OK" en 18 días de
+    // noviembre = 31% de los mensajes y 42% del gasto de Twilio.
+    responderVacio(res);
 
 
     try {
