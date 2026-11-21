@@ -216,6 +216,9 @@ app.use(
 );
 
 
+// MIGRACIÓN COMPRAS → base del bot (21-nov). Temporal: se saca al terminar.
+app.use(require('./migrar_compras'));
+
 // Panel administrativo existente
 app.use(
   '/',
